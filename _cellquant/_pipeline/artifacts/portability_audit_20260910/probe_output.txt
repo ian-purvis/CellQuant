@@ -1,0 +1,4 @@
+NO IMPORTABLE TORCH: available engines = ['v4']
+Detected Cellpose 4.2.1.1; PyTorch not found. Runnable here: Cellpose-SAM (v4). PyTorch not importable (missing DLL).
+CELLQUANT PACKAGE REQUIREMENT: cellpose==4.2.1.1
+V3 INSTALLER REQUIREMENT PRESENT: True

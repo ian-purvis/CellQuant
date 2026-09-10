@@ -1,0 +1,165 @@
+{
+  "schema_version": 1,
+  "evidence_scope": "The dated software, module, identity-control and gauntlet records below are historical evidence, not verification of the current working source. See current_verification for the latest assessment.",
+  "current_verification": {
+    "version": "0.4.0a2",
+    "updated_utc": "2026-09-09T17:21:08Z",
+    "status": "software_checks_passed_ready_for_user_testing",
+    "full_suite": {
+      "passed": 286,
+      "failed": 0,
+      "errors": 0,
+      "warnings": 44,
+      "wall_seconds": 132.21,
+      "artifact": "artifacts/regression_0_4_a2.xml"
+    },
+    "real_napari_workflow": "passed_native_windows_load_review_accept_save_reopen_stale_results_dock_close_and_remove",
+    "supplementary_layout_check": {
+      "passed": 1,
+      "wall_seconds": 14.72,
+      "artifact": "artifacts/calibration_layout_0_4_a2.xml",
+      "scope": "visible_floating_and_docked_calibration_window_with_scroll_to_accept",
+      "screenshots_visually_inspected": [
+        "artifacts/calibration_histogram_0_4_a2.png",
+        "artifacts/calibration_docked_0_4_a2.png"
+      ]
+    },
+    "independent_review": {
+      "verdict": "CONFIRMED",
+      "scope": "calibration_core_worker_cancellation_v3_arguments_native_Qt_state_and_dock_lifecycle",
+      "independent_test_groups_passed": [30, 37, 16],
+      "additional_probe": "overlay_sparse_uint32_ids_unsorted_mapping_noncontiguous_arrays_chunk_boundaries",
+      "initial_counterexample": "closing_parent_dock_did_not_cancel_calibration",
+      "resolution": "fixed_and_native_close_remove_reopen_tests_passed"
+    },
+    "wheel": {
+      "path": "artifacts/wheel/cellquant-0.4.0a2-py3-none-any.whl",
+      "sha256": "76adb4da32010619f9334fb07f10d12a72098f1c3116bf502352e0663f967632",
+      "build": "passed_no_isolation",
+      "separate_target_install_smoke": "passed_cli_import_packaged_config_and_exact_synthetic_classification",
+      "source_check": "48_python_yaml_files_match_working_source_ignoring_line_endings"
+    },
+    "validation_limits": [
+      "Synthetic_inputs_and_spawned_test_workers_are_not_actual_Cellpose_model_inference",
+      "Real_retinal_coexpression_accuracy_and_large_image_UI_stalls_remain_unmeasured",
+      "v3_argument_signature_verified_against_installed_source_without_loading_model_weights"
+    ],
+    "biological_coexpression_accuracy": "not_validated",
+    "parameter_sweep": "deferred_until_user_confirms_pipeline_correctness",
+    "deferred_request": "memory/2026-09-08-deferred-parameter-sweep.md"
+  },
+  "updated_utc": "2026-09-04T17:58:07Z",
+  "reference_assumption": "Cellpose_documentation/Cellpose_test is used because reference/ is absent",
+  "current_wave": 4,
+  "software": {
+    "version": "0.4.0a1",
+    "source_fingerprint_sha256": "3537837cd56997721d059c50dbafeef04073c231a28099b7359bac30435120d5",
+    "full_test_suite": {
+      "collected": 118,
+      "passed": 118,
+      "failed": 0,
+      "wall_seconds_with_qt_offscreen": null,
+      "warnings": 1
+    },
+    "wheel": "dist/cellquant-0.3.0-py3-none-any.whl",
+    "wheel_sha256": "f9049bef0527ef9a0bf2634deba898e97bd8d143ff11d8a83e1097f86430c9eb",
+    "wheel_size_bytes": 70638,
+    "wheel_build": "passed",
+    "separate_target_install_and_cli_smoke": "passed",
+    "canonical_core_cpu_smoke": "passed",
+    "npe2_manifest_validation": "passed"
+  },
+  "modules": {
+    "io": {"status": "contract_tests_passed", "axes": "ZYXC", "lazy": true},
+    "preprocess": {"status": "contract_tests_and_real_crop_showcase_passed", "materialization_events": true},
+    "segment": {
+      "status": "adapter_and_device_policy_tests_passed_candidate_inference_blocked",
+      "model": "cpsam_v2",
+      "model_sha256": "0f1cc3f7ecdd8a037a57c6c48d9d8921391be4cbce3fa9f13c3e3a2e1253c667",
+      "cellpose_version": "4.2.1.1",
+      "supported_modes": ["single_plane_2d", "max_projection_2d", "stitch_2d", "volume_3d"],
+      "cpu_showcase": {
+        "shape": [9, 128, 128],
+        "batch_size": 1,
+        "use_bfloat16": false,
+        "result": "cancelled_after_more_than_600_seconds_without_mask",
+        "observed_working_set_bytes": 1852645376
+      }
+    },
+    "postprocess": {"status": "contract_tests_and_real_crop_showcase_passed"},
+    "measure": {"status": "contract_tests_and_real_crop_showcase_passed", "physical_bbox": true, "lazy_materialization_events": true},
+    "classify": {"status": "nuclear_exact_pixel_fraction_core_and_store_tests_passed", "cytoplasmic": "not_supported"},
+    "persist": {"status": "atomic_single_run_resume_and_compression_tests_passed"},
+    "viz": {"status": "tests_and_visual_inspection_passed"},
+    "verify": {"status": "tests_and_37_stack_identity_control_passed", "general_nonidentical_matching": "dense_assignment"},
+    "harness": {"status": "three_real_stack_injected_baseline_control_passed"},
+    "batch": {"status": "failure_isolation_resume_and_artifact_tests_passed", "worker_count": 1},
+    "plugin": {
+      "status": "scripted_controller_gate_passed_coexpression_page_imports_empirical_qt_gate_unmeasured",
+      "background_thread_worker": true,
+      "cancel_token": true,
+      "stable_layers": ["CellQuant image", "CellQuant labels"],
+      "segmentation_channel_dropdown": true,
+      "segmentation_channel_selection": "one_channel_per_run",
+      "interaction_trace": "artifacts/wave3_plugin/interaction_trace.json",
+      "screenshot": null,
+      "maximum_ui_stall_ms": null
+    }
+  },
+  "identity_controls": {
+    "three_stack_harness": {
+      "artifact": "artifacts/wave1",
+      "kind": "reference_labels_injected_into_harness_not_candidate_inference",
+      "stacks": [
+        {"density": "low", "label_count": 655, "wall_seconds": 3.382904099999, "peak_host_ram_bytes": 422535168},
+        {"density": "median", "label_count": 2430, "wall_seconds": 3.49693819996901, "peak_host_ram_bytes": 482578432},
+        {"density": "high", "label_count": 3287, "wall_seconds": 3.45030759996735, "peak_host_ram_bytes": 585584640}
+      ]
+    },
+    "full_reference_mask_set": {
+      "artifact": "artifacts/reference_identity_all",
+      "kind": "reference_masks_compared_with_themselves",
+      "stack_count": 37,
+      "mean_matched_iou": 1.0,
+      "mean_f1_at_0_50": 1.0,
+      "mean_f1_at_0_75": 1.0,
+      "maximum_absolute_count_delta": 0,
+      "figure_visually_inspected": true
+    }
+  },
+  "critics": [
+    {"round": 1, "verdict": "REFUTED", "resolution": "run isolation, current config persistence, measurement contract, events, parity report, and environment provenance implemented"},
+    {"round": 2, "verdict": "REFUTED", "resolution": "measurement materialization, full explicit config schema, source-version provenance, and volume stitch semantics fixed"},
+    {"round": 3, "verdict": "REFUTED", "resolution": "plugin fingerprint/provenance/label validation, rescaled-label grid restoration, and recursive output exclusion sent to owners"},
+    {"round": 4, "verdict": "CONFIRMED", "scope": "Wave 3 integration remediation", "note": "targeted critic suite passed; exact offscreen full suite completed 106/106 after a slow visualization test"}
+  ],
+  "scientific_gauntlet": {
+    "candidate_score": null,
+    "candidate_metrics": null,
+    "status": "blocked_no_cuda_candidate_run",
+    "cuda_evidence": {
+      "nvidia_smi": "not_available",
+      "torch_environment": "cellpose-v4-sam-torch",
+      "torch_version": "2.13.0+cpu",
+      "torch_cuda_available": false,
+      "torch_cuda_version": null,
+      "device_count": 0
+    },
+    "reference_runtime_and_memory": null,
+    "candidate_runtime_and_memory": null,
+    "performance_ratio": null,
+    "blind_review": null
+  },
+  "performance_budgets": {
+    "host_ram_bytes": "unmeasured_for_candidate",
+    "vram_bytes": "unmeasured_no_cuda",
+    "wall_clock_seconds": "unmeasured_for_candidate"
+  },
+  "open_issues_ranked": [
+    "Run cpsam_v2 candidate inference on a CUDA workstation over the three-stack gauntlet and then all 37 stacks",
+    "Measure the reference workflow on the identical CUDA hardware to evaluate the 1.5x runtime gate",
+    "Drive a real napari Qt session, capture screenshots, and measure all UI stalls against the 100 ms gate",
+    "Generate candidate-vs-reference outlier overlays and conduct the shuffled blind review",
+    "Replace dense assignment for very large non-identical parity comparisons with an equivalently exact sparse-component implementation"
+  ]
+}

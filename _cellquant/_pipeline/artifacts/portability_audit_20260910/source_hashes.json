@@ -1,0 +1,10 @@
+{
+  "pyproject.toml": "f9770f398fb9f92e623eb48f30d0be3fae0bb29295d9f49a7fadf356a51779f7",
+  "environment.yml": "54a85e36d34149ee359071dbe8b06674a980bf4ee30c6f55bbcc10780119c59f",
+  "scripts/install_windows.ps1": "675db637a53958a79fad74c4d97c7835178ea31782c53429c37cb1d5edfa30a8",
+  "scripts/resolve_env_location.ps1": "5530587b9e1f3d86ac3d2342d8ec47aecd7f57fc40c9f126f4da75454b808625",
+  "scripts/resolve_cuda_torch.ps1": "e98dfa619ce7c4e788e8162bd21cddb05aab16fb7083ea652ab169ec4c593e32",
+  "scripts/launch_napari.ps1": "d3d21c7ce6d43ec6f01be226cc12818d146d799877a5af7e95eac0968e2b9069",
+  "src/cellquant/plugin/capabilities.py": "aa4c365fc524495a395a7bb514487d2a37ac2fc353f4a56abb57ce50742f4bb3",
+  "src/cellquant/persist/staging.py": "474bff1d3775c27116b757e5ea7ab48938402383ef96f6eda0bdcf8b13246272"
+}

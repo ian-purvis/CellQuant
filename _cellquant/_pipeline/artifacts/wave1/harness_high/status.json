@@ -1,0 +1,64 @@
+{
+  "artifacts": [
+    {
+      "name": "config.json",
+      "role": "config",
+      "sha256": "08743932483487817917e9e195d2d90164e2d97498a5d8bc74e1b6703a5a458b",
+      "size": 1524
+    },
+    {
+      "name": "events.jsonl",
+      "role": "event_log",
+      "sha256": "e5c5a0d338d0dc033ac6cd8e34cc81cace50f2dfe46230ef73742c832bf8c40f",
+      "size": 1185
+    },
+    {
+      "name": "labels.tif",
+      "role": "labels",
+      "sha256": "d5d3cb9eb99b3324481f0631cd7ec316e4d8296879dbcbf74b08baaf3d3b71f5",
+      "size": 467257
+    },
+    {
+      "name": "harness_metrics.csv",
+      "role": "measurement",
+      "sha256": "402d7e3aa803376d722d4c8b9680f57b773627d25fbb348c066ad3f281ecfad2",
+      "size": 273
+    },
+    {
+      "name": "provenance.json",
+      "role": "provenance",
+      "sha256": "f1e1a4ad35fcd53f7d5e1b0e52055ace39d2dd97a0d18612ede82125c6858a19",
+      "size": 8813
+    },
+    {
+      "name": "qc_label_projection.png",
+      "role": "qc",
+      "sha256": "09f3fb581f4e40dae587f1ff09b9d4d3326d0c25ec2f8ffea9d6fdbd7535fddf",
+      "size": 157027
+    },
+    {
+      "name": "qc_mid_stack_outlines.png",
+      "role": "qc",
+      "sha256": "4d519cd8c5094484df3e4a23554322e8616c1e5453e9fa4cc3c0afed3e110453",
+      "size": 637538
+    },
+    {
+      "name": "qc_orthogonal_view.png",
+      "role": "qc",
+      "sha256": "5a9d5b2f491d64b73dbddafac0cb98207c54a5f3a049b57dc29b295ac551ae33",
+      "size": 407495
+    }
+  ],
+  "config_fingerprint": "a34c894e025d147109011e40a3cb0cdc525bb205236d1272bd18cbc4d71808d8",
+  "input_fingerprint": "8ff8fed2f3529c6d6068856f60c1cf9c823a11e2fc874a73a6cca2108742c572",
+  "label_disk_dtype": "uint16",
+  "label_max": 3287,
+  "label_shape": [
+    8,
+    1024,
+    1024
+  ],
+  "run_id": "c0ad4ecc82354970afd679af1cc04e6a",
+  "schema_version": 1,
+  "status": "complete"
+}

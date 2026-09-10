@@ -1,0 +1,23 @@
+{
+  "source": "C:\\Users\\ianpu\\OneDrive - The University of Colorado Denver\\Brzezinski Lab\\Data\\Tissue Images\\Cellpose_documentation\\Cellpose_test\\test_images\\Control__Explant_3__CRISPRi_cont_GFP_OTX2_far_red003.tif",
+  "baseline": "C:\\Users\\ianpu\\OneDrive - The University of Colorado Denver\\Brzezinski Lab\\Data\\Tissue Images\\Cellpose_documentation\\Cellpose_test\\outputs\\Control__Explant_3__CRISPRi_cont_GFP_OTX2_far_red003.tif",
+  "crop_yx": [
+    399,
+    332,
+    256,
+    256
+  ],
+  "preprocess": {
+    "input": "C:\\Users\\ianpu\\OneDrive - The University of Colorado Denver\\Brzezinski Lab\\Data\\Tissue Images\\Napari\\_cellquant\\_pipeline\\artifacts\\wave2_showcases\\preprocess\\preprocess_input.npy",
+    "output": "C:\\Users\\ianpu\\OneDrive - The University of Colorado Denver\\Brzezinski Lab\\Data\\Tissue Images\\Napari\\_cellquant\\_pipeline\\artifacts\\wave2_showcases\\preprocess\\preprocess_output.npy",
+    "summary": "C:\\Users\\ianpu\\OneDrive - The University of Colorado Denver\\Brzezinski Lab\\Data\\Tissue Images\\Napari\\_cellquant\\_pipeline\\artifacts\\wave2_showcases\\preprocess\\preprocess_summary.json"
+  },
+  "postprocess": {
+    "labels": "C:\\Users\\ianpu\\OneDrive - The University of Colorado Denver\\Brzezinski Lab\\Data\\Tissue Images\\Napari\\_cellquant\\_pipeline\\artifacts\\wave2_showcases\\postprocess\\postprocess_labels.npy",
+    "summary": "C:\\Users\\ianpu\\OneDrive - The University of Colorado Denver\\Brzezinski Lab\\Data\\Tissue Images\\Napari\\_cellquant\\_pipeline\\artifacts\\wave2_showcases\\postprocess\\postprocess_summary.json"
+  },
+  "measure": [
+    "C:\\Users\\ianpu\\OneDrive - The University of Colorado Denver\\Brzezinski Lab\\Data\\Tissue Images\\Napari\\_cellquant\\_pipeline\\artifacts\\wave2_showcases\\measure\\objects.csv",
+    "C:\\Users\\ianpu\\OneDrive - The University of Colorado Denver\\Brzezinski Lab\\Data\\Tissue Images\\Napari\\_cellquant\\_pipeline\\artifacts\\wave2_showcases\\measure\\intensities.csv"
+  ]
+}

@@ -1,0 +1,1 @@
+reference_label,candidate_label,iou,reference_volume_voxels,candidate_volume_voxels,volume_mean_voxels,volume_difference_voxels,volume_difference_percent,is_volume_outlier

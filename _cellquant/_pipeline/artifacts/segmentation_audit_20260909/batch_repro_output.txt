@@ -1,0 +1,4 @@
+EXCLUDED layout 1 remains assigned: 0
+CROSS-LAYOUT OUTPUT COLLISION: True image.tif.cellquant
+AFTER TWO LAYOUT REPORT WRITES: 1 total, 0 failed; failures.csv rows: 0
+THREE CONFIRMED: actual functions, synthetic paths only; no Cellpose or Qt execution
