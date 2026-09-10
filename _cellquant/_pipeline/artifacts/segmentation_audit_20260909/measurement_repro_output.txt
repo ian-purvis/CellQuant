@@ -1,0 +1,7 @@
+Runtime: bundled Python; actual CellQuant measure and postprocess functions.
+No Cellpose inference, no test doubles in the exercised measurement functions.
+
+dz=1.0: area=1 um2, reported volume=1.0 um3, retained IDs=[0]
+2D interior object after z-border removal: [0]
+dz=5.0: area=1 um2, reported volume=5.0 um3, retained IDs=[0, 1]
+2D interior object after z-border removal: [0]

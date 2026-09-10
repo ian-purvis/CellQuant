@@ -1,0 +1,81 @@
+{
+  "title": "Wave 1 parity-checker identity control",
+  "stack_count": 3,
+  "aggregate": {
+    "mean_optimal_matched_iou": 1.0,
+    "mean_f1_at_0_50": 1.0,
+    "mean_f1_at_0_75": 1.0
+  },
+  "results": [
+    {
+      "name": "Control__Explant_3__CRISPRi_cont_GFP_OTX2_far_red003.tif",
+      "reference_count": 655,
+      "candidate_count": 655,
+      "count_delta": 0,
+      "count_delta_percent": 0.0,
+      "foreground_iou": 1.0,
+      "optimal_matched_mean_iou": 1.0,
+      "f1_at_0_50": 1.0,
+      "f1_at_0_75": 1.0,
+      "matched_mean_iou_at_0_50": 1.0,
+      "matched_mean_iou_at_0_75": 1.0,
+      "volume_wasserstein_voxels": 0.0,
+      "volume_ks_statistic": 0.0,
+      "median_volume_delta_percent": 0.0,
+      "bland_altman_mean_difference_voxels": 0.0,
+      "bland_altman_lower_limit_voxels": 0.0,
+      "bland_altman_upper_limit_voxels": 0.0,
+      "volume_outlier_count": 0,
+      "likely_causes": [
+        "no strong systematic discrepancy detected"
+      ]
+    },
+    {
+      "name": "Control__Explant_4__CRISPRi_cont_GFP_OTX2_far_red006.tif",
+      "reference_count": 2430,
+      "candidate_count": 2430,
+      "count_delta": 0,
+      "count_delta_percent": 0.0,
+      "foreground_iou": 1.0,
+      "optimal_matched_mean_iou": 1.0,
+      "f1_at_0_50": 1.0,
+      "f1_at_0_75": 1.0,
+      "matched_mean_iou_at_0_50": 1.0,
+      "matched_mean_iou_at_0_75": 1.0,
+      "volume_wasserstein_voxels": 0.0,
+      "volume_ks_statistic": 0.0,
+      "median_volume_delta_percent": 0.0,
+      "bland_altman_mean_difference_voxels": 0.0,
+      "bland_altman_lower_limit_voxels": 0.0,
+      "bland_altman_upper_limit_voxels": 0.0,
+      "volume_outlier_count": 0,
+      "likely_causes": [
+        "no strong systematic discrepancy detected"
+      ]
+    },
+    {
+      "name": "CRISPRi_DHS2_DHS15__Explant_3__CRISPRi_DHS2-mCherry_DHS15-GFP_OTX2_far_red003.tif",
+      "reference_count": 3287,
+      "candidate_count": 3287,
+      "count_delta": 0,
+      "count_delta_percent": 0.0,
+      "foreground_iou": 1.0,
+      "optimal_matched_mean_iou": 1.0,
+      "f1_at_0_50": 1.0,
+      "f1_at_0_75": 1.0,
+      "matched_mean_iou_at_0_50": 1.0,
+      "matched_mean_iou_at_0_75": 1.0,
+      "volume_wasserstein_voxels": 0.0,
+      "volume_ks_statistic": 0.0,
+      "median_volume_delta_percent": 0.0,
+      "bland_altman_mean_difference_voxels": 0.0,
+      "bland_altman_lower_limit_voxels": 0.0,
+      "bland_altman_upper_limit_voxels": 0.0,
+      "volume_outlier_count": 0,
+      "likely_causes": [
+        "no strong systematic discrepancy detected"
+      ]
+    }
+  ],
+  "performance": []
+}

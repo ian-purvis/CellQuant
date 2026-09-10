@@ -1,0 +1,7 @@
+QUERY BEFORE: [{'denominator_positive': ['A'], 'name': 'conditional', 'negative': [], 'positive': ['A']}] AFTER: [{'denominator_positive': [], 'name': 'A+', 'negative': [], 'positive': ['A']}]
+CALIBRATION AFTER: None
+REGION POLICY AFTER: whole_object
+REVIEW IMAGE SHAPE: (3, 4, 4, 1) LABEL SHAPE: (1, 4, 4) TRANSFORM: {}
+STALE REVIEW SOURCE: old.tif NEW LABEL SPACING: (7.0, 7.0, 7.0)
+UNRELATED LABELS ACCEPTED FOR ORIGINAL RUN: 9
+FOUR REPRODUCTIONS CONFIRMED using actual AST methods and doubles; not real Qt interaction

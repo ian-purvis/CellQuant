@@ -1,0 +1,3 @@
+Rejected busy request nevertheless changed source: B.tif
+Simulated paint between measurement and persistence: {'measured_sum': 4, 'saved_sum': 12}
+10 image pixels at spacing .5; default-scale Shapes world length 5; reported pixels: 5.0

@@ -1,0 +1,15 @@
+v3 single_plane_2d output= (1, 6, 7) calls= [([6, 7], {'do_3D': False, 'z_axis': None, 'channel_axis': None, 'channels': [0, 0], 'anisotropy': None, 'stitch_threshold': 0.0})]
+v3 max_projection_2d output= (1, 6, 7) calls= [([6, 7], {'do_3D': False, 'z_axis': None, 'channel_axis': None, 'channels': [0, 0], 'anisotropy': None, 'stitch_threshold': 0.0})]
+v3 stitch_2d output= (3, 6, 7) calls= [([6, 7], {'do_3D': False, 'z_axis': None, 'channel_axis': None, 'channels': [0, 0], 'anisotropy': None, 'stitch_threshold': 0.0}), ([6, 7], {'do_3D': False, 'z_axis': None, 'channel_axis': None, 'channels': [0, 0], 'anisotropy': None, 'stitch_threshold': 0.0}), ([6, 7], {'do_3D': False, 'z_axis': None, 'channel_axis': None, 'channels': [0, 0], 'anisotropy': None, 'stitch_threshold': 0.0})]
+v3 volume_3d output= (3, 6, 7) calls= [([3, 6, 7], {'do_3D': True, 'z_axis': 0, 'channel_axis': None, 'channels': [0, 0], 'anisotropy': 4.0, 'stitch_threshold': 0.0})]
+v4 single_plane_2d output= (1, 6, 7) calls= [([6, 7], {'do_3D': False, 'z_axis': None, 'channel_axis': None, 'channels': None, 'anisotropy': None, 'stitch_threshold': 0.0})]
+v4 max_projection_2d output= (1, 6, 7) calls= [([6, 7], {'do_3D': False, 'z_axis': None, 'channel_axis': None, 'channels': None, 'anisotropy': None, 'stitch_threshold': 0.0})]
+v4 stitch_2d output= (3, 6, 7) calls= [([6, 7], {'do_3D': False, 'z_axis': None, 'channel_axis': None, 'channels': None, 'anisotropy': None, 'stitch_threshold': 0.0}), ([6, 7], {'do_3D': False, 'z_axis': None, 'channel_axis': None, 'channels': None, 'anisotropy': None, 'stitch_threshold': 0.0}), ([6, 7], {'do_3D': False, 'z_axis': None, 'channel_axis': None, 'channels': None, 'anisotropy': None, 'stitch_threshold': 0.0})]
+v4 volume_3d output= (3, 6, 7) calls= [([3, 6, 7], {'do_3D': True, 'z_axis': 0, 'channel_axis': None, 'channels': None, 'anisotropy': 4.0, 'stitch_threshold': 0.0})]
+ZERO STITCH: independent plane objects=3, nonzero output IDs= [1]
+CONFIG ACCEPTED channel_axis 0
+CONFIG ACCEPTED z_axis 2
+CONFIG ACCEPTED diameter_px nan
+CONFIG ACCEPTED compute_masks False
+CONFIG ACCEPTED stitch_threshold -0.2
+Limits: fake model, stubbed stitch3D, RNG setup disabled; no model/GPU/inference verification.

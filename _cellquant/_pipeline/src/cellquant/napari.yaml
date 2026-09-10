@@ -1,0 +1,11 @@
+name: cellquant
+display_name: CellQuant
+schema_version: 0.2.0
+contributions:
+  commands:
+    - id: cellquant.make_widget
+      title: Open CellQuant
+      python_name: cellquant.plugin:cellquant_widget
+  widgets:
+    - command: cellquant.make_widget
+      display_name: CellQuant Cellpose Pipeline

@@ -1,0 +1,5 @@
+[console_scripts]
+cellquant = cellquant.cli:main
+
+[napari.manifest]
+cellquant = cellquant:napari.yaml

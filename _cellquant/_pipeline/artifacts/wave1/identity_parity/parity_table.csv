@@ -1,0 +1,4 @@
+name,reference_count,candidate_count,count_delta,count_delta_percent,foreground_iou,optimal_matched_mean_iou,f1_at_0_50,f1_at_0_75,matched_mean_iou_at_0_50,matched_mean_iou_at_0_75,volume_wasserstein_voxels,volume_ks_statistic,median_volume_delta_percent,bland_altman_mean_difference_voxels,bland_altman_lower_limit_voxels,bland_altman_upper_limit_voxels,volume_outlier_count,likely_causes
+Control__Explant_3__CRISPRi_cont_GFP_OTX2_far_red003.tif,655,655,0,0.0,1.0,1.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0,"('no strong systematic discrepancy detected',)"
+Control__Explant_4__CRISPRi_cont_GFP_OTX2_far_red006.tif,2430,2430,0,0.0,1.0,1.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0,"('no strong systematic discrepancy detected',)"
+CRISPRi_DHS2_DHS15__Explant_3__CRISPRi_DHS2-mCherry_DHS15-GFP_OTX2_far_red003.tif,3287,3287,0,0.0,1.0,1.0,1.0,1.0,1.0,1.0,0.0,0.0,0.0,0.0,0.0,0.0,0,"('no strong systematic discrepancy detected',)"

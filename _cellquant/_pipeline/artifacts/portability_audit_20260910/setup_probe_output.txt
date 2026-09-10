@@ -1,0 +1,10 @@
+Actual installed v3 environment, read-only command:
+C:/Users/ianpu/miniconda3/envs/cellquant-napari-v3/python.exe -m pip check
+Exit code: 1
+cellquant 0.4.0a2 has requirement cellpose==4.2.1.1, but you have cellpose 3.1.1.3.
+
+Pure PowerShell function probes (no install commands executed):
+Get-SiblingV3Prefix -PrefixV4 C:\CellQuant\cellquant-napari-v3
+Result: C:\CellQuant\cellquant-napari-v3 (identical to v4 path)
+Get-CellQuantTorchCudaTag -DriverCudaVersion ([version]'11.0')
+Result: cu118

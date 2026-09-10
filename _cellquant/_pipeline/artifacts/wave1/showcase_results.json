@@ -1,0 +1,33 @@
+{
+  "note": "Harness used existing reference labels as an injected control; this is not a candidate Cellpose run.",
+  "parity_report": "C:\\Users\\ianpu\\OneDrive - The University of Colorado Denver\\Brzezinski Lab\\Data\\Tissue Images\\Napari\\_cellquant\\_pipeline\\artifacts\\wave1\\identity_parity\\parity_report.json",
+  "cases": [
+    {
+      "density": "low",
+      "filename": "Control__Explant_3__CRISPRi_cont_GFP_OTX2_far_red003.tif",
+      "expected_count": 655,
+      "harness_success": true,
+      "harness_label_count": 655,
+      "wall_seconds": 3.3829040999989957,
+      "peak_host_ram_bytes": 422535168
+    },
+    {
+      "density": "median",
+      "filename": "Control__Explant_4__CRISPRi_cont_GFP_OTX2_far_red006.tif",
+      "expected_count": 2430,
+      "harness_success": true,
+      "harness_label_count": 2430,
+      "wall_seconds": 3.4969381999690086,
+      "peak_host_ram_bytes": 482578432
+    },
+    {
+      "density": "high",
+      "filename": "CRISPRi_DHS2_DHS15__Explant_3__CRISPRi_DHS2-mCherry_DHS15-GFP_OTX2_far_red003.tif",
+      "expected_count": 3287,
+      "harness_success": true,
+      "harness_label_count": 3287,
+      "wall_seconds": 3.4503075999673456,
+      "peak_host_ram_bytes": 585584640
+    }
+  ]
+}

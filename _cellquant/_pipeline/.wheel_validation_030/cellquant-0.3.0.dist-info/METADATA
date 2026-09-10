@@ -1,0 +1,121 @@
+Metadata-Version: 2.4
+Name: cellquant
+Version: 0.3.0
+Summary: Napari Cellpose segmentation and per-object multichannel quantification
+License-Expression: BSD-3-Clause
+Requires-Python: <3.12,>=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: numpy==2.0.2
+Requires-Dist: pandas==3.0.5
+Requires-Dist: tifffile==2026.3.3
+Requires-Dist: nd2==0.11.3
+Requires-Dist: PyYAML==6.0.3
+Requires-Dist: openpyxl==3.1.5
+Requires-Dist: cellpose==4.2.1.1
+Requires-Dist: napari[pyqt6]==0.9.0
+Requires-Dist: magicgui==0.10.2
+Requires-Dist: scipy==1.17.1
+Requires-Dist: matplotlib==3.11.0
+Requires-Dist: pillow==12.3.0
+Requires-Dist: psutil==7.2.2
+Requires-Dist: dask[array]==2026.8.0
+Provides-Extra: test
+Requires-Dist: pytest==9.1.1; extra == "test"
+Requires-Dist: pytest-cov==7.1.0; extra == "test"
+
+# CellQuant
+
+CellQuant is an installable napari plugin and headless CLI for calibrated
+Cellpose-SAM nucleus segmentation in 3D or 2D. Both front ends call the same
+ZYXC core.
+The scientific contract and current reference-corpus assumption are documented
+in `ARCHITECTURE.md`; measured status is kept in `docs/STATUS.json`.
+
+## Current validation status
+
+The I/O, preprocessing, segmentation adapter, postprocessing, measurement,
+persistence, batch, plugin-controller, harness, visualization, and parity
+contracts have automated coverage. Three real retinal stacks (low, median, and
+high nuclear density) pass an exact baseline-label identity control. That proves
+the label I/O and comparison loop, not Cellpose parity. This host has no usable
+CUDA Cellpose runtime, and a CPU `cpsam_v2` run on a 9x128x128 crop exceeded ten
+minutes without producing a mask. Candidate-vs-Fiji parity and performance are
+therefore explicitly unscored.
+
+## Installation
+
+Use Python 3.11 and install a CUDA-enabled PyTorch build compatible with the
+workstation driver before installing CellQuant. Then install the project:
+
+```powershell
+python -m pip install -e ".[test]"
+```
+
+The reference profile pins the local `cpsam_v2` weight bytes by SHA-256. A model
+file whose hash differs from the config is rejected. Review the voxel spacing,
+channel, anisotropy, CUDA device, and model path/hash before every acquisition.
+
+## Headless commands
+
+```powershell
+cellquant batch INPUT_DIR OUTPUT_DIR --config reference_config.yaml --recursive
+cellquant harness STACK.tif CASE_OUTPUT --config reference_config.yaml
+cellquant parity FIJI_LABELS CANDIDATE_LABELS REPORT_DIR
+cellquant showcase preprocess STACK.tif SHOWCASE_DIR --config reference_config.yaml --crop 0:8,0:256,0:256
+```
+
+Batch outputs mirror input parents and use directories such as
+`sample.tif.cellquant`. A file resumes only when its content/size/mtime and full
+config fingerprints match a validated completion marker. A bad file writes a
+failure record and does not stop later files.
+
+The parity command accepts two label TIFFs or two directories. Candidate batch
+directories are recognized through their `*.cellquant/labels.tif` layout. It
+writes per-stack tables, matched-label IoUs, F1 at 0.50 and 0.75,
+Bland-Altman volume data, outlier files, and a deterministic summary figure.
+
+## napari plugin
+
+After installation, choose **Plugins > CellQuant Cellpose Pipeline**. The dock:
+
+- opens TIFF/OME-TIFF/ND2 data lazily into the stable `CellQuant image` layer;
+- offers a segmentation-channel dropdown with 1-based display labels and source
+  channel names while persisting the selected zero-based channel in the run config;
+- runs segmentation and measurement with napari `thread_worker`;
+- publishes the stable `CellQuant labels` layer as ZYX `uint32`;
+- relays typed progress events through a GUI-thread timer;
+- exposes cooperative cancellation; and
+- remeasures edited labels before writing a complete run store.
+
+Cellpose's single blocking `model.eval` call cannot be interrupted internally;
+cancellation takes effect at the checkpoints immediately around it. Scripted
+controller interactions pass, but this environment could not complete a real
+offscreen Qt screenshot/stall measurement, so the empirical 100 ms UI gate is
+not claimed as passed.
+
+## Data and configuration contracts
+
+- Images are `(Z, Y, X, C)` with source intensity dtype preserved at I/O.
+- Labels are `(Z, Y, X)` `uint32`, background `0`.
+- Spacing is positive `(z_um, y_um, x_um)` metadata and is never inferred from
+  a filename or shape.
+- Disabled transformations are still explicit in configuration.
+- Every consumed Cellpose argument and constructor setting is serialized.
+- Four segmentation modes are available: `volume_3d`, `stitch_2d`,
+  `single_plane_2d`, and `max_projection_2d`. Single-plane mode requires the
+  explicit zero-based `segment.z_index`; the other modes require `z_index: null`.
+- Only `stitch_2d` may use a nonzero `stitch_threshold`.
+- Single-plane and max-projection runs produce singleton-Z labels. Measurements
+  use the matching selected plane or per-channel maximum projection. The existing
+  morphology schema still reports a singleton-Z `volume_um3`; this is not a true
+  3D object volume.
+- One channel drives segmentation per run. To segment multiple channels from one
+  image, run them separately with different channel selections and separate output
+  directories; the pipeline does not fuse channels or create several label sets in
+  one run, and the stable napari Labels layer is replaced by the latest run.
+- Run stores contain checksummed labels, measurements, QC figures, config,
+  events, provenance, environment inventory, and an atomic status marker.
+
+Use `sample_config.yaml` as the complete schema example. `reference_config.yaml`
+is the measured Fiji/notebook compatibility profile for the available retinal
+reference corpus.

@@ -1,0 +1,17 @@
+{
+  "background_dispatch": [
+    "open",
+    "segment",
+    "measure_and_save"
+  ],
+  "cancel_token_wired": true,
+  "event_relay": "worker_queue_to_gui_timer",
+  "layers": {
+    "image": "CellQuant image",
+    "labels": "CellQuant labels"
+  },
+  "lazy_open_materialized": false,
+  "screenshot": "deferred: offscreen Qt widget probe did not complete reliably in this environment",
+  "showcase": "scripted fake-viewer interaction",
+  "test_result": "11 plugin tests passed; 32 plugin and adjacent tests passed"
+}

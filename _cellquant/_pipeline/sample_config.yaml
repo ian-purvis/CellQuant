@@ -1,0 +1,68 @@
+schema_version: 1
+io:
+  series: 0
+  position: 0
+  lazy: true
+  axes_override: null
+  spacing_override_um: null
+  recursive: true
+  suffixes: [.tif, .tiff, .nd2]
+preprocess:
+  channel: 0
+  normalize: {enabled: false, low_percentile: null, high_percentile: null, scope: null}
+  rescale: {enabled: false, target_spacing_um: null, interpolation: null, antialias: null, boundary: constant, cval: 0.0}
+  denoise: {enabled: false, method: null, parameters: {}, boundary: reflect, cval: 0.0}
+segment:
+  engine: v4
+  model: cpsam_v2
+  model_sha256: 0f1cc3f7ecdd8a037a57c6c48d9d8921391be4cbce3fa9f13c3e3a2e1253c667
+  model_type: null
+  diam_mean: null
+  nchan: null
+  mode: volume_3d
+  z_index: null
+  diameter_px: 30.0
+  anisotropy: 2.6067
+  min_size: 200
+  flow_threshold: 0.4
+  cellprob_threshold: 0.0
+  stitch_threshold: 0.0
+  channel_axis: null
+  z_axis: 0
+  tile: true
+  tile_overlap: 0.1
+  batch_size: 8
+  augment: false
+  resample: true
+  normalize: true
+  device: cuda
+  allow_cpu_fallback: false
+  use_bfloat16: true
+  flow3D_smooth: 0
+  max_size_fraction: 0.4
+  niter: null
+  bsize: 256
+  compute_masks: true
+  channels: null
+  rescale_factor: null
+  progress: null
+postprocess:
+  min_volume_um3: null
+  max_volume_um3: null
+  min_voxels: null
+  max_voxels: null
+  remove_border_faces: []
+  relabel: false
+measure:
+  intensity_statistics: [mean, median, min, max, integrated_intensity]
+  channels: all
+viz:
+  low_percentile: 1.0
+  high_percentile: 99.8
+  label_seed: 0
+  dpi: 150
+runtime:
+  seed: 0
+  deterministic_torch: true
+  hash_inputs: true
+  output_compression: zlib
