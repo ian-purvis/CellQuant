@@ -27,8 +27,8 @@ MIN_SCRATCH_HEADROOM_BYTES = 2 * 1024 ** 3
 class ResourceEstimate:
     """Bytes and paths for a forthcoming preparation step."""
 
-    image_bytes: int
-    labels_bytes: int
+    image_bytes: int | None
+    labels_bytes: int | None
     temporary_bytes: int
     available_ram_bytes: int | None
     available_scratch_bytes: int | None
@@ -38,15 +38,30 @@ class ResourceEstimate:
     blocking_errors: tuple[str, ...]
 
     @property
-    def total_preparation_bytes(self) -> int:
+    def total_preparation_bytes(self) -> int | None:
+        if self.image_bytes is None or self.labels_bytes is None:
+            return None
         return int(self.image_bytes + self.labels_bytes + self.temporary_bytes)
 
     def as_preflight_lines(self) -> list[str]:
+        total = self.total_preparation_bytes
+        if total is None:
+            prep = (
+                "Estimated preparation: Not estimated"
+                f" (image {_fmt_optional_bytes(self.image_bytes)},"
+                f" labels {_fmt_optional_bytes(self.labels_bytes)},"
+                f" temp {_fmt_bytes(self.temporary_bytes)})"
+            )
+        else:
+            prep = (
+                f"Estimated preparation: {_fmt_bytes(total)}"
+                f" (image {_fmt_optional_bytes(self.image_bytes)},"
+                f" labels {_fmt_optional_bytes(self.labels_bytes)},"
+                f" temp {_fmt_bytes(self.temporary_bytes)})"
+            )
         lines = [
             f"Scratch: {self.scratch_root}",
-            f"Estimated preparation: {_fmt_bytes(self.total_preparation_bytes)}"
-            f" (image {_fmt_bytes(self.image_bytes)}, labels {_fmt_bytes(self.labels_bytes)},"
-            f" temp {_fmt_bytes(self.temporary_bytes)})",
+            prep,
         ]
         if self.available_ram_bytes is not None:
             lines.append(f"Available RAM: {_fmt_bytes(self.available_ram_bytes)}")
@@ -71,21 +86,25 @@ def configure_scratch_root(path: str | Path | None) -> Path:
     return local_staging_root()
 
 
-def _array_nbytes(value: Any) -> int:
+def _array_nbytes(value: Any) -> int | None:
+    """Estimate array size from shape/dtype without converting to a NumPy array."""
+
     if value is None:
         return 0
-    array = getattr(value, "data", value)
-    try:
-        return int(np.asarray(array).nbytes)
-    except Exception:
-        shape = getattr(array, "shape", None)
-        dtype = getattr(array, "dtype", None)
+    # Prefer the object itself. ``ndarray.data`` is a memoryview without ``dtype``.
+    for candidate in (value, getattr(value, "data", None)):
+        if candidate is None:
+            continue
+        shape = getattr(candidate, "shape", None)
+        dtype = getattr(candidate, "dtype", None)
         if shape is None or dtype is None:
-            return 0
+            continue
         try:
-            return int(np.prod(shape)) * int(np.dtype(dtype).itemsize)
+            count = int(np.prod(tuple(int(v) for v in shape), dtype=np.int64))
+            return count * int(np.dtype(dtype).itemsize)
         except Exception:
-            return 0
+            continue
+    return None
 
 
 def _available_ram() -> int | None:
@@ -117,6 +136,12 @@ def _fmt_bytes(count: int) -> str:
     return f"{int(count)} B"
 
 
+def _fmt_optional_bytes(count: int | None) -> str:
+    if count is None:
+        return "Not estimated"
+    return _fmt_bytes(count)
+
+
 def estimate_preparation(
     *,
     image: Any | None = None,
@@ -132,7 +157,7 @@ def estimate_preparation(
     labels_bytes = _array_nbytes(labels)
     temp_bytes = max(0, int(temporary_bytes))
     # Snapshotting typically needs a full extra copy of each array in RAM.
-    snapshot_ram = image_bytes + labels_bytes
+    snapshot_ram = None if image_bytes is None or labels_bytes is None else image_bytes + labels_bytes
     available_ram = _available_ram()
     available_scratch = _available_scratch(root)
     warnings: list[str] = []
@@ -142,7 +167,7 @@ def estimate_preparation(
         warnings.append(
             "Scratch is under a cloud-synced folder; set a local CELLQUANT_SCRATCH path."
         )
-    if available_ram is not None and snapshot_ram > 0:
+    if available_ram is not None and snapshot_ram is not None and snapshot_ram > 0:
         limit = int(available_ram * float(safe_ram_fraction))
         if snapshot_ram > limit:
             errors.append(
@@ -154,8 +179,8 @@ def estimate_preparation(
             warnings.append(
                 f"Large snapshot (~{_fmt_bytes(snapshot_ram)}); close other apps if this machine is tight on RAM."
             )
-    needed_disk = image_bytes + labels_bytes + temp_bytes
-    if available_scratch is not None and needed_disk > 0:
+    needed_disk = None if image_bytes is None or labels_bytes is None else image_bytes + labels_bytes + temp_bytes
+    if available_scratch is not None and needed_disk is not None and needed_disk > 0:
         if needed_disk + MIN_SCRATCH_HEADROOM_BYTES > available_scratch:
             errors.append(
                 f"Scratch disk needs ~{_fmt_bytes(needed_disk)} plus headroom; "

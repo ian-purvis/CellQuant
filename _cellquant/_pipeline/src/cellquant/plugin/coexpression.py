@@ -156,8 +156,9 @@ class SingleImageCoexpressionPanel(Q.QWidget):
             widget.setMinimumWidth(180)
             widget.setSizePolicy(Q.QSizePolicy.Expanding, Q.QSizePolicy.Fixed)
             form.addRow(title, widget)
-            widget.currentIndexChanged.connect(self.mark_stale)
+            widget.currentIndexChanged.connect(self._source_layers_changed)
         self.image.currentIndexChanged.connect(self.refresh_channels)
+        self.image.currentIndexChanged.connect(self.refresh_analysis_context_ui)
         self.labels.currentIndexChanged.connect(self.refresh_analysis_context_ui)
         self.analysis_context_label = Q.QLabel("Measurement grid: select reviewed nuclei.")
         self.analysis_context_label.setWordWrap(True)
@@ -181,16 +182,16 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         form.addRow("Declare grid (imported masks)", declare_row)
         self.declare_mode.currentIndexChanged.connect(self._declared_mode_changed)
         self.declare_mode.currentIndexChanged.connect(self._user_edited_declaration)
-        self.declare_mode.currentIndexChanged.connect(self.mark_stale)
+        self.declare_mode.currentIndexChanged.connect(self.mark_preview_stale)
         self.declare_z.valueChanged.connect(self._user_edited_declaration)
-        self.declare_z.valueChanged.connect(self.mark_stale)
+        self.declare_z.valueChanged.connect(self.mark_preview_stale)
         self.fields = {}
         for key, title in [("name", "Recipe name"), ("calibration_group", "Calibration group"), ("specimen_id", "Specimen"), ("eye_id", "Eye (optional)"), ("section_id", "Section (optional)"), ("image_id", "Image ID"), ("region_id", "Region name")]:
             field = Q.QLineEdit()
             field.setMinimumWidth(180)
             field.setSizePolicy(Q.QSizePolicy.Expanding, Q.QSizePolicy.Fixed)
             self.fields[key] = field
-            form.addRow(title, field); field.textChanged.connect(self.mark_stale)
+            form.addRow(title, field); field.textChanged.connect(self.mark_preview_stale)
         self.fields["name"].setText("Nuclear coexpression")
         self.policy = Q.QComboBox()
         self.policy.setMinimumWidth(180)
@@ -198,7 +199,7 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self.policy.addItem("Whole object: every voxel inside region", "whole_object")
         self.policy.addItem("Centroid: nearest centroid voxel inside region", "centroid")
         form.addRow("Region membership", self.policy)
-        self.policy.currentIndexChanged.connect(self.mark_stale)
+        self.policy.currentIndexChanged.connect(self.mark_preview_stale)
         note = Q.QLabel("No region layer means the entire image. Nonzero region labels define inclusion; measurements always use the complete nucleus. Name the region explicitly.")
         note.setWordWrap(True); layout.addWidget(note)
         self.query_summary = Q.QLabel("Queries: automatic inclusive combinations.")
@@ -209,8 +210,11 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self.markers.setMinimumHeight(140)
         self.markers.setMinimumWidth(420)
         configure_readable_table(self.markers, min_widths=_MARKER_COLUMN_MIN_WIDTHS)
-        self.markers.itemChanged.connect(self.mark_stale)
+        self.markers.itemChanged.connect(self._marker_item_changed)
         layout.addWidget(self.markers)
+        self.evidence_label = Q.QLabel("Calibration evidence: none stored.")
+        self.evidence_label.setWordWrap(True)
+        layout.addWidget(self.evidence_label)
         self._buttons(layout, [("Add marker", self.add_marker), ("Remove last marker", self.remove_marker), ("Calibrate selected marker", self.calibrate_marker), ("Load reviewed TIFF", self.choose_labels)])
         self._buttons(layout, [("Confirm reviewed channel layout", self.confirm_channel_layout), ("Load recipe", self.choose_recipe), ("Save recipe", self.choose_save_recipe), ("Reset queries to defaults", self.reset_queries)])
         self._buttons(layout, [("Reopen classification", self.choose_reopen), ("Preview calls", self.preview), ("Save classification", self.choose_save), ("Cancel", self.cancel)])
@@ -246,7 +250,7 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         try: return fn()
         except Exception as exc: self.status.setText(str(exc))
 
-    def mark_stale(self, *_):
+    def mark_preview_stale(self, *_):
         self.revision += 1
         self._source_signature = self.source_signature()
         if hasattr(self, "status"):
@@ -256,10 +260,70 @@ class SingleImageCoexpressionPanel(Q.QWidget):
             table.setRowCount(0); table.setEnabled(False)
         for layer in self.viewer.layers:
             if layer.name == OVERLAY_NAME: layer.visible = False
-        for record in self._calibrations.values():
-            record.setdefault("review", {})["status"] = "historical"
-        if self.calibration_panel is not None:
+
+    def mark_stale(self, *_):
+        """Keep preview-only invalidation. Source/region changes use ``_source_layers_changed``."""
+        self.mark_preview_stale()
+
+    def invalidate_calibration_evidence(self, reason: str, *, rows=None):
+        targets = (
+            list(self._calibrations)
+            if rows is None
+            else [row for row in rows if row in self._calibrations]
+        )
+        for row in targets:
+            record = self._calibrations[row]
+            review = record.setdefault("review", {})
+            review["status"] = "historical"
+            review["historical_reason"] = reason
+        if rows is None and self.calibration_panel is not None:
             self.calibration_panel.invalidate_source()
+        self._sync_evidence_label()
+
+    def _source_layers_changed(self, *_):
+        self.mark_preview_stale()
+        self.invalidate_calibration_evidence("Source image, nuclei, or counting region changed")
+        if hasattr(self, "declare_z"):
+            self.refresh_analysis_context_ui()
+
+    def _marker_item_changed(self, item):
+        row = item.row() if item is not None else None
+        self.mark_preview_stale()
+        if row is not None:
+            self.invalidate_calibration_evidence(
+                f"Marker row {row + 1} settings changed",
+                rows=(row,),
+            )
+        self._sync_evidence_label()
+
+    def _marker_channel_changed(self, row):
+        self.mark_preview_stale()
+        self.invalidate_calibration_evidence("Channel mapping changed", rows=(row,))
+        if self.calibration_panel is not None and getattr(self, "_calibrating_row", None) == row:
+            self.calibration_panel.invalidate_source()
+
+    def _sync_evidence_label(self):
+        if not hasattr(self, "evidence_label"):
+            return
+        if not self._calibrations:
+            self.evidence_label.setText("Calibration evidence: none stored.")
+            return
+        parts = []
+        for row in sorted(self._calibrations):
+            record = self._calibrations[row]
+            review = record.get("review") or {}
+            name = ""
+            if row < self.markers.rowCount() and self.markers.item(row, 0) is not None:
+                name = self.markers.item(row, 0).text().strip() or f"row {row + 1}"
+            else:
+                name = f"row {row + 1}"
+            status = review.get("status") or "unknown"
+            reason = review.get("historical_reason")
+            if status == "historical" and reason:
+                parts.append(f"{name}: historical ({reason})")
+            else:
+                parts.append(f"{name}: {status}")
+        self.evidence_label.setText("Calibration evidence: " + "; ".join(parts))
 
     def source_signature(self):
         """Cheap event backstop for mutable metadata/config; paint events cover pixels."""
@@ -280,8 +344,9 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         if self._source_signature is None:
             self._source_signature = signature
         elif signature != self._source_signature:
-            self.mark_stale()
+            self._source_layers_changed()
             self.refresh_channels()
+            self.refresh_analysis_context_ui()
 
     def channel_names(self):
         layer = self.image.currentData()
@@ -307,12 +372,22 @@ class SingleImageCoexpressionPanel(Q.QWidget):
             if channel is not None and not 0 <= channel < len(names):
                 raise ValueError("Fix unavailable channel mappings before confirming.")
         self._expected_channel_names = names
-        self.mark_stale()
+        self.mark_preview_stale()
         self.status.setText("Reviewed channel layout confirmed. Preview again with these mappings.")
 
     def refresh_layers(self, *events):
         if events and (getattr(getattr(events[0], "value", None), "name", None) == OVERLAY_NAME or getattr(getattr(events[0], "value", None), "metadata", {}).get("cellquant_calibration")):
             return
+        previous_image = self.image.currentData()
+        previous_labels = self.labels.currentData()
+        previous_region = self.region.currentData()
+        previous_ids = (
+            id(previous_image) if previous_image is not None else None,
+            id(getattr(previous_image, "data", None)) if previous_image is not None else None,
+            id(previous_labels) if previous_labels is not None else None,
+            id(getattr(previous_labels, "data", None)) if previous_labels is not None else None,
+            id(previous_region) if previous_region is not None else None,
+        )
         for combo, kind, optional in [(self.image, "image", False), (self.labels, "labels", False), (self.region, "labels", True)]:
             previous = combo.currentData(); combo.blockSignals(True); combo.clear()
             combo.addItem("Whole image (no region)" if optional else "Select a layer", None)
@@ -325,10 +400,19 @@ class SingleImageCoexpressionPanel(Q.QWidget):
                     self._watched.add(id(layer))
                     for event in ["data", "set_data", "paint", "metadata", "scale", "translate", "rotate", "shear", "affine"]:
                         emitter = getattr(layer.events, event, None)
-                        if emitter is not None: emitter.connect(self.mark_stale)
+                        if emitter is not None: emitter.connect(self._source_layers_changed)
             if not optional and combo.currentIndex() == 0 and combo.count() > 1: combo.setCurrentIndex(1)
             combo.blockSignals(False)
-        self.refresh_channels(); self.refresh_analysis_context_ui(); self.mark_stale()
+        self.refresh_channels(); self.refresh_analysis_context_ui()
+        new_ids = (
+            id(self.image.currentData()) if self.image.currentData() is not None else None,
+            id(getattr(self.image.currentData(), "data", None)) if self.image.currentData() is not None else None,
+            id(self.labels.currentData()) if self.labels.currentData() is not None else None,
+            id(getattr(self.labels.currentData(), "data", None)) if self.labels.currentData() is not None else None,
+            id(self.region.currentData()) if self.region.currentData() is not None else None,
+        )
+        if new_ids != previous_ids:
+            self._source_layers_changed()
 
     def _declared_mode_changed(self, *_):
         self.declare_z.setEnabled(self.declare_mode.currentData() == "single_plane_2d")
@@ -374,9 +458,11 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self.declare_mode.setEnabled(True)
         self._declared_mode_changed()
         pair = (
-            getattr(getattr(image_layer, "source", None), "name", None)
-            or getattr(image_layer, "name", None),
-            getattr(labels_layer, "name", None),
+            id(image_layer) if image_layer is not None else None,
+            id(getattr(image_layer, "data", None)) if image_layer is not None else None,
+            tuple(int(v) for v in getattr(getattr(image_layer, "data", None), "shape", ()) or ()),
+            id(labels_layer) if labels_layer is not None else None,
+            id(getattr(labels_layer, "data", None)) if labels_layer is not None else None,
             tuple(int(v) for v in getattr(labels_layer.data, "shape", ())),
             str(dict(getattr(labels_layer, "metadata", {}) or {}).get("analysis_volume") or {}),
         )
@@ -457,7 +543,7 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self.markers.insertRow(row)
         for col in [0, 2, 3, 4, 5]: self.markers.setItem(row, col, Q.QTableWidgetItem("0" if col == 5 else ""))
         combo = Q.QComboBox()
-        combo.currentIndexChanged.connect(self.mark_stale)
+        combo.currentIndexChanged.connect(lambda *_ , r=row: self._marker_channel_changed(r))
         from cellquant.plugin.combo_scroll import wrap_combo_with_scrollability
         self.markers.setCellWidget(row, 1, wrap_combo_with_scrollability(Q, combo))
         configure_readable_table(self.markers, min_widths=_MARKER_COLUMN_MIN_WIDTHS)
@@ -465,7 +551,7 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         if not self._queries_custom:
             self._queries = None
         self._sync_query_summary()
-        self.mark_stale()
+        self.mark_preview_stale()
 
     def remove_marker(self):
         if self.markers.rowCount() <= 1:
@@ -507,14 +593,14 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         if not self._queries_custom:
             self._queries = None
         self._sync_query_summary()
-        self.mark_stale()
+        self.mark_preview_stale()
 
     def reset_queries(self):
         self._queries = None
         self._queries_custom = False
         self._queries_dirty = False
         self._sync_query_summary()
-        self.mark_stale()
+        self.mark_preview_stale()
         self.status.setText("Queries reset to automatic inclusive combinations.")
 
     def _marker_names(self):
@@ -621,10 +707,13 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self._queries_custom = loaded is not None and loaded != defaults
         self._queries = loaded if self._queries_custom else None
         self._sync_query_summary()
-        self.mark_stale()
+        self.mark_preview_stale()
         self._calibrations = {row: deepcopy(marker["calibration"]) for row, marker in enumerate(raw["markers"]) if marker.get("calibration")}
         for record in self._calibrations.values():
-            record.setdefault("review", {})["status"] = "historical"
+            review = record.setdefault("review", {})
+            review["status"] = "historical"
+            review.setdefault("historical_reason", "Loaded from recipe; review on this image before treating as current")
+        self._sync_evidence_label()
 
     def snapshot_inputs(self):
         self.check_source()
@@ -797,6 +886,7 @@ class SingleImageCoexpressionPanel(Q.QWidget):
             if self.calibration_panel.dock is not None:
                 self.viewer.window.remove_dock_widget(self.calibration_panel.dock)
         launched_item = self.markers.item(row, 0)
+        self._calibrating_row = row
         def accepted(updated):
             self.check_source()
             if (self.calibration_panel is not panel or panel.closed
@@ -805,9 +895,15 @@ class SingleImageCoexpressionPanel(Q.QWidget):
                     or self.markers.item(row, 0).text().strip() != marker["name"]
                     or self._marker_channel_combo(row).currentData() != marker["channel"]):
                 raise ValueError("Source or marker row changed; reopen calibration before accepting.")
-            for col, key in [(2,"low"),(3,"high"),(4,"positive_fraction"),(5,"uncertainty_margin")]:
-                self.markers.item(row,col).setText("" if updated.get(key) is None else str(updated[key]))
+            self.markers.blockSignals(True)
+            try:
+                for col, key in [(2,"low"),(3,"high"),(4,"positive_fraction"),(5,"uncertainty_margin")]:
+                    self.markers.item(row,col).setText("" if updated.get(key) is None else str(updated[key]))
+            finally:
+                self.markers.blockSignals(False)
             self._calibrations[row] = deepcopy(updated["calibration"])
+            self.mark_preview_stale()
+            self._sync_evidence_label()
             self.status.setText("Reviewed calibration applied. Preview all marker calls before saving.")
         from .calibration import CalibrationPanel
         panel = CalibrationPanel(self.viewer, self.controller, marker, accepted,
