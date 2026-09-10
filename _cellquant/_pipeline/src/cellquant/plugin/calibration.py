@@ -280,10 +280,7 @@ class CalibrationPanel(Q.QWidget):
         """Invalidate Accept without clearing the review queue or current cell."""
 
         self.revision += 1
-        self.review = None
         self.accept_button.setEnabled(False)
-        for layer in self.layers:
-            layer.visible = False
         self._update_summary()
 
     def proposal_changed(self, *_):

@@ -115,3 +115,41 @@ def test_transform_and_metadata_invalidate(panel):
     panel.image.currentData().metadata={'channel_names':['C','B','A'], 'spacing_um':(1,1,1)}
     assert panel.result is None
     with pytest.raises(ValueError,match='layout'): panel.recipe()
+
+
+def test_switching_source_image_updates_z_bounds(panel):
+    assert panel.declare_z.maximum() == 1
+    layer = panel.viewer.add_image(
+        np.ones((20, 4, 4, 3), np.float32),
+        name="twenty-plane",
+        metadata={"channel_names": ["A", "B", "C"]},
+    )
+    panel.refresh_layers()
+    panel.image.setCurrentIndex(panel.image.findData(layer))
+    assert panel.declare_z.maximum() == 19
+
+
+def test_accepting_second_marker_keeps_first_calibration_current(panel):
+    from test_calibration_ui import launch, review
+
+    cal = launch(panel)
+    review(cal)
+    cal.accept_review()
+    assert panel._calibrations[0]["review"]["status"] == "current"
+    panel.add_marker()
+    panel.markers.item(1, 0).setText("B")
+    panel.markers.item(1, 2).setText("20")
+    panel.markers.item(1, 4).setText("0.5")
+    panel._marker_channel_combo(1).setCurrentIndex(2)
+    panel.markers.setCurrentCell(1, 0)
+    panel.calibrate_marker()
+    second = panel.calibration_panel
+    second.load_source()
+    complete(second)
+    review(second)
+    second.accept_review()
+    assert panel._calibrations[0]["review"]["status"] == "current"
+    assert panel._calibrations[1]["review"]["status"] == "current"
+    panel.fields["name"].setText("Renamed recipe")
+    assert panel._calibrations[0]["review"]["status"] == "current"
+    assert "historical" not in (panel.evidence_label.text() or "")

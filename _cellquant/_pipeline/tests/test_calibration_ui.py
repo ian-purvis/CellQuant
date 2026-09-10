@@ -157,3 +157,19 @@ def test_calibration_screenshot(panel, tmp_path):
     assert cal.width() >= 520
     assert scroll.viewport().rect().intersects(cal.accept_button.rect().translated(cal.accept_button.mapTo(scroll.viewport(), cal.accept_button.rect().topLeft())))
     assert cal.dock.grab().save(str(tmp_path / 'calibration-docked-settings.png'))
+
+
+def test_marking_example_keeps_queue_navigation_and_disables_accept(panel):
+    cal = launch(panel)
+    review(cal)
+    first = int(cal.review[0].iloc[cal._filtered_rows[cal._queue_index]]["label"])
+    assert cal.accept_button.isEnabled()
+    panel.labels.currentData().selected_label = first
+    cal.mark_example(True)
+    assert not cal.accept_button.isEnabled()
+    assert cal.review is not None
+    assert cal.layers[-1].visible
+    cal.next_cell()
+    nxt = int(cal.review[0].iloc[cal._filtered_rows[cal._queue_index]]["label"])
+    assert panel.labels.currentData().selected_label == nxt
+    assert cal.layers[0].visible

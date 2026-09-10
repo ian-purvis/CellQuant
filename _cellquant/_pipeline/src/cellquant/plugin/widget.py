@@ -451,14 +451,38 @@ def make_segment_options_panel(
                 return option.label
         return str(engine_id)
 
+    _UNSET = object()
+    last_spec: dict = {
+        "channel_label": None,
+        "batch_file_count": None,
+        "image_layer": None,
+        "series": None,
+        "position": None,
+    }
+
     def refresh_preflight(
         *,
-        channel_label: str | None = None,
-        batch_file_count: int | None = None,
-        image_layer=None,
-        series: int | None = None,
-        position: int | None = None,
+        channel_label=_UNSET,
+        batch_file_count=_UNSET,
+        image_layer=_UNSET,
+        series=_UNSET,
+        position=_UNSET,
     ) -> None:
+        if channel_label is not _UNSET:
+            last_spec["channel_label"] = channel_label
+        if batch_file_count is not _UNSET:
+            last_spec["batch_file_count"] = batch_file_count
+        if image_layer is not _UNSET:
+            last_spec["image_layer"] = image_layer
+        if series is not _UNSET:
+            last_spec["series"] = series
+        if position is not _UNSET:
+            last_spec["position"] = position
+        channel_label = last_spec["channel_label"]
+        batch_file_count = last_spec["batch_file_count"]
+        image_layer = last_spec["image_layer"]
+        series = last_spec["series"]
+        position = last_spec["position"]
         try:
             segment_overrides = overrides()
         except ValueError as exc:
@@ -493,10 +517,10 @@ def make_segment_options_panel(
         if position is not None:
             lines.append(f"Source position: {position}")
         metadata = dict(getattr(image_layer, "metadata", {}) or {}) if image_layer is not None else {}
+        shape = getattr(getattr(image_layer, "data", None), "shape", None) if image_layer is not None else None
+        if shape is not None:
+            lines.append(f"Image shape: {tuple(shape)}")
         if metadata:
-            shape = getattr(getattr(image_layer, "data", None), "shape", None)
-            if shape is not None:
-                lines.append(f"Image shape: {tuple(shape)}")
             spacing = metadata.get("spacing_um") or getattr(image_layer, "scale", None)
             if spacing is not None:
                 lines.append(f"Spacing (µm): {tuple(float(v) for v in list(spacing)[:3])}")
@@ -507,18 +531,18 @@ def make_segment_options_panel(
                 lines.append(f"Stored source position: {metadata.get('position')}")
         if batch_file_count is not None:
             lines.append(f"Batch files: {batch_file_count}")
-        try:
-            from cellquant.plugin.resources import estimate_preparation, staging_cache_usage
+        if image_layer is None:
+            lines.append("Estimated preparation: Not estimated (no image selected)")
+        else:
+            try:
+                from cellquant.plugin.resources import estimate_preparation
 
-            estimate = estimate_preparation(
-                image=getattr(image_layer, "data", None) if image_layer is not None else None
-            )
-            lines.extend(estimate.as_preflight_lines())
-            scratch, used = staging_cache_usage()
-            if used:
-                lines.append(f"Staging cache in use: {used / (1024 ** 2):.1f} MiB under {scratch}")
-        except Exception as exc:  # noqa: BLE001
-            lines.append(f"Resource estimate unavailable: {exc}")
+                estimate = estimate_preparation(
+                    image=getattr(image_layer, "data", None)
+                )
+                lines.extend(estimate.as_preflight_lines())
+            except Exception as exc:  # noqa: BLE001
+                lines.append(f"Resource estimate unavailable: {exc}")
         preflight.setText("\n".join(lines))
 
     for widget in (engine, mode, device, diameter_mode, guided):
@@ -802,11 +826,35 @@ def make_cellquant_widget(viewer=None):
         return str(choices.get(channel_index, channel_index))
 
     def refresh_single_preflight(*_args):
+        image = None
+        try:
+            image = run_segmentation.image.value
+        except Exception:
+            image = None
+        series = position = None
+        try:
+            series = int(open_image.series.value)
+            position = int(open_image.position.value)
+        except Exception:
+            series = position = None
         single_options.cellquant_refresh_preflight(
-            channel_label=_channel_label_from_choices(run_segmentation.channel_index.value)
+            channel_label=_channel_label_from_choices(run_segmentation.channel_index.value),
+            image_layer=image,
+            series=series,
+            position=position,
+            batch_file_count=None,
         )
 
     run_segmentation.channel_index.changed.connect(refresh_single_preflight)
+    try:
+        run_segmentation.image.changed.connect(refresh_single_preflight)
+    except Exception:
+        pass
+    try:
+        open_image.series.changed.connect(refresh_single_preflight)
+        open_image.position.changed.connect(refresh_single_preflight)
+    except Exception:
+        pass
     refresh_single_preflight()
 
     @magicgui(call_button="Measure edited labels + save", output_dir={"mode": "d"})

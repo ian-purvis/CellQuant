@@ -39,3 +39,38 @@ def test_estimate_preparation_reports_scratch_path(tmp_path, monkeypatch):
     assert root == (tmp_path / "scratch").resolve()
     estimate = estimate_preparation()
     assert estimate.scratch_root == root
+
+
+def test_estimate_preparation_does_not_materialize_lazy_array():
+    class Lazy:
+        shape = (2, 4, 4, 1)
+        dtype = np.float32
+        calls = 0
+
+        def __array__(self, *_a, **_k):
+            type(self).calls += 1
+            return np.zeros(self.shape, self.dtype)
+
+    lazy = Lazy()
+    estimate = estimate_preparation(image=lazy)
+    assert Lazy.calls == 0
+    assert estimate.image_bytes == 2 * 4 * 4 * 1 * 4
+    assert "Not estimated" not in "\n".join(estimate.as_preflight_lines())
+
+
+def test_unknown_array_size_is_not_reported_as_zero():
+    class Mystery:
+        pass
+
+    estimate = estimate_preparation(image=Mystery())
+    assert estimate.image_bytes is None
+    lines = "\n".join(estimate.as_preflight_lines())
+    assert "Not estimated" in lines
+    assert "image 0 B" not in lines
+
+
+def test_numpy_array_nbytes_uses_shape_not_buffer():
+    array = np.zeros((2, 8, 8, 1), dtype=np.float32)
+    estimate = estimate_preparation(image=array)
+    assert estimate.image_bytes == 2 * 8 * 8 * 1 * 4
+    assert "Not estimated" not in "\n".join(estimate.as_preflight_lines())
