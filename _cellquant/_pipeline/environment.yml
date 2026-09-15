@@ -7,4 +7,4 @@ dependencies:
   - pip:
       # Editable CellQuant + test extras + Cellpose-SAM (v4). The Windows
       # installer builds a sibling v3 env with cellpose-v3 instead.
-    - -e .[cellpose-v4,test]
+    - -e .[gui,cellpose-v4,test]

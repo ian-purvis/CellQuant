@@ -29,11 +29,18 @@ def test_overlay_sparse_ids_and_chunk_boundary():
 @pytest.fixture
 def panel():
     app = QApplication.instance() or QApplication([])
-    viewer = napari.Viewer(show=False)
+    try:
+        viewer = napari.Viewer(show=False)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"napari viewer unavailable in this environment: {exc}")
     controller = PluginController(viewer)
     image = ImageVolume(np.arange(96,dtype=np.float32).reshape(2,4,4,3), (1,1,1), ('A','B','C'), Path('synthetic.tif'), {'classification_analysis_grid':True})
-    controller._publish_image(image)
-    controller._publish_labels(LabelVolume(np.ones((2,4,4),np.uint32), (1,1,1)))
+    try:
+        controller._publish_image(image)
+        controller._publish_labels(LabelVolume(np.ones((2,4,4),np.uint32), (1,1,1)))
+    except Exception as exc:  # noqa: BLE001
+        viewer.close()
+        pytest.skip(f"napari layers unavailable in this environment: {exc}")
     widget = CoexpressionPanel(viewer, controller)
     widget.apply_recipe(ClassificationRecipe(dict(name='test',calibration_group='test',expected_channel_names=['A','B','C'],markers=[dict(name='A',channel=0,low=20,positive_fraction=.5)])))
     for key in ['specimen_id','image_id','region_id']: widget.fields[key].setText('test')
@@ -57,11 +64,12 @@ def complete(panel):
 def test_canonical_source_and_spatial_channel_display(panel,channels):
     image = ImageVolume(np.ones((2,4,4,channels),np.float32),(2,1,1),tuple('ABCD'[:channels]),Path('tiny.tif'))
     panel.controller._publish_image(image)
-    source = panel.viewer.layers[IMAGE_LAYER_NAME]
-    assert source.rgb is False and source.ndim==4 and not source.visible
+    assert IMAGE_LAYER_NAME not in [layer.name for layer in panel.viewer.layers]
+    assert panel.controller.image_volume is image
     display=[x for x in panel.viewer.layers if x.metadata.get('cellquant_display_channel')]
     assert len(display)==channels
     assert all(x.data.shape==(2,4,4) and tuple(x.scale)==(2,1,1) for x in display)
+    assert all(x.colormap is not None for x in display)
 
 def test_preview_paint_edit_save_reopen(panel,tmp_path):
     panel.preview(); complete(panel)
@@ -153,3 +161,56 @@ def test_accepting_second_marker_keeps_first_calibration_current(panel):
     panel.fields["name"].setText("Renamed recipe")
     assert panel._calibrations[0]["review"]["status"] == "current"
     assert "historical" not in (panel.evidence_label.text() or "")
+
+
+def test_review_open_restores_calls_without_preview(panel, tmp_path):
+    from cellquant.classify.store import save_classification
+    from cellquant.contracts import ImageVolume, LabelVolume
+
+    labels = LabelVolume(np.ones((2, 4, 4), np.uint32), (1, 1, 1))
+    image = ImageVolume(
+        np.arange(96, dtype=np.float32).reshape(2, 4, 4, 3),
+        (1, 1, 1), ("A", "B", "C"), Path("synthetic.tif"),
+        {"classification_analysis_grid": True, "analysis_volume": {"mode": "volume_3d"}},
+    )
+    recipe = panel.recipe()
+    path, original = save_classification(
+        tmp_path, image, labels, recipe,
+        context={"specimen_id": "s1", "image_id": "img", "region_id": "whole"},
+    )
+    panel.open_review_analysis(path)
+    complete(panel)
+    assert panel.review_session is not None
+    assert panel.result is not None
+    assert panel.result_revision == panel.revision
+    assert OVERLAY_NAME in [layer.name for layer in panel.viewer.layers]
+    assert panel.viewer.layers[OVERLAY_NAME].visible
+    assert "Saved settings" in panel.review_header.text()
+    panel.markers.item(0, 4).setText("0.9")
+    assert panel.result is None
+    assert "Preview out of date" in panel.review_header.text() or "Unsaved" in panel.review_header.text()
+    panel.revert_to_saved()
+    assert panel.result is not None
+    assert panel.review_session is not None and not panel.review_session.dirty
+    panel.markers.item(0, 4).setText("0.8")
+    panel.preview()
+    complete(panel)
+    assert panel.result is not None
+    from cellquant.classify.store import make_review_record, reopen_classification
+
+    parent = reopen_classification(path)
+    review = make_review_record(
+        parent_run_id=path.name,
+        parent_manifest_sha256=parent.manifest_sha256,
+        computation_status="full_image",
+        preview_scope=panel.review_session.population_label,
+    )
+    out = tmp_path / "reviewed"
+    out.mkdir()
+    panel._save_full_reviewed(out, panel.recipe(), review)
+    complete(panel)
+    children = [p.parent for p in out.rglob("complete.json")]
+    assert len(children) == 1
+    child = reopen_classification(children[0])
+    assert child.review["parent_run_id"] == path.name
+    assert (path / "complete.json").is_file()

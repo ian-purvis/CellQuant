@@ -715,6 +715,7 @@ def make_cellquant_widget(viewer=None):
     mode = QComboBox()
     mode.addItem("Single image", "single")
     mode.addItem("Batch folder", "batch")
+    mode.addItem("HPC prep", "hpc")
     mode.addItem("Coexpression", "coexpression")
     _set_tip(mode, "workflow_mode")
     from .combo_scroll import wrap_combo_with_scrollability
@@ -770,6 +771,20 @@ def make_cellquant_widget(viewer=None):
         QtWidgets,
         QtCore,
         capabilities=capabilities,
+        on_status=set_status,
+        get_image_start_dir=get_image_start_dir,
+        open_image_fn=open_image_for_measure,
+    )
+    from cellquant.hpc.cluster_profiles import load_profile, target_runtime_capabilities
+    from cellquant.hpc.contract import DEFAULT_PROFILE_ID
+
+    hpc_profile = load_profile(DEFAULT_PROFILE_ID)
+    hpc_capabilities = target_runtime_capabilities(hpc_profile)
+    hpc_options = make_segment_options_panel(
+        viewer,
+        QtWidgets,
+        QtCore,
+        capabilities=hpc_capabilities,
         on_status=set_status,
         get_image_start_dir=get_image_start_dir,
         open_image_fn=open_image_for_measure,
@@ -1038,6 +1053,11 @@ def make_cellquant_widget(viewer=None):
     batch_layout.addWidget(run_batch_button)
     pages.addWidget(single_page)
     pages.addWidget(batch_page)
+    from .hpc_panel import HpcPrepPanel
+
+    hpc_page = HpcPrepPanel(viewer, controller, hpc_options)
+    pages.addWidget(hpc_page)
+    root.cellquant_hpc = hpc_page
     from .coexpression import CoexpressionPanel
     coexpression_page = CoexpressionPanel(viewer, controller)
     pages.addWidget(coexpression_page)
@@ -1176,6 +1196,8 @@ def make_cellquant_widget(viewer=None):
             panel = single_options
         elif workflow == "batch":
             panel = batch_options
+        elif workflow == "hpc":
+            panel = hpc_options
         if panel is None:
             return None
         combo = getattr(panel, "cellquant_mode", None)
@@ -1343,6 +1365,95 @@ def make_cellquant_widget(viewer=None):
     timer.start(50)
 
     layout.addWidget(mode_row)
+
+    active_row = QWidget()
+    active_layout = QHBoxLayout(active_row)
+    active_layout.setContentsMargins(0, 0, 0, 0)
+    active_label = QLabel("Open image")
+    _set_tip(active_label, "active_image")
+    active_layout.addWidget(active_label)
+    active_image = QComboBox()
+    _set_tip(active_image, "active_image")
+    active_layout.addWidget(
+        wrap_combo_with_scrollability(
+            QtWidgets, active_image, tip_text=tip("scrollability")
+        ),
+        1,
+    )
+    layout.addWidget(active_row)
+
+    from .display import open_image_sources, set_active_image_source, source_label
+
+    def refresh_active_image_combo(*_args, activate_newest: bool = False):
+        sources = open_image_sources(viewer)
+        previous = active_image.currentData()
+        active_image.blockSignals(True)
+        active_image.clear()
+        if not sources:
+            active_image.addItem("(no CellQuant images open)", None)
+            active_image.setEnabled(False)
+        else:
+            active_image.setEnabled(True)
+            for source in sources:
+                active_image.addItem(source_label(source), source)
+            if activate_newest:
+                target = sources[-1]
+                set_active_image_source(viewer, target)
+                index = active_image.findData(target)
+            else:
+                index = active_image.findData(previous)
+                if index < 0:
+                    index = active_image.count() - 1
+            active_image.setCurrentIndex(max(0, index))
+        active_image.blockSignals(False)
+
+    def on_active_image_changed(_index: int):
+        source = active_image.currentData()
+        if source:
+            set_active_image_source(viewer, source)
+            try:
+                volume = controller.resolve_image_volume(
+                    next(
+                        (
+                            layer
+                            for layer in viewer.layers
+                            if getattr(layer, "metadata", {}).get("source") == source
+                        ),
+                        None,
+                    )
+                )
+                controller.image_volume = volume
+            except Exception:
+                pass
+
+    active_image.currentIndexChanged.connect(on_active_image_changed)
+    refresh_active_image_combo()
+
+    def on_layers_inserted(_event=None):
+        refresh_active_image_combo(activate_newest=True)
+
+    def on_layers_removed(_event=None):
+        refresh_active_image_combo(activate_newest=False)
+
+    try:
+        viewer.layers.events.inserted.connect(on_layers_inserted)
+        viewer.layers.events.removed.connect(on_layers_removed)
+    except Exception:
+        pass
+    # Keep the switcher in sync after CellQuant open/publish finishes.
+    previous_publish = controller._publish_image
+
+    def _publish_and_refresh(volume):
+        previous_publish(volume)
+        refresh_active_image_combo(activate_newest=False)
+        index = active_image.findData(str(volume.source))
+        if index >= 0:
+            active_image.blockSignals(True)
+            active_image.setCurrentIndex(index)
+            active_image.blockSignals(False)
+
+    controller._publish_image = _publish_and_refresh  # type: ignore[method-assign]
+
     layout.addWidget(pages, 1)
     layout.addWidget(actions)
     scroll.setWidget(content)

@@ -38,6 +38,11 @@ from cellquant.io import normalize_suffixes, open_volume, resolve_file_type_pres
 from cellquant.measure import write_measurements
 from cellquant.orchestrator import run_measurements, run_pipeline
 from cellquant.persist import RunStore
+from cellquant.plugin.display import (
+    DISPLAY_CHANNEL_FLAG,
+    display_channel_kwargs,
+    set_active_image_source,
+)
 from cellquant.plugin.messages import (
     UserMessage,
     explain_batch_summary,
@@ -699,37 +704,68 @@ class PluginController:
                 "canonical_axes": "ZYXC",
             }
         )
-        scale = (*volume.spacing_um, 1.0)
-        existing = _find_layer(self.viewer, IMAGE_LAYER_NAME)
-        if existing is not None:
-            if _layer_kind(existing) != "image":
-                raise TypeError(f"{IMAGE_LAYER_NAME!r} is not an Image layer")
-            existing.data = volume.data
-            existing.scale = scale
-            existing.metadata = metadata
-        else:
-            self.viewer.add_image(
-                volume.data,
-                name=IMAGE_LAYER_NAME,
-                rgb=False,
-                visible=False,
-                scale=scale,
-                metadata=metadata,
+        source_key = str(volume.source)
+        # Replace only this acquisition's layers so other open images stay available.
+        stale = [
+            layer
+            for layer in list(self.viewer.layers)
+            if layer.name == IMAGE_LAYER_NAME
+            or (
+                getattr(layer, "metadata", {}).get(DISPLAY_CHANNEL_FLAG)
+                and str(getattr(layer, "metadata", {}).get("source", "")) == source_key
             )
-
-        # Canonical ZYXC is a measurement source, not a spatial display plane.
-        # Display each channel on ZYX so labels and fluorescence share a grid.
-        canonical = _find_layer(self.viewer, IMAGE_LAYER_NAME)
-        canonical.visible = False
-        for stale in list(self.viewer.layers):
-            if getattr(stale, "metadata", {}).get("cellquant_display_channel"):
-                self.viewer.layers.remove(stale)
+        ]
+        for layer in stale:
+            self.viewer.layers.remove(layer)
         for index, channel_name in enumerate(volume.channel_names):
-            self.viewer.add_image(
-                volume.data[..., index], rgb=False,
-                name=f"CellQuant channel - {channel_name}", scale=volume.spacing_um,
-                blending="additive", metadata={"cellquant_display_channel": True},
+            channel_data = volume.data[..., index]
+            kwargs = display_channel_kwargs(
+                metadata,
+                channel_index=index,
+                channel_name=channel_name,
+                channel_names=volume.channel_names,
+                spacing_um=volume.spacing_um,
+                source=source_key,
+                channel_data=channel_data,
+                visible=True,
             )
+            self.viewer.add_image(channel_data, **kwargs)
+        set_active_image_source(self.viewer, source_key)
+
+    def resolve_image_volume(self, layer: Any | None = None) -> ImageVolume:
+        """Return the canonical ZYXC volume for a selected layer or open state."""
+
+        if layer is not None and _layer_kind(layer) == "image":
+            data = getattr(layer, "data", None)
+            shape = tuple(getattr(data, "shape", ()) or ())
+            if len(shape) == 4:
+                return self._volume_from_layer(layer)
+            metadata = dict(getattr(layer, "metadata", {}) or {})
+            if metadata.get(DISPLAY_CHANNEL_FLAG) or metadata.get("channel_names"):
+                source = metadata.get("source")
+                if self.image_volume is not None:
+                    current = str(self.image_volume.source)
+                    if source is None or current == str(source):
+                        return self.image_volume
+                if source:
+                    series = int(metadata.get("series", 0) or 0)
+                    position = int(metadata.get("position", 0) or 0)
+                    volume = self._open_volume(
+                        Path(source),
+                        series=series,
+                        position=position,
+                        lazy=True,
+                    )
+                    self.image_volume = volume
+                    return volume
+        if self.image_volume is not None:
+            return self.image_volume
+        legacy = _find_layer(self.viewer, IMAGE_LAYER_NAME)
+        if legacy is not None:
+            return self._volume_from_layer(legacy)
+        raise ValueError(
+            "Open an image first (drag-and-drop into napari, or CellQuant Open lazily)"
+        )
 
     def _volume_from_layer(self, layer: Any) -> ImageVolume:
         if _layer_kind(layer) != "image":
@@ -765,10 +801,7 @@ class PluginController:
             if raw["segment"].get("mode") != "single_plane_2d":
                 raw["segment"]["z_index"] = None
             local_config = RunConfig(raw)
-        layer = image_layer or _find_layer(self.viewer, IMAGE_LAYER_NAME)
-        if layer is None:
-            raise ValueError("Open or select an Image layer first")
-        volume = self._volume_from_layer(layer)
+        volume = self.resolve_image_volume(image_layer)
         if channel_index is not None:
             if not isinstance(channel_index, int) or isinstance(channel_index, bool):
                 raise TypeError("segmentation channel index must be an integer")
@@ -814,12 +847,10 @@ class PluginController:
         if self._busy:
             raise RuntimeError("A CellQuant background operation is already running")
         config = self._require_config()
-        image = self.image_volume
-        if image is None:
-            image_layer = _find_layer(self.viewer, IMAGE_LAYER_NAME)
-            if image_layer is None:
-                raise ValueError("No source Image layer is available")
-            image = self._volume_from_layer(image_layer)
+        try:
+            image = self.resolve_image_volume(None)
+        except ValueError as exc:
+            raise ValueError("No source Image is available") from exc
         layer = labels_layer or _find_layer(self.viewer, LABEL_LAYER_NAME)
         if layer is None or _layer_kind(layer) != "labels":
             raise ValueError("Select the edited CellQuant Labels layer")

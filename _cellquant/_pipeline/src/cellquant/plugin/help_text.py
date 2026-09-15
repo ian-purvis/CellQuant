@@ -6,12 +6,78 @@ TOOLTIPS = {
     "workflow_mode": (
         "Single image: open one file in napari, segment, edit labels, and save.\n"
         "Batch folder: survey many files, pick a channel per layout, then run all.\n"
+        "HPC prep: pick input images and settings on this laptop, export a package, "
+        "upload it to Alpine, run segmentation on a cluster GPU, then import results.\n"
         "Coexpression: classify nuclear marker positivity and calibrate thresholds."
     ),
-    "open_path": "Choose a TIFF or ND2 file. CellQuant opens it lazily so large volumes stay responsive.",
+    "hpc_overview": (
+        "HPC prep does not run Cellpose on this laptop.\n"
+        "Input images and settings are packaged locally; Alpine project/scratch/env "
+        "paths tell the cluster job where to store work and which Python env to use."
+    ),
+    "hpc_select_images": (
+        "Local input images on this laptop (folder or files).\n"
+        "These are copied into the export package. This is not an Alpine path."
+    ),
+    "hpc_segmentation": (
+        "Segmentation settings are saved into the package and executed on Alpine.\n"
+        "Allowed engines/modes depend on the chosen GPU profile, not this laptop’s CUDA."
+    ),
+    "hpc_alpine_paths": (
+        "Project root: durable Alpine folder for the uploaded package and final results.\n"
+        "Scratch root: temporary job workspace during the run.\n"
+        "CellQuant env: preinstalled cluster Python with CellQuant/torch — not this laptop."
+    ),
+    "hpc_gpu_profile": (
+        "Which Alpine GPU partition/profile to target (for example H200 or RTX PRO 6000).\n"
+        "This sets partition, default GRES, and which segmentation modes are allowed."
+    ),
+    "hpc_account": (
+        "Slurm billing allocation / account name (example: amc-general).\n"
+        "Not your login email (for example ian.purvis@xsede.org)."
+    ),
+    "hpc_qos": "Slurm quality-of-service / queue priority for the GPU job.",
+    "hpc_gres": "Generic resource request telling Slurm which GPU type/count to allocate.",
+    "hpc_walltime": (
+        "Maximum job runtime (HH:MM:SS). Slurm stops the job when this limit is reached."
+    ),
+    "hpc_project_root": (
+        "Durable Alpine folder under /projects/…\n"
+        "Upload the package here. Finished results are published under "
+        "<project root>/results/<package name>/."
+    ),
+    "hpc_scratch_root": (
+        "Temporary Alpine workspace under /scratch/… used while the job runs "
+        "(staging and compute). Not the long-term results location."
+    ),
+    "hpc_env_location": (
+        "Path to the preinstalled CellQuant conda/prefix env on Alpine "
+        "(must contain bin/python).\n"
+        "Not your laptop CellQuant source folder and not the export package."
+    ),
+    "hpc_email": "Optional address for Slurm END/FAIL mail. Leave blank for no email.",
+    "hpc_export": (
+        "Folder on this laptop where CellQuant writes the transfer package.\n"
+        "After export, upload that package folder to Alpine project root."
+    ),
+    "open_path": (
+        "Choose a TIFF or ND2 file, or drag the file onto the napari canvas.\n"
+        "CellQuant opens it lazily so large volumes stay responsive, and shows "
+        "each channel in its microscope LUT color.\n"
+        "Contrast limits start at the mid-Z intensity range (same as histogram Reset)."
+    ),
+    "active_image": (
+        "When several images are open, choose which acquisition is shown.\n"
+        "Other images stay in the layer list but their channels are hidden until selected.\n"
+        "Layer names are prefixed with the file name so channels stay grouped by image."
+    ),
     "series": "Which series inside a multi-series file (usually 0).",
     "position": "Which stage position / well inside a multi-position acquisition (usually 0).",
-    "image_layer": "The napari Image layer to segment. Usually 'CellQuant image' after Open lazily.",
+    "image_layer": (
+        "Any CellQuant channel layer from the opened image (or a legacy 4D "
+        "'CellQuant image' layer). Drag-and-drop into napari also works for "
+        ".nd2 / .tif files."
+    ),
     "segmentation_channel": (
         "Which fluorescence channel Cellpose should segment.\n"
         "Typical choice: nuclear DNA (DAPI/Hoechst). You may also choose other nuclear or "

@@ -263,8 +263,10 @@ stacks selected from low, median, and high baseline label density.
 Pass requires >= 8.5, no uncaught exception, no silent dtype/axis coercion, no
 unlogged parameter default, reproducible config, and runtime <= 1.5 times the
 reference workflow on identical hardware. Metrics, scores, failed rounds, and
-ranked open issues persist in `docs/STATUS.json`; no absent measurement is
-represented as passing.
+ranked open issues are recorded in `docs/STATUS.json` as historical evidence.
+Its `current_verification` records the latest 0.4.0a2 assessment; legacy fields
+describe older history. See the developer guide for the current state map. No
+absent measurement is represented as passing.
 
 Plugin acceptance is separate: scripted interactions capture screenshots,
 confirm progress/cancel and stable layers, exercise lazy large-stack opening,

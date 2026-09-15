@@ -9,7 +9,16 @@ import numpy as np
 from qtpy import QtCore, QtWidgets as Q
 
 from cellquant.classify import ClassificationRecipe, classify_labels, default_queries_for_markers
-from cellquant.classify.store import save_classification, reopen_classification
+from cellquant.classify.compare import compare_marker_calls
+from cellquant.classify.explain import explain_marker_call
+from cellquant.classify.review_session import ReviewSession
+from cellquant.classify.store import (
+    empty_settings_result,
+    make_review_record,
+    reopen_classification,
+    result_from_reopened,
+    save_classification,
+)
 from cellquant.contracts import LabelVolume, MutableCancellationToken, PipelineCancelled
 from cellquant.analysis import (
     analysis_context_from_config,
@@ -17,6 +26,7 @@ from cellquant.analysis import (
     resolve_measurement_image,
 )
 from .controller import _validated_label_array
+from .quant_review_dialogs import OpenAnalysisDialog, SaveReviewedDialog
 
 OVERLAY_NAME = "Coexpression calls (review only)"
 
@@ -96,7 +106,13 @@ def _configure_readable_form(form: Q.QFormLayout) -> None:
 
 def validate_transform(layer, spacing, *, image=False):
     """Only the original calibrated grid is accepted; display transforms are not registration."""
-    expected = (*spacing, 1.0) if image else spacing
+    is_display = bool(getattr(layer, "metadata", {}).get("cellquant_display_channel"))
+    if image and is_display:
+        expected = tuple(spacing)
+    elif image:
+        expected = (*spacing, 1.0)
+    else:
+        expected = spacing
     if (len(layer.scale) != len(expected) or not np.allclose(layer.scale, expected)
             or not np.allclose(layer.translate, 0)
             or not np.allclose(layer.affine.affine_matrix, np.eye(len(expected) + 1))
@@ -142,12 +158,31 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self._declaration_pair = None
         self._declaration_seeded = False
         self._watched = set()
+        self.review_session = None
+        self._review_restoring = False
+        self._remeasure_enabled = True
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cellquant-classify")
         self.cancel_token = MutableCancellationToken()
         layout = Q.QVBoxLayout(self)
         help_text = Q.QLabel("Nuclear coexpression: open an image in Single image, then select reviewed nuclei. Pixel thresholds use raw fluorescence; the positive fraction is how much of each nucleus must pass. Cytoplasmic assignment is not supported here.")
         help_text.setWordWrap(True)
         layout.addWidget(help_text)
+        self._buttons(layout, [("Review quantification…", self.choose_review_quantification)])
+        self.review_header = Q.QLabel("Review: no analysis open.")
+        self.review_header.setWordWrap(True)
+        layout.addWidget(self.review_header)
+        self.cell_explain = Q.QLabel("Selected cell: select a label in Reviewed nuclei.")
+        self.cell_explain.setWordWrap(True)
+        layout.addWidget(self.cell_explain)
+        self.compare_summary = Q.QLabel("Comparison: open a saved analysis to compare Saved vs Proposed.")
+        self.compare_summary.setWordWrap(True)
+        layout.addWidget(self.compare_summary)
+        self._buttons(layout, [
+            ("Update preview", self.preview),
+            ("Revert to saved", self.revert_to_saved),
+            ("Save reviewed version…", self.choose_save_reviewed),
+            ("Locate source…", self.choose_locate_source),
+        ])
         form = Q.QFormLayout()
         _configure_readable_form(form)
         layout.addLayout(form)
@@ -224,6 +259,7 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self.overlay_marker.setMinimumWidth(180)
         self.overlay_marker.setSizePolicy(Q.QSizePolicy.Expanding, Q.QSizePolicy.Fixed)
         self.overlay_marker.currentIndexChanged.connect(self.show_overlay)
+        self.overlay_marker.currentIndexChanged.connect(self._sync_review_panels)
         layout.addWidget(self.overlay_marker)
         legend = Q.QLabel("Overlay: 1 positive (green), 2 negative (blue), 3 uncertain (yellow), 4 missing (magenta); 0 background/excluded. Inclusive queries ignore unrequested markers. Exact patterns specify every marker. NA means no defined percentage.")
         legend.setWordWrap(True); layout.addWidget(legend)
@@ -251,15 +287,27 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         except Exception as exc: self.status.setText(str(exc))
 
     def mark_preview_stale(self, *_):
+        if getattr(self, "_review_restoring", False):
+            return
         self.revision += 1
         self._source_signature = self.source_signature()
+        if self.review_session is not None:
+            self.review_session.mark_stale()
+            try:
+                self.review_session.set_draft_recipe(self.recipe(), bump=False)
+            except Exception:
+                pass
         if hasattr(self, "status"):
-            self.status.setText("Inputs changed. Preview is stale; preview again. Saving recomputes current inputs.")
+            if self.review_session is not None:
+                self.status.setText(f"{self.review_session.state.value}. Update preview to refresh proposed calls.")
+            else:
+                self.status.setText("Inputs changed. Preview is stale; preview again. Saving recomputes current inputs.")
         self.result = None
         for table in getattr(self, "tables", {}).values():
             table.setRowCount(0); table.setEnabled(False)
         for layer in self.viewer.layers:
             if layer.name == OVERLAY_NAME: layer.visible = False
+        self._sync_review_panels()
 
     def mark_stale(self, *_):
         """Keep preview-only invalidation. Source/region changes use ``_source_layers_changed``."""
@@ -350,9 +398,18 @@ class SingleImageCoexpressionPanel(Q.QWidget):
 
     def channel_names(self):
         layer = self.image.currentData()
-        if layer is None: return None
-        return list(layer.metadata.get("channel_names") or
-                    [f"C{i+1}" for i in range(layer.data.shape[-1])])
+        if layer is None:
+            volume = getattr(self.controller, "image_volume", None)
+            if volume is None:
+                return None
+            return list(volume.channel_names)
+        names = layer.metadata.get("channel_names")
+        if names:
+            return list(names)
+        data = getattr(layer, "data", None)
+        if data is not None and getattr(data, "ndim", 0) == 4:
+            return [f"C{i+1}" for i in range(data.shape[-1])]
+        return None
 
     def validate_channel_layout(self):
         names = self.channel_names()
@@ -393,7 +450,13 @@ class SingleImageCoexpressionPanel(Q.QWidget):
             combo.addItem("Whole image (no region)" if optional else "Select a layer", None)
             for layer in self.viewer.layers:
                 if layer.name == OVERLAY_NAME or layer.metadata.get("cellquant_calibration") or layer._type_string != kind: continue
-                if kind == "image" and layer.data.ndim != 4: continue
+                if kind == "image":
+                    ndim = getattr(getattr(layer, "data", None), "ndim", 0)
+                    is_display = bool(layer.metadata.get("cellquant_display_channel"))
+                    if ndim == 4 or (ndim == 3 and is_display):
+                        pass
+                    else:
+                        continue
                 combo.addItem(layer.name, layer)
                 if layer is previous: combo.setCurrentIndex(combo.count() - 1)
                 if id(layer) not in self._watched:
@@ -498,7 +561,7 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         image_layer = self.image.currentData()
         if image_layer is None:
             raise ValueError("Select the source image before declaring a measurement grid.")
-        image = self.controller._volume_from_layer(image_layer)
+        image = self.controller.resolve_image_volume(image_layer)
         mode = self.declare_mode.currentData()
         config = {
             "segment": {"mode": mode, **({"z_index": int(self.declare_z.value())} if mode == "single_plane_2d" else {})}
@@ -513,8 +576,8 @@ class SingleImageCoexpressionPanel(Q.QWidget):
 
     def refresh_channels(self, *_):
         layer = self.image.currentData()
-        names = []
-        if layer is not None and layer.data.ndim == 4:
+        names = self.channel_names() or []
+        if layer is not None and not names and getattr(getattr(layer, "data", None), "ndim", 0) == 4:
             names = layer.metadata.get("channel_names") or [f"C{i+1}" for i in range(layer.data.shape[-1])]
         for row in range(self.markers.rowCount()):
             combo = self._marker_channel_combo(row)
@@ -719,7 +782,7 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self.check_source()
         image_layer, labels_layer = self.image.currentData(), self.labels.currentData()
         if image_layer is None or labels_layer is None: raise ValueError("Select an image and reviewed nuclei first.")
-        image = self.controller._volume_from_layer(image_layer)
+        image = self.controller.resolve_image_volume(image_layer)
         validate_transform(image_layer, image.spacing_um, image=True)
         validate_transform(labels_layer, image.spacing_um)
         # Copies are made while Qt owns the layers; workers never access mutable napari arrays.
@@ -759,8 +822,14 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self.status.setText("Working on an immutable snapshot… You may cancel.")
 
     def preview(self, output_root=None):
+        if not self._remeasure_enabled:
+            raise ValueError("Pixel remeasurement is disabled until the source image is located and accepted.")
         if self.future is not None: raise ValueError("An operation is already running.")
         image, labels, region, recipe, context, declared = self.snapshot(); revision = self.revision
+        if self.review_session is not None:
+            self.review_session.revision = revision
+            self.review_session.begin_compute()
+            self._sync_review_panels()
         def work(cancel):
             analysis, bound = resolve_measurement_image(image, labels, declared=declared, cancel=cancel)
             if output_root is None:
@@ -771,12 +840,21 @@ class SingleImageCoexpressionPanel(Q.QWidget):
 
     def poll(self):
         self.check_source()
+        self._sync_selected_cell()
         if self.future is None or not self.future.done(): return
         future, self.future = self.future, None
         try:
             payload = future.result(); self.cancel_token.raise_if_cancelled(); self._completed(payload)
-        except PipelineCancelled: self.status.setText("Cancelled. No preview published; completed saved runs, if any, remain on disk.")
-        except Exception as exc: self.status.setText(f"Could not classify: {exc}")
+        except PipelineCancelled:
+            if self.review_session is not None:
+                self.review_session.discard_late_preview()
+            self.status.setText("Cancelled. No preview published; completed saved runs, if any, remain on disk.")
+            self._sync_review_panels()
+        except Exception as exc:
+            if self.review_session is not None:
+                self.review_session.discard_late_preview()
+            self.status.setText(f"Could not classify: {exc}")
+            self._sync_review_panels()
 
     def cancel(self):
         self.cancel_token.cancel(); self.status.setText("Cancellation requested…")
@@ -789,7 +867,14 @@ class SingleImageCoexpressionPanel(Q.QWidget):
             result, labels, revision, path = payload
             grid_summary = None
         if revision != self.revision:
+            if self.review_session is not None:
+                self.review_session.discard_late_preview()
             self.status.setText("Inputs changed; late result discarded." + (f" Immutable saved run remains at {path}" if path else " Preview again."))
+            self._sync_review_panels()
+            return
+        if self.review_session is not None and not self.review_session.accept_preview(revision, result):
+            self.status.setText("Inputs changed; late result discarded.")
+            self._sync_review_panels()
             return
         self._queries_dirty = False
         self._sync_query_summary()
@@ -808,11 +893,14 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self.result_revision = revision
         self.show_overlay()
         message = f"Saved immutable classification: {path}" if path else "Preview ready. Inspect calls before saving."
+        if self.review_session is not None and path is None:
+            message = f"{self.review_session.state.value}. {message}"
         if grid_summary:
             message = f"{message} Measurement grid: {grid_summary}."
             self.analysis_context_label.setText(f"Scored with: {grid_summary}")
         if revision != self.revision: message += " INPUTS CHANGED: these results are stale; preview again."
         self.status.setText(message)
+        self._sync_review_panels()
 
     def show_overlay(self, *_):
         if self.result is None or getattr(self,"result_revision", -1) != self.revision: return
@@ -832,7 +920,7 @@ class SingleImageCoexpressionPanel(Q.QWidget):
     def load_labels(self, path):
         image_layer = self.image.currentData()
         if image_layer is None: raise ValueError("Open a CellQuant image before loading reviewed labels.")
-        spacing = self.controller._volume_from_layer(image_layer).spacing_um
+        spacing = self.controller.resolve_image_volume(image_layer).spacing_um
         def work(cancel):
             import tifffile
             data = tifffile.imread(path)
@@ -845,24 +933,342 @@ class SingleImageCoexpressionPanel(Q.QWidget):
 
     def reopen(self, path):
         if self.future is not None: raise ValueError("An operation is already running.")
+        if not self._confirm_discard_review_edits():
+            return
         self.mark_stale()
         def work(cancel):
             bundle = reopen_classification(path); cancel.raise_if_cancelled(); return bundle
         def completed(bundle):
-            image = replace(bundle.image, metadata={**bundle.image.metadata,"classification_analysis_grid":True})
-            self.controller._publish_image(image); self.controller._publish_labels(bundle.labels)
-            self.refresh_layers()
-            from .controller import IMAGE_LAYER_NAME, LABEL_LAYER_NAME
-            self.image.setCurrentIndex(self.image.findData(self.viewer.layers[IMAGE_LAYER_NAME])); self.labels.setCurrentIndex(self.labels.findData(self.viewer.layers[LABEL_LAYER_NAME]))
-            self.region.setCurrentIndex(0)
-            if bundle.region is not None:
-                layer = self.viewer.add_labels(bundle.region.astype(np.uint8),name="Saved counting region",scale=image.spacing_um)
-                self.region.setCurrentIndex(self.region.findData(layer))
-            self.apply_recipe(bundle.recipe)
-            for key,value in bundle.context.items():
-                if key in self.fields: self.fields[key].setText(str(value))
+            self._apply_reopened_bundle(bundle, restore_calls=False)
             self.status.setText("Verified saved inputs reopened. Preview to rescore; saving creates a new run.")
         self.start(work, completed)
+
+    def choose_review_quantification(self):
+        if not self._confirm_discard_review_edits():
+            return
+        dialog = OpenAnalysisDialog(self)
+        if dialog.exec_() != Q.QDialog.Accepted or dialog.selected is None:
+            return
+        candidate = dialog.selected
+        if candidate.kind == "segmentation":
+            self.status.setText(
+                f"Loaded segmentation candidate {candidate.path.name}. "
+                "Use Load recipe / choose recipe before preview. Full segmentation open is advanced."
+            )
+            Q.QMessageBox.information(
+                self, "Segmentation-only analysis",
+                "This folder is a segmentation run. Load or choose a recipe after opening its labels, "
+                "or select a completed classify_* analysis for automatic restoration.",
+            )
+            return
+        self.open_review_analysis(candidate.path)
+
+    def open_review_analysis(self, path):
+        if self.future is not None: raise ValueError("An operation is already running.")
+        def work(cancel):
+            bundle = reopen_classification(path); cancel.raise_if_cancelled(); return bundle
+        def completed(bundle):
+            self._apply_reopened_bundle(bundle, restore_calls=True)
+            self.status.setText("Saved settings restored. Marker calls loaded without resegmentation.")
+            self._sync_review_panels()
+        self.start(work, completed)
+
+    def _apply_reopened_bundle(self, bundle, *, restore_calls: bool):
+        image = replace(bundle.image, metadata={**bundle.image.metadata, "classification_analysis_grid": True})
+        self.controller._publish_image(image)
+        self.controller._publish_labels(bundle.labels)
+        self.refresh_layers()
+        from .controller import LABEL_LAYER_NAME
+        display = next(
+            (
+                layer
+                for layer in self.viewer.layers
+                if getattr(layer, "metadata", {}).get("cellquant_display_channel")
+            ),
+            None,
+        )
+        if display is not None:
+            self.image.setCurrentIndex(self.image.findData(display))
+        self.labels.setCurrentIndex(self.labels.findData(self.viewer.layers[LABEL_LAYER_NAME]))
+        self.region.setCurrentIndex(0)
+        if bundle.region is not None:
+            layer = self.viewer.add_labels(
+                bundle.region.astype(np.uint8), name="Saved counting region", scale=image.spacing_um
+            )
+            self.region.setCurrentIndex(self.region.findData(layer))
+        self._review_restoring = True
+        try:
+            self.apply_recipe(bundle.recipe)
+            for key, value in bundle.context.items():
+                if key in self.fields:
+                    self.fields[key].setText(str(value))
+            volume = (bundle.image.metadata or {}).get("analysis_volume") or {}
+            mode = volume.get("mode") if isinstance(volume, dict) else "unavailable"
+            if restore_calls:
+                self.review_session = ReviewSession.from_reopened(
+                    bundle, sample_name=str(bundle.context.get("specimen_id") or bundle.path.name),
+                    segmentation_mode=str(mode or "unavailable"),
+                )
+                self.revision = self.review_session.revision
+                self._publish_saved_result(result_from_reopened(bundle), bundle.labels)
+                self._remeasure_enabled = True
+                source = Path(bundle.image.source)
+                if str(bundle.image.source) and not source.exists():
+                    self._remeasure_enabled = False
+                    self.status.setText(
+                        "Saved calls restored, but the original source path is unavailable. "
+                        "Summary review works; Locate source… before remeasurement."
+                    )
+            else:
+                self.review_session = None
+        finally:
+            self._review_restoring = False
+            self._source_signature = self.source_signature()
+            self._sync_review_panels()
+
+    def _publish_saved_result(self, result, labels):
+        self.result = result
+        self.result_labels = labels
+        self.result_revision = self.revision
+        for key, table in self.tables.items():
+            table.setEnabled(True)
+            frame = getattr(result, key)
+            table.setRowCount(len(frame))
+            table.setColumnCount(len(frame.columns))
+            table.setHorizontalHeaderLabels(list(frame.columns))
+            for r, values in enumerate(frame.itertuples(index=False, name=None)):
+                for c, value in enumerate(values):
+                    item = Q.QTableWidgetItem(
+                        "NA" if value is None or (isinstance(value, float) and np.isnan(value)) else str(value)
+                    )
+                    item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+                    table.setItem(r, c, item)
+            configure_readable_table(table)
+        self.overlay_marker.blockSignals(True)
+        self.overlay_marker.clear()
+        if len(result.calls):
+            self.overlay_marker.addItems(list(dict.fromkeys(result.calls["marker"].tolist())))
+        self.overlay_marker.blockSignals(False)
+        self.show_overlay()
+
+    def revert_to_saved(self):
+        if self.review_session is None:
+            raise ValueError("Open a review analysis before reverting.")
+        self._review_restoring = True
+        try:
+            self.review_session.revert_to_saved()
+            self.apply_recipe(self.review_session.baseline_recipe)
+            self.revision = self.review_session.revision
+            if self.review_session.baseline_calls_valid:
+                labels = self.review_session.baseline_labels
+                if labels is None:
+                    labels = self.labels.currentData()
+                self._publish_saved_result(self.review_session.baseline_result, labels)
+            else:
+                self.result = None
+            self.status.setText("Reverted to saved settings.")
+        finally:
+            self._review_restoring = False
+            self._source_signature = self.source_signature()
+            self._sync_review_panels()
+
+    def choose_save_reviewed(self):
+        if self.review_session is None:
+            raise ValueError("Open a review analysis before saving a reviewed version.")
+        try:
+            draft = self.recipe()
+            self.review_session.set_draft_recipe(draft, bump=False)
+        except Exception as exc:
+            raise ValueError(f"Draft settings are incomplete: {exc}") from exc
+        preview_ready = (
+            self.result is not None
+            and getattr(self, "result_revision", -1) == self.revision
+            and self.review_session.proposed_revision == self.review_session.revision
+        )
+        baseline = self.review_session.baseline_recipe.raw
+        draft_raw = draft.raw
+        changes = []
+        if baseline.get("markers") != draft_raw.get("markers"):
+            changes.append("marker thresholds/fractions changed")
+        if baseline.get("region_policy") != draft_raw.get("region_policy"):
+            changes.append("region policy changed")
+        if baseline.get("name") != draft_raw.get("name"):
+            changes.append("recipe name changed")
+        summary = "Proposed settings: " + (", ".join(changes) if changes else "no marker/rule changes detected")
+        dialog = SaveReviewedDialog(
+            self,
+            parent_run_id=self.review_session.parent_run_id,
+            settings_summary=summary,
+            preview_ready=preview_ready,
+            population_label=self.review_session.population_label,
+        )
+        if dialog.exec_() != Q.QDialog.Accepted or not dialog.output_root:
+            return
+        review = make_review_record(
+            parent_run_id=self.review_session.parent_run_id,
+            parent_manifest_sha256=self.review_session.parent_manifest_sha256,
+            computation_status=dialog.computation_status,
+            preview_scope=self.review_session.population_label,
+            note=dialog.note,
+            reviewer=dialog.reviewer,
+        )
+        if dialog.computation_status == "settings_only":
+            self._save_settings_version(dialog.output_root, draft, review)
+        else:
+            self._save_full_reviewed(dialog.output_root, draft, review)
+
+    def _save_settings_version(self, output_root, recipe, review):
+        if self.future is not None:
+            raise ValueError("An operation is already running.")
+        image, labels, region, declared = self.snapshot_inputs()
+        context = {key: self.fields[key].text().strip() for key in ["specimen_id", "eye_id", "section_id", "image_id", "region_id"]}
+        result = empty_settings_result(recipe, context=context, image=image)
+        def work(cancel):
+            analysis, bound = resolve_measurement_image(image, labels, declared=declared, cancel=cancel)
+            path, saved = save_classification(
+                output_root, analysis, labels, recipe, region=region, context=context,
+                cancel=cancel, review=review, result=result,
+            )
+            return saved, labels, self.revision, path, analysis_context_summary(bound)
+        self.start(work, self.accept_result)
+
+    def _save_full_reviewed(self, output_root, recipe, review):
+        if not self._remeasure_enabled:
+            raise ValueError("Locate and accept the source before computing full results.")
+        if self.future is not None:
+            raise ValueError("An operation is already running.")
+        image, labels, region, declared = self.snapshot_inputs()
+        context = {key: self.fields[key].text().strip() for key in ["specimen_id", "eye_id", "section_id", "image_id", "region_id"]}
+        revision = self.revision
+        def work(cancel):
+            analysis, bound = resolve_measurement_image(image, labels, declared=declared, cancel=cancel)
+            path, saved = save_classification(
+                output_root, analysis, labels, recipe, region=region, context=context,
+                cancel=cancel, review=review,
+            )
+            return saved, labels, revision, path, analysis_context_summary(bound)
+        self.start(work, self.accept_result)
+
+    def choose_locate_source(self):
+        if self.review_session is None:
+            raise ValueError("Open a review analysis before locating a source.")
+        path, _ = Q.QFileDialog.getOpenFileName(self, "Locate source image", "", "Images (*.tif *.tiff *.nd2 *.npy);;All (*.*)")
+        if not path:
+            return
+        image_layer = self.image.currentData()
+        if image_layer is None:
+            raise ValueError("Restored analysis image is missing.")
+        expected = self.controller.resolve_image_volume(image_layer)
+        import numpy as np
+        from pathlib import Path as P
+        candidate_path = P(path)
+        # Identity check without silently accepting filename-only matches.
+        try:
+            if candidate_path.suffix.lower() == ".npy":
+                data = np.load(candidate_path, allow_pickle=False)
+            else:
+                import tifffile
+                data = tifffile.imread(path)
+                if data.ndim == 3 and expected.data.ndim == 4 and data.shape[-1] == expected.data.shape[-1]:
+                    data = data[None, ...]
+            verified = (
+                tuple(data.shape) == tuple(expected.data.shape)
+                and str(data.dtype) == str(expected.data.dtype)
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"Could not read replacement source: {exc}") from exc
+        if not verified:
+            answer = Q.QMessageBox.question(
+                self, "Unverified source replacement",
+                "Shape/dtype do not match the saved analysis. Accept as an unverified replacement? "
+                "Saved baseline calls will be invalidated.",
+            )
+            if answer != Q.QMessageBox.Yes:
+                return
+            self.review_session.invalidate_baseline_calls("Unverified source replacement")
+            self.review_session.source_verified = False
+        else:
+            self.review_session.source_verified = True
+        # Publish replacement pixels onto the existing image layer metadata/source path.
+        volume = replace(expected, data=np.array(data, copy=True), source=candidate_path)
+        self.controller._publish_image(replace(volume, metadata={**volume.metadata, "classification_analysis_grid": True}))
+        self.refresh_layers()
+        self._remeasure_enabled = True
+        self.mark_preview_stale()
+        self.status.setText("Source located. Update preview before trusting proposed calls.")
+        self._sync_review_panels()
+
+    def _confirm_discard_review_edits(self) -> bool:
+        if self.review_session is None or not self.review_session.dirty:
+            return True
+        box = Q.QMessageBox(self)
+        box.setWindowTitle("Unsaved review changes")
+        box.setText("This review has unsaved draft settings.")
+        save_btn = box.addButton("Save version…", Q.QMessageBox.AcceptRole)
+        discard_btn = box.addButton("Discard", Q.QMessageBox.DestructiveRole)
+        keep_btn = box.addButton("Keep editing", Q.QMessageBox.RejectRole)
+        box.exec_()
+        clicked = box.clickedButton()
+        if clicked is keep_btn:
+            return False
+        if clicked is save_btn:
+            self.choose_save_reviewed()
+            return self.review_session is None or not self.review_session.dirty
+        return True
+
+    def _sync_review_panels(self, *_):
+        if not hasattr(self, "review_header"):
+            return
+        if self.review_session is None:
+            self.review_header.setText("Review: no analysis open.")
+            self.compare_summary.setText("Comparison: open a saved analysis to compare Saved vs Proposed.")
+            return
+        self.review_header.setText(self.review_session.header_text())
+        marker = self.overlay_marker.currentText() if self.overlay_marker.count() else ""
+        if not marker and self.review_session.baseline_recipe.raw.get("markers"):
+            marker = self.review_session.baseline_recipe.raw["markers"][0]["name"]
+        baseline = self.review_session.baseline_calls if self.review_session.baseline_calls_valid else None
+        proposed = None if self.result is None else self.result.calls
+        comparison = compare_marker_calls(
+            baseline, proposed, marker or "",
+            population_label=self.review_session.population_label,
+        )
+        self.compare_summary.setText("\n".join(comparison.summary_lines()))
+        self._sync_selected_cell()
+
+    def _sync_selected_cell(self, *_):
+        if not hasattr(self, "cell_explain"):
+            return
+        labels_layer = self.labels.currentData()
+        if labels_layer is None or self.result is None:
+            self.cell_explain.setText("Selected cell: select reviewed nuclei with restored or previewed calls.")
+            return
+        selected = int(getattr(labels_layer, "selected_label", 0) or 0)
+        if selected <= 0:
+            self.cell_explain.setText("Selected cell: click a nucleus label to inspect measurements.")
+            return
+        marker = self.overlay_marker.currentText()
+        rows = self.result.calls
+        match = rows[(rows["marker"] == marker) & (rows["label"] == selected)] if marker else rows.iloc[0:0]
+        if match.empty:
+            self.cell_explain.setText(f"Selected cell {selected}: no call for marker {marker or '(none)'}.")
+            return
+        row = match.iloc[0]
+        marker_spec = next((m for m in self.recipe().raw["markers"] if m["name"] == marker), None)
+        if marker_spec is None:
+            self.cell_explain.setText(f"Selected cell {selected}: marker settings unavailable.")
+            return
+        fraction = row.get("fraction")
+        units = "fraction of measured voxels (display intensity does not change thresholds)"
+        frac_text = "NA" if fraction is None or (isinstance(fraction, float) and np.isnan(fraction)) else f"{100 * float(fraction):.1f}%"
+        explanation = explain_marker_call(marker_spec, row)
+        self.cell_explain.setText(
+            f"Selected cell {selected} · marker {marker} · measured {frac_text} ({units}).\n{explanation}"
+        )
+
+    def choose_labels(self):
+        path,_ = Q.QFileDialog.getOpenFileName(self,"Reviewed label TIFF","","TIFF (*.tif *.tiff *.TIF *.TIFF)")
+        if path: self.load_labels(path)
 
     def calibrate_marker(self):
         self.check_source()
@@ -912,10 +1318,6 @@ class SingleImageCoexpressionPanel(Q.QWidget):
         self.calibration_panel = panel
         dock = self.viewer.window.add_dock_widget(self.calibration_panel, name=f"Calibrate {marker['name']}")
         panel.bind_dock(dock)
-
-    def choose_labels(self):
-        path,_ = Q.QFileDialog.getOpenFileName(self,"Reviewed label TIFF","","TIFF (*.tif *.tiff *.TIF *.TIFF)")
-        if path: self.load_labels(path)
 
     def choose_recipe(self):
         path,_ = Q.QFileDialog.getOpenFileName(self,"Load classification recipe","","JSON (*.json)")

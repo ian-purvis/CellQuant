@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 
 from cellquant import __version__
-from cellquant.classify import ClassificationRecipe, classify_labels
+from cellquant.classify import ClassificationRecipe, ClassificationResult, classify_labels
 from cellquant.contracts import ImageVolume, LabelVolume
 
 
@@ -27,7 +27,18 @@ _BASE_FILES = frozenset({
     "image.npy", "labels.npy", "inputs.json", "recipe.json", "context.json",
     "metadata.json", "calls.csv", "queries.csv", "patterns.csv", "exclusions.csv",
 })
+_ALLOWED_FILE_SETS = frozenset({
+    _BASE_FILES,
+    _BASE_FILES | {"region.npy"},
+    _BASE_FILES | {"review.json"},
+    _BASE_FILES | {"region.npy", "review.json"},
+})
 _MAX_PATH = 240
+_REVIEW_KEYS = frozenset({
+    "schema_version", "parent_run_id", "parent_manifest_sha256", "scope",
+    "computation_status", "preview_scope", "created_utc", "note", "reviewer",
+})
+_COMPUTATION_STATUSES = frozenset({"full_image", "settings_only", "incomplete"})
 
 
 @dataclass(frozen=True)
@@ -37,6 +48,8 @@ class ReopenedClassification:
     ``metadata`` is the original result metadata. Image metadata retains the
     analysis-grid transformation and optional run configuration. Arrays are new
     writable copies: edits only affect a future save, never the original run.
+    Saved summary tables are verified and returned for review restoration; they
+    are never used as measurement pixels.
     """
 
     image: ImageVolume
@@ -45,6 +58,13 @@ class ReopenedClassification:
     region: np.ndarray | None
     context: dict
     metadata: dict
+    calls: pd.DataFrame
+    queries: pd.DataFrame
+    patterns: pd.DataFrame
+    exclusions: pd.DataFrame
+    review: dict | None = None
+    path: Path | None = None
+    manifest_sha256: str | None = None
 
 
 def _json_bytes(value) -> bytes:
@@ -99,25 +119,128 @@ def _array_spec(array):
     return {"shape": list(array.shape), "dtype": array.dtype.str}
 
 
+def _read_csv(data: bytes) -> pd.DataFrame:
+    return pd.read_csv(io.BytesIO(data), keep_default_na=False, na_values=["NA"])
+
+
+def validate_review_record(review) -> dict:
+    """Normalize and validate a review lineage record for persistence."""
+    if not isinstance(review, dict):
+        raise ValueError("review record must be a JSON object")
+    record = _json_copy(review)
+    if set(record) != _REVIEW_KEYS:
+        raise ValueError("invalid review record schema")
+    if record["schema_version"] != 1:
+        raise ValueError("unsupported review schema_version")
+    if not isinstance(record["parent_run_id"], str) or not record["parent_run_id"].strip():
+        raise ValueError("parent_run_id must be a nonempty string")
+    digest = record["parent_manifest_sha256"]
+    if not isinstance(digest, str) or len(digest) != 64:
+        raise ValueError("parent_manifest_sha256 must be a 64-character hex digest")
+    if record["scope"] != "this_image":
+        raise ValueError("review scope must be this_image")
+    if record["computation_status"] not in _COMPUTATION_STATUSES:
+        raise ValueError("invalid computation_status")
+    if not isinstance(record["preview_scope"], str):
+        raise ValueError("preview_scope must be a string")
+    if not isinstance(record["created_utc"], str) or not record["created_utc"]:
+        raise ValueError("created_utc must be a nonempty string")
+    if not isinstance(record["note"], str):
+        raise ValueError("note must be a string")
+    if not isinstance(record["reviewer"], str):
+        raise ValueError("reviewer must be a string")
+    return record
+
+
+def make_review_record(*, parent_run_id: str, parent_manifest_sha256: str,
+                       computation_status: str, preview_scope: str = "",
+                       note: str = "", reviewer: str = "") -> dict:
+    return validate_review_record({
+        "schema_version": 1,
+        "parent_run_id": parent_run_id,
+        "parent_manifest_sha256": parent_manifest_sha256,
+        "scope": "this_image",
+        "computation_status": computation_status,
+        "preview_scope": preview_scope,
+        "created_utc": datetime.now(timezone.utc).isoformat(),
+        "note": note,
+        "reviewer": reviewer,
+    })
+
+
+def empty_settings_result(recipe, *, context=None, image=None) -> ClassificationResult:
+    """Placeholder tables for a settings-only version (not full-image calls)."""
+    recipe = recipe if isinstance(recipe, ClassificationRecipe) else ClassificationRecipe(recipe)
+    ctx = _json_copy({} if context is None else context)
+    metadata = {
+        "schema_version": 1,
+        "recipe_fingerprint": recipe.fingerprint,
+        "context": ctx,
+        "region_policy": recipe.raw["region_policy"],
+        "region_kind": "unspecified",
+        "total_objects": 0,
+        "total_eligible": 0,
+        "excluded": 0,
+        "spacing_um": list(image.spacing_um) if image is not None else [],
+        "channel_names": list(image.channel_names) if image is not None else [],
+        "measurement_grid": "ZYXC",
+        "analysis_metadata": {},
+        "computation_status": "settings_only",
+    }
+    calls = pd.DataFrame(columns=["label", "marker", "channel", "voxel_count", "fraction", "call", "reason"])
+    queries = pd.DataFrame(columns=[
+        "name", "positive", "negative", "denominator_positive", "total_eligible", "evaluable",
+        "missing", "uncertain", "denominator", "numerator", "percentage",
+        "denominator_population", "denominator_coverage_pct", "denominator_missing",
+        "denominator_uncertain",
+    ])
+    patterns = pd.DataFrame(columns=[
+        "pattern", "total_eligible", "evaluable", "missing", "uncertain", "denominator",
+        "numerator", "percentage", "denominator_population", "denominator_coverage_pct",
+        "denominator_missing", "denominator_uncertain",
+    ])
+    exclusions = pd.DataFrame(columns=["label", "reason"])
+    return ClassificationResult(calls, queries, patterns, exclusions, metadata)
+
+
+def result_from_reopened(bundle: ReopenedClassification) -> ClassificationResult:
+    """Restore a ClassificationResult from verified saved summary tables."""
+    return ClassificationResult(
+        bundle.calls.copy(), bundle.queries.copy(), bundle.patterns.copy(),
+        bundle.exclusions.copy(), _json_copy(bundle.metadata),
+    )
+
+
 def save_classification(output_root, image, labels, recipe, *, region=None,
-                        context=None, cancel=None):
+                        context=None, cancel=None, review=None, result=None):
     """Snapshot, classify and publish a unique run; return ``(path, result)``.
 
     Failed/cancelled writes remain visibly incomplete without ``complete.json``.
     No existing run is overwritten, and all filenames are fixed by this module.
+    Pass ``result`` to persist an already-computed or settings-only result without
+    rescoring. Optional ``review`` writes parent-linked lineage as ``review.json``.
     """
     _checkpoint(cancel)
     recipe = ClassificationRecipe(recipe.raw if isinstance(recipe, ClassificationRecipe) else recipe)
     context = _json_copy({} if context is None else context)
     if not isinstance(context, dict):
         raise ValueError("classification context must be a JSON object")
+    review_record = None if review is None else validate_review_record(review)
     image = ImageVolume(np.array(image.data, copy=True), tuple(image.spacing_um),
                         tuple(image.channel_names), Path(image.source),
                         _json_copy(dict(image.metadata)))
     labels = LabelVolume(np.array(labels.data, copy=True), tuple(labels.spacing_um),
                          _json_copy(dict(labels.provenance)))
     region = None if region is None else np.array(region, copy=True)
-    result = classify_labels(image, labels, recipe, region=region, context=context, cancel=cancel)
+    if result is None:
+        result = classify_labels(image, labels, recipe, region=region, context=context, cancel=cancel)
+    elif not isinstance(result, ClassificationResult):
+        raise ValueError("result must be a ClassificationResult")
+    else:
+        result = ClassificationResult(
+            result.calls.copy(), result.queries.copy(), result.patterns.copy(),
+            result.exclusions.copy(), _json_copy(result.metadata),
+        )
     _checkpoint(cancel)
     inputs = {
         "schema_version": 1,
@@ -131,6 +254,8 @@ def save_classification(output_root, image, labels, recipe, *, region=None,
     # Validate serialization before creating a partial run.
     json_artifacts = {"inputs.json": inputs, "recipe.json": recipe.raw,
                       "context.json": context, "metadata.json": result.metadata}
+    if review_record is not None:
+        json_artifacts["review.json"] = review_record
     payloads = {name: _json_bytes(value) for name, value in json_artifacts.items()}
     root = Path(output_root).expanduser().resolve()
     run = root / ("classify_" + uuid.uuid4().hex[:12])
@@ -153,7 +278,11 @@ def save_classification(output_root, image, labels, recipe, *, region=None,
     for name in ("calls", "queries", "patterns", "exclusions"):
         _checkpoint(cancel)
         _write(run / (name + ".csv"), getattr(result, name).to_csv(index=False, na_rep="NA").encode("utf-8"))
-    names = _BASE_FILES | ({"region.npy"} if region is not None else set())
+    names = set(_BASE_FILES)
+    if region is not None:
+        names.add("region.npy")
+    if review_record is not None:
+        names.add("review.json")
     files = {}
     for name in sorted(names):
         _checkpoint(cancel)
@@ -214,9 +343,10 @@ def reopen_classification(path) -> ReopenedClassification:
                 or software["scoring"] != "nuclear_pixel_fraction_v1"):
             raise ValueError("invalid or unsupported classification software provenance")
         files = manifest["files"]
-        if not isinstance(files, dict) or set(files) not in (_BASE_FILES, _BASE_FILES | {"region.npy"}):
+        if not isinstance(files, dict) or frozenset(files) not in _ALLOWED_FILE_SETS:
             raise ValueError("classification manifest has missing or unexpected artifact names")
         payloads = {}
+        csv_payloads = {}
         for name, spec in files.items():
             if (not isinstance(spec, dict) or set(spec) != {"sha256", "size"}
                     or type(spec["size"]) is not int or spec["size"] < 0
@@ -225,8 +355,9 @@ def reopen_classification(path) -> ReopenedClassification:
             payload = _regular_file(root, name).read_bytes()
             if len(payload) != spec["size"] or _digest(payload) != spec["sha256"]:
                 raise ValueError(f"classification artifact checksum mismatch: {name}")
-            # Summary CSVs are verified but are never used to classify cells.
-            if not name.endswith(".csv"):
+            if name.endswith(".csv"):
+                csv_payloads[name] = payload
+            else:
                 payloads[name] = payload
         inputs = _read_json(payloads["inputs.json"])
         if not isinstance(inputs, dict) or set(inputs) != {"schema_version", "image", "labels", "region"} or inputs["schema_version"] != 1:
@@ -263,16 +394,33 @@ def reopen_classification(path) -> ReopenedClassification:
         metadata = _read_json(payloads["metadata.json"])
         if not isinstance(context, dict) or not isinstance(metadata, dict):
             raise ValueError("classification context/metadata must be objects")
-        return ReopenedClassification(image, labels, recipe, region, context, metadata)
+        review = None
+        if "review.json" in payloads:
+            review = validate_review_record(_read_json(payloads["review.json"]))
+        for name in ("calls.csv", "queries.csv", "patterns.csv", "exclusions.csv"):
+            if name not in csv_payloads:
+                raise ValueError(f"classification artifact is missing: {name}")
+        calls = _read_csv(csv_payloads["calls.csv"])
+        queries = _read_csv(csv_payloads["queries.csv"])
+        patterns = _read_csv(csv_payloads["patterns.csv"])
+        exclusions = _read_csv(csv_payloads["exclusions.csv"])
+        return ReopenedClassification(
+            image, labels, recipe, region, context, metadata,
+            calls, queries, patterns, exclusions, review, root,
+            completion["manifest_sha256"],
+        )
     except (OSError, KeyError, TypeError, AttributeError, EOFError) as exc:
         raise ValueError(f"cannot reopen classification: {exc}") from exc
 
 
-def reclassify_run(path, output_root, recipe=None, *, cancel=None):
+def reclassify_run(path, output_root, recipe=None, *, cancel=None, review=None):
     """Verify saved evidence and create a new independent classification run."""
     _checkpoint(cancel)
     saved = reopen_classification(path)
     _checkpoint(cancel)
-    return save_classification(output_root, saved.image, saved.labels,
-                               saved.recipe if recipe is None else recipe,
-                               region=saved.region, context=saved.context, cancel=cancel)
+    return save_classification(
+        output_root, saved.image, saved.labels,
+        saved.recipe if recipe is None else recipe,
+        region=saved.region, context=saved.context, cancel=cancel,
+        review=review,
+    )

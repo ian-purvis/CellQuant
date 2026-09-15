@@ -1,0 +1,57 @@
+{
+  "profile_id": "alpine_artxpro6000",
+  "display_name": "RTX Pro 6000 — trial",
+  "role": "benchmark_candidate",
+  "submit_ready": true,
+  "cluster": "alpine",
+  "partition": "artxpro6000",
+  "architecture": "blackwell",
+  "vram_gb": 96,
+  "qos_choices": ["gpu-normal", "gpu-long"],
+  "default_qos": "gpu-normal",
+  "gres_choices": ["gpu:rtx_pro_6000:1"],
+  "default_gres": "gpu:rtx_pro_6000:1",
+  "cpus_per_task": 8,
+  "mem": "64G",
+  "default_walltime": "04:00:00",
+  "max_walltime_by_qos": {
+    "gpu-normal": "24:00:00",
+    "gpu-long": "7-00:00:00"
+  },
+  "modules": [],
+  "scratch_root_template": "/scratch/alpine/${USER}/cellquant",
+  "project_root_hint": "/projects/${USER}/cellquant",
+  "require_account": true,
+  "require_gpu": true,
+  "allow_cpu_fallback": false,
+  "backend": "cellquant_core",
+  "cellquant_version_pin": "0.4.0a2",
+  "environment_spec": {
+    "kind": "conda",
+    "name": "cellquant-hpc",
+    "cuda_notes": [
+      "Blackwell may need a newer CUDA/PyTorch wheel than older A100 cu121 stacks.",
+      "First trial may reuse the H200 env if torch loads; if kernels fail, pin a Blackwell-capable wheel.",
+      "CURC FAQ recommends nvhpc_sdk/2025.251 or newer; validate model init + inference + parity."
+    ],
+    "notes": [
+      "Submit enabled for comparative Alpine trials; H200 remains the recommended default.",
+      "Request full GPU GRES gpu:rtx_pro_6000:1 (not MIG 1g/2g slices).",
+      "Record smoke_verified_utc after a successful matched trial."
+    ]
+  },
+  "documentation": {
+    "documentation_checked_utc": "2026-09-11T00:00:00Z",
+    "smoke_verified_utc": null,
+    "sources": [
+      "https://curc.readthedocs.io/en/latest/clusters/alpine/alpine-hardware.html",
+      "https://curc.readthedocs.io/en/latest/getting_started/faq.html",
+      "https://curc.readthedocs.io/en/latest/compute/filesystems.html"
+    ],
+    "notes": [
+      "Not listed for gpu-testing; use short gpu-normal for smoke/benchmark jobs.",
+      "Never advertise as faster merely because the GPU is newer.",
+      "Promote to recommended only after matched benchmark + parity; keep H200 selectable."
+    ]
+  }
+}

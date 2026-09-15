@@ -13,7 +13,9 @@ def inspect_tiff(path: Path, *, series: int = 0) -> ImageMetadata:
     with tifffile.TiffFile(path) as tif:
         validate_index(series, len(tif.series), "series")
         selected = tif.series[series]
-        spacing, names = _tiff_metadata(tif, series, _channel_count(selected.axes, selected.shape))
+        spacing, names, colors = _tiff_metadata(
+            tif, series, _channel_count(selected.axes, selected.shape)
+        )
         axes = str(selected.axes).upper()
         return ImageMetadata(
             source=path,
@@ -26,7 +28,11 @@ def inspect_tiff(path: Path, *, series: int = 0) -> ImageMetadata:
             series_count=len(tif.series),
             position_count=_axis_size(axes, selected.shape, "P"),
             timepoint_count=_axis_size(axes, selected.shape, "T"),
-            metadata={"is_ome": bool(tif.is_ome), "is_imagej": bool(tif.is_imagej)},
+            metadata={
+                "is_ome": bool(tif.is_ome),
+                "is_imagej": bool(tif.is_imagej),
+                "channel_colors": colors,
+            },
         )
 
 
@@ -34,7 +40,9 @@ def read_tiff(path: Path, *, series: int, lazy: bool):
     with tifffile.TiffFile(path) as tif:
         validate_index(series, len(tif.series), "series")
         selected = tif.series[series]
-        spacing, names = _tiff_metadata(tif, series, _channel_count(selected.axes, selected.shape))
+        spacing, names, colors = _tiff_metadata(
+            tif, series, _channel_count(selected.axes, selected.shape)
+        )
         axes = str(selected.axes).upper()
         shape = tuple(int(value) for value in selected.shape)
         dtype = np.dtype(selected.dtype)
@@ -64,6 +72,7 @@ def read_tiff(path: Path, *, series: int, lazy: bool):
         "is_imagej": is_imagej,
         "lazy_requested": lazy,
         "memory_mapped": memory_mapped,
+        "channel_colors": colors,
     }
     return data, axes, spacing, names, details
 
@@ -71,7 +80,7 @@ def read_tiff(path: Path, *, series: int, lazy: bool):
 def _tiff_metadata(tif: tifffile.TiffFile, series: int, channels: int):
     if tif.ome_metadata:
         return _ome_metadata(tif.ome_metadata, series, channels)
-    return _imagej_metadata(tif), default_channel_names(channels)
+    return _imagej_metadata(tif), default_channel_names(channels), tuple(None for _ in range(channels))
 
 
 def _ome_metadata(xml: str, series: int, channels: int):
@@ -98,7 +107,33 @@ def _ome_metadata(xml: str, series: int, channels: int):
         else f"C{index + 1}"
         for index in range(channels)
     )
-    return spacing, names
+    colors = tuple(
+        _ome_channel_color(channel_elements[index]) if index < len(channel_elements) else None
+        for index in range(channels)
+    )
+    return spacing, names, colors
+
+
+def _ome_channel_color(element: ET.Element):
+    from .display_colors import normalize_rgb
+
+    raw = element.get("Color")
+    if raw is None:
+        return None
+    # OME Color is a signed 32-bit packed ARGB integer in some writers; others
+    # use comma-separated RGB. Accept both.
+    if "," in raw:
+        return normalize_rgb(raw)
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value < 0:
+        value += 1 << 32
+    r = (value >> 24) & 0xFF
+    g = (value >> 16) & 0xFF
+    b = (value >> 8) & 0xFF
+    return normalize_rgb((r, g, b))
 
 
 def _physical_size_um(pixels: ET.Element, axis: str) -> float | None:

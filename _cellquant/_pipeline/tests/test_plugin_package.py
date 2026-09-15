@@ -63,11 +63,15 @@ class WorkerFactory:
 
 
 class LazyArray:
-    shape = (3, 8, 9, 1)
-    dtype = np.dtype(np.uint16)
-
-    def __init__(self):
+    def __init__(self, shape=(3, 8, 9, 1), dtype=np.dtype(np.uint16)):
+        self.shape = tuple(shape)
+        self.dtype = np.dtype(dtype)
         self.materialized = False
+
+    def __getitem__(self, item):
+        # Mimic dask/numpy channel views used by display publishing.
+        probe = np.empty(self.shape, dtype=self.dtype)[item]
+        return LazyArray(shape=probe.shape, dtype=self.dtype)
 
     def compute(self):
         self.materialized = True
@@ -77,11 +81,17 @@ class LazyArray:
 class ImageLayer:
     _type_string = "image"
 
-    def __init__(self, data, name, scale, metadata):
+    def __init__(self, data, name, scale, metadata, **kwargs):
         self.data = data
         self.name = name
         self.scale = tuple(scale)
         self.metadata = metadata
+        self.colormap = kwargs.get("colormap")
+        self.blending = kwargs.get("blending")
+        self.rgb = kwargs.get("rgb", False)
+        self.visible = kwargs.get("visible", True)
+        self.contrast_limits = kwargs.get("contrast_limits")
+        self.contrast_limits_range = kwargs.get("contrast_limits_range")
 
 
 class LabelsLayer:
@@ -103,15 +113,31 @@ class LayerList(list):
             raise KeyError(item)
         return super().__getitem__(item)
 
+    def remove(self, layer):
+        super().remove(layer)
+
 
 class Viewer:
     def __init__(self):
         self.layers = LayerList()
         self.calls = []
+        self.reset_view_calls = 0
 
     def add_image(self, data, **kwargs):
         self.calls.append(("image", kwargs["name"]))
-        layer = ImageLayer(data, kwargs["name"], kwargs["scale"], kwargs["metadata"])
+        meta = kwargs.get("metadata") or {}
+        layer = ImageLayer(
+            data,
+            kwargs["name"],
+            kwargs["scale"],
+            meta,
+            colormap=kwargs.get("colormap"),
+            blending=kwargs.get("blending"),
+            rgb=kwargs.get("rgb", False),
+            visible=kwargs.get("visible", True),
+            contrast_limits=kwargs.get("contrast_limits"),
+            contrast_limits_range=kwargs.get("contrast_limits_range"),
+        )
         self.layers.append(layer)
         return layer
 
@@ -120,6 +146,9 @@ class Viewer:
         layer = LabelsLayer(data, kwargs["name"], kwargs["scale"], kwargs["metadata"])
         self.layers.append(layer)
         return layer
+
+    def reset_view(self):
+        self.reset_view_calls += 1
 
 
 def config():
@@ -170,11 +199,21 @@ def test_lazy_open_is_background_and_does_not_materialize(tmp_path):
 
     assert len(workers.workers) == 1 and workers.workers[0].started
     assert calls == [{"series": 0, "position": 0, "lazy": True, "axes_override": None, "spacing_override_um": None}]
-    assert viewer.layers[IMAGE_LAYER_NAME].data is lazy
-    assert len(viewer.layers[IMAGE_LAYER_NAME].metadata["input_fingerprint"]) == 64
-    assert viewer.layers[IMAGE_LAYER_NAME].metadata["input_fingerprint_descriptor"]["size"] == source.stat().st_size
+    assert controller.image_volume is not None
+    assert controller.image_volume.data is lazy
+    assert IMAGE_LAYER_NAME not in [layer.name for layer in viewer.layers]
+    display = [layer for layer in viewer.layers if layer.metadata.get("cellquant_display_channel")]
+    assert len(display) == 1
+    assert display[0].name == f"{source.name} · DAPI"
+    assert display[0].blending == "additive"
+    assert display[0].colormap is not None
+    assert display[0].contrast_limits is not None
+    assert display[0].contrast_limits_range == display[0].contrast_limits
+    assert len(display[0].metadata["input_fingerprint"]) == 64
+    assert display[0].metadata["input_fingerprint_descriptor"]["size"] == source.stat().st_size
     assert not lazy.materialized
-    assert viewer.calls == [("image", IMAGE_LAYER_NAME)]
+    assert viewer.calls == [("image", f"{source.name} · DAPI")]
+    assert viewer.reset_view_calls >= 1
 
 
 def test_controller_keeps_batch_progress_when_plane_events_arrive():
@@ -445,7 +484,8 @@ def test_open_segment_edit_save_commits_complete_store_with_qc_and_provenance(tm
         pipeline_fn=pipeline,
     )
     controller.open_path(source)
-    controller.segment(viewer.layers[IMAGE_LAYER_NAME])
+    display = next(layer for layer in viewer.layers if layer.metadata.get("cellquant_display_channel"))
+    controller.segment(display)
     labels_layer = viewer.layers[LABEL_LAYER_NAME]
     labels_layer.data[0, 0, 0] = 2
     output = tmp_path / "edited_run"
@@ -453,7 +493,7 @@ def test_open_segment_edit_save_commits_complete_store_with_qc_and_provenance(tm
 
     status = json.loads((output / "status.json").read_text(encoding="utf-8"))
     provenance = json.loads((output / "provenance.json").read_text(encoding="utf-8"))
-    image_fingerprint = viewer.layers[IMAGE_LAYER_NAME].metadata["input_fingerprint"]
+    image_fingerprint = display.metadata["input_fingerprint"]
     assert status["status"] == "complete"
     assert status["input_fingerprint"] == image_fingerprint
     assert provenance["input_fingerprint"] == image_fingerprint
