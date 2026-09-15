@@ -1,0 +1,36 @@
+# Python / packaging
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+.wheel_validation*/
+.pytest_cache/
+.pytest_verify*/
+
+# Local installer / env state
+**/cellquant_env.json
+**/install_last.log
+*.log
+
+# Test / local scratch outputs
+**/artifacts/pytest*/
+**/artifacts/wheel/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.venv/
+venv/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
