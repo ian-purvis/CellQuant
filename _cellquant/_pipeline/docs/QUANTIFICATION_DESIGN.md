@@ -1,5 +1,7 @@
 # Integrated retinal coexpression
 
+> Historical design proposal: this records its dated approach, not current feature status. See [current documentation](README.md).
+
 Date: 2026-09-07
 Status: APPROVED approach; implementation and scientific validation tracked separately
 Mode: Research / builder

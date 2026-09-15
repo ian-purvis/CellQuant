@@ -1,0 +1,56 @@
+{
+  "profile_id": "alpine_al40",
+  "display_name": "L40 — alternative",
+  "role": "alternative",
+  "submit_ready": true,
+  "cluster": "alpine",
+  "partition": "al40",
+  "architecture": "ada",
+  "vram_gb": 48,
+  "qos_choices": ["gpu-normal", "gpu-long", "gpu-testing"],
+  "default_qos": "gpu-normal",
+  "gres_choices": ["gpu:l40:1"],
+  "default_gres": "gpu:l40:1",
+  "cpus_per_task": 8,
+  "mem": "64G",
+  "default_walltime": "04:00:00",
+  "max_walltime_by_qos": {
+    "gpu-testing": "01:00:00",
+    "gpu-normal": "24:00:00",
+    "gpu-long": "7-00:00:00"
+  },
+  "modules": [],
+  "scratch_root_template": "/scratch/alpine/${USER}/cellquant",
+  "project_root_hint": "/projects/${USER}/cellquant",
+  "require_account": true,
+  "require_gpu": true,
+  "allow_cpu_fallback": false,
+  "backend": "cellquant_core",
+  "cellquant_version_pin": "0.4.0a2",
+  "environment_spec": {
+    "kind": "conda",
+    "name": "cellquant-hpc",
+    "cuda_notes": [
+      "Pin a PyTorch/CUDA/Cellpose stack compatible with L40 (Ada).",
+      "CURC FAQ recommends nvhpc_sdk/2025.251 or newer across Alpine GPUs."
+    ],
+    "notes": [
+      "Prefer a validated prebuilt environment when available.",
+      "Download standard Cellpose model weights during setup, not during the GPU job."
+    ]
+  },
+  "documentation": {
+    "documentation_checked_utc": "2026-09-11T00:00:00Z",
+    "smoke_verified_utc": null,
+    "sources": [
+      "https://curc.readthedocs.io/en/latest/clusters/alpine/alpine-hardware.html",
+      "https://curc.readthedocs.io/en/latest/running-jobs/job-resources.html",
+      "https://curc.readthedocs.io/en/latest/compute/filesystems.html"
+    ],
+    "notes": [
+      "Explicit alternative selection — never substituted for H200 silently.",
+      "Full-GPU request only (gpu:l40:1); MIG is a separate advanced profile if added later.",
+      "Real Alpine smoke job not yet recorded."
+    ]
+  }
+}

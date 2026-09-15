@@ -1,0 +1,18 @@
+# Headless Alpine / HPC runtime (no napari / PyQt).
+# Use with: pip install -r requirements-hpc.txt && pip install -e . --no-deps
+#
+# Install CUDA PyTorch for the target GPU *before* this file when possible, e.g.:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+numpy==2.0.2
+pandas==3.0.5
+tifffile==2026.3.3
+nd2==0.11.3
+PyYAML==6.0.3
+openpyxl==3.1.5
+scipy==1.17.1
+matplotlib==3.11.0
+pillow==12.3.0
+psutil==7.2.2
+dask[array]==2026.8.0
+cellpose==4.2.1.1

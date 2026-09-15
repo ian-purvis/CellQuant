@@ -20,6 +20,7 @@ def inspect_nd2(path: Path) -> ImageMetadata:
         reader_spacing = _reader_voxel_size(handle)
         calibrated = _axes_calibrated(handle)
         names = _channel_names(handle, sizes.get("C", 1))
+        colors = _channel_colors(handle, sizes.get("C", 1))
     return ImageMetadata(
         source=path,
         format="nd2",
@@ -34,6 +35,7 @@ def inspect_nd2(path: Path) -> ImageMetadata:
             "sizes": sizes,
             "calibration_flag": calibrated,
             "reader_voxel_size_um": reader_spacing,
+            "channel_colors": colors,
         },
     )
 
@@ -55,6 +57,7 @@ def read_nd2(path: Path, *, position: int, lazy: bool):
         reader_spacing = _reader_voxel_size(handle)
         calibrated = _axes_calibrated(handle)
         names = _channel_names(handle, sizes.get("C", 1))
+        colors = _channel_colors(handle, sizes.get("C", 1))
         data = handle.to_dask() if lazy else handle.asarray()
 
     details: dict[str, Any] = {
@@ -71,6 +74,7 @@ def read_nd2(path: Path, *, position: int, lazy: bool):
         "dask_backed": lazy,
         "calibration_flag": calibrated,
         "reader_voxel_size_um": reader_spacing,
+        "channel_colors": colors,
     }
     return data, axes, spacing, names, details
 
@@ -160,3 +164,23 @@ def _channel_names(handle, count: int) -> tuple[str, ...]:
     except Exception:
         return default_channel_names(count)
     return names if len(names) == count else default_channel_names(count)
+
+
+def _channel_colors(handle, count: int) -> tuple[tuple[float, float, float] | None, ...]:
+    """Native ND2 LUT colors as float RGB, or None per channel when missing."""
+
+    from .display_colors import normalize_rgb
+
+    try:
+        channels = tuple(handle.metadata.channels)
+    except Exception:
+        return tuple(None for _ in range(count))
+    if len(channels) != count:
+        return tuple(None for _ in range(count))
+    colors: list[tuple[float, float, float] | None] = []
+    for channel in channels:
+        try:
+            colors.append(normalize_rgb(getattr(channel.channel, "color", None)))
+        except Exception:
+            colors.append(None)
+    return tuple(colors)

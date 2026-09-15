@@ -1,11 +1,21 @@
 param(
     [string]$Prefix = '',
-    [switch]$NonInteractive
+    [switch]$NonInteractive,
+    [string]$LogPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $ProjectRoot
+
+if (-not $LogPath) {
+    $LogPath = Join-Path $ProjectRoot 'install_last.log'
+}
+try {
+    Start-Transcript -LiteralPath $LogPath -Force | Out-Null
+} catch {
+    Write-Host "Warning: could not start install log at $LogPath ($($_.Exception.Message))" -ForegroundColor Yellow
+}
 
 . (Join-Path $PSScriptRoot 'resolve_conda.ps1')
 . (Join-Path $PSScriptRoot 'resolve_env_location.ps1')
@@ -169,37 +179,51 @@ $Saved = Save-CellQuantEnvPrefixes `
 $PrefixV4 = $Saved.prefix_v4
 $PrefixV3 = $Saved.prefix_v3
 
-$BothEnvironmentsExist = (Test-Path -LiteralPath $PrefixV4 -PathType Container) -and
-    (Test-Path -LiteralPath $PrefixV3 -PathType Container)
-if ($BothEnvironmentsExist -and -not $NonInteractive) {
+$CleanReinstall = $false
+$ExistingEnvPrefixes = @(
+    @($PrefixV4, $PrefixV3) |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+)
+if ($ExistingEnvPrefixes.Count -gt 0 -and -not $NonInteractive) {
     Write-Host ''
-    Write-Host 'CellQuant v3 and v4 environments already exist at:'
-    Write-Host "  v4: $PrefixV4"
-    Write-Host "  v3: $PrefixV3"
+    Write-Host 'CellQuant environment folder(s) already exist:'
+    foreach ($Existing in $ExistingEnvPrefixes) {
+        Write-Host "  $Existing"
+    }
     Write-Host ''
-    $Reinstall = Read-Host 'Reinstall/update both environments? [Y/N] (N = open CellQuant)'
-    if ($Reinstall -notmatch '(?i)^y(es)?$') {
-        Write-Host 'Skipping installation and opening CellQuant.'
-        $Launcher = Join-Path $PSScriptRoot 'launch_napari.ps1'
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Launcher -Engine ask
-        exit $LASTEXITCODE
+    Write-Host 'Choose what to do:'
+    Write-Host '  [O] Open CellQuant (no install changes)'
+    Write-Host '  [U] Update existing environments in place'
+    Write-Host '  [R] Uninstall (delete env folders), then reinstall clean'
+    Write-Host ''
+    $Choice = Read-Host 'Choice [O/U/R] (Enter = O)'
+    if (-not $Choice) {
+        $Choice = 'O'
+    }
+    switch -Regex ($Choice.Trim()) {
+        '^(?i)u(pdate)?$' {
+            Write-Host 'Updating existing environments in place...'
+        }
+        '^(?i)r(einstall)?$' {
+            $CleanReinstall = $true
+            Write-Host 'Will uninstall existing environment folders, then reinstall clean.'
+        }
+        default {
+            Write-Host 'Skipping installation and opening CellQuant.'
+            $Launcher = Join-Path $PSScriptRoot 'launch_napari.ps1'
+            & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Launcher -Engine ask
+            exit $LASTEXITCODE
+        }
     }
 }
 
 try {
-    foreach ($Target in @($PrefixV4, $PrefixV3)) {
-        $parent = Split-Path -Parent $Target
-        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
-            New-Item -ItemType Directory -Path $parent -Force | Out-Null
-        }
-    }
-
-    $EnvFile = Join-Path $ProjectRoot 'environment.yml'
-
     function Invoke-CondaChecked {
         param(
             [Parameter(Mandatory)][string]$FailureMessage,
-            [Parameter(ValueFromRemainingArguments = $true)]$CondaArgs
+            # Pass conda argv as an explicit array. Do not use ValueFromRemainingArguments:
+            # bare flags like -p bind to PowerShell common parameters (e.g. -PipelineVariable).
+            [Parameter(Mandatory)][string[]]$CondaArgs
         )
 
         # Keep conda stderr (warnings) from becoming terminating errors under
@@ -217,6 +241,50 @@ try {
         }
     }
 
+    function Remove-CellQuantEnvPrefix {
+        param([Parameter(Mandatory)][string]$EnvPrefix)
+
+        if (-not (Test-Path -LiteralPath $EnvPrefix)) {
+            return
+        }
+
+        Write-Host "Uninstalling environment folder:"
+        Write-Host "  $EnvPrefix"
+        $PreviousEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $CondaExe env remove --prefix $EnvPrefix --yes | Out-Host
+        } finally {
+            $ErrorActionPreference = $PreviousEap
+        }
+        # Conda on Windows often leaves the prefix folder behind; force-delete leftovers.
+        if (Test-Path -LiteralPath $EnvPrefix) {
+            Remove-Item -LiteralPath $EnvPrefix -Recurse -Force -ErrorAction Stop
+        }
+        if (Test-Path -LiteralPath $EnvPrefix) {
+            throw "Could not delete environment folder: $EnvPrefix. Close Napari/Python using it and retry."
+        }
+        Write-Host "Removed: $EnvPrefix"
+    }
+
+    foreach ($Target in @($PrefixV4, $PrefixV3)) {
+        $parent = Split-Path -Parent $Target
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+    }
+
+    if ($CleanReinstall) {
+        Write-Host ''
+        Write-Host 'Uninstalling existing CellQuant environments before clean reinstall...'
+        foreach ($Target in @($PrefixV4, $PrefixV3)) {
+            Remove-CellQuantEnvPrefix -EnvPrefix $Target
+        }
+        Write-Host ''
+    }
+
+    $EnvFile = Join-Path $ProjectRoot 'environment.yml'
+
     function Install-OneCellQuantEnv {
         param(
             [Parameter(Mandatory)][string]$EnvPrefix,
@@ -232,38 +300,48 @@ try {
         if (Test-Path -LiteralPath $EnvPrefix) {
             Invoke-CondaChecked `
                 -FailureMessage "Conda environment install/update failed for $Engine" `
-                env update --prefix $EnvPrefix --file $EnvFile --prune
+                -CondaArgs @('env', 'update', '--prefix', $EnvPrefix, '--file', $EnvFile, '--prune')
         } else {
             Invoke-CondaChecked `
                 -FailureMessage "Conda environment install/update failed for $Engine" `
-                env create --prefix $EnvPrefix --file $EnvFile
+                -CondaArgs @('env', 'create', '--prefix', $EnvPrefix, '--file', $EnvFile)
         }
 
         if ($Engine -eq 'v3') {
             Write-Host ''
             Write-Host 'Installing Cellpose classic 3.x extras into the v3 environment...'
+            # Shared environment.yml starts from the v4 extra. Force classic 3.x
+            # before the editable reinstall so a prior Cellpose 4.x cannot linger.
+            Invoke-CondaChecked `
+                -FailureMessage "Failed to remove Cellpose 4.x before installing classic 3.x into $EnvPrefix" `
+                -CondaArgs @(
+                    'run', '--no-capture-output', '--prefix', $EnvPrefix,
+                    'python', '-m', 'pip', 'uninstall', '-y', 'cellpose'
+                )
             # Reinstall the editable package against the v3 extra so METADATA
             # requires cellpose 3.x (pip check stays clean).
             Invoke-CondaChecked `
                 -FailureMessage "Failed to install CellQuant with cellpose-v3 into $EnvPrefix" `
-                run --no-capture-output -p $EnvPrefix `
-                python -m pip install -e "${ProjectRoot}[cellpose-v3,test]"
+                -CondaArgs @(
+                    'run', '--no-capture-output', '--prefix', $EnvPrefix,
+                    'python', '-m', 'pip', 'install', '-e', "${ProjectRoot}[gui,cellpose-v3,test]"
+                )
             $PreviousEap = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
             try {
-                $Version = & $CondaExe run -p $EnvPrefix python -c "import importlib.metadata as m; print(m.version('cellpose'))"
+                $Version = & $CondaExe run --prefix $EnvPrefix python -c "import importlib.metadata as m; print(m.version('cellpose'))"
             } finally {
                 $ErrorActionPreference = $PreviousEap
             }
             Write-Host "Cellpose in v3 env: $Version"
             if (-not ($Version -match '^3\.')) {
-                throw "Expected Cellpose 3.x in v3 env; found $Version"
+                throw "Expected Cellpose 3.x in v3 env; found $Version. Delete the v3 folder and re-run Install CellQuant.bat."
             }
         } else {
             $PreviousEap = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
             try {
-                $Version = & $CondaExe run -p $EnvPrefix python -c "import importlib.metadata as m; print(m.version('cellpose'))"
+                $Version = & $CondaExe run --prefix $EnvPrefix python -c "import importlib.metadata as m; print(m.version('cellpose'))"
             } finally {
                 $ErrorActionPreference = $PreviousEap
             }
@@ -277,7 +355,7 @@ try {
         $PreviousEap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
-            $PipCheck = & $CondaExe run --no-capture-output -p $EnvPrefix python -m pip check 2>&1
+            $PipCheck = & $CondaExe run --no-capture-output --prefix $EnvPrefix python -m pip check 2>&1
             $PipCheckCode = $LASTEXITCODE
         } finally {
             $ErrorActionPreference = $PreviousEap
@@ -316,11 +394,16 @@ try {
         '',
         $_.Exception.Message,
         '',
+        "Log file: $LogPath",
+        '',
         'Common fix: run Install CellQuant.bat again and press Enter to use the',
         'default folder for this PC (or paste a folder you can write to).',
         'Do not use a path under another user''s C:\Users\... folder.',
         'On GPU PCs, a working NVIDIA driver is required for CUDA PyTorch.'
     ) -join [Environment]::NewLine
     Show-CellQuantInstallMessage -Kind Error -Message $FailMessage
+    try { Stop-Transcript | Out-Null } catch { }
     exit 1
 }
+
+try { Stop-Transcript | Out-Null } catch { }

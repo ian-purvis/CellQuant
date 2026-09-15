@@ -336,6 +336,65 @@ def main(argv=None) -> int:
         help="assignments.csv (default: beside survey.json)",
     )
 
+    hpc_parser = commands.add_parser(
+        "hpc",
+        help="prepare, validate, and import portable Alpine segmentation packages",
+    )
+    hpc_commands = hpc_parser.add_subparsers(dest="hpc_command", required=True)
+
+    hpc_prepare = hpc_commands.add_parser(
+        "prepare",
+        help="export a portable HPC bundle without loading Cellpose",
+    )
+    hpc_prepare.add_argument("input", help="image file or folder")
+    hpc_prepare.add_argument("output", help="directory that will contain cellquant_hpc_<id>/")
+    hpc_prepare.add_argument("--config", required=True)
+    hpc_prepare.add_argument("--profile", default=None, help="Alpine profile id (default: alpine_ah200)")
+    hpc_prepare.add_argument("--recursive", action=argparse.BooleanOptionalAction, default=True)
+    hpc_prepare.add_argument(
+        "--file-type",
+        choices=sorted(("all", "tiff", "nd2")),
+        default="all",
+    )
+    hpc_prepare.add_argument("--suffixes", nargs="+", default=None, metavar="EXT")
+    hpc_prepare.add_argument("--project-root", required=True, help="Alpine /projects path for durable results")
+    hpc_prepare.add_argument("--scratch-root", required=True, help="Alpine /scratch path for compute staging")
+    hpc_prepare.add_argument("--env-location", required=True, help="CellQuant conda/env path on Alpine")
+    hpc_prepare.add_argument("--account", default=None)
+    hpc_prepare.add_argument("--qos", default=None)
+    hpc_prepare.add_argument("--gres", default=None)
+    hpc_prepare.add_argument("--walltime", default=None)
+    hpc_prepare.add_argument("--email", default=None)
+    hpc_prepare.add_argument(
+        "--segment-channel",
+        type=int,
+        default=None,
+        help="0-based channel index applied to every acquisition (required unless set in config)",
+    )
+
+    hpc_validate = hpc_commands.add_parser("validate", help="validate a local HPC bundle")
+    hpc_validate.add_argument("bundle")
+    hpc_validate.add_argument(
+        "--require-ready",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+
+    hpc_import = hpc_commands.add_parser(
+        "import-results",
+        help="import cluster result_manifest.json packages into *.cellquant runs",
+    )
+    hpc_import.add_argument("results", help="result folder containing result_manifest.json")
+    hpc_import.add_argument("destination", help="local folder for imported *.cellquant runs")
+    hpc_import.add_argument("--source-bundle", default=None, help="optional original export bundle")
+    hpc_import.add_argument(
+        "--copy",
+        dest="copy_runs",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="copy run stores into destination (default) or --no-copy to reference in place",
+    )
+
     args = parser.parse_args(argv)
     if args.command in {"classify", "reclassify"}:
         try:
@@ -486,7 +545,126 @@ def main(argv=None) -> int:
         )
         print(json.dumps({name: str(path) for name, path in artifacts.items()}, indent=2))
         return 0
+    if args.command == "hpc":
+        return _hpc_command(parser, args)
     raise AssertionError(args.command)
+
+
+def _hpc_command(parser: argparse.ArgumentParser, args) -> int:
+    from cellquant.hpc.acquisitions import expand_acquisitions, with_segment_channels
+    from cellquant.hpc.export import prepare_bundle
+    from cellquant.hpc.import_results import import_hpc_results
+    from cellquant.hpc.cluster_profiles import load_profile
+    from cellquant.hpc.templates import UserClusterSettings, submission_command, transfer_instructions
+    from cellquant.hpc.validate import validate_bundle
+
+    if args.hpc_command == "validate":
+        try:
+            result = validate_bundle(args.bundle, require_ready=bool(args.require_ready))
+        except (ValueError, TypeError, OSError) as exc:
+            parser.error(str(exc))
+        print(
+            json.dumps(
+                {
+                    "ok": result.ok,
+                    "errors": list(result.errors),
+                    "warnings": list(result.warnings),
+                    "bundle_id": (result.bundle or {}).get("bundle_id"),
+                },
+                indent=2,
+            )
+        )
+        return 0 if result.ok else 1
+
+    if args.hpc_command == "import-results":
+        try:
+            summary = import_hpc_results(
+                args.results,
+                args.destination,
+                source_bundle=args.source_bundle,
+                copy_runs=bool(args.copy_runs),
+            )
+        except (ValueError, TypeError, OSError, KeyError, json.JSONDecodeError) as exc:
+            parser.error(str(exc))
+        print(
+            json.dumps(
+                {
+                    "destination": str(summary.destination),
+                    "complete": summary.complete,
+                    "failed": summary.failed,
+                    "unfinished": summary.unfinished,
+                    "mapping": str(summary.mapping_path),
+                },
+                indent=2,
+            )
+        )
+        return 0 if summary.failed == 0 else 1
+
+    if args.hpc_command == "prepare":
+        try:
+            profile = load_profile(args.profile)
+            config = _configured(args.config)
+            if args.segment_channel is not None:
+                raw = dict(config.raw)
+                raw["preprocess"] = {**dict(raw["preprocess"]), "channel": int(args.segment_channel)}
+                config = RunConfig(raw)
+            suffixes = list(args.suffixes) if args.suffixes is not None else list(
+                resolve_file_type_preset(args.file_type)
+            )
+            input_path = Path(args.input)
+            acquisitions = expand_acquisitions(
+                [input_path] if input_path.is_file() else [],
+                root=None if input_path.is_file() else input_path,
+                recursive=bool(args.recursive),
+                suffixes=suffixes,
+            )
+            channel = int(config.raw["preprocess"]["channel"])
+            layout_channels = {
+                item.layout_id: channel for item in acquisitions if item.layout_id
+            }
+            acquisitions = with_segment_channels(acquisitions, layout_channels)
+            settings = UserClusterSettings(
+                account=args.account,
+                qos=args.qos or profile.default_qos,
+                gres=args.gres or profile.default_gres,
+                walltime=args.walltime or profile.default_walltime,
+                project_root=args.project_root,
+                scratch_root=args.scratch_root,
+                env_location=args.env_location,
+                email=args.email,
+            )
+            result = prepare_bundle(
+                acquisitions,
+                args.output,
+                config,
+                profile,
+                settings,
+            )
+        except (ValueError, TypeError, OSError, FileExistsError, KeyError) as exc:
+            parser.error(str(exc))
+        payload = {
+            "ready": result.ready,
+            "bundle_dir": str(result.bundle_dir),
+            "bundle_id": result.bundle_id,
+            "acquisition_count": result.acquisition_count,
+            "incomplete_reason": result.incomplete_reason,
+            "status": (
+                "Package ready for transfer"
+                if result.ready
+                else "Incomplete — not submittable"
+            ),
+        }
+        if result.ready:
+            remote = f"{settings.project_root.rstrip('/')}/{result.bundle_dir.name}"
+            payload["transfer_command"] = transfer_instructions(
+                local_bundle=result.bundle_dir,
+                remote_parent=settings.project_root,
+            )
+            payload["submission_command"] = submission_command(remote_bundle=remote)
+        print(json.dumps(payload, indent=2))
+        return 0 if result.ready else 1
+
+    raise AssertionError(args.hpc_command)
 
 
 if __name__ == "__main__":

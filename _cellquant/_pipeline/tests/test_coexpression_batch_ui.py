@@ -179,3 +179,33 @@ def test_batch_progress_events_update_before_finish():
     assert "Cancellation requested" in panel.progress.text()
     panel.close()
     app.processEvents()
+
+
+def test_guided_review_queue_filters_layout_and_unreviewed():
+    app, panel = _panel()
+    a1 = CellQuantRunRef(Path("A1.cellquant"), "A1.tif", "LA", ("A",), False, "a1")
+    a2 = CellQuantRunRef(Path("A2.cellquant"), "A2.tif", "LA", ("A",), True, "a2")
+    b1 = CellQuantRunRef(Path("B1.cellquant"), "B1.tif", "LB", ("B",), False, "b1")
+    panel.runs = (a1, a2, b1)
+    panel.included = {str(x.path.resolve()) for x in panel.runs}
+    panel.refresh_review_pick()
+    panel.review_layout_pick.setCurrentIndex(panel.review_layout_pick.findData("LA"))
+    panel.review_scope.setCurrentIndex(panel.review_scope.findData("all"))
+    assert [p.name for p in panel.build_guided_review_queue()] == ["A1.cellquant", "A2.cellquant"]
+    panel.review_scope.setCurrentIndex(panel.review_scope.findData("unreviewed"))
+    assert [p.name for p in panel.build_guided_review_queue()] == ["A1.cellquant"]
+    opened = []
+    panel.open_for_review = lambda path=None: opened.append(Path(path).name if path else None)
+    panel.review_scope.setCurrentIndex(panel.review_scope.findData("all"))
+    panel.start_guided_review()
+    assert panel._guided_active is True
+    assert opened == ["A1.cellquant"]
+    panel._guided_index = 0
+    panel._advance_guided_review(saved=True)
+    assert opened == ["A1.cellquant", "A2.cellquant"]
+    assert panel._guided_index == 1
+    panel._advance_guided_review(saved=False)
+    assert panel._guided_active is False
+    assert "finished" in panel.status.text().lower()
+    panel.close()
+    app.processEvents()

@@ -23,6 +23,7 @@ from ._common import (
     validate_path,
     validate_spacing,
 )
+from .display_colors import resolve_channel_colors
 from ._nd2 import inspect_nd2, read_nd2
 from ._tiff import inspect_tiff, read_tiff
 
@@ -91,6 +92,9 @@ def open_volume(
     if axes_override is not None and len(tuple(names)) != channel_count:
         names = default_channel_names(channel_count)
     channel_names = validate_channel_names(tuple(names), channel_count)
+    channel_colors = resolve_channel_colors(
+        channel_names, details.get("channel_colors")
+    )
     if spacing_override_um is not None:
         calibration_status = "explicit_override"
         spacing_source = "override"
@@ -112,6 +116,7 @@ def open_volume(
         "position": int(details.get("position", position)),
         "position_count": int(details.get("position_count", 1)),
         "series_count": int(details.get("series_count", 1)),
+        "channel_colors": channel_colors,
     }
     return ImageVolume(
         data=normalized,

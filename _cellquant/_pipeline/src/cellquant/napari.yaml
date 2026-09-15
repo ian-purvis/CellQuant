@@ -6,6 +6,18 @@ contributions:
     - id: cellquant.make_widget
       title: Open CellQuant
       python_name: cellquant.plugin:cellquant_widget
+    - id: cellquant.get_reader
+      title: CellQuant image reader
+      python_name: cellquant.plugin.reader:napari_get_reader
   widgets:
     - command: cellquant.make_widget
       display_name: CellQuant Cellpose Pipeline
+  readers:
+    - command: cellquant.get_reader
+      filename_patterns:
+        - "*.nd2"
+        - "*.tif"
+        - "*.tiff"
+        - "*.ome.tif"
+        - "*.ome.tiff"
+      accepts_directories: false
