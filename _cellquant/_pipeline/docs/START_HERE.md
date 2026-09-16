@@ -11,7 +11,7 @@ This guide is for **Windows** and the current 0.4.0a2 alpha. For a first trial, 
 3. Double-click **`Open CellQuant.bat`**. Choose **v4** for the current default or **v3** if v4 is too slow or runs out of memory. Wait for the napari window.
 4. In napari's menu, choose **Plugins → CellQuant Cellpose Pipeline**. A CellQuant panel appears with a **Mode** menu.
 
-**Success check:** the panel shows **Single image**, **Batch folder**, **HPC prep**, and **Coexpression**. If installation fails, read the `install_last.log` file opened by the installer. If launch says an environment is missing, run the installer again on this computer. If the plugin is missing, close napari and reopen it with `Open CellQuant.bat`.
+**Success check:** the panel shows **Single image**, **Batch folder**, **HPC prep**, **Coexpression**, and **Segmentation Review/QC**. If installation fails, read the `install_last.log` file opened by the installer. If launch says an environment is missing, run the installer again on this computer. If the plugin is missing, close napari and reopen it with `Open CellQuant.bat`.
 
 ## Analyze one image
 
@@ -34,10 +34,10 @@ This guide is for **Windows** and the current 0.4.0a2 alpha. For a first trial, 
 
 ## Count nuclear marker combinations
 
-Coexpression uses an existing image and **reviewed nucleus labels**. It scores fluorescence pixels inside each complete segmented nucleus. It does **not** assign cytoplasmic or membrane signal to cells, and its threshold suggestions require biological review.
+Coexpression scores fluorescence pixels inside each complete segmented nucleus. It accepts original Cellpose masks or masks approved in **Segmentation Review/QC**. It does **not** assign cytoplasmic or membrane signal to cells, and its threshold suggestions require biological review.
 
-1. Open the source image in **Single image**, then run segmentation and review its Labels layer, or use a previously reviewed labels TIFF.
-2. Set **Mode → Coexpression**. Select the image and its matching reviewed labels; use **Load reviewed TIFF** if needed. Confirm that the labels align with the image. If a loaded recipe's channel order differs, remap markers and use **Confirm reviewed channel layout** after checking it.
+1. Open the source image in **Single image** and run segmentation, or use **Mode → Segmentation Review/QC** to inspect/correct masks. You can also load a previously reviewed labels TIFF.
+2. Set **Mode → Coexpression**. Select the image and its matching labels; use **Load reviewed TIFF** if needed. Confirm that the labels align with the image. If a loaded recipe's channel order differs, remap markers and use **Confirm reviewed channel layout** after checking it.
 3. Add marker rows. Give each marker a biological name, assign the acquired channel, and enter raw intensity bounds and the **positive fraction** (the fraction of each nucleus's pixels that must pass). A marker that was not acquired must be marked missing, not negative.
 4. To choose a threshold, select a marker row and click **Calibrate selected marker**. In the calibration panel, click **Load / refresh**. Select representative nuclei in napari and use **Mark selected nucleus negative** or **Mark selected nucleus positive**. Choose an Otsu or negative-example percentile method and click **Propose starting raw low threshold** if you want a suggested starting value. Click **Preview** to examine calls and disagreements. Click **Accept reviewed settings** only after review; a proposal alone does not change the main marker row. You can calibrate one marker before filling in other rows.
 5. Click **Preview calls** and inspect the overlay, per-cell calls, query totals, denominators, missing counts, and uncertain counts. Save a recipe if you want to reuse its settings. Click **Save classification** to write an immutable analysis. Use **Reopen classification** to check the saved result or compare a proposed revision.
@@ -46,12 +46,12 @@ Coexpression uses an existing image and **reviewed nucleus labels**. It scores f
 
 ### Classify a completed batch
 
-Use this after reviewing the segmentation results from **Batch folder**. Keep the original TIFF/ND2 images at the paths recorded during segmentation; batch classification needs to read them again. In **Mode → Coexpression**, choose the **Batch** tab:
+Use this after segmenting a **Batch folder** (optionally after **Segmentation Review/QC**). Keep the original TIFF/ND2 images at the paths recorded during segmentation; batch classification needs to read them again. In **Mode → Coexpression**, choose the **Batch** tab:
 
 1. In **1. Select runs**, choose the batch output folder and click **Discover runs**. Include only the completed runs you intend to classify.
-2. In **2. Review labels**, either open runs one at a time, or use **guided layout review**: pick the layout, choose all included runs or only those without curated labels, click **Start guided review**, edit labels, then **Save & next** (or **Skip**). This keeps the original Cellpose mask and writes a separate reviewed mask.
+2. In **2. Review labels**, check each run's review status. Mask editing lives in **Mode → Segmentation Review/QC** — use **Open Segmentation Review/QC** to edit there, then return. Approval is not required; Quantification can use original Cellpose masks via the **Mask input** policy.
 3. In **3. Thresholds**, select each channel layout, set marker names, channels and thresholds, then click **Apply to layout**. Check per-image settings if an acquisition needs a deliberate override.
-4. In **4. Run + results**, choose the classification output folder, click **Refresh summary**, review the effective settings, then click **Run batch classify**. Use **Open results folder** to inspect the per-image results and failures.
+4. In **4. Run + results**, choose the classification output folder, pick a **Mask input** policy (prefer approved / approved only / original), review the preflight table, then click **Run batch classify**. Use **Open results folder** to inspect the per-image results and failures.
 
 **Success check:** a new `classify_batch_...` folder appears under the chosen output folder. Check its summary and each included image's results; a completed segmentation run still needs its own classification review.
 

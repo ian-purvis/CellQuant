@@ -1,6 +1,6 @@
 # CellQuant
 
-CellQuant is a napari plugin and command-line tool for segmenting nuclei with Cellpose and measuring fluorescence images. It accepts TIFF, OME-TIFF, and ND2 images. The napari interface supports **Single image**, **Batch folder**, **HPC prep**, and **Coexpression**. The command line uses the same analysis core.
+CellQuant is a napari plugin and command-line tool for segmenting nuclei with Cellpose and measuring fluorescence images. It accepts TIFF, OME-TIFF, and ND2 images. The napari interface supports **Single image**, **Batch folder**, **HPC prep**, **Coexpression**, and **Segmentation Review/QC**. The command line uses the same analysis core.
 
 **New to CellQuant or to scientific software?** Follow [Start here](docs/START_HERE.md). It walks through installation, a first image, saving results, batch analysis, coexpression review, and the optional Alpine route without requiring code.
 
@@ -11,7 +11,7 @@ CellQuant is a napari plugin and command-line tool for segmenting nuclei with Ce
 1. Install Miniconda, Miniforge, or Anaconda if it is not already installed. CellQuant requires Python 3.11; the installer creates its own environments.
 2. In this folder, double-click **`Install CellQuant.bat`**. Press Enter for the suggested install folder unless you have a specific location. The installer creates a Cellpose-SAM **v4** environment and a lighter classic **v3** environment beside it. Wait for **Install finished**; a failure opens `install_last.log` with details.
 3. Double-click **`Open CellQuant.bat`**, choose v4 or v3, and wait for napari. If v4 is too slow or runs out of memory, try v3.
-4. In napari, choose **Plugins → CellQuant Cellpose Pipeline**, then **Mode → Single image**. Start with a small image whose channel identity and voxel spacing you know.
+4. In napari, choose **Plugins → CellQuant Cellpose Pipeline**, then **Mode → Single image**. Start with a small image whose channel identity and voxel spacing you know. Use **Mode → Segmentation Review/QC** to inspect and correct Cellpose masks before or independently of coexpression; Quantification can still use original unreviewed masks when you choose that policy.
 
 The launcher remembers environment locations in `cellquant_env.json`. A CUDA-capable GPU can speed large runs, but a GPU is not required to start. The Windows installer attempts a compatible CUDA PyTorch build when it detects supported NVIDIA hardware; confirm GPU availability in the plugin's environment summary.
 

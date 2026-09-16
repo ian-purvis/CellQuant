@@ -197,11 +197,21 @@ def load_model(spec: Mapping, device: str | None = None, events=None) -> Segment
     requested = device or str(spec["device"])
     if requested not in {"cuda", "cpu", "auto"}:
         raise ValueError("device must be cuda, cpu, or auto")
-    cuda_available = bool(torch.cuda.is_available())
+    from cellquant.runtime.cuda_compat import check_cuda_device
+
+    cuda_status = check_cuda_device(
+        torch_module=torch,
+        allocate_smoke=False,
+        platform="windows",
+    )
+    cuda_available = bool(cuda_status.ok)
     effective = "cuda" if (requested == "auto" and cuda_available) else ("cpu" if requested == "auto" else requested)
     if effective == "cuda" and not cuda_available:
         if not bool(spec["allow_cpu_fallback"]):
-            raise RuntimeError("CUDA was required but torch.cuda.is_available() is false")
+            message = f"CUDA was required but is not usable: {cuda_status.detail}"
+            if cuda_status.remediation:
+                message = f"{message} {cuda_status.remediation}"
+            raise RuntimeError(message)
         effective = "cpu"
         _emit(
             events,
@@ -209,6 +219,7 @@ def load_model(spec: Mapping, device: str | None = None, events=None) -> Segment
             message="CUDA unavailable; using explicitly permitted CPU fallback",
             requested_device=requested,
             effective_device=effective,
+            cuda_detail=cuda_status.detail,
         )
 
     model_name = str(spec["model"])

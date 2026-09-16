@@ -92,11 +92,24 @@ def run_bundle(
                     import torch
                 except ImportError as exc:
                     raise RuntimeError("torch unavailable for GPU check") from exc
-                if not torch.cuda.is_available():
-                    raise RuntimeError(
-                        "GPU required by profile but CUDA is unavailable; "
-                        "refusing silent CPU fallback"
+                from cellquant.runtime.cuda_compat import check_cuda_device
+                import os
+
+                status = check_cuda_device(
+                    torch_module=torch,
+                    allocate_smoke=True,
+                    platform="alpine",
+                    env_prefix=os.environ.get("CONDA_PREFIX")
+                    or os.environ.get("ENV_LOCATION"),
+                )
+                if not status.ok:
+                    message = (
+                        "GPU required by profile but CUDA is not usable; "
+                        f"refusing silent CPU fallback: {status.detail}"
                     )
+                    if status.remediation:
+                        message = f"{message}\n{status.remediation}"
+                    raise RuntimeError(message)
 
         for row in acquisitions:
             token.raise_if_cancelled()

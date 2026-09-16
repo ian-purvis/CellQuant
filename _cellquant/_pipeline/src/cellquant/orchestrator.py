@@ -164,6 +164,10 @@ def _restore_original_grid(
 def run_pipeline(image: ImageVolume, config, cancel, events=null_event_sink):
     """Run preprocessing, Cellpose, and postprocessing and return labels."""
 
+    from cellquant.config import reject_imported_config
+
+    # Imported-label runs carry no Cellpose settings and must never reach here.
+    reject_imported_config(config, action="segmentation")
     analysis = _stage(
         image,
         "analysis_grid",

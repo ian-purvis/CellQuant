@@ -1,8 +1,11 @@
 # Headless Alpine / HPC runtime (no napari / PyQt).
 # Use with: pip install -r requirements-hpc.txt && pip install -e . --no-deps
 #
-# Install CUDA PyTorch for the target GPU *before* this file when possible, e.g.:
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# Install CUDA PyTorch for the target GPU *before* this file when possible.
+# Prefer a CUDA 12.8+ (cu128) wheel so one env covers Blackwell (sm_120) and
+# older Alpine GPUs (A100 / L40 / H200); cu124 is not sufficient for Blackwell:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+# Verify: python -c "import torch; print(torch.__version__, torch.cuda.get_arch_list())"
 
 numpy==2.0.2
 pandas==3.0.5

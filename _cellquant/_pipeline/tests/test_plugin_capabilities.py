@@ -38,6 +38,29 @@ def test_detects_cuda_device_options_when_available():
     assert "PyTorch 2.4.0+cu121" in caps.summary
 
 
+def test_arch_mismatch_marks_cuda_unavailable_with_fix_guidance():
+    caps = detect_runtime_capabilities(
+        cellpose_version_fn=lambda: "4.2.1.1",
+        cuda_fn=lambda: (
+            False,
+            "2.4.0+cu121",
+            "12.1",
+            "NVIDIA RTX PRO 6000 requires sm_120, but this PyTorch build only "
+            "supports: sm_50 sm_90. Prefer a cu128+ wheel. "
+            "Fix: update the NVIDIA driver, then re-run Install CellQuant.bat",
+            True,
+            "NVIDIA RTX PRO 6000",
+        ),
+        torch_ready_fn=_ready("2.4.0+cu121"),
+    )
+    assert caps.cuda_available is False
+    assert caps.system_gpu_detected is True
+    cuda = next(device for device in caps.devices if device.device_id == "cuda")
+    assert cuda.available is False
+    assert "sm_120" in (cuda.unavailable_reason or "")
+    assert "cu128" in caps.summary or "Install CellQuant" in caps.summary
+
+
 def test_system_gpu_with_cpu_torch_explains_missing_cuda_wheel():
     caps = detect_runtime_capabilities(
         cellpose_version_fn=lambda: "4.2.1.1",

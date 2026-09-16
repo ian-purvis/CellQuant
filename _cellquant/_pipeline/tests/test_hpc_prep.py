@@ -237,6 +237,8 @@ def test_prepare_bundle_and_validate(tmp_path):
     run_sbatch = (result.bundle_dir / "scripts" / "run.sbatch").read_text(encoding="utf-8")
     assert "SLURM_SUBMIT_DIR" in run_sbatch
     assert "${BUNDLE_STAGE}/scripts/validate_bundle.py" in run_sbatch
+    assert "check_cuda_device" in run_sbatch
+    assert "status.remediation" in run_sbatch
     assert '"$PYTHON"' in run_sbatch or "$PYTHON" in run_sbatch
     assert "No bin/activate" in run_sbatch or "bin/python" in run_sbatch
     assert 'PATH="${ENV_LOCATION}/bin:${PATH}"' in run_sbatch

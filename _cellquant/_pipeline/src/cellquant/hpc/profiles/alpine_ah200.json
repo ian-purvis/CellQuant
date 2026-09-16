@@ -30,9 +30,9 @@
     "kind": "conda",
     "name": "cellquant-hpc",
     "cuda_notes": [
-      "Pin a PyTorch/CUDA/Cellpose stack that supports Hopper (H200).",
+      "Prefer a CUDA 12.8+ (cu128) PyTorch wheel in the shared cellquant-hpc env: covers Hopper (H200) and Blackwell; still lists older arches.",
       "CURC FAQ recommends nvhpc_sdk/2025.251 or newer across Alpine GPUs.",
-      "Loading a CUDA module alone does not prove the Python wheel supports the architecture."
+      "Loading a CUDA module alone does not prove the Python wheel supports the architecture — verify torch.cuda.get_arch_list()."
     ],
     "notes": [
       "Prefer a validated prebuilt environment when available.",

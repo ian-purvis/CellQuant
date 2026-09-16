@@ -233,6 +233,17 @@ def test_lazy_input_and_blocking_inference_emit_truthful_events():
     assert events[1].details["cancellation_scope"] == "cellpose_progress_checkpoints"
 
 
+def _fake_cuda_namespace(*, available: bool):
+    if not available:
+        return SimpleNamespace(is_available=lambda: False)
+    return SimpleNamespace(
+        is_available=lambda: True,
+        get_device_name=lambda _index=0: "Fake CUDA GPU",
+        get_device_capability=lambda _index=0: (8, 0),
+        get_arch_list=lambda: ["sm_50", "sm_80", "sm_90"],
+    )
+
+
 def test_loader_passes_and_records_explicit_v4_constructor_defaults(monkeypatch, tmp_path):
     weight = tmp_path / "weights"
     weight.write_bytes(b"cellpose-test-weight")
@@ -246,7 +257,7 @@ def test_loader_passes_and_records_explicit_v4_constructor_defaults(monkeypatch,
     fake_cellpose = ModuleType("cellpose")
     fake_cellpose.models = SimpleNamespace(CellposeModel=FakeCellposeModel)
     fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
+    fake_torch.cuda = _fake_cuda_namespace(available=False)
     fake_torch.device = lambda name: f"device:{name}"
     monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
@@ -280,7 +291,7 @@ def _fake_loader_runtime(monkeypatch, tmp_path, *, cuda_available=False):
     fake_cellpose = ModuleType("cellpose")
     fake_cellpose.models = SimpleNamespace(CellposeModel=FakeCellposeModel)
     fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: cuda_available)
+    fake_torch.cuda = _fake_cuda_namespace(available=cuda_available)
     fake_torch.device = lambda name: f"device:{name}"
     monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
@@ -377,7 +388,7 @@ def test_v3_rejects_misspelled_builtin(monkeypatch, tmp_path):
     fake_cellpose = ModuleType("cellpose")
     fake_cellpose.models = SimpleNamespace(CellposeModel=lambda **kwargs: None)
     fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
+    fake_torch.cuda = _fake_cuda_namespace(available=False)
     fake_torch.device = lambda name: f"device:{name}"
     monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
@@ -396,7 +407,7 @@ def test_v3_rejects_missing_custom_weight_path(monkeypatch, tmp_path):
     fake_cellpose = ModuleType("cellpose")
     fake_cellpose.models = SimpleNamespace(CellposeModel=lambda **kwargs: None)
     fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
+    fake_torch.cuda = _fake_cuda_namespace(available=False)
     fake_torch.device = lambda name: f"device:{name}"
     monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)

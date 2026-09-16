@@ -23,16 +23,26 @@ from cellquant.contracts import (
     PipelineEvent,
     null_event_sink,
 )
-from cellquant.io import inspect_volume, open_volume
+from cellquant.io import inspect_volume
 from cellquant.preprocess import prepare_analysis_volume
+from cellquant.review import load as review_load
+from cellquant.review import persist as review_persist
+from cellquant.review import resolve as review_resolve
+from cellquant.review.constants import (
+    CONFIG_NAME,
+    DEFAULT_INPUT_POLICY,
+    LABELS_DRAFT_NAME,
+    LABELS_NAME,
+    LABELS_REVIEWED_NAME,
+    PROVENANCE_NAME,
+    REVIEW_JSON_NAME,
+    STATUS_NAME,
+)
+from cellquant.review.handoff import PinnedInput, pin_inputs, preflight_table
+from cellquant.review.labels import label_array_sha256, read_label_tiff
+from cellquant.review.load import open_run_volume
+from cellquant.review.state import has_approved_labels, load_review
 from cellquant.survey import layout_id_for, load_survey
-
-LABELS_NAME = "labels.tif"
-LABELS_REVIEWED_NAME = "labels_reviewed.tif"
-REVIEW_JSON_NAME = "review.json"
-STATUS_NAME = "status.json"
-PROVENANCE_NAME = "provenance.json"
-CONFIG_NAME = "config.json"
 
 
 @dataclass(frozen=True)
@@ -47,18 +57,29 @@ class CellQuantRunRef:
     run_id: str | None
 
 
-def labels_path_for_run(run_dir: str | Path) -> Path:
-    """Prefer curated labels when present; otherwise Cellpose ``labels.tif``."""
+def labels_path_for_run(
+    run_dir: str | Path,
+    *,
+    policy: str = DEFAULT_INPUT_POLICY,
+) -> Path:
+    """Mask the given input policy selects for ``run_dir``.
 
-    root = Path(run_dir)
-    reviewed = root / LABELS_REVIEWED_NAME
-    if reviewed.is_file():
-        return reviewed
-    return root / LABELS_NAME
+    Delegates to :func:`cellquant.review.resolve.resolve_labels_path`, so review
+    state — not mere file existence — decides the input. Drafts are never
+    selected, and a stale or corrupt approved revision raises rather than falling
+    back silently to originals.
+    """
+
+    return review_resolve.resolve_labels_path(run_dir, policy=policy)
 
 
-def read_run_labels(run_dir: str | Path) -> np.ndarray:
-    path = labels_path_for_run(run_dir)
+def read_run_labels(
+    run_dir: str | Path,
+    *,
+    policy: str = DEFAULT_INPUT_POLICY,
+) -> np.ndarray:
+    resolved = review_resolve.resolve_labels(run_dir, policy=policy)
+    path = resolved.path
     if not path.is_file():
         raise FileNotFoundError(f"labels not found in CellQuant run: {run_dir}")
     value = np.asarray(tifffile.imread(path))
@@ -67,45 +88,34 @@ def read_run_labels(run_dir: str | Path) -> np.ndarray:
     return value.astype(np.uint32, copy=False)
 
 
-def save_reviewed_labels(run_dir: str | Path, labels: np.ndarray, *, note: str = "") -> Path:
-    """Write curated labels without overwriting original Cellpose ``labels.tif``."""
+def save_reviewed_labels(
+    run_dir: str | Path,
+    labels: np.ndarray,
+    *,
+    note: str = "",
+) -> Path:
+    """Publish curated labels as the next approved revision.
 
-    root = Path(run_dir)
-    if not root.is_dir():
-        raise FileNotFoundError(root)
-    array = np.asarray(labels)
-    if array.ndim != 3 or not np.issubdtype(array.dtype, np.integer):
-        raise ValueError("reviewed labels must be an integer ZYX array")
-    if (array < 0).any():
-        raise ValueError("reviewed labels must not contain negative IDs")
-    maximum = int(array.max(initial=0))
-    disk_dtype = np.uint16 if maximum <= np.iinfo(np.uint16).max else np.uint32
-    destination = root / LABELS_REVIEWED_NAME
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        tifffile.imwrite(
-            temporary,
-            array.astype(disk_dtype, copy=False),
-            photometric="minisblack",
-            metadata={"axes": "ZYX"},
-        )
-        temporary.replace(destination)
-    finally:
-        temporary.unlink(missing_ok=True)
-    payload = {
-        "schema_version": 1,
-        "reviewed_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "labels_file": LABELS_REVIEWED_NAME,
-        "supersedes": LABELS_NAME,
-        "note": str(note or ""),
-        "label_count": int(len(np.unique(array)) - (1 if 0 in array else 0)),
-        "shape": list(array.shape),
-    }
-    (root / REVIEW_JSON_NAME).write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    Compatibility wrapper over :func:`cellquant.review.persist.publish_approved`:
+    the immutable revision under ``reviews/`` is the authoritative artifact,
+    ``review.json`` is the commit point, and ``labels_reviewed.tif`` is refreshed
+    as a compatibility copy. The original ``labels.tif`` is never overwritten.
+    """
+
+    result = review_persist.publish_approved(
+        run_dir,
+        labels,
+        note=note,
+        acknowledge_empty=True,
     )
-    return destination
+    compatibility = result.compatibility_path
+    if compatibility is None:
+        raise RuntimeError(
+            "; ".join(result.warnings)
+            or f"approved revision {result.revision_path} committed without a "
+            f"{LABELS_REVIEWED_NAME} compatibility copy"
+        )
+    return compatibility
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -147,16 +157,9 @@ def _channel_names_from_source(source: str) -> tuple[str, ...]:
 
 
 def _open_run_volume(source: Path, config):
-    io = dict(config.raw.get("io") or {})
-    spacing = io.get("spacing_override_um")
-    return open_volume(
-        source,
-        series=int(io.get("series") or 0),
-        position=int(io.get("position") or 0),
-        lazy=True if io.get("lazy") is None else bool(io.get("lazy")),
-        axes_override=io.get("axes_override"),
-        spacing_override_um=tuple(spacing) if spacing is not None else None,
-    )
+    """Compatibility wrapper for :func:`cellquant.review.load.open_run_volume`."""
+
+    return open_run_volume(source, config)
 
 
 def _layout_from_survey(
@@ -203,7 +206,15 @@ def discover_cellquant_runs(
         raise FileNotFoundError(base)
     survey_hint = Path(survey_json) if survey_json is not None else None
     found: list[CellQuantRunRef] = []
-    for path in sorted(base.rglob("*.cellquant")):
+    # The selected directory can itself be a run; rglob alone would skip it.
+    candidates = [base] if base.suffix.lower() == ".cellquant" else []
+    candidates.extend(sorted(base.rglob("*.cellquant")))
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path.resolve()).casefold()
+        if key in seen:
+            continue
+        seen.add(key)
         if not path.is_dir() or not _is_complete_run(path):
             continue
         try:
@@ -227,7 +238,7 @@ def discover_cellquant_runs(
                 source=source,
                 layout_id=str(layout_id),
                 channel_names=tuple(channel_names),
-                has_reviewed_labels=(path / LABELS_REVIEWED_NAME).is_file(),
+                has_reviewed_labels=has_approved_labels(path),
                 run_id=str(provenance.get("run_id") or "") or None,
             )
         )
@@ -272,8 +283,15 @@ def classify_cellquant_run(
     output_root: str | Path,
     context: Mapping[str, Any] | None = None,
     cancel=None,
+    policy: str = DEFAULT_INPUT_POLICY,
+    pinned: PinnedInput | None = None,
 ) -> tuple[Path, ClassificationResult, str]:
-    """Classify one complete CellQuant run; return (pack_path, result, labels_used)."""
+    """Classify one complete CellQuant run; return (pack_path, result, labels_used).
+
+    Pass ``pinned`` to measure a mask resolved earlier — quantification pins its
+    inputs at job start so mask edits made while the job runs cannot change what
+    it measures. Without a pin, ``policy`` resolves the input now.
+    """
 
     root = Path(run_dir)
     if not _is_complete_run(root):
@@ -285,12 +303,35 @@ def classify_cellquant_run(
             f"source image missing for {root.name}: {source} "
             "(keep original ND2/TIFF reachable for coexpression)"
         )
-    config = load_config(root / CONFIG_NAME)
-    volume = _open_run_volume(source, config)
-    analysis = prepare_analysis_volume(volume, config, cancel=cancel)
-    labels_path = labels_path_for_run(root)
-    labels_used = "reviewed" if labels_path.name == LABELS_REVIEWED_NAME else "original"
-    labels_array = read_run_labels(root)
+    # Native and imported-label runs both resolve to the grid their masks were
+    # produced on; imported runs declare it rather than deriving it from segment
+    # settings they never had.
+    _, analysis = review_load.prepare_run_analysis(root, source=source, cancel=cancel)
+    if pinned is not None:
+        if Path(pinned.run_dir).resolve() != root.resolve():
+            raise ValueError(
+                f"pinned mask belongs to {pinned.run_dir}, not {root}"
+            )
+        labels_path = Path(pinned.labels_path)
+        labels_used = pinned.selection
+        mask_provenance = pinned.provenance()
+        labels_array = read_label_tiff(labels_path)
+    else:
+        resolved = review_resolve.resolve_labels(root, policy=policy)
+        labels_path = resolved.path
+        labels_used = resolved.selection
+        labels_array = read_label_tiff(labels_path)
+        mask_provenance = {
+            "labels_path": str(labels_path),
+            "labels_file": labels_path.name,
+            "labels_sha256": resolved.labels_sha256 or label_array_sha256(labels_array),
+            "labels_used": labels_used,
+            "labels_selection": labels_used,
+            "review_revision": int(resolved.revision),
+            "review_status": resolved.review_status,
+            "queue_status": resolved.queue_status,
+            "input_policy": resolved.policy,
+        }
     if labels_array.shape != analysis.data.shape[:3]:
         raise ValueError(
             f"labels shape {labels_array.shape} does not match analysis grid "
@@ -301,8 +342,7 @@ def classify_cellquant_run(
         analysis.spacing_um,
         {
             "source_run": str(root),
-            "labels_file": labels_path.name,
-            "labels_used": labels_used,
+            **mask_provenance,
             "analysis_volume": dict(analysis.metadata.get("analysis_volume") or {}),
         },
     )
@@ -359,8 +399,15 @@ def run_classify_batch(
     image_overrides: Mapping[str, ClassificationRecipe | Mapping[str, Any]] | None = None,
     cancel=None,
     events=null_event_sink,
+    policy: str = DEFAULT_INPUT_POLICY,
+    include_rejected: bool = False,
 ) -> dict[str, Path]:
     """Score many CellQuant runs; write Fiji-style summary CSVs.
+
+    Mask inputs are resolved and pinned before the first measurement, so edits
+    made in Segmentation Review/QC while the batch runs cannot change what this
+    batch measures. Runs the policy excludes are recorded as ``excluded`` rows
+    with their reason rather than silently dropped.
 
     Cancellation is finalized rather than raised: the interrupted run is recorded
     as ``cancelled``, runs never reached as ``unstarted``, and every CSV plus the
@@ -390,11 +437,37 @@ def run_classify_batch(
     total = len(runs)
     cancelled_from: int | None = None
 
+    # Pin every mask input before measuring anything.
+    pins, preflight = pin_inputs(
+        [run.path for run in runs], policy=policy, include_rejected=include_rejected
+    )
+    pinned_by_run = {str(pin.run_dir.resolve()): pin for pin in pins}
+    excluded_reasons = {
+        str(row.run_dir.resolve()): row.reason for row in preflight if not row.included
+    }
+
+    def _selection_for(run: CellQuantRunRef) -> str:
+        pin = pinned_by_run.get(str(run.path.resolve()))
+        return pin.selection if pin is not None else "excluded"
+
     for index, run in enumerate(runs):
         if token.cancelled:
             cancelled_from = index
             break
         resolved = str(run.path.resolve())
+        if resolved in excluded_reasons:
+            run_rows.append(
+                {
+                    "run_path": str(run.path),
+                    "layout_id": run.layout_id,
+                    "source": run.source,
+                    "labels_used": "excluded",
+                    "status": "excluded",
+                    "classify_pack": "",
+                    "error": excluded_reasons[resolved],
+                }
+            )
+            continue
         events(
             _event(
                 "progress",
@@ -418,7 +491,7 @@ def run_classify_batch(
                     "run_path": str(run.path),
                     "layout_id": run.layout_id,
                     "source": run.source,
-                    "labels_used": "reviewed" if run.has_reviewed_labels else "original",
+                    "labels_used": _selection_for(run),
                     "status": "failed",
                     "classify_pack": "",
                     "error": f"no recipe for layout {run.layout_id}",
@@ -437,6 +510,8 @@ def run_classify_batch(
                     "calibration_group": recipe.raw.get("calibration_group") or "",
                 },
                 cancel=token,
+                policy=policy,
+                pinned=pinned_by_run.get(resolved),
             )
             image_id = Path(run.source).name if run.source else run.path.name
             for row in _threshold_rows(
@@ -520,7 +595,7 @@ def run_classify_batch(
                     "run_path": str(run.path),
                     "layout_id": run.layout_id,
                     "source": run.source,
-                    "labels_used": "reviewed" if run.has_reviewed_labels else "original",
+                    "labels_used": _selection_for(run),
                     "status": "cancelled",
                     "classify_pack": "",
                     "error": "cancelled",
@@ -546,7 +621,7 @@ def run_classify_batch(
                     "run_path": str(run.path),
                     "layout_id": run.layout_id,
                     "source": run.source,
-                    "labels_used": "reviewed" if run.has_reviewed_labels else "original",
+                    "labels_used": _selection_for(run),
                     "status": "failed",
                     "classify_pack": "",
                     "error": f"{type(exc).__name__}: {exc}",
@@ -571,7 +646,7 @@ def run_classify_batch(
                 "run_path": str(run.path),
                 "layout_id": run.layout_id,
                 "source": run.source,
-                "labels_used": "reviewed" if run.has_reviewed_labels else "original",
+                "labels_used": _selection_for(run),
                 "status": "unstarted",
                 "classify_pack": "",
                 "error": "cancelled before this run started",
@@ -582,8 +657,12 @@ def run_classify_batch(
     thresholds_path = destination / "thresholds_used.csv"
     markers_path = destination / "marker_results.csv"
     coexpr_path = destination / "coexpression_summary.csv"
+    preflight_path = destination / "mask_preflight.csv"
     summary_path = destination / "batch_summary.json"
 
+    pd.DataFrame([row.as_dict() for row in preflight]).to_csv(
+        preflight_path, index=False, na_rep="NA"
+    )
     pd.DataFrame(run_rows).to_csv(runs_path, index=False, na_rep="NA")
     pd.DataFrame(threshold_rows).to_csv(thresholds_path, index=False, na_rep="NA")
     pd.DataFrame(marker_rows).to_csv(markers_path, index=False, na_rep="NA")
@@ -594,6 +673,7 @@ def run_classify_batch(
         "failed": sum(r["status"] == "failed" for r in run_rows),
         "cancelled": sum(r["status"] == "cancelled" for r in run_rows),
         "unstarted": sum(r["status"] == "unstarted" for r in run_rows),
+        "excluded": sum(r["status"] == "excluded" for r in run_rows),
     }
     summary_path.write_text(
         json.dumps(
@@ -601,6 +681,8 @@ def run_classify_batch(
                 "schema_version": 1,
                 "created_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "status": "cancelled" if cancelled_from is not None else "completed",
+                "input_policy": policy,
+                "pinned_masks": [pin.provenance() for pin in pins],
                 **counts,
             },
             indent=2,
@@ -614,6 +696,7 @@ def run_classify_batch(
         "thresholds_used": thresholds_path,
         "marker_results": markers_path,
         "coexpression_summary": coexpr_path,
+        "mask_preflight": preflight_path,
         "batch_summary": summary_path,
         "output_dir": destination,
     }
@@ -664,6 +747,8 @@ def resolve_layout_recipes_for_runs(
 
 __all__ = [
     "CellQuantRunRef",
+    "DEFAULT_INPUT_POLICY",
+    "LABELS_DRAFT_NAME",
     "LABELS_NAME",
     "LABELS_REVIEWED_NAME",
     "REVIEW_JSON_NAME",
@@ -674,6 +759,7 @@ __all__ = [
     "load_image_overrides",
     "load_layout_recipes",
     "read_run_labels",
+    "preflight_table",
     "resolve_layout_recipes_for_runs",
     "run_classify_batch",
     "save_reviewed_labels",

@@ -30,12 +30,13 @@
     "kind": "conda",
     "name": "cellquant-hpc",
     "cuda_notes": [
-      "Blackwell may need a newer CUDA/PyTorch wheel than older A100 cu121 stacks.",
-      "First trial may reuse the H200 env if torch loads; if kernels fail, pin a Blackwell-capable wheel.",
+      "Prefer one shared cellquant-hpc env with a CUDA 12.8+ (cu128) PyTorch wheel: includes Blackwell sm_120 and older arches (A100/L40/H200).",
+      "Do not reuse an older cu121/cu124 wheel that only lists through sm_90 — jobs fail-fast with an upgrade recipe.",
+      "Upgrade on a login node: python -m pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu128",
       "CURC FAQ recommends nvhpc_sdk/2025.251 or newer; validate model init + inference + parity."
     ],
     "notes": [
-      "Submit enabled for comparative Alpine trials; H200 remains the recommended default.",
+      "Submit enabled for comparative Alpine trials; H200 remains the recommended default partition until smoke_verified_utc is set.",
       "Request full GPU GRES gpu:rtx_pro_6000:1 (not MIG 1g/2g slices).",
       "Record smoke_verified_utc after a successful matched trial."
     ]

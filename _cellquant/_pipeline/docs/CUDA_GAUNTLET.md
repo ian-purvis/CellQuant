@@ -8,14 +8,17 @@ candidate results.
 
 ```powershell
 nvidia-smi
-python -c "import torch, cellpose; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_name(0)); print(cellpose.__version__)"
+python -c "import torch, cellpose; print(torch.__version__, torch.version.cuda, torch.cuda.is_available(), torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0), torch.cuda.get_arch_list()); print(cellpose.__version__)"
 Get-FileHash -Algorithm SHA256 "$env:USERPROFILE\.cellpose\models\cpsam_v2"
 ```
 
 The weight hash must equal
 `0f1cc3f7ecdd8a037a57c6c48d9d8921391be4cbce3fa9f13c3e3a2e1253c667`.
-`torch.cuda.is_available()` must be `True`; the reference profile forbids silent
-CPU fallback.
+`torch.cuda.is_available()` must be `True`, and
+`torch.cuda.get_arch_list()` must include the device capability tag (e.g. `sm_75`
+for a GTX 1660, `sm_90` for H200, `sm_120` for Blackwell). Prefer a CUDA 12.8+
+(`cu128`) PyTorch wheel so one env covers Blackwell and older GPUs. The
+reference profile forbids silent CPU fallback.
 
 ## 2. Three-stack critic round
 

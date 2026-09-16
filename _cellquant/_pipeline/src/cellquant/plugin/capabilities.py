@@ -174,9 +174,35 @@ def _detect_cuda(
 
     if available:
         try:
-            name = torch.cuda.get_device_name(0)
-        except Exception:  # noqa: BLE001
-            name = system_gpu_name or "CUDA device 0"
+            from cellquant.runtime.cuda_compat import check_cuda_device
+
+            status = check_cuda_device(
+                torch_module=torch,
+                allocate_smoke=False,
+                platform="windows",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                False,
+                version,
+                torch_cuda_build,
+                f"CUDA arch probe failed ({exc})",
+                system_gpu_detected,
+                system_gpu_name,
+            )
+        if not status.ok:
+            detail = status.detail
+            if status.remediation:
+                detail = f"{detail} {status.remediation}"
+            return (
+                False,
+                version,
+                torch_cuda_build,
+                detail,
+                system_gpu_detected,
+                status.device_name or system_gpu_name,
+            )
+        name = status.device_name or system_gpu_name or "CUDA device 0"
         return True, version, torch_cuda_build, name, system_gpu_detected, system_gpu_name
 
     if _is_cpu_only_torch(version, torch_cuda_build):

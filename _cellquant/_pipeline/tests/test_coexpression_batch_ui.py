@@ -12,6 +12,7 @@ from cellquant.classify import ClassificationRecipe
 from cellquant.classify.batch import CellQuantRunRef
 from cellquant.contracts import PipelineEvent
 from cellquant.plugin.coexpression_batch import BatchCoexpressionPanel
+from cellquant.review import REVIEW_MODE_LABEL as SEGMENTATION_REVIEW_LABEL
 import cellquant.plugin.coexpression_batch as module
 
 
@@ -181,31 +182,48 @@ def test_batch_progress_events_update_before_finish():
     app.processEvents()
 
 
-def test_guided_review_queue_filters_layout_and_unreviewed():
+def test_review_step_summarizes_state_and_has_no_edit_controls():
     app, panel = _panel()
     a1 = CellQuantRunRef(Path("A1.cellquant"), "A1.tif", "LA", ("A",), False, "a1")
     a2 = CellQuantRunRef(Path("A2.cellquant"), "A2.tif", "LA", ("A",), True, "a2")
-    b1 = CellQuantRunRef(Path("B1.cellquant"), "B1.tif", "LB", ("B",), False, "b1")
-    panel.runs = (a1, a2, b1)
+    panel.runs = (a1, a2)
     panel.included = {str(x.path.resolve()) for x in panel.runs}
     panel.refresh_review_pick()
-    panel.review_layout_pick.setCurrentIndex(panel.review_layout_pick.findData("LA"))
-    panel.review_scope.setCurrentIndex(panel.review_scope.findData("all"))
-    assert [p.name for p in panel.build_guided_review_queue()] == ["A1.cellquant", "A2.cellquant"]
-    panel.review_scope.setCurrentIndex(panel.review_scope.findData("unreviewed"))
-    assert [p.name for p in panel.build_guided_review_queue()] == ["A1.cellquant"]
-    opened = []
-    panel.open_for_review = lambda path=None: opened.append(Path(path).name if path else None)
-    panel.review_scope.setCurrentIndex(panel.review_scope.findData("all"))
-    panel.start_guided_review()
-    assert panel._guided_active is True
-    assert opened == ["A1.cellquant"]
-    panel._guided_index = 0
-    panel._advance_guided_review(saved=True)
-    assert opened == ["A1.cellquant", "A2.cellquant"]
-    assert panel._guided_index == 1
-    panel._advance_guided_review(saved=False)
-    assert panel._guided_active is False
-    assert "finished" in panel.status.text().lower()
+    # The wizard reports state only; mask editing moved to the dedicated mode.
+    assert panel.review_summary.rowCount() == 2
+    assert panel.review_summary.item(0, 1).text() == "pending"
+    assert "0 of 2" in panel.review_status.text()
+    for removed in ("open_for_review", "save_curated_labels", "build_guided_review_queue"):
+        assert not hasattr(panel, removed)
+    panel.close()
+    app.processEvents()
+
+
+def test_open_segmentation_review_preserves_selection_and_switches_mode():
+    app, panel = _panel()
+    panel.root_edit.setText("some-batch-root")
+    review = N(
+        scope_pick=N(findData=lambda key: 1, setCurrentIndex=lambda index: None),
+        input_edit=N(setText=lambda text: opened.append(text)),
+    )
+    opened: list[str] = []
+    activated: list[bool] = []
+    panel.controller.segmentation_review_panel = review
+    panel.controller.activate_segmentation_review = lambda: activated.append(True)
+    panel.open_segmentation_review()
+    assert opened == ["some-batch-root"]
+    assert activated == [True]
+    assert SEGMENTATION_REVIEW_LABEL in panel.status.text()
+    panel.close()
+    app.processEvents()
+
+
+def test_handoff_pins_revisions_and_sets_policy():
+    app, panel, a, b = _loaded_panel()
+    pin = N(run_dir=Path("A.cellquant"))
+    panel.accept_review_handoff([pin], policy="approved_only")
+    assert panel.input_policy() == "approved_only"
+    assert panel.pinned_masks == (pin,)
+    assert panel.included == {str(Path("A.cellquant").resolve())}
     panel.close()
     app.processEvents()

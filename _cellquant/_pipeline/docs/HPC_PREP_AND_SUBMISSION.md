@@ -132,7 +132,7 @@ Replace all example paths. This command runs on your computer, not on Alpine. Im
 
 ## Alpine environment prerequisite
 
-The package does not install its own cluster software. Before exporting a package, ask the maintainer for a Python 3.11 environment with CellQuant, compatible Cellpose/PyTorch and model weights, plus its exact **Environment location**. The maintainer should verify imports and confirm that the generated batch script activates this environment on a compute node. A standard Conda prefix may work interactively yet fail the batch script's activation checks; do not infer compatibility from `conda activate` alone. GPU availability must be checked inside an allocated GPU job. Once this prerequisite is met, use the same verified location in the Cluster profile tab.
+The package does not install its own cluster software. Before exporting a package, ask the maintainer for a Python 3.11 environment with CellQuant, compatible Cellpose/PyTorch and model weights, plus its exact **Environment location**. Prefer a **CUDA 12.8+ (`cu128`) PyTorch** wheel in that shared env so one prefix covers H200 and Blackwell (`sm_120`) as well as older Alpine GPUs; verify with `torch.cuda.get_arch_list()` inside an allocated GPU job. The maintainer should verify imports and confirm that the generated batch script activates this environment on a compute node. A standard Conda prefix may work interactively yet fail the batch script's activation checks; do not infer compatibility from `conda activate` alone. GPU availability must be checked inside an allocated GPU job. Once this prerequisite is met, use the same verified location in the Cluster profile tab.
 
 ## Current release limitations
 

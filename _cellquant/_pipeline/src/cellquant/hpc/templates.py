@@ -275,20 +275,30 @@ rsync -a --delete \\
 "$PYTHON" "${{BUNDLE_STAGE}}/scripts/validate_bundle.py"
 
 "$PYTHON" - <<'PY'
+import os
 import sys
 try:
     import torch
 except Exception as exc:
     print("ERROR: torch unavailable:", exc, file=sys.stderr)
     sys.exit(1)
-if not torch.cuda.is_available():
+from cellquant.runtime.cuda_compat import check_cuda_device
+status = check_cuda_device(
+    torch_module=torch,
+    allocate_smoke=True,
+    platform="alpine",
+    env_prefix=os.environ.get("CONDA_PREFIX") or os.environ.get("ENV_LOCATION"),
+)
+if not status.ok:
     print(
         "ERROR: CUDA GPU required by profile {profile_id} ({partition}) "
-        "but torch.cuda.is_available() is False",
+        "but not usable: " + status.detail,
         file=sys.stderr,
     )
+    if status.remediation:
+        print(status.remediation, file=sys.stderr)
     sys.exit(1)
-print("GPU OK:", torch.cuda.get_device_name(0))
+print("GPU OK:", status.detail)
 PY
 
 export CELLQUANT_HPC_BUNDLE="${{BUNDLE_STAGE}}"

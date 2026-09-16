@@ -18,22 +18,26 @@ from cellquant.classify.batch import (
     CellQuantRunRef,
     discover_cellquant_runs,
     group_runs_by_layout,
-    read_run_labels,
     run_classify_batch,
-    save_reviewed_labels,
-    _open_run_volume,
 )
-from cellquant.config import load_config
-from cellquant.contracts import LabelVolume, MutableCancellationToken, PipelineCancelled
-from cellquant.plugin.controller import LABEL_LAYER_NAME, _validated_label_array
+from cellquant.contracts import MutableCancellationToken, PipelineCancelled
 from cellquant.plugin.coexpression import (
     _MARKER_COLUMN_MIN_WIDTHS,
     _configure_readable_form,
     configure_readable_table,
 )
-from cellquant.preprocess import prepare_analysis_volume
-from cellquant.analysis import analysis_context_summary, analysis_context_from_dict
-from dataclasses import replace
+from cellquant.review import (
+    INPUT_POLICIES,
+    REVIEW_MODE_LABEL,
+    load_review,
+    preflight_table,
+)
+
+_POLICY_LABELS = {
+    "prefer_approved": "Prefer approved (default)",
+    "approved_only": "Approved only",
+    "original": "Original Cellpose masks",
+}
 
 
 class BatchCoexpressionPanel(Q.QWidget):
@@ -63,14 +67,8 @@ class BatchCoexpressionPanel(Q.QWidget):
             "active": None,
             "cancel_requested": False,
         }
-        self._review_run: Path | None = None
-        self._review_generation = 0
-        self._review_layer_id: int | None = None
-        self._review_shape: tuple[int, ...] | None = None
-        self._review_context_summary = ""
-        self._guided_queue: list[Path] = []
-        self._guided_index = -1
-        self._guided_active = False
+        # Mask revisions pinned by a Segmentation Review/QC handoff.
+        self.pinned_masks: tuple = ()
         self.future = None
         self.cancel_token = MutableCancellationToken()
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cellquant-classify-batch")
@@ -149,49 +147,32 @@ class BatchCoexpressionPanel(Q.QWidget):
         page = Q.QWidget()
         layout = Q.QVBoxLayout(page)
         note = Q.QLabel(
-            "Open one run at a time, or start guided review to walk every included run "
-            "in a layout. Edit CellQuant labels in napari, then Save curated labels "
-            "(writes labels_reviewed.tif without overwriting Cellpose labels.tif). "
-            "In guided mode, Save & next advances automatically."
+            f"Mask editing lives in the {REVIEW_MODE_LABEL} mode, not in Quantification. "
+            "This step summarizes the review state of the included runs and hands you "
+            "over there; your run selection and threshold settings stay here for when "
+            "you return. Quantification still works with original, unreviewed Cellpose "
+            "masks: approval is not a prerequisite."
         )
         note.setWordWrap(True)
         layout.addWidget(note)
 
-        form = Q.QFormLayout()
-        _configure_readable_form(form)
-        self.review_layout_pick = Q.QComboBox()
-        form.addRow("Layout for guided review", self.review_layout_pick)
-        self.review_scope = Q.QComboBox()
-        self.review_scope.addItem("All included runs in layout", "all")
-        self.review_scope.addItem("Only runs without curated labels yet", "unreviewed")
-        form.addRow("Guided scope", self.review_scope)
-        layout.addLayout(form)
+        self.review_summary = Q.QTableWidget(0, 4)
+        self.review_summary.setHorizontalHeaderLabels(["Run", "Review", "Queue", "Revision"])
+        self.review_summary.setMinimumHeight(140)
+        configure_readable_table(self.review_summary)
+        layout.addWidget(self.review_summary)
 
-        single = Q.QLabel("Single run")
-        layout.addWidget(single)
-        self.review_pick = Q.QComboBox()
-        layout.addWidget(self.review_pick)
         self._buttons(
             layout,
             [
-                ("Open for review", self.open_for_review),
-                ("Save curated labels", self.save_curated_labels),
-                ("Refresh list", self.refresh_review_pick),
+                (f"Open {REVIEW_MODE_LABEL}", self.open_segmentation_review),
+                ("Refresh review status", self.refresh_review_pick),
             ],
         )
-
-        guided = Q.QLabel("Guided layout review")
-        layout.addWidget(guided)
-        self._buttons(
-            layout,
-            [
-                ("Start guided review", self.start_guided_review),
-                ("Save & next", self.save_and_next_guided),
-                ("Skip (keep current labels)", self.skip_guided_review),
-                ("Stop guided review", self.stop_guided_review),
-            ],
+        self.review_status = Q.QLabel(
+            f"Discover runs to see their review state, then open {REVIEW_MODE_LABEL} to "
+            "edit masks."
         )
-        self.review_status = Q.QLabel("No run opened for review.")
         self.review_status.setWordWrap(True)
         layout.addWidget(self.review_status)
         layout.addStretch(1)
@@ -262,10 +243,28 @@ class BatchCoexpressionPanel(Q.QWidget):
         out_browse.clicked.connect(lambda: self.guard(self.choose_output))
         out_row.addWidget(out_browse)
         layout.addLayout(out_row)
+        policy_form = Q.QFormLayout()
+        _configure_readable_form(policy_form)
+        layout.addLayout(policy_form)
+        self.policy_pick = Q.QComboBox()
+        for key in INPUT_POLICIES:
+            self.policy_pick.addItem(_POLICY_LABELS[key], key)
+        self.policy_pick.currentIndexChanged.connect(
+            lambda *_: self.guard(self.refresh_preflight)
+        )
+        policy_form.addRow("Mask input", self.policy_pick)
+        self.preflight = Q.QTableWidget(0, 6)
+        self.preflight.setHorizontalHeaderLabels(
+            ["Image", "Review state", "Mask source", "Revision", "Included", "Reason"]
+        )
+        self.preflight.setMinimumHeight(140)
+        configure_readable_table(self.preflight)
+        layout.addWidget(self.preflight)
         self._buttons(
             layout,
             [
                 ("Refresh summary", self.refresh_summary),
+                ("Refresh mask preflight", self.refresh_preflight),
                 ("Run batch classify", self.run_batch),
                 ("Cancel", self.cancel),
                 ("Open results folder", self.open_results),
@@ -276,6 +275,34 @@ class BatchCoexpressionPanel(Q.QWidget):
         layout.addWidget(self.progress)
         layout.addStretch(1)
         return page
+
+    def input_policy(self) -> str:
+        return str(self.policy_pick.currentData() or "prefer_approved")
+
+    def refresh_preflight(self):
+        """Show which mask each included run will measure before the batch starts."""
+
+        runs = self.selected_runs()
+        rows = preflight_table([run.path for run in runs], policy=self.input_policy())
+        self.preflight.setRowCount(len(rows))
+        for index, row in enumerate(rows):
+            values = (
+                row.image,
+                row.review_state,
+                row.labels_source or "—",
+                str(row.revision),
+                "yes" if row.included else "no",
+                row.reason,
+            )
+            for column, value in enumerate(values):
+                self.preflight.setItem(index, column, Q.QTableWidgetItem(value))
+        configure_readable_table(self.preflight)
+        excluded = sum(1 for row in rows if not row.included)
+        self.progress.setText(
+            f"Mask preflight under {_POLICY_LABELS[self.input_policy()]}: "
+            f"{len(rows) - excluded} included, {excluded} excluded."
+        )
+        return rows
 
     def choose_root(self):
         path = Q.QFileDialog.getExistingDirectory(self, "Choose folder containing *.cellquant runs")
@@ -349,28 +376,65 @@ class BatchCoexpressionPanel(Q.QWidget):
         return tuple(run for run in self.runs if str(run.path.resolve()) in self.included)
 
     def refresh_review_pick(self):
-        previous_layout = self.review_layout_pick.currentData()
-        self.review_layout_pick.blockSignals(True)
-        self.review_layout_pick.clear()
-        for layout_id, members in group_runs_by_layout(self.selected_runs() or self.runs).items():
-            self.review_layout_pick.addItem(
-                f"{layout_id} ({len(members)} included)", layout_id
-            )
-        self.review_layout_pick.blockSignals(False)
-        if previous_layout is not None:
-            index = self.review_layout_pick.findData(previous_layout)
-            if index >= 0:
-                self.review_layout_pick.setCurrentIndex(index)
+        """Summarize each included run's review state (read-only)."""
 
-        previous = self.review_pick.currentData()
-        self.review_pick.clear()
-        for run in self.selected_runs() or self.runs:
-            label = f"{run.path.name} [{('reviewed' if run.has_reviewed_labels else 'original')}]"
-            self.review_pick.addItem(label, str(run.path))
-        if previous is not None:
-            index = self.review_pick.findData(previous)
-            if index >= 0:
-                self.review_pick.setCurrentIndex(index)
+        runs = self.selected_runs() or self.runs
+        self.review_summary.setRowCount(len(runs))
+        approved = 0
+        drafts = 0
+        for row, run in enumerate(runs):
+            record = load_review(run.path)
+            status = record.review_status if record is not None else "pending"
+            queue_state = record.queue_status if record is not None else "active"
+            revision = record.revision if record is not None else 0
+            if record is not None and record.is_approved:
+                approved += 1
+            if record is not None and record.has_draft:
+                drafts += 1
+            for column, value in enumerate((run.path.name, status, queue_state, str(revision))):
+                self.review_summary.setItem(row, column, Q.QTableWidgetItem(value))
+        configure_readable_table(self.review_summary)
+        self.review_status.setText(
+            f"{approved} of {len(runs)} included run(s) have an approved mask revision; "
+            f"{drafts} have unpublished drafts, which are never quantified. "
+            f"Open {REVIEW_MODE_LABEL} to edit masks."
+        )
+
+    def open_segmentation_review(self):
+        """Switch to the review mode, preserving this wizard's selection."""
+
+        panel = getattr(self.controller, "segmentation_review_panel", None)
+        if panel is not None:
+            root = self.root_edit.text().strip()
+            if root:
+                panel.scope_pick.setCurrentIndex(panel.scope_pick.findData("folder"))
+                panel.input_edit.setText(root)
+        activate = getattr(self.controller, "activate_segmentation_review", None)
+        if activate is None:
+            raise ValueError(
+                f"{REVIEW_MODE_LABEL} is unavailable in this window. Choose it from the "
+                "Mode list at the top of the CellQuant panel."
+            )
+        activate()
+        self.status.setText(
+            f"Opened {REVIEW_MODE_LABEL}. Your run selection and thresholds are kept here."
+        )
+
+    def accept_review_handoff(self, pins, *, policy: str):
+        """Receive pinned mask revisions from Segmentation Review/QC."""
+
+        self.pinned_masks = tuple(pins)
+        index = self.policy_pick.findData(policy)
+        if index >= 0:
+            self.policy_pick.setCurrentIndex(index)
+        self.included = {str(Path(pin.run_dir).resolve()) for pin in pins}
+        self._populate_run_list()
+        self.refresh_review_pick()
+        self.refresh_summary()
+        self.status.setText(
+            f"Received {len(self.pinned_masks)} approved revision(s) from "
+            f"{REVIEW_MODE_LABEL}; input policy set to {policy}."
+        )
 
     def refresh_layout_pick(self):
         previous = self.layout_pick.currentData()
@@ -400,244 +464,6 @@ class BatchCoexpressionPanel(Q.QWidget):
             self.load_image_effective_recipe()
         else:
             self.load_layout_into_table()
-
-    def open_for_review(self, path=None):
-        if path is None or isinstance(path, bool):
-            # Qt clicked(bool) may pass a checked flag; ignore it.
-            path = self.review_pick.currentData()
-        if not path:
-            raise ValueError("Select a run to review.")
-        if self.future is not None:
-            raise ValueError("Wait for the current batch/review operation to finish.")
-        run_dir = Path(path)
-        index = self.review_pick.findData(str(run_dir))
-        if index < 0:
-            index = self.review_pick.findData(str(run_dir.resolve()))
-        if index >= 0:
-            self.review_pick.setCurrentIndex(index)
-        self._review_generation += 1
-        generation = self._review_generation
-        self._review_run = None
-        self._review_layer_id = None
-        self._review_shape = None
-        progress = ""
-        if self._guided_active and self._guided_queue:
-            progress = (
-                f" Guided review {self._guided_index + 1}/{len(self._guided_queue)}."
-            )
-        self.review_status.setText(
-            f"Opening {run_dir.name} as a bound review session…{progress}"
-        )
-
-        def work(cancel):
-            provenance = json.loads((run_dir / "provenance.json").read_text(encoding="utf-8"))
-            source = Path(str(provenance.get("source") or ""))
-            if not source.is_file():
-                raise FileNotFoundError(f"Source image missing: {source}")
-            config = load_config(run_dir / "config.json")
-            cancel.raise_if_cancelled()
-            volume = _open_run_volume(source, config)
-            analysis = prepare_analysis_volume(volume, config, cancel=cancel)
-            labels_array = read_run_labels(run_dir)
-            if labels_array.shape != analysis.data.shape[:3]:
-                raise ValueError(
-                    f"labels shape {labels_array.shape} does not match analysis grid "
-                    f"{analysis.data.shape[:3]}"
-                )
-            analysis_meta = dict(analysis.metadata)
-            analysis_meta["classification_analysis_grid"] = True
-            analysis = replace(analysis, metadata=analysis_meta)
-            labels = LabelVolume(
-                np.array(labels_array, copy=True),
-                analysis.spacing_um,
-                {
-                    "source_run": str(run_dir.resolve()),
-                    "review": True,
-                    "review_generation": generation,
-                    "analysis_volume": dict(analysis.metadata.get("analysis_volume") or {}),
-                },
-            )
-            used = "reviewed" if (run_dir / "labels_reviewed.tif").is_file() else "original"
-            summary = analysis_context_summary(
-                analysis_context_from_dict(
-                    labels.provenance["analysis_volume"],
-                    spacing_um=tuple(labels.spacing_um),
-                    shape_zyx=tuple(int(v) for v in labels.data.shape),
-                    source=analysis.source,
-                )
-            )
-            return analysis, labels, run_dir, used, summary, generation
-
-        def completed(payload):
-            analysis, labels, run_dir, used, summary, gen = payload
-            if gen != self._review_generation:
-                self.review_status.setText("Stale review open discarded (a newer request superseded it).")
-                return
-            self.controller.config = load_config(run_dir / "config.json")
-            self.controller._publish_image(analysis)
-            self.controller._publish_labels(labels)
-            layer = None
-            for candidate in self.viewer.layers:
-                if candidate.name == LABEL_LAYER_NAME:
-                    layer = candidate
-                    break
-            self._review_run = run_dir
-            self._review_layer_id = id(layer) if layer is not None else None
-            self._review_shape = tuple(int(v) for v in labels.data.shape)
-            self._review_context_summary = summary
-            guided = ""
-            if self._guided_active and self._guided_queue:
-                guided = (
-                    f" Guided {self._guided_index + 1}/{len(self._guided_queue)} — "
-                    "edit labels, then Save & next or Skip."
-                )
-            self.review_status.setText(
-                f"Bound review session for {run_dir.name} ({used} labels). "
-                f"Display/measurement grid: {summary}.{guided}"
-            )
-            self.status.setText(f"Reviewing {run_dir.name}")
-
-        self.cancel_token = MutableCancellationToken()
-        self.future = self.pool.submit(work, self.cancel_token)
-        self._review_completed = completed
-
-    def build_guided_review_queue(self) -> list[Path]:
-        """Included runs for the chosen layout, optionally only unreviewed."""
-
-        layout_id = self.review_layout_pick.currentData()
-        if layout_id is None:
-            raise ValueError("Select a layout for guided review (discover runs first).")
-        scope = self.review_scope.currentData() or "all"
-        queue: list[Path] = []
-        for run in self.selected_runs() or self.runs:
-            if run.layout_id != layout_id:
-                continue
-            if scope == "unreviewed" and run.has_reviewed_labels:
-                continue
-            queue.append(Path(run.path))
-        if not queue:
-            raise ValueError(
-                f"No runs to review for layout {layout_id} "
-                f"with scope {self.review_scope.currentText()!r}."
-            )
-        return queue
-
-    def start_guided_review(self):
-        if self.future is not None:
-            raise ValueError("Wait for the current batch/review operation to finish.")
-        queue = self.build_guided_review_queue()
-        self._guided_queue = queue
-        self._guided_index = 0
-        self._guided_active = True
-        self.status.setText(
-            f"Guided review started: {len(queue)} run(s) in layout "
-            f"{self.review_layout_pick.currentData()}."
-        )
-        self.open_for_review(queue[0])
-
-    def stop_guided_review(self):
-        was_active = self._guided_active
-        self._guided_active = False
-        self._guided_queue = []
-        self._guided_index = -1
-        if was_active:
-            self.review_status.setText(
-                (self.review_status.text() + " Guided review stopped.").strip()
-            )
-            self.status.setText("Guided review stopped.")
-        else:
-            self.status.setText("No guided review was active.")
-
-    def skip_guided_review(self):
-        if not self._guided_active:
-            raise ValueError("Start guided review first.")
-        self._advance_guided_review(saved=False)
-
-    def save_and_next_guided(self):
-        if not self._guided_active:
-            raise ValueError("Start guided review first.")
-        self.save_curated_labels(advance_guided=True)
-
-    def _advance_guided_review(self, *, saved: bool):
-        if not self._guided_active or not self._guided_queue:
-            return
-        action = "Saved" if saved else "Skipped"
-        current = (
-            self._guided_queue[self._guided_index].name
-            if 0 <= self._guided_index < len(self._guided_queue)
-            else "?"
-        )
-        next_index = self._guided_index + 1
-        if next_index >= len(self._guided_queue):
-            total = len(self._guided_queue)
-            self._guided_active = False
-            self._guided_queue = []
-            self._guided_index = -1
-            self.review_status.setText(
-                f"{action} {current}. Guided review finished ({total} run(s))."
-            )
-            self.status.setText("Guided review finished.")
-            self.refresh_review_pick()
-            return
-        self._guided_index = next_index
-        nxt = self._guided_queue[next_index]
-        self.status.setText(
-            f"{action} {current}. Opening {next_index + 1}/{len(self._guided_queue)}: {nxt.name}"
-        )
-        self.open_for_review(nxt)
-
-    def save_curated_labels(self, advance_guided: bool = False):
-        if self._review_run is None or self._review_layer_id is None:
-            raise ValueError("Open a bound review session first.")
-        layer = None
-        for candidate in self.viewer.layers:
-            if candidate.name == LABEL_LAYER_NAME:
-                layer = candidate
-                break
-        if layer is None:
-            raise ValueError("CellQuant labels layer not found; Save disabled.")
-        if id(layer) != self._review_layer_id:
-            raise ValueError(
-                "Labels layer was replaced; Save is bound to the review session layer. "
-                "Re-open the run for review before saving."
-            )
-        meta = dict(getattr(layer, "metadata", {}) or {})
-        source_run = Path(str(meta.get("source_run") or ""))
-        if source_run.resolve() != self._review_run.resolve():
-            raise ValueError(
-                "Current labels are not bound to the open review run. "
-                "Re-open the run before saving curated labels."
-            )
-        if self._review_shape is not None and tuple(layer.data.shape) != self._review_shape:
-            raise ValueError(
-                f"Label shape {tuple(layer.data.shape)} no longer matches the bound review "
-                f"grid {self._review_shape}."
-            )
-        path = save_reviewed_labels(
-            self._review_run,
-            _validated_label_array(layer.data),
-            note=f"bound review generation {self._review_generation}",
-        )
-        self.runs = tuple(
-            CellQuantRunRef(
-                path=run.path,
-                source=run.source,
-                layout_id=run.layout_id,
-                channel_names=run.channel_names,
-                has_reviewed_labels=True if run.path.resolve() == self._review_run.resolve() else run.has_reviewed_labels,
-                run_id=run.run_id,
-            )
-            for run in self.runs
-        )
-        self._populate_run_list()
-        self.refresh_review_pick()
-        self.review_status.setText(
-            f"Saved curated labels to {path.name} for {self._review_run.name} "
-            f"({self._review_context_summary}). Original labels.tif unchanged."
-        )
-        self.status.setText(f"Curated labels saved for {self._review_run.name}")
-        if advance_guided and self._guided_active:
-            self._advance_guided_review(saved=True)
 
     def add_marker(self):
         row = self.markers.rowCount()
@@ -1255,6 +1081,8 @@ class BatchCoexpressionPanel(Q.QWidget):
         self.progress.setText(f"Starting batch → {destination}")
         self.status.setText("Running batch classify…")
 
+        policy = self.input_policy()
+
         def work(cancel):
             return run_classify_batch(
                 selected,
@@ -1263,6 +1091,7 @@ class BatchCoexpressionPanel(Q.QWidget):
                 image_overrides=overrides,
                 cancel=cancel,
                 events=self._enqueue_event,
+                policy=policy,
             )
 
         self.future = self.pool.submit(work, self.cancel_token)
@@ -1297,11 +1126,6 @@ class BatchCoexpressionPanel(Q.QWidget):
         self._drain_events()
         try:
             artifacts = future.result()
-            completed = getattr(self, "_review_completed", None)
-            if completed is not None and isinstance(artifacts, tuple) and len(artifacts) == 6:
-                self._review_completed = None
-                completed(artifacts)
-                return
             self._last_output = Path(artifacts["output_dir"])
             summary = json.loads(Path(artifacts["batch_summary"]).read_text(encoding="utf-8"))
             cancelled = summary.get("status") == "cancelled"
@@ -1321,17 +1145,13 @@ class BatchCoexpressionPanel(Q.QWidget):
             self._batch_started = None
             self._progress["cancel_requested"] = False
         except PipelineCancelled:
-            self._review_completed = None
             self._batch_started = None
             partial = self._last_output is not None and Path(self._last_output).is_dir()
             self.status.setText(
                 f"Batch cancelled; completed work kept at {self._last_output}" if partial else "Batch cancelled."
             )
             self.progress.setText(f"Cancelled → {self._last_output}" if partial else "Cancelled.")
-            self.review_status.setText("Review open cancelled.")
         except Exception as exc:  # noqa: BLE001
-            self._review_completed = None
             self._batch_started = None
             self.status.setText(f"Batch failed: {exc}")
             self.progress.setText(str(exc))
-            self.review_status.setText(f"Could not open for review: {exc}")
