@@ -4,6 +4,7 @@ from pathlib import Path
 
 from cellquant.config import load_config
 from cellquant.io import resolve_file_type_preset
+from cellquant.review.constants import REVIEW_MODE_KEY, REVIEW_MODE_LABEL
 from cellquant.survey import default_template_config_path, materialize_run_config
 
 from .capabilities import RuntimeCapabilities, detect_runtime_capabilities
@@ -717,6 +718,7 @@ def make_cellquant_widget(viewer=None):
     mode.addItem("Batch folder", "batch")
     mode.addItem("HPC prep", "hpc")
     mode.addItem("Coexpression", "coexpression")
+    mode.addItem(REVIEW_MODE_LABEL, REVIEW_MODE_KEY)
     _set_tip(mode, "workflow_mode")
     from .combo_scroll import wrap_combo_with_scrollability
 
@@ -1062,6 +1064,17 @@ def make_cellquant_widget(viewer=None):
     coexpression_page = CoexpressionPanel(viewer, controller)
     pages.addWidget(coexpression_page)
     root.cellquant_coexpression = coexpression_page
+    from .segmentation_review import SegmentationReviewPanel
+
+    review_page = SegmentationReviewPanel(viewer, controller)
+    pages.addWidget(review_page)
+    root.cellquant_segmentation_review = review_page
+    # Quantification's shortcut needs to reach this page without importing the
+    # widget module (which would be circular).
+    controller.segmentation_review_panel = review_page
+    controller.activate_segmentation_review = lambda: mode.setCurrentIndex(
+        mode.findData(REVIEW_MODE_KEY)
+    )
 
     # Decorate magicgui / coexpression combos that were not built via _labeled_row.
     for host in (
@@ -1073,7 +1086,19 @@ def make_cellquant_widget(viewer=None):
     ):
         install_scrollability_controls(host, QtWidgets, tip_text=tip("scrollability"))
 
+    mode_state = {"index": mode.currentIndex()}
+
     def sync_mode(index: int):
+        previous = mode_state["index"]
+        leaving_review = mode.itemData(previous) == REVIEW_MODE_KEY and index != previous
+        if leaving_review and not review_page.can_leave():
+            # Dirty mask edits must be resolved before the mode changes.
+            mode.blockSignals(True)
+            mode.setCurrentIndex(previous)
+            mode.blockSignals(False)
+            set_status("Resolve the unsaved mask edits before changing modes.")
+            return
+        mode_state["index"] = index
         pages.setCurrentIndex(index)
         label = mode.itemText(index)
         set_status(f"Mode: {label}")

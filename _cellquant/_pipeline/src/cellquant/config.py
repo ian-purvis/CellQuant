@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -257,7 +257,88 @@ class RunConfig:
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 
 
-def load_config(path: str | Path) -> RunConfig:
+NATIVE_RUN_KIND = "native"
+IMPORTED_RUN_KIND = "imported_labels"
+REQUIRED_IMPORT_PROVENANCE_KEYS = {"origin", "engine", "model", "model_sha256", "settings"}
+
+
+@dataclass(frozen=True)
+class ImportedRunConfig:
+    """Configuration of a run whose masks came from an external label TIFF.
+
+    External masks cannot truthfully supply Cellpose engine/model settings, so
+    this contract validates only what an import can honestly declare: how to
+    reopen the source (``io``), the analysis grid the mask lives on
+    (``analysis``), and nullable ``segmentation_provenance``. It is deliberately
+    *not* a :class:`RunConfig`; segmentation execution paths must reject it.
+    """
+
+    raw: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if int(self.raw.get("schema_version", -1)) != 1:
+            raise ValueError("imported configuration schema_version must be 1")
+        if str(self.raw.get("run_kind") or "") != IMPORTED_RUN_KIND:
+            raise ValueError(f"run_kind must be {IMPORTED_RUN_KIND!r}")
+        for section in ("io", "analysis", "segmentation_provenance"):
+            if not isinstance(self.raw.get(section), Mapping):
+                raise ValueError(f"missing mapping section {section!r}")
+        missing_io = REQUIRED_IO_KEYS - set(self.raw["io"])
+        if missing_io:
+            raise ValueError(f"io config omits explicit parameter(s): {sorted(missing_io)}")
+        try:
+            object.__setattr__(
+                self,
+                "raw",
+                {
+                    **dict(self.raw),
+                    "io": {
+                        **dict(self.raw["io"]),
+                        "suffixes": list(normalize_suffixes(self.raw["io"]["suffixes"])),
+                    },
+                },
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"io.suffixes is invalid: {exc}") from exc
+        provenance = self.raw["segmentation_provenance"]
+        missing_provenance = REQUIRED_IMPORT_PROVENANCE_KEYS - set(provenance)
+        if missing_provenance:
+            raise ValueError(
+                "segmentation_provenance omits explicit parameter(s): "
+                f"{sorted(missing_provenance)}"
+            )
+        if not str(provenance.get("origin") or "").strip():
+            raise ValueError("segmentation_provenance.origin is required")
+        # Validate the declared grid with the shared analysis-context checks so
+        # imported masks reconstruct exactly like native runs.
+        from cellquant.analysis import analysis_context_from_dict
+
+        analysis = dict(self.raw["analysis"])
+        spacing = analysis.get("spacing_um")
+        shape = analysis.get("shape_zyx")
+        if not isinstance(spacing, Sequence) or len(tuple(spacing)) != 3:
+            raise ValueError("analysis.spacing_um must be a three-element list")
+        if not isinstance(shape, Sequence) or len(tuple(shape)) != 3:
+            raise ValueError("analysis.shape_zyx must be a three-element list")
+        analysis_context_from_dict(
+            analysis,
+            spacing_um=tuple(float(v) for v in spacing),
+            shape_zyx=tuple(int(v) for v in shape),
+        )
+
+    @property
+    def run_kind(self) -> str:
+        return IMPORTED_RUN_KIND
+
+    def canonical_json(self) -> str:
+        return json.dumps(self.raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+    @property
+    def fingerprint(self) -> str:
+        return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
+
+
+def _read_raw_config(path: str | Path) -> tuple[Path, Mapping[str, Any]]:
     path = Path(path)
     text = path.read_text(encoding="utf-8")
     if path.suffix.lower() == ".json":
@@ -268,4 +349,77 @@ def load_config(path: str | Path) -> RunConfig:
         raw = yaml.safe_load(text)
     if not isinstance(raw, Mapping):
         raise ValueError("configuration root must be a mapping")
+    return path, raw
+
+
+def read_run_kind(path: str | Path) -> str:
+    """Read ``run_kind`` without validating either configuration contract."""
+
+    _, raw = _read_raw_config(path)
+    return str(raw.get("run_kind") or NATIVE_RUN_KIND)
+
+
+def load_config(path: str | Path) -> RunConfig:
+    """Load and validate a native segmentation configuration."""
+
+    _, raw = _read_raw_config(path)
+    kind = str(raw.get("run_kind") or NATIVE_RUN_KIND)
+    if kind != NATIVE_RUN_KIND:
+        raise ValueError(
+            f"{path} declares run_kind {kind!r}; use load_run_config to load "
+            "non-native runs. Native segmentation settings remain mandatory for "
+            "actual segmentation."
+        )
     return RunConfig(raw)
+
+
+def load_imported_config(path: str | Path) -> ImportedRunConfig:
+    """Load and validate an imported-labels configuration."""
+
+    _, raw = _read_raw_config(path)
+    return ImportedRunConfig(raw)
+
+
+def load_run_config(path: str | Path) -> RunConfig | ImportedRunConfig:
+    """Branch on ``run_kind`` before applying either validator.
+
+    Native runs keep the existing loader unchanged; imported-label runs are
+    validated against the imported contract instead of the segmentation one.
+    """
+
+    _, raw = _read_raw_config(path)
+    kind = str(raw.get("run_kind") or NATIVE_RUN_KIND)
+    if kind == IMPORTED_RUN_KIND:
+        return ImportedRunConfig(raw)
+    if kind != NATIVE_RUN_KIND:
+        raise ValueError(f"unknown run_kind {kind!r} in {path}")
+    return RunConfig(raw)
+
+
+def reject_imported_config(config: Any, *, action: str = "segmentation") -> None:
+    """Refuse imported-label configurations in segmentation execution paths.
+
+    Native segmentation settings stay mandatory for actual segmentation. This
+    only rejects imports; it deliberately does not tighten the duck-typed
+    configuration mappings that internal stages accept.
+    """
+
+    raw = config.raw if hasattr(config, "raw") else config
+    kind = ""
+    if isinstance(raw, Mapping):
+        kind = str(raw.get("run_kind") or "")
+    if isinstance(config, ImportedRunConfig) or kind == IMPORTED_RUN_KIND:
+        raise ValueError(
+            f"{action} requires native Cellpose settings, but this run was created by "
+            "importing external labels (run_kind=imported_labels). Re-run segmentation "
+            "from the source image instead."
+        )
+
+
+def require_segmentation_config(config: Any, *, action: str = "segmentation") -> RunConfig:
+    """Require a validated native :class:`RunConfig` for ``action``."""
+
+    reject_imported_config(config, action=action)
+    if not isinstance(config, RunConfig):
+        raise TypeError(f"{action} requires a validated RunConfig")
+    return config

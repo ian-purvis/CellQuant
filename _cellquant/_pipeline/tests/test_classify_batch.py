@@ -75,8 +75,19 @@ def test_prefer_reviewed_labels_and_leave_original(tmp_path):
     np.testing.assert_array_equal(tifffile.imread(run / LABELS_NAME), original)
     np.testing.assert_array_equal(read_run_labels(run), curated)
     review = json.loads((run / REVIEW_JSON_NAME).read_text(encoding="utf-8"))
-    assert review["labels_file"] == LABELS_REVIEWED_NAME
+    # Schema v2: the manifest references the immutable revision, and
+    # labels_reviewed.tif remains only as a compatibility copy.
+    assert review["schema_version"] == 2
+    assert review["review_status"] == "approved"
+    assert review["labels_file"] == "reviews/r000001.tif"
     assert review["supersedes"] == LABELS_NAME
+    assert review["note"] == "manual"
+    assert review["label_count"] == 2
+    assert review["shape"] == [2, 4, 4]
+    assert (run / "reviews" / "r000001.tif").is_file()
+    np.testing.assert_array_equal(
+        tifffile.imread(run / LABELS_REVIEWED_NAME), curated.astype(np.uint16)
+    )
 
 
 def test_discover_only_complete_runs(tmp_path):

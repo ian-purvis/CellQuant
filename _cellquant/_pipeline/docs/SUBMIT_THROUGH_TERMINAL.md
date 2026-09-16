@@ -198,6 +198,7 @@ Download the complete result directory and retain the input bundle. Follow [Down
 | `Invalid account or account/partition` | Use the Slurm allocation from `sacctmgr` (e.g. `amc-general`), not your login email; re-export — do not edit package scripts |
 | `package not prepared` and path under `/var/spool/slurmd` | Older packages resolved the bundle from the Slurm script copy. Re-export after the SLURM_SUBMIT_DIR fix, or resubmit a one-off `sbatch` with `BUNDLE_DIR` set to the absolute package path (submit from that package directory so `logs/` stay correct) |
 | CUDA unavailable inside the job | Check GPU allocation and compatible environment; do not enable CPU fallback to hide it |
+| GPU capability not in `get_arch_list` (e.g. Blackwell `sm_120`) | Upgrade the shared `cellquant-hpc` env to a cu128+ PyTorch wheel on a login node (`pip install --upgrade torch --index-url https://download.pytorch.org/whl/cu128`), verify `get_arch_list()`, resubmit; one env covers artxpro and H200/A100/L40 |
 | Scheduler completes but some images fail | Read the result manifest and per-image errors; scheduler status is not scientific completion |
 | Import cannot find cluster paths | Confirm you selected the downloaded result folder that contains `result_manifest.json` and `runs/`; re-export if the package predates portable run paths |
 | `squeue` says invalid job id | Job left the queue; use `sacct -j <id>` and read `logs/*.err` |

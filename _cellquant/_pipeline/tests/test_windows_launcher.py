@@ -52,10 +52,17 @@ def test_installer_installs_cuda_torch_on_nvidia_gpus():
     assert "function Get-CellQuantTorchCudaTag" in helper_text
     assert "download.pytorch.org/whl" in helper_text
     assert "cu130" in helper_text
-    assert "torch.cuda.is_available()" in helper_text
+    assert "cu128" in helper_text
+    assert "Get-NvidiaGpuComputeCapability" in helper_text
+    assert "arch_ok" in helper_text
     assert "force-reinstall" in helper_text
     assert "probe_torch_cuda.py" in helper_text
     assert "numpy==2.0.2" in helper_text
+
+    probe = Path(__file__).parents[1] / "scripts" / "probe_torch_cuda.py"
+    probe_text = probe.read_text(encoding="utf-8")
+    assert "arch_ok" in probe_text
+    assert "get_arch_list" in probe_text or "check_cuda_device" in probe_text
 
 
 def test_install_bat_documents_open_update_and_clean_reinstall_choices():

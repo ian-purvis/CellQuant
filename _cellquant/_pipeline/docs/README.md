@@ -25,5 +25,6 @@ These retained documents explain design decisions or proposed behavior. Check cu
 
 - [Quantification design](QUANTIFICATION_DESIGN.md) — rationale for the quantification approach.
 - [Quantification review UX specification](QUANTIFICATION_REVIEW_UX_SPEC_2026-09-11.md) — a **proposal**, not current UI instructions; check the source for what has been implemented.
+- [Segmentation Review/QC specification](SEGMENTATION_REVIEW_QC_SPEC.md) — a **proposal** for standalone mask review and editing, with reviewed-mask handoff into Quantification; distinct from downstream quantification review.
 - [HPC contract gate](HPC_CONTRACT_GATE_2026-09-11.md) — the settled first-release HPC contract.
 - [Deferred parameter sweep decision](../memory/2026-09-08-deferred-parameter-sweep.md) — records why a parameter search has not been authorized to run.
