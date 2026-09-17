@@ -15,4 +15,4 @@ CellQuant is a napari plugin and command-line tool for segmenting nuclei with Ce
 
 The launcher remembers environment locations in `cellquant_env.json`. A CUDA-capable GPU can speed large runs, but a GPU is not required to start. The Windows installer attempts a compatible CUDA PyTorch build when it detects supported NVIDIA hardware; confirm GPU availability in the plugin's environment summary.
 
-CellQuant 0.4.0a2 is an **alpha for lab testing**. The latest recorded software checks are dated **2026-09-09**. They do not establish biological accuracy on expert-reviewed retinal images or a live Alpine job. See the [release note](docs/RELEASE_0.4.0a2.md) and [`STATUS.json`](docs/STATUS.json) before treating results as validated scientific evidence.
+CellQuant 0.4.0a3 is an **alpha for lab testing**. The latest recorded software checks are dated **2026-09-16**. They do not establish biological accuracy on expert-reviewed retinal images or a live Alpine job. See the [release note](docs/RELEASE_0.4.0a3.md) and [`STATUS.json`](docs/STATUS.json) before treating results as validated scientific evidence.

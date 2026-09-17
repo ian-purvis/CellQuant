@@ -2,51 +2,47 @@
   "schema_version": 1,
   "evidence_scope": "The dated software, module, identity-control and gauntlet records below are historical evidence, not verification of the current working source. See current_verification for the latest assessment.",
   "current_verification": {
-    "version": "0.4.0a2",
-    "updated_utc": "2026-09-09T17:21:08Z",
+    "version": "0.4.0a3",
+    "updated_utc": "2026-09-16T21:40:00Z",
     "status": "software_checks_passed_ready_for_user_testing",
     "full_suite": {
-      "passed": 286,
+      "passed": 462,
       "failed": 0,
       "errors": 0,
-      "warnings": 44,
-      "wall_seconds": 132.21,
-      "artifact": "artifacts/regression_0_4_a2.xml"
+      "skipped": 19,
+      "wall_seconds": 129.2,
+      "note": "Run as two sessions: suite excluding test_plugin_slow_run.py (445 passed, 19 skipped) plus that file alone (17 passed). A single combined process can fail 10 native Qt slow-dialog/dock cases after earlier napari viewer pollution; those cases pass in isolation.",
+      "artifact": "artifacts/regression_0_4_a3.xml",
+      "supplementary_artifact": "artifacts/slow_run_0_4_a3.xml"
     },
-    "real_napari_workflow": "passed_native_windows_load_review_accept_save_reopen_stale_results_dock_close_and_remove",
-    "supplementary_layout_check": {
-      "passed": 1,
-      "wall_seconds": 14.72,
-      "artifact": "artifacts/calibration_layout_0_4_a2.xml",
-      "scope": "visible_floating_and_docked_calibration_window_with_scroll_to_accept",
-      "screenshots_visually_inspected": [
-        "artifacts/calibration_histogram_0_4_a2.png",
-        "artifacts/calibration_docked_0_4_a2.png"
+    "review_qc": {
+      "package": "src/cellquant/review",
+      "ui": "src/cellquant/plugin/segmentation_review.py",
+      "focused_tests_passed": [
+        "tests/test_review_persist.py",
+        "tests/test_review_discovery.py",
+        "tests/test_review_import.py",
+        "tests/test_review_store.py",
+        "tests/test_classify_batch.py",
+        "tests/test_coexpression_batch_ui.py"
       ]
     },
-    "independent_review": {
-      "verdict": "CONFIRMED",
-      "scope": "calibration_core_worker_cancellation_v3_arguments_native_Qt_state_and_dock_lifecycle",
-      "independent_test_groups_passed": [30, 37, 16],
-      "additional_probe": "overlay_sparse_uint32_ids_unsorted_mapping_noncontiguous_arrays_chunk_boundaries",
-      "initial_counterexample": "closing_parent_dock_did_not_cancel_calibration",
-      "resolution": "fixed_and_native_close_remove_reopen_tests_passed"
-    },
+    "real_napari_workflow": "manual_smoke_pending_user_lab_trial",
     "wheel": {
-      "path": "artifacts/wheel/cellquant-0.4.0a2-py3-none-any.whl",
-      "sha256": "76adb4da32010619f9334fb07f10d12a72098f1c3116bf502352e0663f967632",
-      "build": "passed_no_isolation",
-      "separate_target_install_smoke": "passed_cli_import_packaged_config_and_exact_synthetic_classification",
-      "source_check": "48_python_yaml_files_match_working_source_ignoring_line_endings"
+      "path": null,
+      "build": "not_built_for_a3_use_editable_install",
+      "separate_target_install_smoke": "not_run"
     },
     "validation_limits": [
       "Synthetic_inputs_and_spawned_test_workers_are_not_actual_Cellpose_model_inference",
       "Real_retinal_coexpression_accuracy_and_large_image_UI_stalls_remain_unmeasured",
-      "v3_argument_signature_verified_against_installed_source_without_loading_model_weights"
+      "No_live_Alpine_smoke_run_recorded",
+      "Combined_full_suite_native_Qt_slow_run_order_sensitivity"
     ],
     "biological_coexpression_accuracy": "not_validated",
     "parameter_sweep": "deferred_until_user_confirms_pipeline_correctness",
-    "deferred_request": "memory/2026-09-08-deferred-parameter-sweep.md"
+    "deferred_request": "memory/2026-09-08-deferred-parameter-sweep.md",
+    "previous_verification": "0.4.0a2_2026-09-09"
   },
   "updated_utc": "2026-09-04T17:58:07Z",
   "reference_assumption": "Cellpose_documentation/Cellpose_test is used because reference/ is absent",

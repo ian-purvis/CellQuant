@@ -26,7 +26,7 @@
   "require_gpu": true,
   "allow_cpu_fallback": false,
   "backend": "cellquant_core",
-  "cellquant_version_pin": "0.4.0a2",
+  "cellquant_version_pin": "0.4.0a3",
   "environment_spec": {
     "kind": "conda",
     "name": "cellquant-hpc",

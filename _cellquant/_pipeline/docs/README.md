@@ -1,6 +1,6 @@
 # CellQuant documentation
 
-Choose the guide for your task. The package is currently **0.4.0a2**, an alpha for lab testing. The most recent recorded software verification is **2026-09-09**; expert-reviewed retinal accuracy and a live Alpine smoke run remain unverified.
+Choose the guide for your task. The package is currently **0.4.0a3**, an alpha for lab testing. The most recent recorded software verification is **2026-09-16**; expert-reviewed retinal accuracy and a live Alpine smoke run remain unverified.
 
 | Start here | Use it for |
 | --- | --- |
@@ -16,8 +16,9 @@ Choose the guide for your task. The package is currently **0.4.0a2**, an alpha f
 
 ## Release and verification record
 
-- [0.4.0a2 release note](RELEASE_0.4.0a2.md) — latest recorded behavior changes and software checks.
-- [`STATUS.json`](STATUS.json) — read **`current_verification`** for the 0.4.0a2 assessment. Its other dated software/module/gauntlet records are historical and may name older versions or artifacts.
+- [0.4.0a3 release note](RELEASE_0.4.0a3.md) — latest recorded behavior changes and software checks.
+- [0.4.0a2 release note](RELEASE_0.4.0a2.md) — prior alpha (calibration and coexpression state).
+- [`STATUS.json`](STATUS.json) — read **`current_verification`** for the 0.4.0a3 assessment. Its other dated software/module/gauntlet records are historical and may name older versions or artifacts.
 
 ## Design rationale and proposed work
 
@@ -25,6 +26,6 @@ These retained documents explain design decisions or proposed behavior. Check cu
 
 - [Quantification design](QUANTIFICATION_DESIGN.md) — rationale for the quantification approach.
 - [Quantification review UX specification](QUANTIFICATION_REVIEW_UX_SPEC_2026-09-11.md) — a **proposal**, not current UI instructions; check the source for what has been implemented.
-- [Segmentation Review/QC specification](SEGMENTATION_REVIEW_QC_SPEC.md) — a **proposal** for standalone mask review and editing, with reviewed-mask handoff into Quantification; distinct from downstream quantification review.
+- [Segmentation Review/QC specification](SEGMENTATION_REVIEW_QC_SPEC.md) — behavioral contract for standalone mask review (implemented in `0.4.0a3`); distinct from downstream quantification review.
 - [HPC contract gate](HPC_CONTRACT_GATE_2026-09-11.md) — the settled first-release HPC contract.
 - [Deferred parameter sweep decision](../memory/2026-09-08-deferred-parameter-sweep.md) — records why a parameter search has not been authorized to run.
