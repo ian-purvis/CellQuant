@@ -1,8 +1,8 @@
 # CellQuant developer guide
 
-This is the orientation for the **current source tree**, not a record of unverified scientific accuracy. The package version in [`pyproject.toml`](../pyproject.toml) is **0.4.0a2** and requires **Python 3.11**. The [0.4.0a2 release note](RELEASE_0.4.0a2.md) describes the latest recorded changes; [`STATUS.json`](STATUS.json) `current_verification` records the 2026-09-09 software checks. Older top-level `software`, `modules`, and gauntlet fields in that JSON are historical. No Git metadata is present in this project copy, so neither commit chronology nor an exact current source revision can be inferred here.
+This is the orientation for the **current source tree**, not a record of unverified scientific accuracy. The package version in [`pyproject.toml`](../pyproject.toml) is **0.4.0a3** and requires **Python 3.11**. The [0.4.0a3 release note](RELEASE_0.4.0a3.md) describes the latest recorded changes; [`STATUS.json`](STATUS.json) `current_verification` records the 2026-09-16 software checks. Older top-level `software`, `modules`, and gauntlet fields in that JSON are historical. No Git metadata is present in this project copy, so neither commit chronology nor an exact current source revision can be inferred here.
 
-The latest release record highlights guided nuclear-marker calibration, explicit acceptance of reviewed thresholds, source-bound recipe and result invalidation, cancellable or killable Cellpose workers, and corrected v3 evaluation arguments. Those are software behavior changes; retinal classification accuracy, real-model parity and large-image UI performance remain unmeasured. See the release note for the exact scope and verification evidence.
+The latest release record highlights Segmentation Review/QC, durable draft/approve mask revisions, Quantification mask-input policies, and imported Cellpose TIFF bundles. Prior 0.4.0a2 work covered guided nuclear-marker calibration and coexpression state handling. Those are software behavior changes; retinal classification accuracy, real-model parity and large-image UI performance remain unmeasured. See the release note for the exact scope and verification evidence.
 
 ## Source map
 
@@ -13,7 +13,8 @@ The latest release record highlights guided nuclear-marker calibration, explicit
 | Shared run core | `src/cellquant/contracts.py`, `config.py`, `orchestrator.py`, `analysis.py` define validated inputs, events and pipeline flow |
 | Image analysis | `io/`, `preprocess/`, `segment/`, `postprocess/`, `measure/`, `viz/` |
 | Batch and artifacts | `survey/`, `batch/`, `persist/` provide layout assignment, per-file runs, completion/resume and cloud staging |
-| Nuclear coexpression | `classify/` scores pixels in reviewed labels, calibrates markers, stores/reopens classifications; `plugin/coexpression.py` and `plugin/calibration.py` are its UI |
+| Nuclear coexpression | `classify/` scores pixels in reviewed or original labels, calibrates markers, stores/reopens classifications; `plugin/coexpression.py` and `plugin/calibration.py` are its UI |
+| Segmentation Review/QC | `review/` owns draft/approve persistence, discovery, import bundles, and mask-input policies; `plugin/segmentation_review.py` is the UI |
 | HPC | `hpc/` surveys acquisitions, exports/validates bundles, runs cluster jobs and imports results; `plugin/hpc_panel.py` is the local UI |
 | Verification | `harness/`, `verify/`, `tests/`; `ARCHITECTURE.md` defines scientific parity expectations |
 
@@ -29,9 +30,9 @@ python -m pytest
 cellquant --help
 ```
 
-For a separate classic v3 environment, install `.[gui,cellpose-v3,test]` instead. Cellpose v3 and v4 should not be treated as the same engine; `segment.engine` must match the installed major version. Run targeted tests in `tests/` while editing, then the full suite and a small real-image or native napari workflow relevant to the change. Some native Qt tests require the environment described in [the release note](RELEASE_0.4.0a2.md). Tests with synthetic workers do not prove actual Cellpose inference or retinal biological accuracy.
+For a separate classic v3 environment, install `.[gui,cellpose-v3,test]` instead. Cellpose v3 and v4 should not be treated as the same engine; `segment.engine` must match the installed major version. Run targeted tests in `tests/` while editing, then the full suite and a small real-image or native napari workflow relevant to the change. Some native Qt tests require the environment described in [the release note](RELEASE_0.4.0a3.md). Tests with synthetic workers do not prove actual Cellpose inference or retinal biological accuracy.
 
-There are three distinct forms of verification: (1) software tests and native UI interaction, (2) model inference and parity against reviewed reference labels, and (3) biological review of the intended tissue and marker calls. The recorded 2026-09-09 suite passed 286 tests and checked an installed wheel, but the latter two gates remain open. A live Alpine smoke job is also unrecorded; see the [HPC guide](HPC_PREP_AND_SUBMISSION.md).
+There are three distinct forms of verification: (1) software tests and native UI interaction, (2) model inference and parity against reviewed reference labels, and (3) biological review of the intended tissue and marker calls. The recorded 2026-09-16 suite passed 462 tests across two sessions (see [0.4.0a3](RELEASE_0.4.0a3.md)); the latter two gates remain open. A live Alpine smoke job is also unrecorded; see the [HPC guide](HPC_PREP_AND_SUBMISSION.md).
 
 ## Run the CLI
 
@@ -67,11 +68,11 @@ The core image shape is **`(Z, Y, X, C)`** and labels are **`(Z, Y, X)`** intege
 
 A completed segmentation store contains `labels.tif`, `objects.csv`, `intensities.csv`, `config.json`, `provenance.json`, `events.jsonl`, QC figures, and a final `status.json`. The completion marker is written last and checked before resume. Batch runs isolate failure per input and mirror relative input parents under `*.cellquant` directories. Cloud output is first staged locally and then published to the chosen folder, so a sync copy is not the active analysis directory. Preserve full stores when investigating a result.
 
-Classification is independent of Cellpose and uses raw fluorescence pixels inside **reviewed complete nuclei**. Its saved folder contains `metadata.json`, `calls.csv`, `queries.csv`, `patterns.csv`, `exclusions.csv` and additional evidence files. Query totals include evaluable denominators, missing and uncertain counts. Recipes bind expected channel layouts and retain calibration provenance; reusing a recipe on a new image does not turn old examples into a new review. See [the release note](RELEASE_0.4.0a2.md) for the current reliability/calibration behavior. Cytoplasmic assignment is outside this implementation.
+Classification is independent of Cellpose and uses raw fluorescence pixels inside **reviewed complete nuclei**. Its saved folder contains `metadata.json`, `calls.csv`, `queries.csv`, `patterns.csv`, `exclusions.csv` and additional evidence files. Query totals include evaluable denominators, missing and uncertain counts. Recipes bind expected channel layouts and retain calibration provenance; reusing a recipe on a new image does not turn old examples into a new review. See [the release note](RELEASE_0.4.0a3.md) for the current reliability/calibration behavior. Cytoplasmic assignment is outside this implementation.
 
 ## Trace a behavior or reported change
 
-1. Start with [the release note](RELEASE_0.4.0a2.md) for the latest recorded change set and [`STATUS.json`](STATUS.json) `current_verification` for its evidence and limits. Do not read older JSON sections as results for 0.4.0a2.
+1. Start with [the release note](RELEASE_0.4.0a3.md) for the latest recorded change set and [`STATUS.json`](STATUS.json) `current_verification` for its evidence and limits. Do not read older JSON sections as results for 0.4.0a3.
 2. Find the user's entry point in `plugin/widget.py`, `plugin/coexpression.py`, `plugin/hpc_panel.py`, or `cli.py`; follow its call into the shared core. Consult [`ARCHITECTURE.md`](../ARCHITECTURE.md) for intended contracts and then check the actual `src/` implementation.
 3. Search `tests/` for the behavior and reproduce it with a small input. Examine the entire saved store, especially `config.json`, `provenance.json`, `events.jsonl`, and `status.json`, before attributing a difference to Cellpose or a threshold.
 4. Use the retained design rationale, proposed quantification UX and settled HPC contract in [the documentation index](README.md) for context. A proposal's desired UI does not prove that UI exists. Record new changes and verification explicitly rather than inferring a timeline from old build artifacts.

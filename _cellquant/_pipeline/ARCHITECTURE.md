@@ -264,7 +264,7 @@ Pass requires >= 8.5, no uncaught exception, no silent dtype/axis coercion, no
 unlogged parameter default, reproducible config, and runtime <= 1.5 times the
 reference workflow on identical hardware. Metrics, scores, failed rounds, and
 ranked open issues are recorded in `docs/STATUS.json` as historical evidence.
-Its `current_verification` records the latest 0.4.0a2 assessment; legacy fields
+Its `current_verification` records the latest 0.4.0a3 assessment; legacy fields
 describe older history. See the developer guide for the current state map. No
 absent measurement is represented as passing.
 

@@ -1,6 +1,6 @@
 # CellQuant segmentation review/QC workflow
 
-Status: implemented (first release)  
+Status: implemented in 0.4.0a3  
 Date: September 16, 2026  
 Scope: standalone Segmentation Review/QC
 

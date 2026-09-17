@@ -2,7 +2,7 @@
 
 CellQuant finds objects such as nuclei in microscope images and measures their fluorescence. Its napari window lets you inspect the image and the colored object outlines before saving. **CellQuant does not decide whether a result is biologically correct.** Review masks, channel choices, and marker thresholds against your experiment.
 
-This guide is for **Windows** and the current 0.4.0a2 alpha. For a first trial, use one small TIFF, OME-TIFF, or ND2 image with known channel names and pixel/voxel spacing. Keep your original image untouched. Allow ample free disk space for output. If your files are in OneDrive, make them available offline first (for example, **Always keep on this device**).
+This guide is for **Windows** and the current 0.4.0a3 alpha. For a first trial, use one small TIFF, OME-TIFF, or ND2 image with known channel names and pixel/voxel spacing. Keep your original image untouched. Allow ample free disk space for output. If your files are in OneDrive, make them available offline first (for example, **Always keep on this device**).
 
 ## Install and open
 
