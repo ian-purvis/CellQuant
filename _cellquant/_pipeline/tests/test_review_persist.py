@@ -173,6 +173,42 @@ def test_editing_an_approved_run_creates_a_draft_that_is_not_selected(tmp_path):
     np.testing.assert_array_equal(read_label_tiff(reselected.path), approved)
 
 
+def test_discarding_a_draft_after_reject_stays_rejected(tmp_path):
+    original = _labels()
+    run = _run(tmp_path, original)
+    publish_approved(run, original)
+    reject_review(run, reason="not good enough", loaded_record=load_review(run))
+    edited = original.copy()
+    edited[0, 1, 1] = 3
+    save_draft(run, edited, loaded_record=load_review(run))
+    draft = load_review(run)
+    assert draft.review_status == "draft"
+    restored = discard_draft(run, restore_approval=True, loaded_record=draft)
+    assert restored.review_status == "rejected"
+    assert restored.rejection_reason == "not good enough"
+    with pytest.raises(ReviewResolutionError, match="rejected"):
+        resolve_labels(run, policy="prefer_approved")
+
+
+def test_discarding_an_old_draft_uses_the_previous_rejection(tmp_path):
+    """Drafts that cleared the reason still restore it from review.previous.json."""
+
+    original = _labels()
+    run = _run(tmp_path, original)
+    publish_approved(run, original)
+    reject_review(run, reason="debris in the field", loaded_record=load_review(run))
+    edited = original.copy()
+    edited[0, 1, 1] = 3
+    record = save_draft(run, edited, loaded_record=load_review(run))
+    cleared = record.with_updates(rejection_reason=None)
+    (run / REVIEW_JSON_NAME).write_text(cleared.to_json(), encoding="utf-8")
+    restored = discard_draft(run, restore_approval=True, loaded_record=cleared)
+    assert restored.review_status == "rejected"
+    assert restored.rejection_reason == "debris in the field"
+    with pytest.raises(ReviewResolutionError, match="debris in the field"):
+        resolve_labels(run, policy="prefer_approved")
+
+
 def test_reject_requires_reason_and_excludes_from_policies(tmp_path):
     run = _run(tmp_path, _labels())
     with pytest.raises(Exception, match="reason"):

@@ -91,7 +91,12 @@ class ImageLayer:
         self.rgb = kwargs.get("rgb", False)
         self.visible = kwargs.get("visible", True)
         self.contrast_limits = kwargs.get("contrast_limits")
-        self.contrast_limits_range = kwargs.get("contrast_limits_range")
+        # napari 0.9 sets the slider range from contrast_limits. add_image
+        # no longer accepts contrast_limits_range.
+        explicit_range = kwargs.get("contrast_limits_range")
+        self.contrast_limits_range = (
+            self.contrast_limits if explicit_range is None else explicit_range
+        )
 
 
 class LabelsLayer:

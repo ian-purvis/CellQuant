@@ -124,7 +124,6 @@ def display_channel_kwargs(
     if channel_data is not None:
         clim = contrast_limits_from_channel(channel_data)
         kwargs["contrast_limits"] = clim
-        kwargs["contrast_limits_range"] = clim
     return kwargs
 
 

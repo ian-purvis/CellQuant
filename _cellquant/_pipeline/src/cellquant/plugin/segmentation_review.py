@@ -181,6 +181,10 @@ class SegmentationReviewPanel(Q.QWidget):
         self.timer.timeout.connect(self.poll)
         self.timer.start()
         self.destroyed.connect(lambda: self.pool.shutdown(wait=False, cancel_futures=True))
+        app = Q.QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+            self.destroyed.connect(lambda: app.removeEventFilter(self))
         self._sync_layout_combo()
 
     # -- construction ----------------------------------------------------
@@ -288,17 +292,19 @@ class SegmentationReviewPanel(Q.QWidget):
         page = Q.QGroupBox("4. Edit and approve")
         layout = Q.QVBoxLayout(page)
         hint = Q.QLabel(
-            "Edit the working mask in napari: paint a new object with an unused "
-            "positive ID, paint or erase an existing object, delete or merge whole "
-            "objects, or split one by painting a fresh ID. Brush edits affect the "
-            "current Z plane; delete-object and merge affect the selected IDs "
-            "throughout the volume. Undo/redo use napari's Labels history."
+            "Click Paint or press P. That selects Mask review labels and turns on "
+            "the brush for the current Z plane. Erase is E. Napari's brush buttons "
+            "appear in the layer controls once that layer is selected. Delete-object "
+            "and merge affect the selected IDs throughout the volume. Undo/redo use "
+            "napari's Labels history."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self._buttons(
             layout,
             [
+                ("Paint", lambda: self._set_mode("paint")),
+                ("Erase", lambda: self._set_mode("erase")),
                 ("Previous", self.previous_item),
                 ("Next", self.next_item),
                 ("Save draft", self.save_draft),
@@ -651,6 +657,11 @@ class SegmentationReviewPanel(Q.QWidget):
         self._working_layer_id = id(layer)
         self._apply_layout()
         self._apply_opacity()
+        self._select_working_labels()
+        self.status.setText(
+            "Mask review labels is selected. Click Paint or press P to edit the "
+            "current Z plane."
+        )
 
     def _remove_review_layers(self):
         for layer in list(getattr(self.viewer, "layers", []) or []):
@@ -734,6 +745,72 @@ class SegmentationReviewPanel(Q.QWidget):
             layer = _find_layer(self.viewer, name)
             if layer is not None:
                 self._set(layer, "opacity", value)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if event.type() != QtCore.QEvent.KeyPress or self.workspace is None:
+            return False
+        if event.modifiers() & ~QtCore.Qt.KeypadModifier:
+            return False
+        focus = Q.QApplication.focusWidget()
+        if isinstance(
+            focus,
+            (Q.QLineEdit, Q.QTextEdit, Q.QPlainTextEdit, Q.QAbstractSpinBox, Q.QComboBox),
+        ):
+            return False
+        modes = {
+            QtCore.Qt.Key_P: "paint",
+            QtCore.Qt.Key_E: "erase",
+            QtCore.Qt.Key_F: "fill",
+            QtCore.Qt.Key_L: "pick",
+        }
+        mode = modes.get(event.key())
+        if mode is None or self.working_layer() is None:
+            return False
+        self.guard(lambda: self._set_mode(mode))
+        return True
+
+    def _select_working_labels(self):
+        """Make Mask review labels the layer Napari's brush tools edit."""
+
+        layer = self.working_layer()
+        if layer is None:
+            raise ValueError("Mask review labels is not open. Open the image again.")
+        original = _find_layer(self.viewer, ORIGINAL_LABELS_LAYER)
+        if original is not None and hasattr(original, "editable"):
+            original.editable = False
+        selection = getattr(getattr(self.viewer, "layers", None), "selection", None)
+        if selection is not None:
+            try:
+                selection.active = layer
+            except Exception:  # noqa: BLE001 - viewer mocks may reject assignment
+                pass
+        self._show_label_controls()
+        return layer
+
+    def _show_label_controls(self) -> None:
+        window = getattr(self.viewer, "window", None)
+        qt_viewer = getattr(window, "_qt_viewer", None)
+        if qt_viewer is None:
+            return
+        dock = getattr(qt_viewer, "dockLayerControls", None)
+        if dock is not None:
+            dock.show()
+            dock.raise_()
+        canvas = getattr(qt_viewer, "canvas", None)
+        native = getattr(canvas, "native", None) if canvas is not None else None
+        target = native if native is not None else canvas
+        if target is not None and hasattr(target, "setFocus"):
+            QtCore.QTimer.singleShot(0, target.setFocus)
+
+    def _set_mode(self, mode: str) -> None:
+        layer = self._select_working_labels()
+        if hasattr(layer, "mode"):
+            layer.mode = mode
+        names = {"paint": "Paint", "erase": "Erase", "fill": "Fill", "pick": "Pick"}
+        self.status.setText(
+            f"{names.get(mode, mode)} is on for Mask review labels, current Z plane. "
+            "Click the image and drag. P paint, E erase, F fill, L pick."
+        )
 
     @staticmethod
     def _set(layer, attribute: str, value):

@@ -49,7 +49,7 @@ def test_display_channel_kwargs_are_additive_and_colored():
     assert kwargs["metadata"]["cellquant_display_channel"] is True
     assert kwargs["colormap"] is not None
     assert kwargs["contrast_limits"] == (float(data[1].min()), float(data[1].max()))
-    assert kwargs["contrast_limits_range"] == kwargs["contrast_limits"]
+    assert "contrast_limits_range" not in kwargs
 
 
 def test_set_active_image_source_toggles_visibility():

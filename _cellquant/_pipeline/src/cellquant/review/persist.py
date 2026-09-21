@@ -191,7 +191,6 @@ def save_draft(
     base = current or ReviewRecord()
     record = base.with_updates(
         review_status="draft",
-        rejection_reason=None,
         draft_file=LABELS_DRAFT_NAME,
         draft_sha256=summary.sha256,
         shape=summary.shape,
@@ -368,6 +367,22 @@ def reject_review(
     return record
 
 
+def _previous_rejection_reason(root: Path) -> str | None:
+    """Reason from the metadata replaced by the current draft, if it was a rejection.
+
+    Drafts written before rejection reasons were kept on the draft record only
+    survive in ``review.previous.json``.
+    """
+
+    previous = previous_metadata(root)
+    if previous is None:
+        return None
+    if str(previous.get("review_status") or "") != "rejected":
+        return None
+    reason = str(previous.get("rejection_reason") or "").strip()
+    return reason or None
+
+
 def discard_draft(
     run_dir: str | Path,
     *,
@@ -381,11 +396,23 @@ def discard_draft(
     base = current or ReviewRecord()
     (root / LABELS_DRAFT_NAME).unlink(missing_ok=True)
     restored = base.review_status
+    rejection_reason = base.rejection_reason
     if base.review_status == "draft":
         has_revision = bool(base.labels_file) and (root / base.labels_file).is_file()
-        restored = "approved" if (restore_approval and has_revision) else "pending"
+        prior_rejection = (base.rejection_reason or "").strip() or _previous_rejection_reason(root)
+        if prior_rejection:
+            # A draft saved after Reject must not resurrect the rejected revision.
+            restored = "rejected"
+            rejection_reason = prior_rejection
+        elif restore_approval and has_revision:
+            restored = "approved"
+            rejection_reason = None
+        else:
+            restored = "pending"
+            rejection_reason = None
     record = base.with_updates(
         review_status=restored,
+        rejection_reason=rejection_reason,
         draft_file=None,
         draft_sha256=None,
         updated_utc=utc_now(),
