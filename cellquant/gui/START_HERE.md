@@ -131,7 +131,7 @@ Tips:
 
 ## Step 5: Results
 
-1. Click **Run all images** (included images only), or select rows in step 1 and click **Run selected images**. The bar at the bottom shows the image and step, for example *Image 3 of 9: Finding objects: slice 2 of 7*. **Pause** waits after the current step; **Cancel** stops after it, keeping the images already finished. One image failing does not stop the others. To re-run with new settings, change them and click **Run all images** again.
+1. Click **Run all images** (included images only), or select rows in step 1 and click **Run selected images**. The bar at the bottom shows the image and step, for example *Image 3 of 9: Finding objects: slice 2 of 7*. **Pause** waits after the current step; **Cancel** stops after it, keeping the images already finished. One image failing does not stop the others. To re-run with new settings, change them and click **Run all images** again. With several analyses (see below), **Run all analyses** runs each of them.
 2. Click **Export results…** and choose a folder.
 
 The **Results** box shows the numbers for the image on screen, for example *Marker A+ among all objects: 10 of 40 (25.0%)*.
@@ -148,6 +148,19 @@ The **Results** box shows the numbers for the image on screen, for example *Mark
 If `mixed_settings.txt` is also there, some images were analysed with different settings (for example you changed a cutoff after running them). Run all images again before you report numbers.
 
 *Advanced:* **Show all settings** lets you add results such as "Marker B among Marker A-positive objects", review only flagged or failed images, and save or load settings.
+
+## Several analyses of the same images
+
+The **Analysis** list at the top of the CellQuant panel lets one experiment hold several analyses of the same images, for example finding objects in each channel in turn, or trying two segmentation methods. Each analysis has its own settings, its own results, its own deleted objects and approvals.
+
+- **One per channel…**: tick the channels; each gets an analysis that finds objects in that channel with the current settings otherwise (method, Z-stack mode, markers).
+- **New analysis…**: a copy of the current settings under a new name. Change what you need in steps 2-4, for example the channel in step 2.
+- Choose an analysis in the list to see, change, check or run it. Steps 2-5 always show the analysis chosen.
+- **Run all analyses** (bottom bar, and step 5) runs every included image with each analysis, one after another. Pause and Cancel work as for one analysis; Cancel keeps what is finished and skips the analyses not started.
+- **Export all analyses…** (step 5) saves each analysis in its own folder, plus `all_analyses_image_summary.csv`: every analysis's per-image numbers in one table, with `analysis` and `segmentation_channel` columns.
+- **Rename…** and **Remove** change the list. Removing only takes an analysis off the list; its settings and results stay in the experiment folder.
+
+**Success check:** after **Run all analyses**, choosing each analysis in the list shows outlines found in its channel.
 
 ---
 

@@ -77,6 +77,33 @@ class ImageRecord(BaseModel):
     file_signature: str = ""
 
 
+# Review state of one image that belongs to one analysis (see AnalysisRecord.image_states).
+IMAGE_STATE_FIELDS = ("processing_status", "last_result", "last_message", "approved_settings_sha256")
+
+
+class AnalysisRecord(BaseModel):
+    """One analysis of the experiment's images: its own settings (recipe) and its own results.
+
+    An experiment can hold several, for example one per channel that objects are found in. The
+    active analysis's per-image review state lives on the image records; the others' is kept in
+    ``image_states`` until they are made active again.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    recipe_id: str
+    name: str
+    # Where this analysis keeps its open (not yet run) results, relative to the experiment folder.
+    working_folder: str = "working"
+    latest_run_id: str | None = None
+    image_states: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # The analysis that holds everything saved before analyses existed (runs without its id among the
+    # others, working/, unstamped edits). Only the experiment's original analysis has this.
+    owns_legacy: bool = False
+    # Taken off the list. Kept so its runs and edits are never mistaken for another analysis's.
+    removed: bool = False
+
+
 class Experiment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -94,6 +121,8 @@ class Experiment(BaseModel):
     import_file_types: list[str] = Field(default_factory=lambda: ["nd2", "tiff"])
     software_version: str = __version__
     latest_run_id: str | None = None
+    # Analyses of these images; empty in experiments saved before analyses existed (one analysis).
+    analyses: list[AnalysisRecord] = Field(default_factory=list)
 
     def image(self, image_id: str) -> ImageRecord:
         for record in self.images:
@@ -161,7 +190,7 @@ def save_experiment(experiment: Experiment) -> Path:
 
 
 # CellQuant's own folders inside an experiment. They are never imported as images.
-_EXPERIMENT_FOLDERS = {"runs", "working", ".cache", "exports", "edits", "recipes"}
+_EXPERIMENT_FOLDERS = {"runs", "working", ".cache", "exports", "edits", "recipes", "analyses"}
 
 
 @dataclass

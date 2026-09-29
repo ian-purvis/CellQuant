@@ -252,7 +252,10 @@ class HpcPanel(QWidget):
         def channel(index: int) -> str:
             return f"{index + 1} ({channels[index]})" if index < len(channels) else str(index + 1)
 
+        controller = self.shell.controller if hasattr(self, "shell") else None
+        analysis = controller.active_analysis().name if controller is not None else ""
         lines = [
+            *([f"Analysis: {analysis} (choose another in the Analysis list at the top; one package per analysis)"] if analysis else []),
             f"Method: {recipe.object_set.algorithm}"
             + (f", engine {parameters.get('engine')}, model {parameters.get('model')}, GPU {'on' if parameters.get('gpu') else 'off'}" if recipe.object_set.algorithm == "cellpose" else ""),
             f"Channel segmented: {channel(recipe.object_set.segmentation_channel)}",
