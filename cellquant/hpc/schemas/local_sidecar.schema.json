@@ -1,0 +1,46 @@
+{
+  "$id": "https://cellquant.local/hpc/v1/local_sidecar.schema.json",
+  "additionalProperties": false,
+  "description": "Beside a prepared package, never inside it: the Windows source files, for the user's reference.",
+  "properties": {
+    "acquisitions": {
+      "additionalProperties": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Acquisitions",
+      "type": "object"
+    },
+    "bundle_id": {
+      "title": "Bundle Id",
+      "type": "string"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "package_name": {
+      "title": "Package Name",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_experiment_dir": {
+      "title": "Source Experiment Dir",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "package_name",
+    "created_at",
+    "source_experiment_dir",
+    "acquisitions"
+  ],
+  "title": "LocalSidecar",
+  "type": "object"
+}
