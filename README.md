@@ -51,7 +51,8 @@ No real images are stored in this repository. The tests make their own images:
   python -m cellquant.synthetic_retina "D:\CellQuant test images"
   ```
 
-  Add `--size 1024` for full-size images. The folder's `README.txt` and `truth_summary.csv` give the answers.
+  Add the `images` folder it makes to CellQuant; the answers are in `truth`, `truth_summary.csv` and `README.txt`.
+  Add `--size 1024` for full-size images.
 
 ## Running the tests
 

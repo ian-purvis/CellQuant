@@ -128,8 +128,10 @@ def test_classical_segmentation_finds_a_plausible_number_of_nuclei(retina):
 def test_control_and_crispri_set_with_known_answers(tmp_path):
     rows = write_retina_set(tmp_path, size=96, retinas=1, seed=2)
     assert [row["condition"] for row in rows] == ["Control", "CRISPRi"]
-    assert (tmp_path / "Control" / "Retina 1" / "control_r1.tif").is_file()
-    assert (tmp_path / "CRISPRi" / "Retina 1" / "crispri_r1_labels.tif").is_file()
+    assert (tmp_path / "images" / "Control" / "Retina 1" / "control_r1.tif").is_file()
+    assert (tmp_path / "truth" / "CRISPRi" / "Retina 1" / "crispri_r1_labels.tif").is_file()
+    # Only the images are in the images folder, so adding it to CellQuant finds 2 images.
+    assert sorted(path.name for path in (tmp_path / "images").rglob("*.*")) == ["control_r1.tif", "crispri_r1.tif"]
     with (tmp_path / "truth_summary.csv").open(encoding="utf-8") as handle:
         summary = list(csv.DictReader(handle))
     assert [item["image"] for item in summary] == ["Control/Retina 1/control_r1.tif", "CRISPRi/Retina 1/crispri_r1.tif"]
