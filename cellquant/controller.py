@@ -1,0 +1,913 @@
+"""Analysis controller.
+
+The viewer calls this object. Segmentation, measurement, classification, and
+summary each cache on their own inputs, and manual edits stay out of the recipe.
+"""
+
+from __future__ import annotations
+
+from collections import OrderedDict
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from cellquant.__version__ import __version__
+from cellquant.cache import StageCache, stage_key
+from cellquant.edits import EditOperation, apply_edits, operations_from_diff
+from cellquant.errors import CellQuantError, ImageLoadError
+from cellquant.experiment import (
+    Experiment,
+    add_images,
+    add_metadata_column,
+    channel_warnings,
+    create_experiment,
+    load_experiment,
+    save_experiment,
+    set_channel_name,
+)
+from cellquant.image import LoadedImage
+from cellquant.inputs import load_record_image, resolve_source_path
+from cellquant.hpc.lineage import segmentation_settings
+from cellquant import progress
+from cellquant.progress import AnalysisCancelled
+from cellquant.pipeline import (
+    ImageResult,
+    assemble_result,
+    carry_segmentation_provenance,
+    measurement_values,
+    process_image,
+    reclassify_result,
+    remeasure_persisted_result,
+    segmentation_details_of,
+)
+from cellquant.quantify import classification_counts
+from cellquant.recipe import Recipe, load_recipe, save_recipe
+from cellquant.segmentation import engine_signature
+from cellquant.storage import (
+    RunLog,
+    RunRecord,
+    export_run_tables,
+    file_fingerprint,
+    finish_run,
+    grouped_summary,
+    load_edits,
+    persist_image_result,
+    read_persisted_result,
+    save_edits,
+    start_run,
+)
+
+
+@dataclass
+class ImageJobResult:
+    image_id: str
+    filename: str
+    status: str
+    message: str
+    qc_status: str | None = None
+
+
+@dataclass
+class BatchReport:
+    run_id: str
+    run_dir: str
+    jobs: list[ImageJobResult] = field(default_factory=list)
+
+    @property
+    def completed(self) -> int:
+        return sum(job.status == "Success" for job in self.jobs)
+
+    @property
+    def warnings(self) -> int:
+        return sum(job.status == "Warning" for job in self.jobs)
+
+    @property
+    def failed(self) -> int:
+        return sum(job.status == "Failure" for job in self.jobs)
+
+
+# Loaded images kept for fast re-measuring after an edit. Only the most recent
+# few are kept so a long batch does not hold every image in memory.
+SESSION_IMAGE_LIMIT = 2
+
+
+class AnalysisController:
+    def __init__(self, experiment: Experiment):
+        self.experiment = experiment
+        self.directory = Path(experiment.directory)
+        self.cache = StageCache(self.directory / ".cache")
+        self.recipe = self._load_bound_recipe()
+        self.edits: dict[str, list[EditOperation]] = {
+            record.image_id: load_edits(self.directory, record.image_id) for record in experiment.images
+        }
+        self.current_image_id: str | None = experiment.images[0].image_id if experiment.images else None
+        self.run_record: RunRecord | None = None
+        self.run_dir: Path | None = None
+        self.run_log: RunLog | None = None
+        self.last_results: dict[str, ImageResult] = {}
+        self._session_images: OrderedDict[str, LoadedImage] = OrderedDict()
+        self._segmentation_ids: dict[str, str] = {}
+
+    @classmethod
+    def create(cls, directory: str | Path, name: str, input_directory: str | Path | None = None) -> AnalysisController:
+        return cls(create_experiment(directory, name, input_directory=input_directory))
+
+    @classmethod
+    def open(cls, directory: str | Path) -> AnalysisController:
+        return cls(load_experiment(directory))
+
+    def save(self) -> None:
+        self._touch_recipe()
+        recipe_path = self._recipe_path()
+        save_recipe(self.recipe, recipe_path)
+        self.experiment.recipe_id = self.recipe.recipe_id
+        save_experiment(self.experiment)
+        for image_id, edits in self.edits.items():
+            save_edits(self.directory, image_id, edits)
+        self._persist_open_results()
+
+    def recall(self, image_id: str) -> ImageResult | None:
+        """Return the in-memory result or the last saved result for this image."""
+
+        if image_id in self.last_results:
+            return self.last_results[image_id]
+        for folder in self._result_folders():
+            result = read_persisted_result(folder, image_id)
+            if result is not None:
+                self.last_results[image_id] = result
+                return result
+        return None
+
+    def _result_folders(self) -> list[Path]:
+        """Where saved results are looked for: open work, the latest run, then earlier runs, newest first.
+
+        A run of one image does not hide the saved results of the others (for example, results
+        imported from a cluster run after one image is run again here).
+        """
+
+        folders = [self.directory / "working"]
+        latest = self._latest_run_dir()
+        if latest is not None:
+            folders.append(latest)
+        earlier = []
+        for run in (self.directory / "runs").glob("*/run.json"):
+            if latest is not None and run.parent == latest:
+                continue
+            try:
+                import json
+
+                started = str(json.loads(run.read_text(encoding="utf-8")).get("start_timestamp") or "")
+            except (OSError, ValueError):
+                started = ""
+            earlier.append((started, run.parent))
+        folders.extend(folder for _started, folder in sorted(earlier, key=lambda item: item[0], reverse=True))
+        return folders
+
+    def _latest_run_dir(self) -> Path | None:
+        if self.run_dir is not None and self.run_dir.is_dir():
+            return self.run_dir
+        if self.experiment.latest_run_id:
+            path = self.directory / "runs" / self.experiment.latest_run_id
+            if path.is_dir():
+                return path
+        return None
+
+    def _persist_open_results(self) -> None:
+        """Save interactive results separately from the finished run snapshot."""
+
+        destination = self.directory / "working"
+        for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits"):
+            (destination / relative).mkdir(parents=True, exist_ok=True)
+        for image_id, result in self.last_results.items():
+            persist_image_result(destination, result, self._active_edits(image_id))
+
+    def add_image_paths(self, paths: list[str | Path], file_types: list[str] | tuple[str, ...] | None = None) -> list[str]:
+        """Add files, or every image of the chosen types in folders and their subfolders."""
+
+        if file_types is not None:
+            if not list(file_types):
+                raise ValueError("Choose at least one file type: ND2 or TIFF.")
+            self.experiment.import_file_types = list(file_types)
+        notices = add_images(self.experiment, paths, file_types=file_types or self.experiment.import_file_types)
+        for record in self.experiment.images:
+            self.edits.setdefault(record.image_id, [])
+        if self.current_image_id is None and self.experiment.images:
+            self.current_image_id = self.experiment.images[0].image_id
+        self.save()
+        return notices
+
+    def channel_notices(self) -> list[str]:
+        """Things to check about the listed images: channels, pixel sizes, Z-stacks."""
+
+        from cellquant.experiment import image_notices
+
+        return image_notices(self.experiment)
+
+    def set_sample_name(self, image_id: str, name: str) -> None:
+        self.experiment.image(image_id).sample_name = name
+
+    def set_included(self, image_id: str, include: bool) -> None:
+        record = self.experiment.image(image_id)
+        record.include = include
+        if not include:
+            record.processing_status = "excluded"
+        elif record.processing_status == "excluded":
+            # Ticked again: back to what it was before it was left out.
+            record.processing_status = "analyzed" if self.recall(image_id) is not None else "not_analyzed"
+
+    def add_metadata_column(self, name: str) -> None:
+        add_metadata_column(self.experiment, name)
+
+    def set_metadata(self, image_id: str, column: str, value: str) -> None:
+        if column not in self.experiment.metadata_columns:
+            self.add_metadata_column(column)
+        self.experiment.image(image_id).user_metadata[column] = value
+
+    def set_channel_name(self, channel_index: int, name: str) -> None:
+        set_channel_name(self.experiment, channel_index, name)
+
+    def set_pixel_size(
+        self,
+        image_id: str,
+        pixel_size_x: float | None,
+        pixel_size_y: float | None,
+        pixel_size_z: float | None = None,
+    ) -> None:
+        """Set µm per pixel in X and Y, and optionally the Z step in µm."""
+
+        record = self.experiment.image(image_id)
+        record.pixel_size_x = pixel_size_x
+        record.pixel_size_y = pixel_size_y
+        if pixel_size_z is not None:
+            record.pixel_size_z = pixel_size_z or None
+
+    def set_status(self, image_id: str, status: str) -> None:
+        record = self.experiment.image(image_id)
+        record.processing_status = status
+        record.approved_settings_sha256 = self._approval_fingerprint(image_id) if status == "approved" else ""
+
+    def _approval_fingerprint(self, image_id: str) -> str:
+        """Settings plus the number of edits: what an approval vouches for."""
+
+        result = self.last_results.get(image_id)
+        settings = result.provenance.get("recipe_sha256", "") if result is not None else self.recipe.content_hash()
+        return f"{settings}:{len(self._active_edits(image_id))}"
+
+    def set_recipe(self, recipe: Recipe | dict | str | Path) -> None:
+        self.recipe = load_recipe(recipe)
+        if not self.recipe.recipe_id:
+            self.recipe.recipe_id = self.experiment.recipe_id or f"recipe_{self.experiment.experiment_id[-8:]}"
+        self.recipe.software_version = self.recipe.software_version or __version__
+
+    def duplicate_recipe(self, name: str) -> Recipe:
+        copy = self.recipe.model_copy(deep=True)
+        copy.recipe_id = f"{self.recipe.recipe_id or 'recipe'}_copy"
+        copy.recipe_name = name or f"{self.recipe.recipe_name or 'Recipe'} copy"
+        self.recipe = copy
+        self.save()
+        return self.recipe
+
+    def import_recipe(self, path: str | Path) -> Recipe:
+        self.set_recipe(path)
+        self.save()
+        return self.recipe
+
+    def export_recipe(self, path: str | Path) -> None:
+        self._touch_recipe()
+        save_recipe(self.recipe, path)
+
+    def set_included_many(self, image_ids: list[str], include: bool) -> None:
+        for image_id in image_ids:
+            self.set_included(image_id, include)
+
+    def included_ids(self) -> list[str]:
+        return [record.image_id for record in self.experiment.images if record.include]
+
+    def run_image(self, image_id: str, *, persist: bool = True, new_run: bool = True) -> ImageResult:
+        record = self.experiment.image(image_id)
+        was_approved = record.processing_status == "approved"
+        result = self._analyze(record)
+        status, message = _job_status(result)
+        self.last_results[image_id] = result
+        unchanged = (
+            was_approved
+            and status == "Success"
+            and record.approved_settings_sha256 == self._approval_fingerprint(image_id)
+        )
+        if not unchanged:
+            if was_approved:
+                record.last_message = "Approval was cleared: this image was analyzed again with different settings."
+                record.approved_settings_sha256 = ""
+            record.processing_status = "needs_attention" if status != "Success" else "analyzed"
+        record.last_result = status
+        record.last_message = message or record.last_message
+        self.last_results[image_id] = result
+        if persist:
+            progress.update("Saving results")
+            self._ensure_run([record], fresh=new_run)
+            assert self.run_dir is not None and self.run_record is not None and self.run_log is not None
+            persist_image_result(self.run_dir, result, self._active_edits(image_id))
+            self._record_recipe_use(image_id, result)
+            self.run_record.manual_edits[image_id] = [item.model_dump(mode="json") for item in self._active_edits(image_id)]
+            self.run_record.input_hashes[image_id] = record.content_hash
+            if message:
+                self.run_log.write(record.filename, "result", message)
+                if status == "Warning":
+                    self.run_record.warnings.append(f"{record.filename}: {message}")
+            self.experiment.latest_run_id = self.run_record.run_id
+            finish_run(self.run_dir, self.run_record, "completed")
+            self.save()
+        return result
+
+    def run_images(
+        self,
+        image_ids: list[str] | None = None,
+        *,
+        on_progress=None,
+        should_continue=None,
+    ) -> BatchReport:
+        selected = list(image_ids) if image_ids is not None else self.included_ids()
+        records = [self.experiment.image(image_id) for image_id in selected]
+        self._ensure_run(records, fresh=True)
+        assert self.run_dir is not None and self.run_record is not None and self.run_log is not None
+        jobs: list[ImageJobResult] = []
+        total = len(records)
+        cancelled = False
+        for index, record in enumerate(records, start=1):
+            if should_continue is not None and not should_continue():
+                self.run_log.write(record.filename, "batch", "Cancelled.")
+                cancelled = True
+                break
+            if on_progress is not None:
+                on_progress(index, total, record.filename, "running")
+            try:
+                result = self.run_image(record.image_id, persist=True, new_run=False)
+            except AnalysisCancelled:
+                # Stopped part-way through this image: nothing from it is kept; earlier images are.
+                self.run_log.write(record.filename, "batch", "Cancelled during this image.")
+                cancelled = True
+                break
+            except Exception as exc:
+                message = exc.args[0] if exc.args else "Analysis failed."
+                if not isinstance(exc, CellQuantError):
+                    message = "Analysis failed."
+                record.processing_status = "needs_attention"
+                record.last_result = "Failure"
+                record.last_message = str(message)
+                self.run_log.write(record.filename, "batch", str(message), exc)
+                self.run_record.errors.append(f"{record.filename}: {message}")
+                jobs.append(ImageJobResult(record.image_id, record.filename, "Failure", str(message)))
+            else:
+                status, message = _job_status(result)
+                jobs.append(
+                    ImageJobResult(
+                        record.image_id,
+                        record.filename,
+                        status,
+                        message,
+                        result.qc.status,
+                    )
+                )
+            if on_progress is not None:
+                on_progress(index, total, record.filename, jobs[-1].status)
+        if cancelled:
+            # Stopped early: never recorded as a finished run, whatever the finished images did.
+            batch_status = "cancelled"
+        elif jobs and all(job.status == "Failure" for job in jobs):
+            batch_status = "failed"
+        elif any(job.status == "Failure" for job in jobs):
+            batch_status = "completed_with_failures"
+        else:
+            batch_status = "completed"
+        finish_run(self.run_dir, self.run_record, batch_status)
+        self.save()
+        return BatchReport(self.run_record.run_id, str(self.run_dir), jobs)
+
+    def preview(self, image_id: str, crop: tuple[int, int, int, int] | None = None) -> np.ndarray:
+        """Segment a crop. The result is not cached and is not a saved run."""
+
+        record = self.experiment.image(image_id)
+        loaded = self._load_record(record)
+        height, width = loaded.shape_yx
+        y0, y1, x0, x1 = crop or (0, height, 0, width)
+        y0, y1 = _clamp(y0, y1, height)
+        x0, x1 = _clamp(x0, x1, width)
+        from dataclasses import replace
+
+        from cellquant.pipeline import segment_channel
+
+        # A 3D preview segments every slice of the visible area, so linking can be checked too.
+        cropped = replace(loaded, data=np.ascontiguousarray(loaded.data[..., y0:y1, x0:x1]))
+        labels = segment_channel(cropped, self.recipe, record_timing=False)
+        full = np.zeros(loaded.spatial_shape, dtype=np.int32)
+        full[..., y0:y1, x0:x1] = labels
+        return full
+
+    def update_thresholds(self, image_id: str, thresholds: dict[str, float]) -> ImageResult | None:
+        """Reclassify the current measurements. Segmentation is not repeated."""
+
+        data = self.recipe.model_dump(mode="json")
+        known = {item["id"]: item for item in data["classifications"]}
+        for classification_id, threshold in thresholds.items():
+            if classification_id not in known:
+                raise KeyError(classification_id)
+            known[classification_id]["threshold"] = float(threshold)
+        self.set_recipe(data)
+        prior = self.recall(image_id)
+        if prior is None:
+            return None
+        result = reclassify_result(prior, self.recipe)
+        self.last_results[image_id] = result
+        return result
+
+    def delete_object(self, image_id: str, object_id: int) -> ImageResult:
+        self._edit_and_remeasure(image_id, EditOperation.create(image_id, int(object_id), "delete"))
+        return self.last_results[image_id]
+
+    def restore_object(self, image_id: str, object_id: int) -> ImageResult:
+        self._edit_and_remeasure(image_id, EditOperation.create(image_id, int(object_id), "restore"))
+        return self.last_results[image_id]
+
+    def undo(self, image_id: str) -> ImageResult | None:
+        edits = self.edits.get(image_id, [])
+        active = self._active_edits(image_id)
+        if not active:
+            return self.last_results.get(image_id)
+        last = active[-1]
+        # Remove that exact edit; edits made on other segmentations stay.
+        for index in range(len(edits) - 1, -1, -1):
+            if edits[index] is last:
+                del edits[index]
+                break
+        save_edits(self.directory, image_id, edits)
+        self._remeasure_cached(image_id)
+        return self.last_results.get(image_id)
+
+    def commit_drawn_labels(self, image_id: str, drawn: np.ndarray) -> ImageResult:
+        current = self.last_results.get(image_id)
+        if current is None:
+            current = self.run_image(image_id, persist=False, new_run=False)
+        operations = operations_from_diff(current.labels, np.asarray(drawn), image_id)
+        stamp = self._current_segmentation(image_id)
+        for operation in operations:
+            operation.segmentation = stamp
+        self.edits.setdefault(image_id, []).extend(operations)
+        save_edits(self.directory, image_id, self.edits[image_id])
+        self._remeasure_cached(image_id)
+        return self.last_results[image_id]
+
+    def _current_segmentation(self, image_id: str) -> str:
+        """Cache key of the segmentation on screen for this image, or blank when unknown."""
+
+        if image_id in self._segmentation_ids:
+            return self._segmentation_ids[image_id]
+        result = self.recall(image_id)
+        key = str(result.provenance.get("segmentation_key") or "") if result is not None else ""
+        if key:
+            self._segmentation_ids[image_id] = key
+        return key
+
+    def _active_edits(self, image_id: str, segmentation: str | None = None) -> list[EditOperation]:
+        """Edits made on the current segmentation (and older edits with no segmentation recorded)."""
+
+        current = self._segmentation_ids.get(image_id, "") if segmentation is None else segmentation
+        edits = self.edits.get(image_id, [])
+        if not current:
+            return list(edits)
+        return [item for item in edits if item.segmentation in ("", current)]
+
+    def _edit_and_remeasure(self, image_id: str, operation: EditOperation) -> None:
+        operation.segmentation = self._current_segmentation(image_id)
+        self.edits.setdefault(image_id, []).append(operation)
+        save_edits(self.directory, image_id, self.edits[image_id])
+        record = self.experiment.image(image_id)
+        if record.processing_status == "approved":
+            record.processing_status = "analyzed"
+            record.last_message = "Approval was cleared because an object was edited."
+        self._remeasure_cached(image_id)
+
+    def _remeasure_cached(self, image_id: str) -> ImageResult:
+        """Re-measure from the image already in memory. Does not hash the file."""
+
+        record = self.experiment.image(image_id)
+        prior = self.last_results.get(image_id)
+        loaded = self._session_images.get(image_id)
+        if loaded is not None:
+            self._session_images.move_to_end(image_id)
+        if prior is None or loaded is None:
+            saved = prior or self.recall(image_id)
+            # An edit never segments again when the objects came from elsewhere (a cluster run):
+            # it re-measures the saved labels, or explains why it cannot.
+            from_elsewhere = saved is not None and saved.provenance.get("segmentation_origin") == "hpc"
+            result = self._analyze(record, allow_segmentation=not from_elsewhere)
+            self.last_results[image_id] = result
+            self._write_working(image_id, result)
+            return result
+        result = process_image(
+            loaded,
+            self.recipe,
+            sample_name=record.sample_name,
+            image_id=record.image_id,
+            experiment_id=self.experiment.experiment_id,
+            run_id=None,
+            filename=record.filename,
+            user_metadata=record.user_metadata,
+            manual_edits=self._active_edits(image_id),
+            automated_labels=prior.automated_labels,
+            segmentation_details=_details_to_keep(prior),
+        )
+        carry_segmentation_provenance(prior, result)
+        self.last_results[image_id] = result
+        self._write_working(image_id, result)
+        return result
+
+    def _remember_image(self, image_id: str, loaded: LoadedImage) -> None:
+        self._session_images[image_id] = loaded
+        self._session_images.move_to_end(image_id)
+        while len(self._session_images) > SESSION_IMAGE_LIMIT:
+            self._session_images.popitem(last=False)
+
+    def _write_working(self, image_id: str, result: ImageResult) -> None:
+        destination = self.directory / "working"
+        for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits"):
+            (destination / relative).mkdir(parents=True, exist_ok=True)
+        persist_image_result(destination, result, self._active_edits(image_id))
+
+    def _record_recipe_use(self, image_id: str, result: ImageResult) -> None:
+        if self.run_record is None:
+            return
+        used = getattr(self.run_record, "recipe_hashes", None)
+        if used is None:
+            self.run_record.recipe_hashes = {}
+        self.run_record.recipe_hashes[image_id] = result.provenance.get("recipe_sha256", "")
+
+    def update_pixel_levels(
+        self,
+        image_id: str | None,
+        levels: dict[str, tuple[float, float | None]],
+    ) -> ImageResult | None:
+        """Change the pixel level (and optional upper level) of 'percent_above' measurements.
+
+        ``levels`` maps a measurement id to ``(pixel_level, pixel_level_high or None)``.
+        The image on screen is measured again from its current objects; segmentation is
+        not repeated and manual edits are kept. Other images use the new level when they
+        are next run or opened.
+        """
+
+        data = self.recipe.model_dump(mode="json")
+        known = {item["id"]: item for item in data["measurements"]}
+        for measurement_id, (low, high) in levels.items():
+            item = known.get(measurement_id)
+            if item is None:
+                raise KeyError(measurement_id)
+            if item.get("statistic") != "percent_above":
+                raise CellQuantError(f"Measurement '{measurement_id}' does not use a pixel level.")
+            item["pixel_level"] = float(low)
+            item["pixel_level_high"] = None if high is None else float(high)
+        self.set_recipe(data)
+        if image_id is None or (image_id not in self.last_results and self.recall(image_id) is None):
+            return None
+        return self._remeasure_cached(image_id)
+
+    def histogram(self, image_id: str, measurement_id: str, threshold: float, comparison: str = "above") -> dict[str, float]:
+        result = self.last_results.get(image_id)
+        if result is None or measurement_id not in result.objects.columns:
+            return {"positive": 0, "negative": 0, "percent_positive": float("nan"), "n_missing": 0}
+        active = result.objects
+        if "excluded" in active.columns:
+            active = active.loc[~active["excluded"].astype(bool)]
+        return classification_counts(active[measurement_id].to_numpy(dtype=float), threshold, comparison)
+
+    def export(self, directory: str | Path, *, group_by: str | None = None) -> Path:
+        destination = Path(directory)
+        results = self._results_for_export()
+        if not results:
+            raise CellQuantError("There are no results to export yet.")
+        destination.mkdir(parents=True, exist_ok=True)
+        objects = pd.concat([item.objects for item in results], ignore_index=True)
+        summaries = pd.concat([item.summary for item in results], ignore_index=True)
+        objects.to_csv(destination / "objects.csv", index=False)
+        summaries.to_csv(destination / "image_summary.csv", index=False)
+        index_rows = [
+            {
+                "image_id": item.provenance.get("image_id"),
+                "filename": item.provenance.get("filename"),
+                "recipe_sha256": item.provenance.get("recipe_sha256"),
+            }
+            for item in results
+        ]
+        pd.DataFrame(index_rows).to_csv(destination / "settings_index.csv", index=False)
+        hashes = {row["recipe_sha256"] for row in index_rows}
+        self.export_recipe(destination / "recipe.yaml")
+        mixed_note = destination / "mixed_settings.txt"
+        if len(hashes) <= 1 and mixed_note.is_file():
+            mixed_note.unlink()
+        if len(hashes) > 1:
+            (destination / "mixed_settings.txt").write_text(
+                "These results were produced with more than one analysis settings version. "
+                "settings_index.csv lists the settings hash for each image. "
+                "recipe.yaml is the current analysis settings, not a single label for every row.\n",
+                encoding="utf-8",
+            )
+        run_dir = self._latest_run_dir()
+        if run_dir is not None and (run_dir / "run.json").is_file():
+            (destination / "run.json").write_text((run_dir / "run.json").read_text(encoding="utf-8"), encoding="utf-8")
+        if group_by:
+            grouped_summary(summaries, group_by).to_csv(destination / f"grouped_by_{group_by}.csv", index=False)
+        return destination
+
+    def _results_for_export(self) -> list[ImageResult]:
+        """Results for every included image: open ones first, then saved ones.
+
+        Saved results are read without keeping them in memory, so exporting a
+        large experiment does not load every label image at once.
+        """
+
+        folders = self._result_folders()
+        results: list[ImageResult] = []
+        for record in self.experiment.images:
+            if not record.include:
+                continue
+            result = self.last_results.get(record.image_id)
+            for folder in folders:
+                if result is not None:
+                    break
+                result = read_persisted_result(folder, record.image_id)
+            if result is not None:
+                results.append(result)
+        return results
+
+    def objects_for_export(self) -> pd.DataFrame:
+        frames = [result.objects for result in self.last_results.values()]
+        if not frames and self.experiment.latest_run_id:
+            folder = self.directory / "runs" / self.experiment.latest_run_id / "measurements"
+            frames = [pd.read_csv(path) for path in sorted(folder.glob("*.csv"))]
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
+
+    def remeasure_persisted_result(self, image_id: str) -> ImageResult:
+        """Measure the saved objects of this image again, with the current edits. Never segments."""
+
+        record = self.experiment.image(image_id)
+        result = self._analyze(record, allow_segmentation=False)
+        self.last_results[image_id] = result
+        self._write_working(image_id, result)
+        return result
+
+    def _persisted_segmentation(self, record, loaded: LoadedImage, digest: str) -> ImageResult | None:
+        """A saved segmentation made elsewhere (a cluster run) that still fits this image and these settings."""
+
+        prior = self.last_results.get(record.image_id) or self.recall(record.image_id)
+        if prior is None or prior.provenance.get("segmentation_origin") != "hpc":
+            return None
+        provenance = prior.provenance
+        wanted = segmentation_settings(self.recipe, loaded.z_index)
+        same_settings = _canonical(provenance.get("segmentation_settings")) == _canonical(wanted)
+        calibration = [record.pixel_size_x, record.pixel_size_y, record.pixel_size_z]
+        same_calibration = _same_numbers(provenance.get("segmentation_calibration"), calibration)
+        same_image = provenance.get("segmentation_input_sha256") == digest
+        same_shape = tuple(prior.automated_labels.shape) == tuple(loaded.spatial_shape)
+        return prior if same_settings and same_calibration and same_image and same_shape else None
+
+    def _analyze(self, record, *, allow_segmentation: bool = True) -> ImageResult:
+        analyzed = self._cached_analysis(record, remeasure=True, allow_segmentation=allow_segmentation)
+        if analyzed is None:
+            raise ImageLoadError("File could not be opened.")
+        result, loaded = analyzed
+        self._remember_image(record.image_id, loaded)
+        return result
+
+    def _cached_analysis(self, record, *, remeasure: bool, allow_segmentation: bool = True) -> tuple[ImageResult, LoadedImage] | None:
+        progress.update("Reading the image file")
+        try:
+            loaded = self._load_record(record)
+        except ImageLoadError:
+            raise
+        progress.update("Checking whether the file changed since the last run")
+        signature, digest = self._fingerprint(record)
+        record.file_signature = signature
+        record.content_hash = digest
+        persisted = self._persisted_segmentation(record, loaded, digest)
+        if persisted is not None:
+            # Objects from a cluster run: measured again here without the segmentation engine.
+            key = str(persisted.provenance.get("segmentation_key") or "")
+            self._segmentation_ids[record.image_id] = key
+            progress.update("Measuring markers in each object")
+            result = remeasure_persisted_result(
+                loaded,
+                self.recipe,
+                persisted,
+                manual_edits=self._active_edits(record.image_id, key),
+                sample_name=record.sample_name,
+                image_id=record.image_id,
+                experiment_id=self.experiment.experiment_id,
+                run_id=self.run_record.run_id if self.run_record else self.experiment.latest_run_id,
+                filename=record.filename,
+                user_metadata=record.user_metadata,
+            )
+            return result, loaded
+        if not allow_segmentation:
+            raise CellQuantError(
+                "These objects came from the cluster run, but the image, its pixel sizes or the segmentation "
+                "settings have changed since, so the saved objects no longer apply. Editing never segments again: "
+                "restore the settings, or click Run to segment this image again on purpose."
+            )
+        segmentation_payload = {
+            "image_sha256": digest,
+            "position": record.position,
+            "z_stack": self.recipe.z_stack,
+            "z_index": self.recipe.z_index,
+            "z_settings": {
+                key: value
+                for key, value in self.recipe.scientific_dict().items()
+                if key in ("z_stitch_threshold", "z_scale_brightness", "z_min_slices")
+            },
+            "pixel_size_z": loaded.pixel_size_z if loaded.is_3d else None,
+            "object_set": self.recipe.object_set.model_dump(mode="json"),
+            # Engine, version and model: labels from Cellpose 3 are never reused under Cellpose 4.
+            "engine": engine_signature(self.recipe.object_set.algorithm, self.recipe.object_set.parameters),
+            "pixel_size_x": loaded.pixel_size_x,
+            "pixel_size_y": loaded.pixel_size_y,
+        }
+        segmentation_id = stage_key("segmentation", segmentation_payload)
+        automated = self.cache.get_labels(segmentation_id)
+        details = self.cache.get_meta(segmentation_id) or {}
+        if automated is None or automated.shape != loaded.spatial_shape:
+            if not remeasure:
+                return None
+            automated = None
+        self._segmentation_ids[record.image_id] = segmentation_id
+        edits = self._active_edits(record.image_id, segmentation_id)
+        measurement_payload = {
+            "segmentation": segmentation_id,
+            "measurements": [item.model_dump(mode="json") for item in self.recipe.measurements],
+            "edits": [item.model_dump(mode="json") for item in edits],
+            "pixel_size_x": loaded.pixel_size_x,
+            "pixel_size_y": loaded.pixel_size_y,
+            "pixel_size_z": loaded.pixel_size_z if loaded.is_3d else None,
+        }
+        measurement_id = stage_key("measurement", measurement_payload)
+        measured = self.cache.get_table(measurement_id)
+        if automated is not None and measured is not None:
+            final_labels = apply_edits(automated, edits)
+            result = assemble_result(
+                loaded=loaded,
+                recipe=self.recipe,
+                automated_labels=automated,
+                labels=final_labels,
+                measured=measured,
+                measure_warnings=[],
+                edits=edits,
+                segmentation_details=details.get("segmentation_details", details),
+                sample_name=record.sample_name,
+                image_id=record.image_id,
+                experiment_id=self.experiment.experiment_id,
+                run_id=self.run_record.run_id if self.run_record else self.experiment.latest_run_id,
+                filename=record.filename,
+                user_metadata=record.user_metadata,
+            )
+            result.provenance["segmentation_key"] = segmentation_id
+            return result, loaded
+        if not remeasure:
+            return None
+        result = process_image(
+            loaded,
+            self.recipe,
+            sample_name=record.sample_name,
+            image_id=record.image_id,
+            experiment_id=self.experiment.experiment_id,
+            run_id=self.run_record.run_id if self.run_record else None,
+            filename=record.filename,
+            user_metadata=record.user_metadata,
+            manual_edits=edits,
+            automated_labels=automated,
+            segmentation_details=details.get("segmentation_details"),
+        )
+        self.cache.put_labels(segmentation_id, result.automated_labels)
+        stored_details = _details_to_keep(result)
+        self.cache.put_meta(segmentation_id, {"segmentation_details": stored_details})
+        result.provenance["segmentation_key"] = segmentation_id
+        self.cache.put_table(measurement_id, measurement_values(result, self.recipe))
+        return result, loaded
+
+    def _load_record(self, record) -> LoadedImage:
+        return load_record_image(
+            record,
+            z_mode=self.recipe.z_stack,
+            z_index=self.recipe.z_index,
+            experiment_dir=self.directory,
+        )
+
+    def source_path(self, record) -> Path:
+        """The image file this record reads (its own copy inside the experiment, when it has one)."""
+
+        return resolve_source_path(record, self.directory)
+
+    def _fingerprint(self, record) -> tuple[str, str]:
+        path = self.source_path(record)
+        stat = path.stat()
+        signature = f"{stat.st_mtime_ns}:{stat.st_size}"
+        if record.file_signature == signature and record.content_hash:
+            return signature, record.content_hash
+        return file_fingerprint(path)
+
+    def _ensure_run(self, records, fresh: bool = False) -> None:
+        if self.run_dir is not None and not fresh:
+            return
+        self._touch_recipe()
+        record, run_dir = start_run(self.experiment, self.recipe, records)
+        self.run_record = record
+        self.run_dir = run_dir
+        self.run_log = RunLog(run_dir)
+        self.experiment.latest_run_id = record.run_id
+
+    def _load_bound_recipe(self) -> Recipe:
+        path = self._recipe_path()
+        if path.is_file():
+            recipe = load_recipe(path)
+        else:
+            recipe = Recipe(
+                recipe_id=f"recipe_{self.experiment.experiment_id[-8:]}",
+                recipe_name="Recipe",
+                software_version=__version__,
+                object_set={
+                    "name": "Objects",
+                    "segmentation_channel": 0,
+                    "algorithm": "classical",
+                    "parameters": {"threshold_method": "otsu"},
+                },
+            )
+        if not recipe.recipe_id:
+            recipe.recipe_id = f"recipe_{self.experiment.experiment_id[-8:]}"
+        return recipe
+
+    def _recipe_path(self) -> Path:
+        recipe_id = self.recipe.recipe_id if hasattr(self, "recipe") and self.recipe.recipe_id else None
+        if recipe_id is None and self.experiment.recipe_id:
+            recipe_id = self.experiment.recipe_id
+        name = recipe_id or "recipe"
+        return self.directory / "recipes" / f"{name}.yaml"
+
+    def _touch_recipe(self) -> None:
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).isoformat()
+        if not self.recipe.created_at:
+            self.recipe.created_at = now
+        self.recipe.modified_at = now
+        self.recipe.software_version = __version__
+        if not self.recipe.recipe_id:
+            self.recipe.recipe_id = f"recipe_{self.experiment.experiment_id[-8:]}"
+
+
+def process_experiment(
+    experiment_dir: str | Path,
+    recipe: Recipe | dict | str | Path | None = None,
+    image_ids: list[str] | None = None,
+    on_progress=None,
+) -> BatchReport:
+    """Headless batch entry point. One image failure does not stop the rest."""
+
+    controller = AnalysisController.open(experiment_dir)
+    if recipe is not None:
+        controller.set_recipe(recipe)
+    return controller.run_images(image_ids, on_progress=on_progress)
+
+
+def _canonical(value) -> str:
+    import json
+
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _same_numbers(stored, current) -> bool:
+    if not isinstance(stored, list) or len(stored) != len(current):
+        return False
+    for first, second in zip(stored, current, strict=True):
+        if (first is None) != (second is None):
+            return False
+        if first is not None and abs(float(first) - float(second)) > 1e-9 * max(abs(float(first)), 1.0):
+            return False
+    return True
+
+
+def _job_status(result: ImageResult) -> tuple[str, str]:
+    if result.qc.status == "success":
+        return "Success", ""
+    message = "; ".join(result.qc.warnings) or "Analysis completed with a warning."
+    return "Warning", message
+
+
+def _clamp(start: int, stop: int, limit: int) -> tuple[int, int]:
+    start = max(0, min(int(start), limit))
+    stop = max(start + 1, min(int(stop), limit)) if limit else start
+    return start, stop
+
+
+def _details_to_keep(result: ImageResult) -> dict:
+    """Segmentation details that later measurements of the same labels still report."""
+
+    return segmentation_details_of(result)

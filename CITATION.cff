@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use CellQuant in your research, please cite it as below."
+title: "CellQuant: nuclear segmentation and marker quantification for confocal z-stacks"
+type: software
+authors:
+  - family-names: Purvis
+    given-names: Ian
+    affiliation: "Department of Ophthalmology, University of Colorado Anschutz Medical Campus"
+version: 2.0.0
+date-released: "2026-09-29"
+license: MIT
+repository-code: "https://github.com/ian-purvis/CellQuant"
+keywords:
+  - microscopy
+  - image analysis
+  - segmentation
+  - Cellpose
+  - napari
+  - retina
