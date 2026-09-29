@@ -1,0 +1,114 @@
+{
+  "$id": "https://cellquant.local/hpc/v1/runtime.schema.json",
+  "additionalProperties": false,
+  "description": "The exact cluster software a package is prepared for, exported by ``runtime-inspect``.",
+  "properties": {
+    "application_build_sha256": {
+      "title": "Application Build Sha256",
+      "type": "string"
+    },
+    "cellpose_version": {
+      "title": "Cellpose Version",
+      "type": "string"
+    },
+    "dependency_lock_sha256": {
+      "title": "Dependency Lock Sha256",
+      "type": "string"
+    },
+    "engine": {
+      "enum": [
+        "cellpose3",
+        "cellpose4"
+      ],
+      "title": "Engine",
+      "type": "string"
+    },
+    "model": {
+      "title": "Model",
+      "type": "string"
+    },
+    "model_directory": {
+      "title": "Model Directory",
+      "type": "string"
+    },
+    "model_files": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Model Files",
+      "type": "object"
+    },
+    "observed": {
+      "additionalProperties": true,
+      "title": "Observed",
+      "type": "object"
+    },
+    "packages": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Packages",
+      "type": "object"
+    },
+    "python_version": {
+      "title": "Python Version",
+      "type": "string"
+    },
+    "runtime_id": {
+      "title": "Runtime Id",
+      "type": "string"
+    },
+    "runtime_validation_date": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Runtime Validation Date"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "supported_modes": {
+      "items": {
+        "enum": [
+          "max_projection",
+          "single_plane",
+          "stitch_slices",
+          "full_3d"
+        ],
+        "type": "string"
+      },
+      "title": "Supported Modes",
+      "type": "array"
+    },
+    "validation_notes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Validation Notes",
+      "type": "object"
+    }
+  },
+  "required": [
+    "runtime_id",
+    "python_version",
+    "application_build_sha256",
+    "dependency_lock_sha256",
+    "packages",
+    "engine",
+    "cellpose_version",
+    "model",
+    "model_files",
+    "model_directory"
+  ],
+  "title": "RuntimeContract",
+  "type": "object"
+}

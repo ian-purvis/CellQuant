@@ -1,0 +1,22 @@
+# Cluster environment for classic Cellpose (Cellpose 3). Python 3.11 or newer.
+# Cellpose 3.1.1.3 declares numpy<2.1, so this set is older than the Cellpose 4 one.
+# Cellpose 3.1.1.3 ran CellQuant's real-weight checks (CPU) on 2026-09-29; confirm these pins with
+# the preflight and parity checks on the cluster before enabling any mode (docs/HPC_PREP_AND_SUBMISSION.md).
+cellpose==3.1.1.3
+numpy==2.0.2
+scipy==1.14.1
+pandas==2.2.3
+scikit-image==0.24.0
+tifffile==2024.9.20
+imagecodecs==2024.9.22
+nd2==0.10.1
+pydantic==2.9.2
+PyYAML==6.0.2
+opencv-python-headless==4.10.0.84
+fastremap==1.15.0
+fill-voids==2.0.7
+numba==0.60.0
+llvmlite==0.43.0
+natsort==8.4.0
+roifile==2024.9.13
+tqdm==4.66.5

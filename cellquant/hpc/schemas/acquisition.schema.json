@@ -1,0 +1,180 @@
+{
+  "$id": "https://cellquant.local/hpc/v1/acquisition.schema.json",
+  "additionalProperties": false,
+  "description": "One prepared image: where it came from, its exported copy, and how it will be analyzed.",
+  "properties": {
+    "acquisition_id": {
+      "title": "Acquisition Id",
+      "type": "string"
+    },
+    "calibration_source": {
+      "enum": [
+        "file",
+        "user",
+        "file_and_user",
+        "missing"
+      ],
+      "title": "Calibration Source",
+      "type": "string"
+    },
+    "channel_colors": {
+      "items": {
+        "anyOf": [
+          {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Channel Colors",
+      "type": "array"
+    },
+    "channel_layout_confirmed": {
+      "default": false,
+      "title": "Channel Layout Confirmed",
+      "type": "boolean"
+    },
+    "channel_names": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Channel Names",
+      "type": "array"
+    },
+    "dtype": {
+      "title": "Dtype",
+      "type": "string"
+    },
+    "effective_spacing_xyz_um": {
+      "items": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Effective Spacing Xyz Um",
+      "type": "array"
+    },
+    "effective_z_index": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effective Z Index"
+    },
+    "effective_z_mode": {
+      "enum": [
+        "none",
+        "max_projection",
+        "single_plane",
+        "stitch_slices",
+        "full_3d"
+      ],
+      "title": "Effective Z Mode",
+      "type": "string"
+    },
+    "file_spacing_xyz_um": {
+      "items": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "File Spacing Xyz Um",
+      "type": "array"
+    },
+    "input_file_sha256": {
+      "title": "Input File Sha256",
+      "type": "string"
+    },
+    "input_path": {
+      "title": "Input Path",
+      "type": "string"
+    },
+    "objective": {
+      "default": "",
+      "title": "Objective",
+      "type": "string"
+    },
+    "pixel_sha256": {
+      "title": "Pixel Sha256",
+      "type": "string"
+    },
+    "sample_name": {
+      "title": "Sample Name",
+      "type": "string"
+    },
+    "shape_czyx": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Shape Czyx",
+      "type": "array"
+    },
+    "source_file_sha256": {
+      "title": "Source File Sha256",
+      "type": "string"
+    },
+    "source_image_id": {
+      "title": "Source Image Id",
+      "type": "string"
+    },
+    "source_position": {
+      "minimum": 0,
+      "title": "Source Position",
+      "type": "integer"
+    },
+    "source_relative_path": {
+      "title": "Source Relative Path",
+      "type": "string"
+    },
+    "task_key": {
+      "title": "Task Key",
+      "type": "string"
+    },
+    "user_metadata": {
+      "additionalProperties": true,
+      "title": "User Metadata",
+      "type": "object"
+    }
+  },
+  "required": [
+    "acquisition_id",
+    "source_image_id",
+    "source_relative_path",
+    "source_file_sha256",
+    "source_position",
+    "sample_name",
+    "input_path",
+    "input_file_sha256",
+    "pixel_sha256",
+    "shape_czyx",
+    "dtype",
+    "channel_names",
+    "file_spacing_xyz_um",
+    "effective_spacing_xyz_um",
+    "calibration_source",
+    "effective_z_mode",
+    "task_key"
+  ],
+  "title": "Acquisition",
+  "type": "object"
+}

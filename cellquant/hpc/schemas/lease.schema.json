@@ -1,0 +1,74 @@
+{
+  "$id": "https://cellquant.local/hpc/v1/lease.schema.json",
+  "additionalProperties": false,
+  "description": "Who owns a run. Only one worker at a time may publish into a run folder.",
+  "properties": {
+    "acquired_at": {
+      "title": "Acquired At",
+      "type": "string"
+    },
+    "attempt_id": {
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "cluster": {
+      "default": "",
+      "title": "Cluster",
+      "type": "string"
+    },
+    "host": {
+      "default": "",
+      "title": "Host",
+      "type": "string"
+    },
+    "job_id": {
+      "default": "",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "lease_token": {
+      "title": "Lease Token",
+      "type": "string"
+    },
+    "pid": {
+      "default": 0,
+      "title": "Pid",
+      "type": "integer"
+    },
+    "ready_digest": {
+      "title": "Ready Digest",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "submitted_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Submitted At"
+    }
+  },
+  "required": [
+    "lease_token",
+    "ready_digest",
+    "run_id",
+    "attempt_id",
+    "acquired_at"
+  ],
+  "title": "LeaseRecord",
+  "type": "object"
+}

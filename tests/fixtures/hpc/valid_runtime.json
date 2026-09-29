@@ -1,0 +1,27 @@
+{
+  "application_build_sha256": "aabeb13979f4d4e28382ec697be06d64e6b481c41633502eab14360fbf4cb5dc",
+  "cellpose_version": "4.2.1.1",
+  "dependency_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "engine": "cellpose4",
+  "model": "cpsam_v2",
+  "model_directory": "/projects/lab/cellquant/models",
+  "model_files": {
+    "cpsam_v2": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "observed": {},
+  "packages": {
+    "cellpose": "4.2.1.1",
+    "numpy": "2.4.6"
+  },
+  "python_version": "3.11.9",
+  "runtime_id": "alpine-cp4-test",
+  "runtime_validation_date": "2026-09-29",
+  "schema_version": 1,
+  "supported_modes": [
+    "max_projection",
+    "single_plane",
+    "stitch_slices",
+    "full_3d"
+  ],
+  "validation_notes": {}
+}

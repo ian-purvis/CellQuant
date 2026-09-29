@@ -1,0 +1,60 @@
+{
+  "$id": "https://cellquant.local/hpc/v1/attempt.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "cluster": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cluster"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "job_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Job Id"
+    },
+    "resume": {
+      "default": false,
+      "title": "Resume",
+      "type": "boolean"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "attempt_id",
+    "run_id",
+    "created_at"
+  ],
+  "title": "AttemptInfo",
+  "type": "object"
+}

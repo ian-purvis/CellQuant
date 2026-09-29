@@ -1,0 +1,146 @@
+{
+  "$defs": {
+    "Issue": {
+      "additionalProperties": false,
+      "properties": {
+        "acquisition_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Acquisition Id"
+        },
+        "code": {
+          "title": "Code",
+          "type": "string"
+        },
+        "fix": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fix"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "Issue",
+      "type": "object"
+    }
+  },
+  "$id": "https://cellquant.local/hpc/v1/preflight_report.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "bundle_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Bundle Id"
+    },
+    "checked_at": {
+      "title": "Checked At",
+      "type": "string"
+    },
+    "errors": {
+      "items": {
+        "$ref": "#/$defs/Issue"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "gpu": {
+      "additionalProperties": true,
+      "title": "Gpu",
+      "type": "object"
+    },
+    "host": {
+      "default": "",
+      "title": "Host",
+      "type": "string"
+    },
+    "inference": {
+      "additionalProperties": true,
+      "title": "Inference",
+      "type": "object"
+    },
+    "job_id": {
+      "default": "",
+      "title": "Job Id",
+      "type": "string"
+    },
+    "ok": {
+      "title": "Ok",
+      "type": "boolean"
+    },
+    "runtime_fingerprint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Runtime Fingerprint"
+    },
+    "runtime_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Runtime Id"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "ok",
+    "checked_at"
+  ],
+  "title": "PreflightReport",
+  "type": "object"
+}

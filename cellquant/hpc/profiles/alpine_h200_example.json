@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "profile_id": "alpine_h200_example",
+  "display_name": "Alpine H200 (example: fill in and verify)",
+  "scheduler": "slurm",
+  "host": "login.rc.colorado.edu",
+  "account": "YOUR_ACCOUNT",
+  "partition": "ah200",
+  "qos": "gpu-normal",
+  "gpu_resource": "gpu:h200_3g.71gb:1",
+  "gpus": 1,
+  "cpus": 8,
+  "memory_mib": 65536,
+  "walltime_seconds": 14400,
+  "remote_durable_root": "/projects/YOUR_USERNAME/cellquant",
+  "scratch_root": "/scratch/alpine/YOUR_USERNAME/cellquant",
+  "python_path": "/projects/YOUR_USERNAME/cellquant/envs/CHANGE_ME/bin/python",
+  "modules": [],
+  "runtime_id": "alpine-cp4-CHANGE_ME",
+  "runtime_contract_path": "alpine-cp4-CHANGE_ME.runtime.json",
+  "runtime_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "validation_status": "draft",
+  "profile_verified_date": null,
+  "live_smoke_date": null,
+  "notes": [
+    "Partition, QoS and GPU names come from the September 2026 CellQuant pipeline profiles and have not been re-checked. Check them against the current CURC Alpine documentation before use.",
+    "A 71 GB H200 MIG slice held typical 1024 x 1024 nuclear 3D Cellpose work with room to spare in earlier runs (about 3-4 GB used); a full H200 is gpu:h200:1.",
+    "Set runtime_contract_path to the runtime.json the maintainer exported for the cluster environment, and runtime_sha256 to its SHA-256."
+  ]
+}
