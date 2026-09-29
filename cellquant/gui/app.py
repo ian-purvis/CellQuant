@@ -247,6 +247,9 @@ class CellQuantWindow:
         self._wanted_image_id: str | None = None
         self._loader: CallWorker | None = None
         self._building = False
+        # True while work runs that switches between analyses (Run all analyses, Export all analyses):
+        # the settings pages and image navigation are locked, since they would show another analysis.
+        self._exclusive = False
         self._tabs = QTabWidget()
         self._experiment_panel = ExperimentPanel(self)
         self._objects_panel = ObjectsPanel(self)
@@ -270,8 +273,14 @@ class CellQuantWindow:
         for page, step in zip(self._step_pages, guide.STEPS):
             self._tabs.addTab(page, step.tab)
         self._tabs.setMinimumWidth(460)
+        self._analysis_bar = AnalysisBar(self)
+        self._dock = QWidget()
+        dock_layout = QVBoxLayout(self._dock)
+        dock_layout.setContentsMargins(0, 0, 0, 0)
+        dock_layout.addWidget(self._analysis_bar)
+        dock_layout.addWidget(self._tabs, 1)
         self._footer = Footer(self)
-        self.viewer.window.add_dock_widget(self._tabs, name="CellQuant", area="right")
+        self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         self.viewer.window.add_dock_widget(self._footer, name="Run", area="bottom")
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
@@ -499,6 +508,8 @@ class CellQuantWindow:
 
     def show_current(self) -> None:
         controller = self.controller
+        if self._exclusive and self.is_busy():
+            return  # another analysis is active in the background; shown again when it finishes
         if controller is None or not self._nav_ids:
             self._clear_managed()
             return
@@ -620,6 +631,10 @@ class CellQuantWindow:
             "Open experiment…", "Try practice images", "Include shown", "Leave out shown",
             "Include only selected", "Delete object", "Restore object", "Undo", "Approve", "Use recommended",
             "HPC prep…",  # the HPC prep page manages its own buttons: a second job is refused while one runs
+            "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
+            # Buttons that change the settings: never while images are being analyzed with them.
+            "Save recipe", "Load recipe", "Duplicate", "Add measurement", "Remove measurement",
+            "Add classification", "Add result row", "Apply pixel level",
         }
     )
 
@@ -629,12 +644,16 @@ class CellQuantWindow:
         if busy:
             buttons = [
                 button
-                for button in [*self._tabs.findChildren(QPushButton), *self._footer.findChildren(QPushButton)]
+                for button in [*self._dock.findChildren(QPushButton), *self._footer.findChildren(QPushButton)]
                 if button.text() in self._BUSY_BUTTONS
             ]
+            buttons.append(self._analysis_bar.choice)
             self._busy_restore = {button: button.isEnabled() for button in buttons}
             for button in buttons:
                 button.setEnabled(False)
+            if self._exclusive:
+                self._tabs.setEnabled(False)
+                self._footer.set_navigation_enabled(False)
             self._footer.start_busy(batch=self._batch is not None)
         else:
             for button, enabled in getattr(self, "_busy_restore", {}).items():
@@ -644,6 +663,11 @@ class CellQuantWindow:
                     pass  # the button was rebuilt meanwhile
             self._busy_restore = {}
             self._footer.end_busy()
+            if self._exclusive:
+                self._exclusive = False
+                self._tabs.setEnabled(True)
+                self._footer.set_navigation_enabled(True)
+                self._refresh_all(keep_image=True)
 
     def is_busy(self) -> bool:
         return self._job is not None or self._batch is not None
@@ -662,12 +686,14 @@ class CellQuantWindow:
 
         self._start_job(lambda: controller.preview(image_id, crop), finish)
 
-    def start_batch(self, image_ids: list[str] | None) -> None:
+    def start_batch(self, image_ids: list[str] | None, analyses: list[str] | None = None) -> None:
+        """Run the images with the current analysis, or (``analyses``) with each of those analyses in turn."""
+
         controller = self.require_controller()
         if controller is None or self._batch is not None or self._job is not None:
             return
         self._panels_to_recipe()
-        worker = BatchWorker(controller, image_ids)
+        worker = BatchWorker(controller, image_ids, analyses)
         worker.progress.connect(self._footer.update_progress)
         worker.step.connect(self._footer.show_step)
         worker.finished_ok.connect(self._batch_finished)
@@ -675,10 +701,20 @@ class CellQuantWindow:
         self.set_busy(True)
         worker.start()
 
+    def run_all_analyses(self) -> None:
+        controller = self.require_controller()
+        if controller is None or self.is_busy():
+            return
+        self._exclusive = True
+        self.start_batch(None, [item.recipe_id for item in controller.analyses()])
+
     def _batch_finished(self, report) -> None:
         planned = getattr(self._footer, "_batch_total", 0)
         self._batch = None
         self.set_busy(False)
+        if isinstance(report, list):
+            self._analyses_finished(report, planned)
+            return
         stopped = planned and len(report.jobs) < planned
         self._results_panel.show_queue(report)
         self._results_summary.show_batch(report)
@@ -690,6 +726,65 @@ class CellQuantWindow:
             (f"Stopped after {len(report.jobs)} of {planned} images. " if stopped else "")
             + f"Completed {report.completed}, warnings {report.warnings}, failed {report.failed}."
         )
+
+    def _analyses_finished(self, reports, planned: int) -> None:
+        done = sum(len(report.jobs) for report in reports)
+        lines = [
+            f"{report.analysis}: completed {report.completed}, warnings {report.warnings}, failed {report.failed}"
+            + (" (stopped)" if report.cancelled else "")
+            for report in reports
+        ]
+        if reports:
+            self._results_panel.show_queue(reports[-1])
+        self._results_summary.show_analyses(reports)
+        self.refresh_guidance()
+        stopped = planned and done < planned
+        self._footer.message(
+            (f"Stopped after {done} of {planned} image runs. " if stopped else f"Ran {len(reports)} analyses. ")
+            + " | ".join(lines)
+        )
+
+    def export_all_dialog(self) -> None:
+        controller = self.require_controller()
+        if controller is None:
+            return
+        directory = QFileDialog.getExistingDirectory(
+            self._tabs, "Choose a folder for the results of every analysis", str(controller.directory / "exports")
+        )
+        if not directory or self.is_busy():
+            return
+        self._panels_to_recipe()
+        self._exclusive = True
+
+        def done(path) -> None:
+            self._exported_to = Path(path)
+            self._results_summary.show_exported(path)
+            self.message(f"Every analysis with results was saved to {path} (one folder each, and all_analyses_image_summary.csv).")
+            self.refresh_guidance()
+
+        self._start_job(lambda: controller.export_all(directory), done)
+
+    # -- analyses ----------------------------------------------------------------------------------
+
+    def switch_analysis(self, recipe_id: str) -> None:
+        controller = self.controller
+        if controller is None or recipe_id == controller.recipe.recipe_id:
+            return
+        if self.is_busy():
+            self.message("Wait for the current analysis to finish before switching.")
+            self._analysis_bar.refresh()
+            return
+        self._panels_to_recipe()  # the settings on screen belong to the analysis being left
+        try:
+            controller.switch_analysis(recipe_id)
+        except (CellQuantError, KeyError, OSError) as exc:
+            self.message(str(exc))
+            self._analysis_bar.refresh()
+            return
+        self._refresh_all(keep_image=True)
+        self.refresh_guidance()
+        item = controller.active_analysis()
+        self.message(f"Showing analysis '{item.name}': objects found in {controller._channel_name(controller.recipe.object_set.segmentation_channel)}.")
 
     def update_navigation(self) -> None:
         """Previous/Next image go through included images; keep the image on screen when possible."""
@@ -715,13 +810,15 @@ class CellQuantWindow:
         self._measurements_panel.write_recipe()
         self._results_panel.write_reports()
 
-    def _refresh_all(self) -> None:
+    def _refresh_all(self, keep_image: bool = False) -> None:
         if self.controller is None:
             return
+        current = self._nav_ids[self._nav_index] if keep_image and self._nav_ids else None
         self._nav_ids = [record.image_id for record in self.controller.experiment.images if record.include]
         if not self._nav_ids:
             self._nav_ids = [record.image_id for record in self.controller.experiment.images]
-        self._nav_index = 0
+        self._nav_index = self._nav_ids.index(current) if current in self._nav_ids else 0
+        self._analysis_bar.refresh()
         self._experiment_panel.refresh()
         self._objects_panel.refresh()
         self._measurements_panel.refresh()
@@ -2417,10 +2514,12 @@ class ResultsPanel(QWidget):
         controller = self.shell.require_controller()
         if controller is None:
             return
-        name, accepted = QInputDialog.getText(self, "Duplicate recipe", "Recipe name")
+        name, accepted = QInputDialog.getText(self, "Duplicate settings", "Name of the new analysis")
         if accepted:
+            self.shell._panels_to_recipe()
             controller.duplicate_recipe(name)
-            self.shell._footer.message("Recipe duplicated.")
+            self.shell._refresh_all(keep_image=True)
+            self.shell._footer.message(f"New analysis '{controller.active_analysis().name}' with a copy of these settings.")
 
     def _filter_nav(self, mode: str) -> None:
         controller = self.shell.controller
@@ -2441,6 +2540,155 @@ class ResultsPanel(QWidget):
         self.shell.show_current()
 
 
+class AnalysisBar(QWidget):
+    """Which analysis is shown, and adding, renaming and removing analyses.
+
+    An analysis is one set of settings (for example the channel objects are found in) with its own
+    results, edits and review state. Every analysis uses the experiment's images.
+    """
+
+    def __init__(self, shell: CellQuantWindow):
+        super().__init__()
+        self.shell = shell
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 2)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Analysis:"))
+        self.choice = QComboBox()
+        self.choice.setToolTip(
+            "Each analysis has its own settings (for example which channel objects are found in) and its own "
+            "results, for the same images. Choose one to see, change or run it."
+        )
+        self.choice.currentIndexChanged.connect(self._chosen)
+        top.addWidget(self.choice, 1)
+        layout.addLayout(top)
+        buttons = QHBoxLayout()
+        for text, slot, tip in (
+            ("New analysis…", self._new, "A new analysis that starts with a copy of the current settings."),
+            ("One per channel…", self._per_channel, "One analysis per channel: the current settings, finding objects in each channel."),
+            ("Rename…", self._rename, "Rename the analysis shown."),
+            ("Remove", self._remove, "Take the analysis shown off the list. Its saved results stay in the experiment folder."),
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        self.remove_button = buttons.itemAt(3).widget()
+        self.refresh()
+
+    def refresh(self) -> None:
+        controller = self.shell.controller
+        self.choice.blockSignals(True)
+        self.choice.clear()
+        if controller is not None:
+            for item in controller.analyses():
+                self.choice.addItem(item.name, item.recipe_id)
+            self.choice.setCurrentIndex(max(self.choice.findData(controller.recipe.recipe_id), 0))
+        self.choice.blockSignals(False)
+        several = controller is not None and len(controller.analyses()) > 1
+        self.remove_button.setEnabled(several)
+        footer = getattr(self.shell, "_footer", None)
+        if footer is not None:
+            footer.run_analyses.setVisible(several)
+        summary = getattr(self.shell, "_results_summary", None)
+        if summary is not None:
+            summary.show_analysis_actions(several)
+
+    def _chosen(self, _index: int) -> None:
+        recipe_id = self.choice.currentData()
+        if recipe_id:
+            self.shell.switch_analysis(str(recipe_id))
+
+    def _new(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or self.shell.is_busy():
+            return
+        name, accepted = QInputDialog.getText(self, "New analysis", "Name (for example: Objects in Green, or Cellpose-SAM):")
+        if not accepted:
+            return
+        self.shell._panels_to_recipe()
+        controller.add_analysis(name or "Analysis", activate=True)
+        self.shell._refresh_all(keep_image=True)
+        self.shell.message(
+            f"New analysis '{controller.active_analysis().name}' starts with a copy of the settings. Change what you "
+            "need in steps 2-4 (for example the channel to find objects in), then run it."
+        )
+        self.shell.refresh_guidance()
+
+    def _per_channel(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or self.shell.is_busy():
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("One analysis per channel")
+        layout = QVBoxLayout(dialog)
+        note = QLabel(
+            "Each ticked channel gets an analysis that finds objects in that channel, with the current "
+            "settings otherwise (method, Z-stack mode, markers). A channel that already has one is not added again. "
+            "Then click <b>Run all analyses</b> at the bottom."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        boxes = []
+        for channel in controller.experiment.channels:
+            box = QCheckBox(channel.channel_name)
+            box.setChecked(True)
+            box.setProperty("channel_index", channel.channel_index)
+            boxes.append(box)
+            layout.addWidget(box)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        self._channel_dialog = dialog  # for tests
+        self._channel_boxes = boxes
+        if dialog.exec() != QDialog.Accepted:
+            return
+        chosen = [int(box.property("channel_index")) for box in boxes if box.isChecked()]
+        self.make_per_channel(chosen)
+
+    def make_per_channel(self, channels: list[int]) -> None:
+        controller = self.shell.controller
+        if controller is None or not channels:
+            return
+        self.shell._panels_to_recipe()
+        before = {item.recipe_id for item in controller.analyses()}
+        ids = controller.analyses_for_channels(channels)
+        added = [item.name for item in controller.analyses() if item.recipe_id not in before]
+        self.refresh()
+        self.shell.message(
+            (f"Added {', '.join(added)}. " if added else "Every ticked channel already has an analysis. ")
+            + f"{len(ids)} analyses cover these channels; click Run all analyses to run them."
+        )
+
+    def _rename(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None:
+            return
+        item = controller.active_analysis()
+        name, accepted = QInputDialog.getText(self, "Rename analysis", "Name:", text=item.name)
+        if accepted and name.strip():
+            controller.rename_analysis(item.recipe_id, name)
+            self.refresh()
+
+    def _remove(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or self.shell.is_busy() or len(controller.analyses()) <= 1:
+            return
+        item = controller.active_analysis()
+        answer = QMessageBox.question(
+            self,
+            "Remove analysis?",
+            f"Take '{item.name}' off the list? Its settings and saved results stay in the experiment folder.",
+        )
+        if answer != QMessageBox.Yes:
+            return
+        controller.remove_analysis(item.recipe_id)
+        self.shell._refresh_all(keep_image=True)
+        self.shell.refresh_guidance()
+
+
 class Footer(QWidget):
     def __init__(self, shell: CellQuantWindow):
         super().__init__()
@@ -2452,6 +2700,10 @@ class Footer(QWidget):
         run_current = QPushButton("Run this image")
         run_selected = QPushButton("Run selected images")
         run_all = QPushButton("Run all images")
+        self.run_analyses = QPushButton("Run all analyses")
+        self.run_analyses.setToolTip("Run every included image with each analysis in the list at the top, one analysis after another.")
+        self.run_analyses.clicked.connect(shell.run_all_analyses)
+        self.run_analyses.setVisible(False)
         previous.setToolTip("Show the previous image in the experiment.")
         next_image.setToolTip("Show the next image in the experiment.")
         run_current.setToolTip("Find objects and measure markers in the image on screen.")
@@ -2459,6 +2711,7 @@ class Footer(QWidget):
         run_all.setToolTip("Run every included image with the current settings.")
         previous.clicked.connect(lambda: self._step(-1))
         next_image.clicked.connect(lambda: self._step(1))
+        self._navigation = (previous, next_image)
         run_current.clicked.connect(shell.run_current)
         run_selected.clicked.connect(shell._results_panel._run_selected)
         run_all.clicked.connect(shell._results_panel._run_all)
@@ -2466,7 +2719,7 @@ class Footer(QWidget):
         self.cancel = QPushButton("Cancel")
         self.pause.clicked.connect(self._pause)
         self.cancel.clicked.connect(self._cancel)
-        for button in (previous, run_current, run_selected, run_all, next_image, self.pause, self.cancel):
+        for button in (previous, run_current, run_selected, run_all, self.run_analyses, next_image, self.pause, self.cancel):
             row.addWidget(button)
         self.pause.setEnabled(False)
         self.cancel.setEnabled(False)
@@ -2485,6 +2738,10 @@ class Footer(QWidget):
         layout.addWidget(self.progress)
         layout.addWidget(self.status)
         layout.addWidget(self.log)
+
+    def set_navigation_enabled(self, enabled: bool) -> None:
+        for button in self._navigation:
+            button.setEnabled(enabled)
 
     def set_position(self, index: int, total: int, filename: str) -> None:
         self.position.setText(f"Image {index + 1} / {total}  {filename}")
@@ -2665,10 +2922,11 @@ class BatchWorker(QThread):
     step = Signal(str, float)
     finished_ok = Signal(object)
 
-    def __init__(self, controller: AnalysisController, image_ids: list[str] | None):
+    def __init__(self, controller: AnalysisController, image_ids: list[str] | None, analyses: list[str] | None = None):
         super().__init__()
         self.controller = controller
         self.image_ids = image_ids
+        self.analyses = analyses
         self.paused = False
         self.cancelled = False
 
@@ -2693,11 +2951,19 @@ class BatchWorker(QThread):
             lambda text, fraction: self.step.emit(text, -1.0 if fraction is None else float(fraction)),
             stop_requested,
         ):
-            report = self.controller.run_images(
-                self.image_ids,
-                on_progress=on_progress,
-                should_continue=should_continue,
-            )
+            if self.analyses is not None:
+                report = self.controller.run_analyses(
+                    self.analyses,
+                    self.image_ids,
+                    on_progress=on_progress,
+                    should_continue=should_continue,
+                )
+            else:
+                report = self.controller.run_images(
+                    self.image_ids,
+                    on_progress=on_progress,
+                    should_continue=should_continue,
+                )
         self.finished_ok.emit(report)
 
 

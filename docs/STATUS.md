@@ -181,3 +181,25 @@ pixels are at or above a pixel level (optionally at most an upper level).
 - Tests: `tests/test_synthetic_retina.py`. Suite: 289 passed.
 - Version 2.0.0 (version 1 ended at 0.4.0a3), MIT license, `CITATION.cff`, `CHANGELOG.md`, `.gitignore` that
   keeps images and results out of the repository. Lab file and folder names were removed from the docs.
+
+## Several analyses of the same images (2.1.0, 2026-09-29)
+
+- `experiment.json` has an `analyses` list (`AnalysisRecord`: recipe id, name, working folder, latest run,
+  stored per-image review state). The active analysis's review state lives on the image records as before;
+  switching stores it and restores the other's. Experiments without the list get one analysis on opening,
+  using `working/` and every earlier run, so 2.0.0 experiments open unchanged.
+- Results are kept apart: each analysis has its own working folder (`analyses/<id>/working`; the first keeps
+  `working/`), and a run is read only by the analysis whose recipe id it records. Edits carry the
+  segmentation they were made on; unstamped (older) edits belong to the first analysis only. Loading settings
+  never changes which analysis they belong to.
+- Controller: `add_analysis`, `switch_analysis`, `rename_analysis`, `remove_analysis` (keeps files),
+  `analyses_for_channels` (one per channel, reusing an analysis with the same settings), `run_analyses`
+  (progress counted across analyses, Cancel skips the rest, the active analysis is restored), `export_all`
+  (one folder per analysis plus `all_analyses_image_summary.csv`).
+- Window: Analysis list and buttons above the steps; Run all analyses (bottom bar and step 5) and Export all
+  analyses (step 5) appear when there are several; switching is refused while anything runs; settings on
+  screen are saved to the analysis being left. HPC prep packages the analysis shown.
+- Tests: `tests/test_analyses.py` (10), `tests/test_gui_analyses.py`; synthetic retina z-stacks are the test
+  images. Suite: 300 passed. An independent review found four problems (a removed analysis's runs read by the
+  original one; edits shared by analyses with the same segmentation; a re-included image left "excluded"; settings
+  pages usable during Run all analyses), all fixed with tests.
