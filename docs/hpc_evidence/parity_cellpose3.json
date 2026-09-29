@@ -1,0 +1,124 @@
+{
+  "engine": "cellpose3",
+  "model": "nuclei",
+  "cellpose_version": "3.1.1.3",
+  "runtime_fingerprint": "bbda2379cec79eff45c6efe3d2a44e1511109d4e1346d3a667fe9f7319f07bda",
+  "cases": [
+    {
+      "case": "single_plane:384",
+      "mode": "single_plane",
+      "source": "TIFF crop 384x384 of the same ND2",
+      "shape_czyx": [
+        3,
+        7,
+        384,
+        384
+      ],
+      "pixels_identical": true,
+      "labels_identical": true,
+      "objects_local": 107,
+      "objects_remote": 107,
+      "seconds_local": 47.8,
+      "seconds_worker": 30.1,
+      "measurements_within_tolerance": true,
+      "report": [
+        {
+          "report": "report_1",
+          "numerator": "Green AND Red",
+          "denominator": "Red",
+          "count": 7,
+          "denominator_count": 36,
+          "n_unmeasured": 0,
+          "percent": 19.444444444444443
+        }
+      ]
+    },
+    {
+      "case": "max_projection:nd2",
+      "mode": "max_projection",
+      "source": "ND2 (whole file)",
+      "shape_czyx": [
+        3,
+        7,
+        1024,
+        1024
+      ],
+      "pixels_identical": true,
+      "labels_identical": true,
+      "objects_local": 616,
+      "objects_remote": 616,
+      "seconds_local": 157.4,
+      "seconds_worker": 166.0,
+      "measurements_within_tolerance": true,
+      "report": [
+        {
+          "report": "report_1",
+          "numerator": "Green AND Red",
+          "denominator": "Red",
+          "count": 40,
+          "denominator_count": 121,
+          "n_unmeasured": 0,
+          "percent": 33.05785123966942
+        }
+      ]
+    },
+    {
+      "case": "stitch_slices:192",
+      "mode": "stitch_slices",
+      "source": "TIFF crop 192x192 of the same ND2",
+      "shape_czyx": [
+        3,
+        7,
+        192,
+        192
+      ],
+      "pixels_identical": true,
+      "labels_identical": true,
+      "objects_local": 151,
+      "objects_remote": 151,
+      "seconds_local": 22.6,
+      "seconds_worker": 22.2,
+      "measurements_within_tolerance": true,
+      "report": [
+        {
+          "report": "report_1",
+          "numerator": "Green AND Red",
+          "denominator": "Red",
+          "count": 11,
+          "denominator_count": 44,
+          "n_unmeasured": 0,
+          "percent": 25.0
+        }
+      ]
+    },
+    {
+      "case": "full_3d:96",
+      "mode": "full_3d",
+      "source": "TIFF crop 96x96 of the same ND2",
+      "shape_czyx": [
+        3,
+        7,
+        96,
+        96
+      ],
+      "pixels_identical": true,
+      "labels_identical": true,
+      "objects_local": 35,
+      "objects_remote": 35,
+      "seconds_local": 106.3,
+      "seconds_worker": 103.5,
+      "measurements_within_tolerance": true,
+      "report": [
+        {
+          "report": "report_1",
+          "numerator": "Green AND Red",
+          "denominator": "Red",
+          "count": 1,
+          "denominator_count": 8,
+          "n_unmeasured": 0,
+          "percent": 12.5
+        }
+      ]
+    }
+  ]
+}
