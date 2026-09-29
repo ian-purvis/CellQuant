@@ -1,36 +1,45 @@
-# Python / packaging
+# Python and packaging
 __pycache__/
 *.py[cod]
-*$py.class
 *.egg-info/
 .eggs/
 build/
 dist/
-*.egg
-.wheel_validation*/
 .pytest_cache/
-.pytest_verify*/
-
-# Local installer / env state
-**/cellquant_env.json
-**/install_last.log
-*.log
-
-# Test / local scratch outputs
-**/artifacts/pytest*/
-**/artifacts/wheel/
+.ruff_cache/
+.mypy_cache/
 .coverage
 htmlcov/
-.mypy_cache/
-.ruff_cache/
-.tox/
 .venv/
 venv/
 
-# OS / editor
+# Local installer state and logs
+cellquant_env.json
+install_last.log
+*.log
+
+# Results and images: never commit lab data
+Outputs/
+outputs/
+exports/
+*.nd2
+*.czi
+*.lif
+*.tif
+*.tiff
+*.npz
+# CellQuant experiment folders
+experiment.json
+runs/
+working/
+.cache/
+
+# OS and editors
 .DS_Store
 Thumbs.db
-.idea/
+desktop.ini
 .vscode/
-*.swp
-*~
+.idea/
+
+# Git bundles used to move the repository
+*.bundle

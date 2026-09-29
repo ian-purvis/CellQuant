@@ -1,0 +1,95 @@
+{
+  "engine": "cellpose4",
+  "model": "cpsam_v2",
+  "cellpose_version": "4.2.1.1",
+  "runtime_fingerprint": "3d02f6269d6622a4f7578d6565afb5fe0ba92144dd1b717f06f787af43fe724d",
+  "cases": [
+    {
+      "case": "max_projection:nd2",
+      "mode": "max_projection",
+      "source": "ND2 (whole file)",
+      "shape_czyx": [
+        3,
+        7,
+        1024,
+        1024
+      ],
+      "pixels_identical": true,
+      "labels_identical": true,
+      "objects_local": 1111,
+      "objects_remote": 1111,
+      "seconds_local": 87.3,
+      "seconds_worker": 60.8,
+      "measurements_within_tolerance": true,
+      "report": [
+        {
+          "report": "report_1",
+          "numerator": "Green AND Red",
+          "denominator": "Red",
+          "count": 56,
+          "denominator_count": 175,
+          "n_unmeasured": 0,
+          "percent": 32.0
+        }
+      ]
+    },
+    {
+      "case": "single_plane:384",
+      "mode": "single_plane",
+      "source": "TIFF crop 384x384 of the same ND2",
+      "shape_czyx": [
+        3,
+        7,
+        384,
+        384
+      ],
+      "pixels_identical": true,
+      "labels_identical": true,
+      "objects_local": 235,
+      "objects_remote": 235,
+      "seconds_local": 8.8,
+      "seconds_worker": 9.7,
+      "measurements_within_tolerance": true,
+      "report": [
+        {
+          "report": "report_1",
+          "numerator": "Green AND Red",
+          "denominator": "Red",
+          "count": 17,
+          "denominator_count": 66,
+          "n_unmeasured": 0,
+          "percent": 25.75757575757576
+        }
+      ]
+    },
+    {
+      "case": "stitch_slices:160",
+      "mode": "stitch_slices",
+      "source": "TIFF crop 160x160 of the same ND2",
+      "shape_czyx": [
+        3,
+        7,
+        160,
+        160
+      ],
+      "pixels_identical": true,
+      "labels_identical": true,
+      "objects_local": 184,
+      "objects_remote": 184,
+      "seconds_local": 15.4,
+      "seconds_worker": 16.3,
+      "measurements_within_tolerance": true,
+      "report": [
+        {
+          "report": "report_1",
+          "numerator": "Green AND Red",
+          "denominator": "Red",
+          "count": 12,
+          "denominator_count": 41,
+          "n_unmeasured": 0,
+          "percent": 29.26829268292683
+        }
+      ]
+    }
+  ]
+}

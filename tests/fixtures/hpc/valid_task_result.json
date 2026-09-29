@@ -1,0 +1,88 @@
+{
+  "acquisition_id": "a000001",
+  "artifacts": [
+    {
+      "bytes": 148,
+      "path": "classifications/a000001_combinations.csv",
+      "sha256": "cf2a3b0053c809a43a4643dfa6cc16dd70c938cf8761f82013a488c35f2eee09"
+    },
+    {
+      "bytes": 215,
+      "path": "classifications/a000001_phenotypes.csv",
+      "sha256": "fbbff7e72731b1a64515461200aee470965be096fce7a023c81de832f2bfe5b5"
+    },
+    {
+      "bytes": 2,
+      "path": "edits/a000001.json",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "bytes": 16656,
+      "path": "labels/a000001_automated.tif",
+      "sha256": "aa0a23ae606da830dc404dec2c63b993cfaaff0d213dc9215d29f19be7d37039"
+    },
+    {
+      "bytes": 16656,
+      "path": "labels/a000001_final.tif",
+      "sha256": "aa0a23ae606da830dc404dec2c63b993cfaaff0d213dc9215d29f19be7d37039"
+    },
+    {
+      "bytes": 1069,
+      "path": "measurements/a000001.csv",
+      "sha256": "174c504208b2f5435de24d9a984250b581af7e31b491b147e2d23192a721729d"
+    },
+    {
+      "bytes": 9071,
+      "path": "provenance/a000001.json",
+      "sha256": "2ba02317816cd6796ab0a4c6c8a09f8936f44f70d825e265486f2c38a4182ad1"
+    },
+    {
+      "bytes": 301,
+      "path": "qc/a000001.json",
+      "sha256": "4c79fb230d91542a0e445dc776896ce744a755692c12fab588522be0d9042385"
+    },
+    {
+      "bytes": 159,
+      "path": "reports/a000001.csv",
+      "sha256": "671db22b60d30e56cba7f7d4871f5b027dbe240aa015c0cc13bfd71ec8788a6d"
+    },
+    {
+      "bytes": 401,
+      "path": "summaries/a000001.csv",
+      "sha256": "8c7cd68c2a5cb94028874ba48a31eb72b34c8bcce025622b4a5593dab5a24de1"
+    },
+    {
+      "bytes": 3524,
+      "path": "tables/a000001.json",
+      "sha256": "b791e3c63fcee36420df29a2a4a364935c167da44cc99bdabec4cb4aad17a34a"
+    }
+  ],
+  "attempt_id": "att_20260929T160911_24a4",
+  "bundle_id": "e82c2a8cdbcf4e2d9fa59615c4a49f9f",
+  "device": "cuda",
+  "ended_at": "2026-09-29T16:09:11Z",
+  "error": null,
+  "outcome": "succeeded",
+  "qc": {
+    "errors": [],
+    "fraction_touching_border": 0.0,
+    "median_area": 20.25,
+    "n_objects": 5,
+    "percent_excluded_by_size": 0.0,
+    "status": "warning",
+    "warnings": [
+      "Measurement 'far_core' has no pixels for object 6.",
+      "1 object could not be measured and was left out of all counts."
+    ]
+  },
+  "run_id": "run_fixture",
+  "runtime_fingerprint": "88b0dd99634762b5e284e1cfbf8e2c10e9cf56dd6fcf4ba23c9e3ba2083a5c62",
+  "runtime_sha256": "ee5a5cc095e79b2a4671930bf2362621976c5e149f8d0e90a2ea486fb4833c5b",
+  "schema_version": 1,
+  "started_at": "2026-09-29T16:09:11Z",
+  "task_key": "3b48fa1d9f7962a802c7f83bf0d23176d66a74b4f34b781939694fd371af6122",
+  "warnings": [
+    "Measurement 'far_core' has no pixels for object 6.",
+    "1 object could not be measured and was left out of all counts."
+  ]
+}

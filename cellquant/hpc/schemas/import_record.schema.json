@@ -1,0 +1,176 @@
+{
+  "$defs": {
+    "ImportedAcquisition": {
+      "additionalProperties": false,
+      "properties": {
+        "acquisition_id": {
+          "title": "Acquisition Id",
+          "type": "string"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attempt Id"
+        },
+        "image_id": {
+          "title": "Image Id",
+          "type": "string"
+        },
+        "imported_result": {
+          "title": "Imported Result",
+          "type": "boolean"
+        },
+        "sample_name": {
+          "title": "Sample Name",
+          "type": "string"
+        },
+        "source_image_id": {
+          "title": "Source Image Id",
+          "type": "string"
+        },
+        "source_relative_path": {
+          "title": "Source Relative Path",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "running",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "interrupted"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "acquisition_id",
+        "state",
+        "imported_result",
+        "image_id",
+        "source_image_id",
+        "source_relative_path",
+        "sample_name"
+      ],
+      "title": "ImportedAcquisition",
+      "type": "object"
+    }
+  },
+  "$id": "https://cellquant.local/hpc/v1/import_record.schema.json",
+  "additionalProperties": false,
+  "description": "``hpc_import.json`` in an imported experiment: where it came from and what was imported.",
+  "properties": {
+    "acquisitions": {
+      "items": {
+        "$ref": "#/$defs/ImportedAcquisition"
+      },
+      "title": "Acquisitions",
+      "type": "array"
+    },
+    "bundle_id": {
+      "title": "Bundle Id",
+      "type": "string"
+    },
+    "compute_outcome": {
+      "enum": [
+        "not_started",
+        "running",
+        "completed",
+        "completed_with_failures",
+        "failed",
+        "cancelled",
+        "interrupted"
+      ],
+      "title": "Compute Outcome",
+      "type": "string"
+    },
+    "experiment_id": {
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "imported_at": {
+      "title": "Imported At",
+      "type": "string"
+    },
+    "package_name": {
+      "title": "Package Name",
+      "type": "string"
+    },
+    "partial": {
+      "title": "Partial",
+      "type": "boolean"
+    },
+    "publication_outcome": {
+      "enum": [
+        "not_published",
+        "verified_partial",
+        "verified_complete",
+        "failed"
+      ],
+      "title": "Publication Outcome",
+      "type": "string"
+    },
+    "ready_digest": {
+      "title": "Ready Digest",
+      "type": "string"
+    },
+    "results_index_sha256": {
+      "title": "Results Index Sha256",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime_id": {
+      "title": "Runtime Id",
+      "type": "string"
+    },
+    "runtime_sha256": {
+      "title": "Runtime Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_experiment_id": {
+      "title": "Source Experiment Id",
+      "type": "string"
+    },
+    "source_experiment_name": {
+      "title": "Source Experiment Name",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bundle_id",
+    "package_name",
+    "ready_digest",
+    "run_id",
+    "results_index_sha256",
+    "imported_at",
+    "experiment_id",
+    "source_experiment_id",
+    "source_experiment_name",
+    "runtime_id",
+    "runtime_sha256",
+    "compute_outcome",
+    "publication_outcome",
+    "partial",
+    "acquisitions"
+  ],
+  "title": "ImportRecord",
+  "type": "object"
+}
