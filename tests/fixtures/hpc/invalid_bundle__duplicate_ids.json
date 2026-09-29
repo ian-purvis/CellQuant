@@ -1,0 +1,113 @@
+{
+  "acquisitions": [
+    {
+      "acquisition_id": "a000001",
+      "calibration_source": "file",
+      "channel_colors": [],
+      "channel_layout_confirmed": false,
+      "channel_names": [
+        "Green",
+        "Red",
+        "Far Red"
+      ],
+      "dtype": "uint16",
+      "effective_spacing_xyz_um": [
+        0.5,
+        0.5,
+        1.5
+      ],
+      "effective_z_index": null,
+      "effective_z_mode": "max_projection",
+      "file_spacing_xyz_um": [
+        0.5,
+        0.5,
+        1.5
+      ],
+      "input_file_sha256": "1e12ccdaa59e7a917d74a95a5b7b92684a02b896f720bda5d54bef607c8b5500",
+      "input_path": "inputs/a000001.ome.tif",
+      "objective": "",
+      "pixel_sha256": "bf3f421f4947d9a73b356d18571f3453f28a21d594523d949b7b73e58f110118",
+      "sample_name": "Group A/stack0",
+      "shape_czyx": [
+        3,
+        5,
+        64,
+        64
+      ],
+      "source_file_sha256": "ca907eeaf47ccb846237139630423dd04d58ab068aa73cadf0e555340598f195",
+      "source_image_id": "img_c978b3fb",
+      "source_position": 0,
+      "source_relative_path": "Group A/stack0.tif",
+      "task_key": "3b48fa1d9f7962a802c7f83bf0d23176d66a74b4f34b781939694fd371af6122",
+      "user_metadata": {
+        "Folder 1": "Group A"
+      }
+    },
+    {
+      "acquisition_id": "a000001",
+      "calibration_source": "file",
+      "channel_colors": [],
+      "channel_layout_confirmed": false,
+      "channel_names": [
+        "Green",
+        "Red",
+        "Far Red"
+      ],
+      "dtype": "uint16",
+      "effective_spacing_xyz_um": [
+        0.5,
+        0.5,
+        1.5
+      ],
+      "effective_z_index": null,
+      "effective_z_mode": "max_projection",
+      "file_spacing_xyz_um": [
+        0.5,
+        0.5,
+        1.5
+      ],
+      "input_file_sha256": "4e7314ec41cc95090fe62b2e3620ad01f1b20df6a2e2881496750209be6f013d",
+      "input_path": "inputs/a000002.ome.tif",
+      "objective": "",
+      "pixel_sha256": "4610f7e0b27dcfcfcdb1ce5efb55f9d1d216ebb0cf99c027d877c171205fc447",
+      "sample_name": "Group A/stack1",
+      "shape_czyx": [
+        3,
+        5,
+        64,
+        64
+      ],
+      "source_file_sha256": "538043247a59fd976fcfca7ab6e81812d2e9beeaf175b0b16e48245d81df218f",
+      "source_image_id": "img_8c8d2e09",
+      "source_position": 0,
+      "source_relative_path": "Group A/stack1.tif",
+      "task_key": "571bf80bf7823ba59eb5b6120f23a05f142aeef9d8afcb8201d54c215d692ac3",
+      "user_metadata": {
+        "Folder 1": "Group A"
+      }
+    }
+  ],
+  "application_build_sha256": "aabeb13979f4d4e28382ec697be06d64e6b481c41633502eab14360fbf4cb5dc",
+  "bundle_id": "e82c2a8cdbcf4e2d9fa59615c4a49f9f",
+  "cellquant_version": "0.1.0",
+  "channel_layout": [
+    "Green",
+    "Red",
+    "Far Red"
+  ],
+  "channel_layout_confirmed": false,
+  "cluster_path": "cluster.json",
+  "created_at": "2026-09-29T16:09:11Z",
+  "kind": "cellquant_v2_hpc",
+  "notes": [
+    "Manual object edits, deleted objects and approvals from the source experiment are not applied to the new segmentation. Image selection, sample names and metadata are kept."
+  ],
+  "package_name": "cq_hpc_e82c2a8c",
+  "recipe_path": "recipe.yaml",
+  "recipe_scientific_sha256": "13b0f814e61026aa37e0cf9fdcb380363e7f72d969b48195e028b83cd03abae7",
+  "runtime_path": "runtime.json",
+  "runtime_sha256": "ee5a5cc095e79b2a4671930bf2362621976c5e149f8d0e90a2ea486fb4833c5b",
+  "schema_version": 1,
+  "source_experiment_id": "exp_fa0479fb",
+  "source_experiment_name": "HPC test"
+}

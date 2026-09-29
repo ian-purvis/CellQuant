@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cellquant"
+version = "2.0.0"
+description = "Nuclear segmentation and marker quantification for multichannel confocal images and z-stacks, with review in napari"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Ian Purvis" },
+]
+requires-python = ">=3.11"
+keywords = ["microscopy", "segmentation", "cellpose", "napari", "quantification", "retina"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "scikit-image",
+    "tifffile",
+    "nd2",
+    "pydantic>=2",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# One Cellpose engine per environment. The Windows installer builds one
+# environment per engine, and Open CellQuant.bat asks which one to start.
+cellpose-v4 = ["cellpose>=4.2,<5"]   # Cellpose-SAM: most accurate, best with an NVIDIA GPU
+cellpose-v3 = ["cellpose>=3.1,<4"]   # Classic Cellpose: lighter, faster on CPU
+cellpose = ["cellpose>=4.2,<5"]      # kept for older install commands; same as cellpose-v4
+# napari needs a Qt backend to open a window. Plain "napari" does not install one.
+gui = ["napari[pyqt6]>=0.5,<0.7"]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/ian-purvis/CellQuant"
+Repository = "https://github.com/ian-purvis/CellQuant"
+Issues = "https://github.com/ian-purvis/CellQuant/issues"
+Changelog = "https://github.com/ian-purvis/CellQuant/blob/main/CHANGELOG.md"
+
+[project.scripts]
+cellquant = "cellquant.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["cellquant*"]
+
+# The in-app guide (a copy of docs/START_HERE.md; a test keeps them identical).
+[tool.setuptools.package-data]
+"cellquant.gui" = ["START_HERE.md"]
+# Cluster profile example and the published JSON schemas. The installed copy must hold the same files as
+# the source folder, because the application build digest covers every release file under cellquant/.
+"cellquant.hpc" = ["profiles/*.json", "profiles/*.md", "schemas/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
