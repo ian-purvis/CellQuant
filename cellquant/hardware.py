@@ -274,3 +274,182 @@ def format_seconds(seconds: float | None) -> str:
     if seconds < 5400:
         return f"{seconds / 60:.0f} min"
     return f"{seconds / 3600:.1f} h"
+
+
+# -- per-computer settings: Cellpose precision and CPU threads ------------------------------------------
+
+PRECISIONS = ("auto", "bfloat16", "float32")
+_BF16: dict[str, bool] = {}
+
+
+def settings_path():
+    """Per-computer settings, beside the install record: %LOCALAPPDATA%\\CellQuant\\cellquant_settings.json."""
+
+    from pathlib import Path
+
+    local = os.environ.get("LOCALAPPDATA")
+    base = Path(local) if local else Path.home() / "AppData" / "Local"
+    return base / "CellQuant" / "cellquant_settings.json"
+
+
+def load_settings() -> dict:
+    import json
+
+    path = settings_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_settings(data: dict) -> None:
+    import json
+
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def bfloat16_native(gpu: bool) -> bool:
+    """Whether the device Cellpose will use computes bfloat16 natively (not emulated).
+
+    A CUDA GPU must report bfloat16 support; a CPU must report oneDNN (mkldnn) bfloat16
+    support (AVX-512 BF16 or AMX). Otherwise bfloat16 is emulated, which on a laptop CPU
+    made Cellpose-SAM several times slower than float32. Anything unknown counts as no.
+    """
+
+    key = "cuda" if gpu else "cpu"
+    if key not in _BF16:
+        supported = False
+        try:
+            import torch
+
+            if gpu:
+                supported = bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+            else:
+                supported = bool(torch.ops.mkldnn._is_mkldnn_bf16_supported())
+        except Exception:  # noqa: BLE001 - no PyTorch, or an old one: float32
+            supported = False
+        _BF16[key] = supported
+    return _BF16[key]
+
+
+def cellpose_precision(parameters: dict, engine: str) -> str:
+    """"bfloat16" or "float32" for Cellpose-SAM: the recipe's ``precision`` when it names one,
+    otherwise bfloat16 only where the device supports it natively. Classic Cellpose runs float32."""
+
+    if engine != "cellpose4":
+        return "float32"
+    chosen = str(parameters.get("precision") or "auto")
+    if chosen not in PRECISIONS:
+        raise ValueError(f"Unknown precision '{chosen}'. Choose one of: {', '.join(PRECISIONS)}.")
+    if chosen != "auto":
+        return chosen
+    return "bfloat16" if bfloat16_native(bool(parameters.get("gpu", False))) else "float32"
+
+
+def best_threads(engine: str) -> int | None:
+    """The fastest CPU thread count measured here for this engine, or None when not measured."""
+
+    value = (load_settings().get("cpu_threads") or {}).get(engine)
+    try:
+        return int(value["threads"]) if isinstance(value, dict) else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+_THREADS_APPLIED: set[str] = set()
+
+
+def apply_threads(engine: str) -> int | None:
+    """Use the measured thread count for PyTorch, once per program run (it changes speed, not results)."""
+
+    if engine in _THREADS_APPLIED:
+        return None
+    _THREADS_APPLIED.add(engine)
+    threads = best_threads(engine)
+    if threads:
+        try:
+            import torch
+
+            torch.set_num_threads(threads)
+        except Exception:  # noqa: BLE001 - PyTorch is optional for classical runs
+            return None
+    return threads
+
+
+def benchmark_threads(engine: str | None = None, counts=None, run=None, repeats: int = 1) -> dict:
+    """Time Cellpose on a small fixed synthetic image at a few CPU thread counts and keep the fastest.
+
+    ``run(image) -> labels`` defaults to CellQuant's Cellpose on the engine installed here. The
+    labels must be identical at every thread count (the result is refused otherwise). The fastest
+    count is stored in the per-computer settings and used for later runs of that engine.
+    """
+
+    import time
+
+    import numpy as np
+
+    from cellquant.engines import cellpose_engine
+
+    engine = engine or cellpose_engine().key
+    available = os.cpu_count() or 1
+    counts = sorted({min(int(count), available) for count in (counts or (2, 4, 6, available)) if int(count) > 0})
+    image = _benchmark_image()
+    if run is None:
+        from cellquant.segmentation import segment_objects
+
+        def run(data):
+            return segment_objects(data, "cellpose", {"engine": engine})
+
+    try:
+        import torch
+    except Exception:  # noqa: BLE001
+        torch = None
+    before = torch.get_num_threads() if torch is not None else None
+    _THREADS_APPLIED.add(engine)  # the benchmark sets the thread count itself
+    timings, labels = {}, {}
+    try:
+        for count in counts:
+            if torch is not None:
+                torch.set_num_threads(count)
+            run(image)  # warm-up: loading the model is not timed
+            best = None
+            for _ in range(max(1, repeats)):
+                started = time.perf_counter()
+                labels[count] = np.asarray(run(image))
+                elapsed = time.perf_counter() - started
+                best = elapsed if best is None else min(best, elapsed)
+            timings[count] = best
+    finally:
+        if torch is not None and before:
+            torch.set_num_threads(before)
+    first = labels[counts[0]]
+    identical = all(np.array_equal(first, other) for other in labels.values())
+    fastest = min(timings, key=timings.get)
+    result = {"engine": engine, "seconds": {str(key): value for key, value in timings.items()}, "threads": fastest, "identical": identical}
+    if not identical:
+        result["error"] = "Results differed between thread counts; the setting was not saved."
+        return result
+    data = load_settings()
+    data.setdefault("cpu_threads", {})[engine] = {"threads": fastest, "seconds": result["seconds"]}
+    save_settings(data)
+    return result
+
+
+def _benchmark_image():
+    """A fixed 256 x 256 image of 36 nucleus-sized discs, the same on every computer."""
+
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    yy, xx = np.mgrid[:256, :256]
+    image = rng.normal(40, 5, (256, 256))
+    for row in range(6):
+        for column in range(6):
+            cy, cx = 22 + 42 * row, 22 + 42 * column
+            image[(yy - cy) ** 2 + (xx - cx) ** 2 <= 100] += 800
+    return np.clip(image, 0, 65535).astype(np.uint16)
