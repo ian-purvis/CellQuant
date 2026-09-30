@@ -12,6 +12,9 @@ are sometimes dim or labelled in only part of the nucleus.
 Nothing here comes from a real image. Every nucleus is drawn from a recorded
 plan, so the right answer is known exactly:
 
+``write_retina_set`` puts the images in ``images/`` and the answers in ``truth/`` (the same
+subfolders), so the images folder can be added to CellQuant without picking up the answer files:
+
 - ``<name>.tif``: the image (ImageJ hyperstack, Z × C × Y × X, uint16) with
   channel names, colors and pixel sizes, readable by CellQuant, Fiji and napari.
 - ``<name>_labels.tif``: the true nuclei (Z × Y × X, 0 = background).
@@ -91,11 +94,14 @@ class Nucleus:
     brightness: tuple[float, float, float]  # Green, Red, Far Red peak above offset
 
 
-def write_retina_image(plan: RetinaPlan, folder: str | Path) -> dict:
-    """Write one image, its true labels and its truth table. Returns the summary row."""
+def write_retina_image(plan: RetinaPlan, folder: str | Path, truth_folder: str | Path | None = None) -> dict:
+    """Write one image to ``folder``, and its true labels and truth table to ``truth_folder``
+    (the same folder when not given). Returns the summary row."""
 
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
+    truth = Path(truth_folder) if truth_folder is not None else folder
+    truth.mkdir(parents=True, exist_ok=True)
     rng = np.random.default_rng(plan.seed)
     shape = (plan.slices, plan.size, plan.size)
     band, normal_angle = _tissue_band(plan.size, rng)
@@ -119,14 +125,14 @@ def write_retina_image(plan: RetinaPlan, folder: str | Path) -> dict:
         },
     )
     tifffile.imwrite(
-        folder / f"{plan.name}_labels.tif",
+        truth / f"{plan.name}_labels.tif",
         labels.astype(np.uint16 if labels.max() < 65535 else np.uint32),
         imagej=True,
         resolution=(1 / PIXEL_SIZE_UM, 1 / PIXEL_SIZE_UM),
         metadata={"axes": "ZYX", "unit": "um", "spacing": Z_STEP_UM},
     )
     voxels = np.bincount(labels.ravel(), minlength=max(present, default=0) + 1)
-    with (folder / f"{plan.name}_truth.csv").open("w", newline="", encoding="utf-8") as handle:
+    with (truth / f"{plan.name}_truth.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["label", "z_um", "y_um", "x_um", "voxels", "fluor", "otx2", "otx2_pattern", "pax6_high"])
         for item in nuclei:
@@ -160,7 +166,8 @@ def write_retina_set(
 ) -> list[dict]:
     """Control and CRISPRi images laid out like the lab's folders:
 
-    ``<folder>/Control/Retina 1/control_r1.tif``, ``<folder>/CRISPRi/Retina 1/crispri_r1.tif``, ...
+    ``<folder>/images/Control/Retina 1/control_r1.tif``, ``<folder>/images/CRISPRi/Retina 1/crispri_r1.tif``, ...
+    with the answers in the same places under ``<folder>/truth/``. Add ``<folder>/images`` to CellQuant.
     """
 
     folder = Path(folder)
@@ -175,7 +182,8 @@ def write_retina_set(
                 otx2_of_fluor_percent=percent,
                 seed=seed + offset + index,
             )
-            row = write_retina_image(plan, folder / condition / f"Retina {index}")
+            where = Path(condition) / f"Retina {index}"
+            row = write_retina_image(plan, folder / "images" / where, folder / "truth" / where)
             row["image"] = f"{condition}/Retina {index}/{row['image']}"
             rows.append(row)
     with (folder / "truth_summary.csv").open("w", newline="", encoding="utf-8") as handle:
@@ -401,6 +409,7 @@ def _readme(rows: list[dict]) -> str:
         "",
         "Each image: 7 slices (1.5 um apart), 3 channels (Green = OTX2, Red = mCherry reporter 'Fluor',",
         "Far Red = PAX6, present in every nucleus), 12-bit values in 16-bit files, 0.575 um pixels.",
+        "Add the images folder to CellQuant. The truth folder holds the answers in the same subfolders:",
         "<name>_labels.tif holds the true nuclei; <name>_truth.csv says which are Fluor+, OTX2+, PAX6-high.",
         "",
         "Known answers, (Fluor+ OTX2+) / Fluor+:",

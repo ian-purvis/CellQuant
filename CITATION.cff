@@ -6,7 +6,7 @@ authors:
   - family-names: Purvis
     given-names: Ian
     affiliation: "Department of Ophthalmology, University of Colorado Anschutz Medical Campus"
-version: 2.0.0
+version: 2.1.0
 date-released: "2026-09-29"
 license: MIT
 repository-code: "https://github.com/ian-purvis/CellQuant"
