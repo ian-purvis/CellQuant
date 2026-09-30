@@ -124,7 +124,8 @@ class HpcPanel(QWidget):
                 self.table.insertRow(row)
                 tick = QTableWidgetItem()
                 tick.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-                tick.setCheckState(Qt.Checked if record.include else Qt.Unchecked)
+                # The images the analysis shown runs (its Plan); every included image unless changed.
+                tick.setCheckState(Qt.Checked if controller.is_planned(record.image_id) else Qt.Unchecked)
                 tick.setData(Qt.UserRole, record.image_id)
                 self.table.setItem(row, 0, tick)
                 size = f"{record.pixel_size_x:.4g}" if record.pixel_size_x else "none"
@@ -520,6 +521,22 @@ class HpcPanel(QWidget):
             return
         controller, recipe, ids, confirm = inputs
         profile = self.profile
+        per_image = [
+            controller.experiment.image(image_id)
+            for image_id in ids
+            if controller.segmentation_channel_for(image_id)[1] in ("chosen for this image", "same name")
+            or any(reason == "same name" for _channel, reason in controller.measurement_channels_for(image_id).values())
+        ]
+        if per_image:
+            names = ", ".join(record.relative_path or record.filename for record in per_image[:5])
+            more = f" and {len(per_image) - 5} more" if len(per_image) > 5 else ""
+            self.plan_text.setText(
+                "<p style='color:#c0392b'>Cluster packages use one channel setting for every image, but these images "
+                f"use a channel chosen for them or another channel layout: {names}{more}. Untick them here (run them "
+                "on this computer), or give them an analysis of their own.</p>"
+            )
+            self.prepare_button.setEnabled(False)
+            return
         self.prepare_button.setEnabled(False)
 
         def work():

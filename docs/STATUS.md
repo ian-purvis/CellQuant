@@ -203,3 +203,30 @@ pixels are at or above a pixel level (optionally at most an upper level).
   images. Suite: 300 passed. An independent review found four problems (a removed analysis's runs read by the
   original one; edits shared by analyses with the same segmentation; a re-included image left "excluded"; settings
   pages usable during Run all analyses), all fixed with tests.
+
+## The Plan dock and other channel layouts (2.1.0, 2026-09-29)
+
+- Each analysis has a plan (`AnalysisRecord.plan`: image id -> `PlanEntry(run, channel)`); blank entries mean
+  "run every included image with the analysis's channel". Controller: `is_planned`, `planned_images`,
+  `set_planned` (ticking a left-out image includes it), `set_plan_channel` (checked against the image's channel
+  count), `segmentation_channel_for` and `measurement_channels_for` (with the reason), `plan_status`.
+  `run_analyses` without a list of images runs each analysis's ticked images.
+- Channel layouts: the experiment's channel list comes from the first image; an image whose file lists the
+  same names in another order is segmented and measured in the channels of the same names (the analysis's
+  settings are not changed; the result records the channels used). Without the name, the position is kept
+  and the Plan marks the image ⚠. Per-image channel choices override both.
+- `cellquant/plan.py` groups images by layout, folder, or layout then folder. `cellquant/gui/plan_dock.py`:
+  grid and tree views, group ticks, the apply bar (selected/all images × one/all analyses: tick, untick, set
+  channel), right-click and double-click, status colours; locked while anything runs.
+- Tests: `tests/test_plan.py` (4, including the same image in another channel order giving the same objects
+  and marker values), `tests/test_gui_plan.py`.
+- An independent review found: channels mapped twice when an image of another layout was edited after
+  reopening (fixed: the per-image settings are applied once); settings saved during such an analysis could
+  store the image's channels (fixed: the analysis's own settings are saved, and changing settings then is
+  refused); HPC prep ignored the plan (fixed: it starts from the plan's images and refuses images with
+  per-image or other-layout channels, which packages cannot express yet); a failed per-image channel choice
+  could apply to some images (fixed: checked first); approvals and "mixed settings" did not allow for
+  per-image channels (fixed). A crash when a tick in the dock redrew the dock under its own signal was fixed
+  by redrawing afterwards. Suite: 307 passed, twice.
+- Known limits: the reference channel layout is the first image with named channels that match the
+  experiment's channel count; a file that names two channels the same uses the first.
