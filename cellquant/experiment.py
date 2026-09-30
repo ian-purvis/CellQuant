@@ -81,6 +81,17 @@ class ImageRecord(BaseModel):
 IMAGE_STATE_FIELDS = ("processing_status", "last_result", "last_message", "approved_settings_sha256")
 
 
+class PlanEntry(BaseModel):
+    """One image in one analysis's plan. Blank fields follow the defaults."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # None: run it when the image is included (the default); True/False: chosen for this image.
+    run: bool | None = None
+    # Channel to find objects in for this image only (index in this image's own channels).
+    channel: int | None = None
+
+
 class AnalysisRecord(BaseModel):
     """One analysis of the experiment's images: its own settings (recipe) and its own results.
 
@@ -102,6 +113,8 @@ class AnalysisRecord(BaseModel):
     owns_legacy: bool = False
     # Taken off the list. Kept so its runs and edits are never mistaken for another analysis's.
     removed: bool = False
+    # Which images this analysis runs on, and per-image channel choices (image id -> entry).
+    plan: dict[str, PlanEntry] = Field(default_factory=dict)
 
 
 class Experiment(BaseModel):
