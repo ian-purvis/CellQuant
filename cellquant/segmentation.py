@@ -120,7 +120,10 @@ class CellposeBackend:
     """
 
     def describe(self, parameters: dict[str, Any]) -> dict[str, Any]:
-        """Engine, version, and model that will run. Does not import PyTorch."""
+        """Engine, version, model and (Cellpose-SAM) numeric precision that will run.
+
+        Imports PyTorch only to decide the precision automatically (once per program run).
+        """
 
         from cellquant.engines import CELLPOSE_CLASSIC, ENGINE_LABELS, cellpose_engine
 
@@ -150,12 +153,21 @@ class CellposeBackend:
                 + (" (that is a classic Cellpose model)" if model in _CLASSIC_ONLY_MODELS else "")
                 + f". Choose one of: {', '.join(engine.models)}, or open CellQuant with classic Cellpose."
             )
-        return {
+        described = {
             "engine": engine.key,
             "engine_label": ENGINE_LABELS[engine.key],
             "cellpose_version": engine.version,
             "model": str(model),
         }
+        if engine.key != CELLPOSE_CLASSIC:
+            from cellquant.hardware import cellpose_precision
+
+            try:
+                # bfloat16 only where the device computes it natively; part of the cache key and provenance.
+                described["precision"] = cellpose_precision(parameters, engine.key)
+            except ValueError as exc:
+                raise SegmentationError(str(exc)) from exc
+        return described
 
     def segment(self, image: np.ndarray, parameters: dict[str, Any]) -> np.ndarray:
         labels, _details = self.segment_with_details(image, parameters)
@@ -181,10 +193,13 @@ class CellposeBackend:
                 "Cellpose could not be loaded in this copy of CellQuant. Run Install CellQuant.bat "
                 f"and choose Update. Details: {exc}"
             ) from exc
+        from cellquant.hardware import apply_threads
+
         gpu = bool(parameters.get("gpu", False))
         _seed_everything(parameters.get("random_seed"))
         _opt_out_of_sparse_checks()
-        return _cached_model(models, details["engine"] == CELLPOSE_CLASSIC, details["model"], gpu)
+        apply_threads(details["engine"])
+        return _cached_model(models, details["engine"] == CELLPOSE_CLASSIC, details["model"], gpu, details.get("precision"))
 
     def _finish(self, model, details: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
         device = getattr(model, "device", None)
@@ -349,17 +364,22 @@ def stage_timer() -> Iterator[dict]:
         _STAGE_TIMES = previous
 
 
-def _cached_model(models, classic: bool, name: str, gpu: bool):
-    """One Cellpose model per (class, name, GPU) for the life of the program.
+def _cached_model(models, classic: bool, name: str, gpu: bool, precision: str | None = None):
+    """One Cellpose model per (class, name, GPU, precision) for the life of the program.
 
     Loading Cellpose-SAM reads more than 1 GB, so batches should not repeat it.
     """
 
     cls = models.Cellpose if classic else models.CellposeModel
-    key = (cls, str(name), bool(gpu))
+    key = (cls, str(name), bool(gpu), precision)
     model = _MODELS.get(key)
     if model is None:
-        model = cls(gpu=gpu, model_type=name) if classic else cls(gpu=gpu, pretrained_model=name)
+        if classic:
+            model = cls(gpu=gpu, model_type=name)
+        elif precision:
+            model = cls(gpu=gpu, pretrained_model=name, use_bfloat16=precision == "bfloat16")
+        else:
+            model = cls(gpu=gpu, pretrained_model=name)
         _share_network_output(model)
         _MODELS[key] = model
     return model
