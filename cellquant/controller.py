@@ -7,6 +7,7 @@ summary each cache on their own inputs, and manual edits stay out of the recipe.
 from __future__ import annotations
 
 from collections import OrderedDict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,7 +19,10 @@ from cellquant.cache import StageCache, stage_key
 from cellquant.edits import EditOperation, apply_edits, operations_from_diff
 from cellquant.errors import CellQuantError, ImageLoadError
 from cellquant.experiment import (
+    IMAGE_STATE_FIELDS,
+    AnalysisRecord,
     Experiment,
+    PlanEntry,
     add_images,
     add_metadata_column,
     channel_warnings,
@@ -74,6 +78,8 @@ class BatchReport:
     run_id: str
     run_dir: str
     jobs: list[ImageJobResult] = field(default_factory=list)
+    analysis: str = ""  # the analysis's name, when several analyses were run
+    cancelled: bool = False
 
     @property
     def completed(self) -> int:
@@ -109,6 +115,7 @@ class AnalysisController:
         self.last_results: dict[str, ImageResult] = {}
         self._session_images: OrderedDict[str, LoadedImage] = OrderedDict()
         self._segmentation_ids: dict[str, str] = {}
+        self._ensure_analyses()
 
     @classmethod
     def create(cls, directory: str | Path, name: str, input_directory: str | Path | None = None) -> AnalysisController:
@@ -119,10 +126,22 @@ class AnalysisController:
         return cls(load_experiment(directory))
 
     def save(self) -> None:
+        if getattr(self, "_unswapped_recipe", None) is not None:
+            # Saving while one image is analyzed with its own channels: keep the analysis's settings.
+            swapped, original = self.recipe, self._unswapped_recipe
+            self.recipe, self._unswapped_recipe = original, None
+            try:
+                self.save()
+            finally:
+                self.recipe, self._unswapped_recipe = swapped, original
+            return
         self._touch_recipe()
+        self.recipe.recipe_name = self.active_analysis().name
         recipe_path = self._recipe_path()
         save_recipe(self.recipe, recipe_path)
         self.experiment.recipe_id = self.recipe.recipe_id
+        active = self.active_analysis()
+        active.latest_run_id = self.experiment.latest_run_id
         save_experiment(self.experiment)
         for image_id, edits in self.edits.items():
             save_edits(self.directory, image_id, edits)
@@ -147,9 +166,9 @@ class AnalysisController:
         imported from a cluster run after one image is run again here).
         """
 
-        folders = [self.directory / "working"]
+        folders = [self._working_dir()]
         latest = self._latest_run_dir()
-        if latest is not None:
+        if latest is not None and self._run_belongs_here(latest):
             folders.append(latest)
         earlier = []
         for run in (self.directory / "runs").glob("*/run.json"):
@@ -158,9 +177,13 @@ class AnalysisController:
             try:
                 import json
 
-                started = str(json.loads(run.read_text(encoding="utf-8")).get("start_timestamp") or "")
+                data = json.loads(run.read_text(encoding="utf-8"))
+                started = str(data.get("start_timestamp") or "")
+                recipe_id = data.get("recipe_id")
             except (OSError, ValueError):
-                started = ""
+                started, recipe_id = "", None
+            if not self._recipe_belongs_here(recipe_id):
+                continue  # another analysis's run
             earlier.append((started, run.parent))
         folders.extend(folder for _started, folder in sorted(earlier, key=lambda item: item[0], reverse=True))
         return folders
@@ -177,7 +200,7 @@ class AnalysisController:
     def _persist_open_results(self) -> None:
         """Save interactive results separately from the finished run snapshot."""
 
-        destination = self.directory / "working"
+        destination = self._working_dir()
         for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits"):
             (destination / relative).mkdir(parents=True, exist_ok=True)
         for image_id, result in self.last_results.items():
@@ -252,21 +275,30 @@ class AnalysisController:
         """Settings plus the number of edits: what an approval vouches for."""
 
         result = self.last_results.get(image_id)
-        settings = result.provenance.get("recipe_sha256", "") if result is not None else self.recipe.content_hash()
+        if result is not None:
+            settings = result.provenance.get("recipe_sha256", "")
+        else:
+            with self._image_settings(self.experiment.image(image_id)):
+                settings = self.recipe.content_hash()
         return f"{settings}:{len(self._active_edits(image_id))}"
 
     def set_recipe(self, recipe: Recipe | dict | str | Path) -> None:
+        """Replace the active analysis's settings. The analysis keeps its identity (recipe id)."""
+
+        if getattr(self, "_unswapped_recipe", None) is not None:
+            raise CellQuantError("Wait for the current analysis to finish before changing the settings.")
+        current = self.recipe.recipe_id if hasattr(self, "recipe") else None
         self.recipe = load_recipe(recipe)
+        if current and self.experiment.analyses:
+            self.recipe.recipe_id = current
         if not self.recipe.recipe_id:
             self.recipe.recipe_id = self.experiment.recipe_id or f"recipe_{self.experiment.experiment_id[-8:]}"
         self.recipe.software_version = self.recipe.software_version or __version__
 
     def duplicate_recipe(self, name: str) -> Recipe:
-        copy = self.recipe.model_copy(deep=True)
-        copy.recipe_id = f"{self.recipe.recipe_id or 'recipe'}_copy"
-        copy.recipe_name = name or f"{self.recipe.recipe_name or 'Recipe'} copy"
-        self.recipe = copy
-        self.save()
+        """A new analysis with a copy of these settings, made active. The current analysis is kept."""
+
+        self.add_analysis(name or f"{self.active_analysis().name} copy", activate=True)
         return self.recipe
 
     def import_recipe(self, path: str | Path) -> Recipe:
@@ -383,7 +415,9 @@ class AnalysisController:
             batch_status = "completed"
         finish_run(self.run_dir, self.run_record, batch_status)
         self.save()
-        return BatchReport(self.run_record.run_id, str(self.run_dir), jobs)
+        return BatchReport(
+            self.run_record.run_id, str(self.run_dir), jobs, analysis=self.active_analysis().name, cancelled=cancelled
+        )
 
     def preview(self, image_id: str, crop: tuple[int, int, int, int] | None = None) -> np.ndarray:
         """Segment a crop. The result is not cached and is not a saved run."""
@@ -400,7 +434,8 @@ class AnalysisController:
 
         # A 3D preview segments every slice of the visible area, so linking can be checked too.
         cropped = replace(loaded, data=np.ascontiguousarray(loaded.data[..., y0:y1, x0:x1]))
-        labels = segment_channel(cropped, self.recipe, record_timing=False)
+        with self._image_settings(record):
+            labels = segment_channel(cropped, self.recipe, record_timing=False)
         full = np.zeros(loaded.spatial_shape, dtype=np.int32)
         full[..., y0:y1, x0:x1] = labels
         return full
@@ -453,6 +488,7 @@ class AnalysisController:
         stamp = self._current_segmentation(image_id)
         for operation in operations:
             operation.segmentation = stamp
+            operation.analysis = self.recipe.recipe_id or ""
         self.edits.setdefault(image_id, []).extend(operations)
         save_edits(self.directory, image_id, self.edits[image_id])
         self._remeasure_cached(image_id)
@@ -473,13 +509,18 @@ class AnalysisController:
         """Edits made on the current segmentation (and older edits with no segmentation recorded)."""
 
         current = self._segmentation_ids.get(image_id, "") if segmentation is None else segmentation
-        edits = self.edits.get(image_id, [])
+        analysis = self.recipe.recipe_id
+        legacy = self._owns_legacy()
+        # An edit belongs to the analysis it was made in; edits from before analyses existed belong
+        # to the original analysis.
+        edits = [item for item in self.edits.get(image_id, []) if item.analysis == analysis or (not item.analysis and legacy)]
         if not current:
-            return list(edits)
-        return [item for item in edits if item.segmentation in ("", current)]
+            return edits
+        return [item for item in edits if item.segmentation in (current, "")]
 
     def _edit_and_remeasure(self, image_id: str, operation: EditOperation) -> None:
         operation.segmentation = self._current_segmentation(image_id)
+        operation.analysis = self.recipe.recipe_id or ""
         self.edits.setdefault(image_id, []).append(operation)
         save_edits(self.directory, image_id, self.edits[image_id])
         record = self.experiment.image(image_id)
@@ -491,6 +532,10 @@ class AnalysisController:
     def _remeasure_cached(self, image_id: str) -> ImageResult:
         """Re-measure from the image already in memory. Does not hash the file."""
 
+        with self._image_settings(self.experiment.image(image_id)):
+            return self._remeasure_cached_here(image_id)
+
+    def _remeasure_cached_here(self, image_id: str) -> ImageResult:
         record = self.experiment.image(image_id)
         prior = self.last_results.get(image_id)
         loaded = self._session_images.get(image_id)
@@ -530,7 +575,7 @@ class AnalysisController:
             self._session_images.popitem(last=False)
 
     def _write_working(self, image_id: str, result: ImageResult) -> None:
-        destination = self.directory / "working"
+        destination = self._working_dir()
         for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits"):
             (destination / relative).mkdir(parents=True, exist_ok=True)
         persist_image_result(destination, result, self._active_edits(image_id))
@@ -599,7 +644,7 @@ class AnalysisController:
             for item in results
         ]
         pd.DataFrame(index_rows).to_csv(destination / "settings_index.csv", index=False)
-        hashes = {row["recipe_sha256"] for row in index_rows}
+        hashes = self._settings_versions(results)
         self.export_recipe(destination / "recipe.yaml")
         mixed_note = destination / "mixed_settings.txt"
         if len(hashes) <= 1 and mixed_note.is_file():
@@ -617,6 +662,45 @@ class AnalysisController:
         if group_by:
             grouped_summary(summaries, group_by).to_csv(destination / f"grouped_by_{group_by}.csv", index=False)
         return destination
+
+    def _settings_versions(self, results: list[ImageResult]) -> set:
+        """Distinct settings among these results. Channels that differ only because an image uses its own
+        channels (a per-image choice, or another channel layout) do not count as different settings."""
+
+        versions = set()
+        for result in results:
+            recipe = result.provenance.get("recipe")
+            image_id = result.provenance.get("image_id")
+            if not isinstance(recipe, dict) or image_id is None:
+                versions.add(("hash", result.provenance.get("recipe_sha256")))
+                continue
+            try:
+                record = self.experiment.image(str(image_id))
+            except KeyError:
+                versions.add(("hash", result.provenance.get("recipe_sha256")))
+                continue
+            used = (
+                int(recipe.get("object_set", {}).get("segmentation_channel", -1)),
+                tuple(int(item.get("channel", -1)) for item in recipe.get("measurements", [])),
+            )
+            with self._image_settings(record):
+                expected = (
+                    int(self.recipe.object_set.segmentation_channel),
+                    tuple(int(item.channel) for item in self.recipe.measurements),
+                )
+            try:
+                normalized = load_recipe(
+                    {
+                        **recipe,
+                        "object_set": {**recipe.get("object_set", {}), "segmentation_channel": 0},
+                        "measurements": [{**item, "channel": 0} for item in recipe.get("measurements", [])],
+                    }
+                )
+            except Exception:  # noqa: BLE001 - settings saved by another version: compare them as they are
+                versions.add(("hash", result.provenance.get("recipe_sha256")))
+                continue
+            versions.add((normalized.content_hash(), used == expected))
+        return versions
 
     def _results_for_export(self) -> list[ImageResult]:
         """Results for every included image: open ones first, then saved ones.
@@ -673,7 +757,8 @@ class AnalysisController:
         return prior if same_settings and same_calibration and same_image and same_shape else None
 
     def _analyze(self, record, *, allow_segmentation: bool = True) -> ImageResult:
-        analyzed = self._cached_analysis(record, remeasure=True, allow_segmentation=allow_segmentation)
+        with self._image_settings(record):
+            analyzed = self._cached_analysis(record, remeasure=True, allow_segmentation=allow_segmentation)
         if analyzed is None:
             raise ImageLoadError("File could not be opened.")
         result, loaded = analyzed
@@ -861,6 +946,470 @@ class AnalysisController:
         self.recipe.software_version = __version__
         if not self.recipe.recipe_id:
             self.recipe.recipe_id = f"recipe_{self.experiment.experiment_id[-8:]}"
+
+    # -- analyses: several settings (for example one per channel) on the same images ----------------
+
+    def analyses(self) -> list[AnalysisRecord]:
+        """The analyses on the list (removed ones are kept on file but not listed)."""
+
+        return [item for item in self.experiment.analyses if not item.removed]
+
+    def active_analysis(self) -> AnalysisRecord:
+        self._ensure_analyses()
+        for item in self.experiment.analyses:
+            if item.recipe_id == self.recipe.recipe_id:
+                return item
+        # The settings were given a new identity from outside (an old-style recipe file): adopt it.
+        item = self.experiment.analyses[0] if len(self.experiment.analyses) == 1 and not self.experiment.analyses[0].removed else None
+        if item is not None:
+            item.recipe_id = self.recipe.recipe_id or item.recipe_id
+            return item
+        item = AnalysisRecord(recipe_id=self.recipe.recipe_id, name=self._unique_name("Analysis"), working_folder=self._new_working_folder(self.recipe.recipe_id))
+        self.experiment.analyses.append(item)
+        return item
+
+    def add_analysis(self, name: str, recipe: Recipe | dict | None = None, *, activate: bool = True) -> str:
+        """Add an analysis of the same images: a copy of the current settings, or the settings given.
+
+        Returns its id. Its results are kept apart from every other analysis's.
+        """
+
+        import uuid
+
+        source = load_recipe(recipe) if recipe is not None else self.recipe
+        new_id = f"recipe_{uuid.uuid4().hex[:8]}"
+        data = source.model_dump(mode="json")
+        name = self._unique_name(name.strip() or "Analysis")
+        data.update(recipe_id=new_id, recipe_name=name, created_at=None, modified_at=None)
+        created = load_recipe(data)
+        save_recipe(created, self.directory / "recipes" / f"{new_id}.yaml")
+        self.experiment.analyses.append(
+            AnalysisRecord(recipe_id=new_id, name=name, working_folder=self._new_working_folder(new_id))
+        )
+        if activate:
+            self.switch_analysis(new_id)
+        else:
+            self.save()
+        return new_id
+
+    def switch_analysis(self, recipe_id: str) -> None:
+        """Make another analysis active: its settings, its results and its review state."""
+
+        target = self._analysis(recipe_id)
+        if recipe_id == self.recipe.recipe_id:
+            return
+        self.save()
+        current = self.active_analysis()
+        current.image_states = {
+            record.image_id: {name: str(getattr(record, name) or "") for name in IMAGE_STATE_FIELDS}
+            for record in self.experiment.images
+        }
+        current.latest_run_id = self.experiment.latest_run_id
+        path = self.directory / "recipes" / f"{recipe_id}.yaml"
+        restored_excluded = []
+        self.recipe = load_recipe(path) if path.is_file() else self.recipe.model_copy(update={"recipe_id": recipe_id})
+        self.recipe.recipe_id = recipe_id
+        for record in self.experiment.images:
+            state = target.image_states.get(record.image_id, {})
+            record.processing_status = state.get("processing_status") or "not_analyzed"
+            record.last_result = state.get("last_result", "")
+            record.last_message = state.get("last_message", "")
+            record.approved_settings_sha256 = state.get("approved_settings_sha256", "")
+            if not record.include:
+                record.processing_status = "excluded"
+            elif record.processing_status == "excluded":
+                restored_excluded.append(record)  # included again while another analysis was shown
+        self.experiment.latest_run_id = target.latest_run_id
+        self.experiment.recipe_id = recipe_id
+        self.last_results = {}
+        self._session_images.clear()
+        self._segmentation_ids = {}
+        self.run_record = None
+        self.run_dir = None
+        self.run_log = None
+        for record in restored_excluded:
+            record.processing_status = "analyzed" if self.recall(record.image_id) is not None else "not_analyzed"
+        self.save()
+
+    def rename_analysis(self, recipe_id: str, name: str) -> None:
+        item = self._analysis(recipe_id)
+        name = name.strip()
+        if not name:
+            raise CellQuantError("An analysis needs a name.")
+        if name != item.name:
+            item.name = self._unique_name(name)
+        if recipe_id == self.recipe.recipe_id:
+            self.recipe.recipe_name = item.name
+        self.save()
+
+    def remove_analysis(self, recipe_id: str) -> None:
+        """Take an analysis off the list. Its settings and results stay in the experiment folder."""
+
+        if len(self.analyses()) <= 1:
+            raise CellQuantError("An experiment keeps at least one analysis.")
+        item = self._analysis(recipe_id)
+        if recipe_id == self.recipe.recipe_id:
+            other = next(entry for entry in self.analyses() if entry.recipe_id != recipe_id)
+            self.switch_analysis(other.recipe_id)
+        item.removed = True
+        self.save()
+
+    def analyses_for_channels(self, channels: list[int] | None = None) -> list[str]:
+        """One analysis per channel: the current settings, finding objects in each channel in turn.
+
+        A channel the current analysis (or another with the same settings) already finds objects in
+        is not added again. Returns the ids of the analyses for these channels, in channel order.
+        The active analysis does not change.
+        """
+
+        wanted = [channel.channel_index for channel in self.experiment.channels] if channels is None else list(channels)
+        names = {channel.channel_index: channel.channel_name for channel in self.experiment.channels}
+        base = self.recipe.model_dump(mode="json")
+        ids = []
+        for channel in wanted:
+            data = dict(base)
+            data["object_set"] = {**base["object_set"], "segmentation_channel": int(channel)}
+            existing = self._analysis_with_settings(load_recipe({**data, "recipe_id": None}))
+            if existing is not None:
+                ids.append(existing)
+                continue
+            ids.append(self.add_analysis(f"Objects in {names.get(channel, f'channel {channel + 1}')}", data, activate=False))
+        return ids
+
+    def run_analyses(
+        self,
+        recipe_ids: list[str] | None = None,
+        image_ids: list[str] | None = None,
+        *,
+        on_progress=None,
+        should_continue=None,
+        on_analysis=None,
+    ) -> list[BatchReport]:
+        """Run each analysis over the same images, one after another. The active analysis is restored.
+
+        ``on_progress(index, total, filename, status)`` counts across all analyses; ``filename`` is
+        prefixed with the analysis name. ``on_analysis(index, total, name)`` is called as each starts.
+        Stopping ends the current analysis's run (finished images are kept) and skips the rest.
+        """
+
+        chosen = [item.recipe_id for item in self.analyses()] if recipe_ids is None else list(recipe_ids)
+        for recipe_id in chosen:
+            self._analysis(recipe_id)
+        original = self.recipe.recipe_id
+        # Without a list of images, each analysis runs the images its plan ticks.
+        work = [(recipe_id, list(image_ids) if image_ids is not None else self.planned_images(recipe_id)) for recipe_id in chosen]
+        work = [(recipe_id, images) for recipe_id, images in work if images]
+        total = sum(len(images) for _recipe_id, images in work)
+        reports: list[BatchReport] = []
+        offset = 0
+        try:
+            for position, (recipe_id, images) in enumerate(work):
+                if should_continue is not None and not should_continue():
+                    break
+                self.switch_analysis(recipe_id)
+                name = self.active_analysis().name
+                if on_analysis is not None:
+                    on_analysis(position + 1, len(work), name)
+
+                def progress_across(index, _count, filename, status, offset=offset, label=name):
+                    if on_progress is not None:
+                        on_progress(offset + index, total, f"{label}: {filename}", status)
+
+                offset += len(images)
+                report = self.run_images(images, on_progress=progress_across, should_continue=should_continue)
+                reports.append(report)
+                if report.cancelled:
+                    break
+        finally:
+            if original and original != self.recipe.recipe_id and any(item.recipe_id == original for item in self.analyses()):
+                self.switch_analysis(original)
+        return reports
+
+    def export_all(self, directory: str | Path, *, group_by: str | None = None) -> Path:
+        """Export every analysis that has results, one folder each, and one table of all image summaries."""
+
+        import re
+
+        destination = Path(directory)
+        destination.mkdir(parents=True, exist_ok=True)
+        original = self.recipe.recipe_id
+        summaries, skipped, used = [], [], set()
+        try:
+            for item in self.analyses():
+                self.switch_analysis(item.recipe_id)
+                slug = re.sub(r"[^A-Za-z0-9._-]+", "_", item.name).strip("_") or item.recipe_id
+                while slug in used:
+                    slug += "_"
+                used.add(slug)
+                if not self._results_for_export():
+                    skipped.append(item.name)
+                    continue
+                folder = self.export(destination / slug, group_by=group_by)
+                table = pd.read_csv(folder / "image_summary.csv")
+                table.insert(0, "segmentation_channel", self._channel_name(self.recipe.object_set.segmentation_channel))
+                table.insert(0, "analysis", item.name)
+                summaries.append(table)
+        finally:
+            if original != self.recipe.recipe_id:
+                self.switch_analysis(original)
+        if not summaries:
+            raise CellQuantError("There are no results to export yet.")
+        combined = pd.concat(summaries, ignore_index=True)
+        combined.to_csv(destination / "all_analyses_image_summary.csv", index=False)
+        if group_by:
+            grouped = [grouped_summary(frame.drop(columns=["analysis", "segmentation_channel"]), group_by).assign(analysis=frame["analysis"].iloc[0]) for frame in summaries]
+            pd.concat(grouped, ignore_index=True).to_csv(destination / f"all_analyses_grouped_by_{group_by}.csv", index=False)
+        note = destination / "analyses_not_exported.txt"
+        if skipped:
+            note.write_text("These analyses have no results yet, so they were not exported:\n" + "\n".join(skipped) + "\n", encoding="utf-8")
+        elif note.is_file():
+            note.unlink()
+        return destination
+
+    # -- plan: which images each analysis runs on, and per-image channels ------------------------
+
+    def is_planned(self, image_id: str, recipe_id: str | None = None) -> bool:
+        """Whether this analysis runs this image: included, and not unticked in its plan."""
+
+        record = self.experiment.image(image_id)
+        entry = self._analysis(recipe_id or self.recipe.recipe_id).plan.get(image_id)
+        return bool(record.include) and not (entry is not None and entry.run is False)
+
+    def planned_images(self, recipe_id: str | None = None) -> list[str]:
+        return [record.image_id for record in self.experiment.images if self.is_planned(record.image_id, recipe_id)]
+
+    def set_planned(self, image_ids: list[str], run: bool, recipe_ids: list[str] | None = None) -> None:
+        """Tick (run=True) or untick these images in these analyses (all listed ones when not given).
+
+        Ticking an image that is left out of the experiment also includes it again.
+        """
+
+        targets = [self._analysis(recipe_id) for recipe_id in (recipe_ids or [item.recipe_id for item in self.analyses()])]
+        for image_id in image_ids:
+            record = self.experiment.image(image_id)
+            if run and not record.include:
+                self.set_included(image_id, True)
+            for item in targets:
+                entry = item.plan.get(image_id) or PlanEntry()
+                entry.run = None if run else False
+                self._store_entry(item, image_id, entry)
+        self.save()
+
+    def set_plan_channel(self, image_ids: list[str], channel: int | None, recipe_ids: list[str] | None = None) -> None:
+        """Find objects in ``channel`` (an index in each image's own channels) for these images only.
+
+        ``None`` goes back to the analysis's channel. Applies to the active analysis unless others are given.
+        """
+
+        targets = [self._analysis(recipe_id) for recipe_id in (recipe_ids or [self.recipe.recipe_id])]
+        for image_id in image_ids:  # check every image before changing any
+            record = self.experiment.image(image_id)
+            count = record.number_of_channels or len(record.channel_names) or len(self.experiment.channels)
+            if channel is not None and not 0 <= int(channel) < max(count, 1):
+                label = record.relative_path or record.filename
+                raise CellQuantError(f"{label} has {count} channels; channel {int(channel) + 1} does not exist.")
+        for image_id in image_ids:
+            for item in targets:
+                entry = item.plan.get(image_id) or PlanEntry()
+                entry.channel = None if channel is None else int(channel)
+                self._store_entry(item, image_id, entry)
+        self.save()
+
+    def segmentation_channel_for(self, image_id: str, recipe_id: str | None = None) -> tuple[int, str]:
+        """The channel this analysis finds objects in for this image, and why.
+
+        Reasons: ``"chosen for this image"``; ``"analysis"`` (the analysis's channel); ``"same name"``
+        (the image lists that channel's name at another position); ``"not in this image"`` (its
+        layout has no channel of that name, so the position is used: worth checking).
+        """
+
+        recipe_id = recipe_id or self.recipe.recipe_id
+        record = self.experiment.image(image_id)
+        entry = self._analysis(recipe_id).plan.get(image_id)
+        if entry is not None and entry.channel is not None:
+            return int(entry.channel), "chosen for this image"
+        return self._map_channel(record, int(self._recipe_of(recipe_id).object_set.segmentation_channel))
+
+    def _map_channel(self, record, index: int) -> tuple[int, str]:
+        """A channel of the experiment's channel list, found in this image by its name in the file.
+
+        Images with another channel layout (the same channels in another order) then use the right
+        channel. When the image has no channel of that name, the position is kept.
+        """
+
+        reference = self._reference_channel_names()
+        names = list(record.channel_names)
+        if reference and names and names != reference and index < len(reference):
+            wanted = reference[index]
+            if wanted in names:
+                found = names.index(wanted)
+                return found, ("same name" if found != index else "analysis")
+            return index, "not in this image"
+        return index, "analysis"
+
+    def measurement_channels_for(self, image_id: str, recipe_id: str | None = None) -> dict[str, tuple[int, str]]:
+        """For each measurement of this analysis: the channel it reads in this image, and why."""
+
+        record = self.experiment.image(image_id)
+        recipe = self._recipe_of(recipe_id or self.recipe.recipe_id)
+        return {item.id: self._map_channel(record, int(item.channel)) for item in recipe.measurements}
+
+    def plan_status(self, image_id: str, recipe_id: str | None = None) -> str:
+        """For the Plan dock: 'not planned', 'not run', 'analyzed', 'reviewed', 'approved', 'needs attention' or 'failed'."""
+
+        recipe_id = recipe_id or self.recipe.recipe_id
+        if not self.is_planned(image_id, recipe_id):
+            return "not planned"
+        record = self.experiment.image(image_id)
+        if recipe_id == self.recipe.recipe_id:
+            status, last = record.processing_status, record.last_result
+        else:
+            state = self._analysis(recipe_id).image_states.get(image_id, {})
+            status, last = state.get("processing_status", "not_analyzed"), state.get("last_result", "")
+        if last == "Failure":
+            return "failed"
+        return {"not_analyzed": "not run", "excluded": "not run", "needs_attention": "needs attention"}.get(status, status)
+
+    def _store_entry(self, item: AnalysisRecord, image_id: str, entry: PlanEntry) -> None:
+        if entry.run is None and entry.channel is None:
+            item.plan.pop(image_id, None)
+        else:
+            item.plan[image_id] = entry
+
+    def _recipe_of(self, recipe_id: str) -> Recipe:
+        if recipe_id == self.recipe.recipe_id:
+            return self.recipe
+        path = self.directory / "recipes" / f"{recipe_id}.yaml"
+        if not path.is_file():
+            return self.recipe
+        stamp = path.stat().st_mtime_ns
+        cache = self.__dict__.setdefault("_recipe_files", {})
+        if cache.get(recipe_id, (None,))[0] != stamp:
+            cache[recipe_id] = (stamp, load_recipe(path))
+        return cache[recipe_id][1]
+
+    def _reference_channel_names(self) -> list[str]:
+        """File channel names of the layout the experiment's channel list was made from."""
+
+        expected = len(self.experiment.channels)
+        for record in self.experiment.images:
+            if record.channel_names and len(record.channel_names) == expected:
+                return list(record.channel_names)
+        return []
+
+    @contextmanager
+    def _image_settings(self, record):
+        """Analyze this image with its own channels: the segmentation channel chosen for it (or the
+        channel of the same name), and each marker read from the channel of the same name."""
+
+        if getattr(self, "_unswapped_recipe", None) is not None:
+            yield  # already analyzing this image with its own channels: never map twice
+            return
+        channel, _reason = self.segmentation_channel_for(record.image_id)
+        measured = {item.id: self._map_channel(record, int(item.channel))[0] for item in self.recipe.measurements}
+        same = channel == self.recipe.object_set.segmentation_channel and all(
+            measured[item.id] == item.channel for item in self.recipe.measurements
+        )
+        if same:
+            yield
+            return
+        saved = self.recipe
+        changed = saved.model_copy(deep=True)
+        changed.object_set.segmentation_channel = channel
+        for item in changed.measurements:
+            item.channel = measured[item.id]
+        self.recipe = changed
+        self._unswapped_recipe = saved
+        try:
+            yield
+        finally:
+            self.recipe = saved
+            self._unswapped_recipe = None
+
+    def _channel_name(self, index: int) -> str:
+        for channel in self.experiment.channels:
+            if channel.channel_index == index:
+                return channel.channel_name
+        return f"Channel {index + 1}"
+
+    def _ensure_analyses(self) -> None:
+        """Experiments saved before analyses existed have one: the current settings and results."""
+
+        if self.experiment.analyses or not hasattr(self, "recipe"):
+            return
+        name = self.recipe.recipe_name if self.recipe.recipe_name and self.recipe.recipe_name != "Recipe" else "Analysis 1"
+        self.experiment.analyses.append(
+            AnalysisRecord(
+                recipe_id=self.recipe.recipe_id,
+                name=name,
+                working_folder="working",
+                latest_run_id=self.experiment.latest_run_id,
+                owns_legacy=True,
+            )
+        )
+
+    def _analysis(self, recipe_id: str) -> AnalysisRecord:
+        self._ensure_analyses()
+        for item in self.analyses():
+            if item.recipe_id == recipe_id:
+                return item
+        raise KeyError(recipe_id)
+
+    def _analysis_with_settings(self, recipe: Recipe) -> str | None:
+        wanted = recipe.content_hash()
+        if self.recipe.content_hash() == wanted:
+            return self.recipe.recipe_id
+        for item in self.analyses():
+            path = self.directory / "recipes" / f"{item.recipe_id}.yaml"
+            if item.recipe_id != self.recipe.recipe_id and path.is_file() and load_recipe(path).content_hash() == wanted:
+                return item.recipe_id
+        return None
+
+    def _owns_legacy(self) -> bool:
+        """Whether the active analysis holds what was saved before analyses existed."""
+
+        if not self.experiment.analyses:
+            return True
+        return self.active_analysis().owns_legacy
+
+    def _recipe_belongs_here(self, recipe_id) -> bool:
+        """Whether a saved run with this recipe id holds results of the active analysis."""
+
+        if recipe_id == self.recipe.recipe_id:
+            return True
+        if not self._owns_legacy():
+            return False
+        # The original analysis also owns runs made before analyses existed (other or missing ids),
+        # but never a run of another analysis, listed or removed.
+        others = {item.recipe_id for item in self.experiment.analyses if item.recipe_id != self.recipe.recipe_id}
+        return recipe_id not in others
+
+    def _run_belongs_here(self, run_dir: Path) -> bool:
+        import json
+
+        try:
+            recipe_id = json.loads((run_dir / "run.json").read_text(encoding="utf-8")).get("recipe_id")
+        except (OSError, ValueError):
+            return self._owns_legacy()
+        return self._recipe_belongs_here(recipe_id)
+
+    def _working_dir(self) -> Path:
+        if not self.experiment.analyses:
+            return self.directory / "working"
+        return self.directory / Path(self.active_analysis().working_folder)
+
+    @staticmethod
+    def _new_working_folder(recipe_id: str) -> str:
+        return f"analyses/{recipe_id}/working"
+
+    def _unique_name(self, name: str) -> str:
+        taken = {item.name for item in self.analyses()}
+        if name not in taken:
+            return name
+        counter = 2
+        while f"{name} ({counter})" in taken:
+            counter += 1
+        return f"{name} ({counter})"
 
 
 def process_experiment(
