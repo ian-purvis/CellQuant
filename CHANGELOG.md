@@ -17,6 +17,7 @@
 - ND2 files on OneDrive that are not downloaded yet are read through an ordinary open file.
 - `cellquant run` has help text and a plain summary.
 - New `docs/DEVELOPERS.md` and `tests/README.md`; `docs/STATUS.md` starts with the known limitations.
+- **Per-unit summaries** (step 6, Advanced: **Group by**, **Unit**): export adds `units_by_<unit>.csv` (each unit's images pooled, for example per retina; by default the folder that holds the images) and, when grouped, `grouped_by_<group>_equal_units.csv` (the mean of the units' percents, so every retina counts once, with n units and SD). Restored from unpublished local work.
 
 ## 2.1.0 (2026-09-30)
 
