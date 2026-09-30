@@ -8,6 +8,13 @@
   **One per channel…**), renames and removes them. **Run all analyses** runs every included image with each
   analysis in turn (with Pause and Cancel); **Export all analyses…** saves each in its own folder plus
   `all_analyses_image_summary.csv`. Experiments made with 2.0.0 open with their settings as the first analysis.
+- **The Plan** (button **Plan…**): a dock listing every image grouped by channel layout, by folder, or both,
+  in a grid (images × analyses) or a tree (image ▸ analyses). Tick which images each analysis runs, one cell,
+  a group, an analysis or everything at once; choose the channel to find objects in for single images; see
+  each image's status per analysis; double-click to open an image with an analysis. **Run all analyses** runs
+  the plan.
+- **Other channel layouts**: an image whose file stores the channels in another order is segmented and
+  measured in the channels of the same names; images without such a channel are marked for checking.
 - **Duplicate** (advanced, step 5) now makes a new analysis and keeps the old one and its results.
 - Synthetic retina sets put images in `images/` and the answers in `truth/`, so adding the images folder
   does not pick up the answer files.

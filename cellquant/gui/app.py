@@ -281,6 +281,11 @@ class CellQuantWindow:
         dock_layout.addWidget(self._tabs, 1)
         self._footer = Footer(self)
         self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
+        from cellquant.gui.plan_dock import PlanDock
+
+        self._plan_dock = PlanDock(self)
+        self._plan_dock_widget = self.viewer.window.add_dock_widget(self._plan_dock, name="Plan", area="left")
+        self._plan_dock_widget.hide()
         self.viewer.window.add_dock_widget(self._footer, name="Run", area="bottom")
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
@@ -599,6 +604,7 @@ class CellQuantWindow:
 
     def _run_finished(self, result) -> None:
         self.show_result(result)
+        self._refresh_plan()
         self._experiment_panel.refresh_table()
         if result.qc.warnings:
             self._footer.message(result.qc.warnings[0])
@@ -632,6 +638,7 @@ class CellQuantWindow:
             "Include only selected", "Delete object", "Restore object", "Undo", "Approve", "Use recommended",
             "HPC prep…",  # the HPC prep page manages its own buttons: a second job is refused while one runs
             "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
+            "Run ticked", "Save",
             # Buttons that change the settings: never while images are being analyzed with them.
             "Save recipe", "Load recipe", "Duplicate", "Add measurement", "Remove measurement",
             "Add classification", "Add result row", "Apply pixel level",
@@ -654,6 +661,7 @@ class CellQuantWindow:
             if self._exclusive:
                 self._tabs.setEnabled(False)
                 self._footer.set_navigation_enabled(False)
+            self._plan_dock.setEnabled(False)  # the plan is read when a run starts; no changes while it runs
             self._footer.start_busy(batch=self._batch is not None)
         else:
             for button, enabled in getattr(self, "_busy_restore", {}).items():
@@ -663,6 +671,8 @@ class CellQuantWindow:
                     pass  # the button was rebuilt meanwhile
             self._busy_restore = {}
             self._footer.end_busy()
+            self._plan_dock.setEnabled(True)
+            self._refresh_plan()
             if self._exclusive:
                 self._exclusive = False
                 self._tabs.setEnabled(True)
@@ -702,11 +712,65 @@ class CellQuantWindow:
         worker.start()
 
     def run_all_analyses(self) -> None:
+        """Run the plan: each analysis on the images ticked for it (all included images unless changed)."""
+
+        self.run_plan()
+
+    def run_plan(self) -> None:
         controller = self.require_controller()
         if controller is None or self.is_busy():
             return
+        if not any(controller.planned_images(item.recipe_id) for item in controller.analyses()):
+            self.message("Nothing is ticked in the plan: tick images for at least one analysis.")
+            return
         self._exclusive = True
         self.start_batch(None, [item.recipe_id for item in controller.analyses()])
+
+    # -- plan dock ---------------------------------------------------------------------------------
+
+    def show_plan(self) -> None:
+        if self.require_controller() is None:
+            return
+        self._plan_dock_widget.show()
+        self._plan_dock_widget.raise_()
+        self._plan_dock.refresh()
+
+    def _refresh_plan(self) -> None:
+        if self._plan_dock_widget.isVisible() or self._plan_dock.tree.topLevelItemCount():
+            self._plan_dock.refresh()
+
+    def plan_changed(self) -> None:
+        """After the plan changed in the Plan dock: redraw it and the lists that depend on it.
+
+        Redrawn on the next turn of the event loop: the change usually comes from a signal of a
+        row or menu inside the dock, which must not be deleted while its signal runs.
+        """
+
+        def redraw() -> None:
+            self._plan_dock.refresh()
+            self._experiment_panel.refresh_table()
+            self.update_navigation()
+            self.refresh_guidance()
+
+        QTimer.singleShot(0, redraw)
+
+    def open_in_analysis(self, image_id: str, recipe_id: str | None) -> None:
+        """Show this image with this analysis (from the Plan dock), in step 4."""
+
+        controller = self.controller
+        if controller is None:
+            return
+        if self.is_busy():
+            self.message("Wait for the current analysis to finish.")
+            return
+        if recipe_id and recipe_id != controller.recipe.recipe_id:
+            self.switch_analysis(recipe_id)
+        if image_id not in self._nav_ids:
+            self.message("That image is left out (unticked in step 1). Tick Include to show it.")
+            return
+        self._nav_index = self._nav_ids.index(image_id)
+        self.show_current()
+        self.go_to_step(3)
 
     def _batch_finished(self, report) -> None:
         planned = getattr(self._footer, "_batch_total", 0)
@@ -819,6 +883,7 @@ class CellQuantWindow:
             self._nav_ids = [record.image_id for record in self.controller.experiment.images]
         self._nav_index = self._nav_ids.index(current) if current in self._nav_ids else 0
         self._analysis_bar.refresh()
+        self._refresh_plan()
         self._experiment_panel.refresh()
         self._objects_panel.refresh()
         self._measurements_panel.refresh()
@@ -2382,6 +2447,7 @@ class ReviewPanel(QWidget):
         if status == "excluded":
             controller.set_included(image_id, False)
         self.shell._experiment_panel.refresh_table()
+        self.shell._refresh_plan()
         words = {
             "approved": "Approved. Use Next image ▶ at the bottom to check the next image, or go on to step 5.",
             "reviewed": "Marked as reviewed.",
@@ -2561,6 +2627,13 @@ class AnalysisBar(QWidget):
         )
         self.choice.currentIndexChanged.connect(self._chosen)
         top.addWidget(self.choice, 1)
+        plan = QPushButton("Plan…")
+        plan.setToolTip(
+            "Open the Plan: choose which images each analysis runs and which channel it finds objects in, "
+            "for all images, a channel layout, a folder, or single images."
+        )
+        plan.clicked.connect(shell.show_plan)
+        top.addWidget(plan)
         layout.addLayout(top)
         buttons = QHBoxLayout()
         for text, slot, tip in (
@@ -2701,7 +2774,7 @@ class Footer(QWidget):
         run_selected = QPushButton("Run selected images")
         run_all = QPushButton("Run all images")
         self.run_analyses = QPushButton("Run all analyses")
-        self.run_analyses.setToolTip("Run every included image with each analysis in the list at the top, one analysis after another.")
+        self.run_analyses.setToolTip("Run each analysis on the images ticked for it in the Plan (every included image unless you changed the Plan), one analysis after another.")
         self.run_analyses.clicked.connect(shell.run_all_analyses)
         self.run_analyses.setVisible(False)
         previous.setToolTip("Show the previous image in the experiment.")
