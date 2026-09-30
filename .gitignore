@@ -41,5 +41,8 @@ desktop.ini
 .vscode/
 .idea/
 
+# Scratch space for tests, audits and work copies (kept off the C: temp folder)
+_scratch/
+
 # Git bundles used to move the repository
 *.bundle

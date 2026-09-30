@@ -72,7 +72,7 @@ The bar at the bottom of the window is shared by all steps. It shows which image
 
 **Success check:** every image you expect is listed once, in the right folder; the ones you want are included; and every channel has a real name.
 
-Channels are shown in the colors saved in the file by the microscope software (for example green, red and magenta for an AXR ND2). A file with no saved colors is shown in gray. CellQuant never assigns colors of its own.
+Channels are shown in the colors saved in the file by the microscope software (for example green, red and magenta for an AXR ND2). A file with no saved colors is shown in gray. CellQuant never assigns colors of its own: each image uses its own file's colors in its own channel order, even when an analysis finds a channel by name in a file with another channel layout. (The green and gray fills in step 4 color the objects, not the channels.)
 
 ## Step 2: Find objects
 
@@ -131,7 +131,7 @@ Tips:
 
 ## Step 5: Results
 
-1. Click **Run all images** (included images only), or select rows in step 1 and click **Run selected images**. The bar at the bottom shows the image and step, for example *Image 3 of 9: Finding objects: slice 2 of 7*. **Pause** waits after the current step; **Cancel** stops after it, keeping the images already finished. One image failing does not stop the others. To re-run with new settings, change them and click **Run all images** again.
+1. Click **Run all images** (included images only), or select rows in step 1 and click **Run selected images**. The bar at the bottom shows the image and step, for example *Image 3 of 9: Finding objects: slice 2 of 7*. **Pause** waits after the current step; **Cancel** stops after it, keeping the images already finished. One image failing does not stop the others. To re-run with new settings, change them and click **Run all images** again. With several analyses (see below), **Run all analyses** runs each of them.
 2. Click **Export results…** and choose a folder.
 
 The **Results** box shows the numbers for the image on screen, for example *Marker A+ among all objects: 10 of 40 (25.0%)*.
@@ -148,6 +148,30 @@ The **Results** box shows the numbers for the image on screen, for example *Mark
 If `mixed_settings.txt` is also there, some images were analysed with different settings (for example you changed a cutoff after running them). Run all images again before you report numbers.
 
 *Advanced:* **Show all settings** lets you add results such as "Marker B among Marker A-positive objects", review only flagged or failed images, and save or load settings.
+
+## Several analyses of the same images
+
+The **Analysis** list at the top of the CellQuant panel lets one experiment hold several analyses of the same images, for example finding objects in each channel in turn, or trying two segmentation methods. Each analysis has its own settings, its own results, its own deleted objects and approvals.
+
+- **One per channel…**: tick the channels; each gets an analysis that finds objects in that channel with the current settings otherwise (method, Z-stack mode, markers).
+- **New analysis…**: a copy of the current settings under a new name. Change what you need in steps 2-4, for example the channel in step 2.
+- Choose an analysis in the list to see, change, check or run it. Steps 2-5 always show the analysis chosen.
+- **Run all analyses** (bottom bar, and step 5) runs every included image with each analysis, one after another. Pause and Cancel work as for one analysis; Cancel keeps what is finished and skips the analyses not started.
+- **Export all analyses…** (step 5) saves each analysis in its own folder, plus `all_analyses_image_summary.csv`: every analysis's per-image numbers in one table, with `analysis` and `segmentation_channel` columns.
+- **Rename…** and **Remove** change the list. Removing only takes an analysis off the list; its settings and results stay in the experiment folder.
+
+**Success check:** after **Run all analyses**, choosing each analysis in the list shows outlines found in its channel.
+
+### The Plan: which images each analysis runs, and in which channel
+
+Click **Plan…** (next to the Analysis list) to open the Plan beside the image. It lists every image, grouped by **Channel layout** (images whose files list the same channels in the same order), by **Folder**, or by **Channel layout, then folder**. Choose a view:
+
+- **Grid: images × analyses**: one column per analysis. A tick means that analysis runs that image; the cell shows its status (green when analyzed, amber when it needs a look, red when it failed) and the channel objects are found in. Ticking a group's box ticks every image in it.
+- **Tree: image ▸ analyses**: under each image, one row per analysis, each with a tick and a **Find objects in** menu.
+
+The bar at the bottom applies a choice to the **selected images** or **all images**, in **all analyses** or one: **Tick**, **Untick**, or **Set channel** (find objects in that channel for those images only; ★ marks such a choice). Right-click a cell for the same choice for one image. Double-click a cell to open that image with that analysis in step 4. **Run ticked** (or **Run all analyses**) runs each analysis on its ticked images.
+
+Images with another channel layout are analyzed with the channels of the same names: if an analysis finds objects in *Far Red*, a file that stores Far Red first is segmented in its first channel, and each marker is read from the channel with its name. ⚠ marks an image that has no channel of that name, so the position is used; check it, or set its channel.
 
 ---
 

@@ -181,3 +181,57 @@ pixels are at or above a pixel level (optionally at most an upper level).
 - Tests: `tests/test_synthetic_retina.py`. Suite: 289 passed.
 - Version 2.0.0 (version 1 ended at 0.4.0a3), MIT license, `CITATION.cff`, `CHANGELOG.md`, `.gitignore` that
   keeps images and results out of the repository. Lab file and folder names were removed from the docs.
+
+## Several analyses of the same images (2.1.0, 2026-09-29)
+
+- `experiment.json` has an `analyses` list (`AnalysisRecord`: recipe id, name, working folder, latest run,
+  stored per-image review state). The active analysis's review state lives on the image records as before;
+  switching stores it and restores the other's. Experiments without the list get one analysis on opening,
+  using `working/` and every earlier run, so 2.0.0 experiments open unchanged.
+- Results are kept apart: each analysis has its own working folder (`analyses/<id>/working`; the first keeps
+  `working/`), and a run is read only by the analysis whose recipe id it records. Edits carry the
+  segmentation they were made on; unstamped (older) edits belong to the first analysis only. Loading settings
+  never changes which analysis they belong to.
+- Controller: `add_analysis`, `switch_analysis`, `rename_analysis`, `remove_analysis` (keeps files),
+  `analyses_for_channels` (one per channel, reusing an analysis with the same settings), `run_analyses`
+  (progress counted across analyses, Cancel skips the rest, the active analysis is restored), `export_all`
+  (one folder per analysis plus `all_analyses_image_summary.csv`).
+- Window: Analysis list and buttons above the steps; Run all analyses (bottom bar and step 5) and Export all
+  analyses (step 5) appear when there are several; switching is refused while anything runs; settings on
+  screen are saved to the analysis being left. HPC prep packages the analysis shown.
+- Tests: `tests/test_analyses.py` (10), `tests/test_gui_analyses.py`; synthetic retina z-stacks are the test
+  images. Suite: 300 passed. An independent review found four problems (a removed analysis's runs read by the
+  original one; edits shared by analyses with the same segmentation; a re-included image left "excluded"; settings
+  pages usable during Run all analyses), all fixed with tests.
+
+## The Plan dock and other channel layouts (2.1.0, 2026-09-29)
+
+- Each analysis has a plan (`AnalysisRecord.plan`: image id -> `PlanEntry(run, channel)`); blank entries mean
+  "run every included image with the analysis's channel". Controller: `is_planned`, `planned_images`,
+  `set_planned` (ticking a left-out image includes it), `set_plan_channel` (checked against the image's channel
+  count), `segmentation_channel_for` and `measurement_channels_for` (with the reason), `plan_status`.
+  `run_analyses` without a list of images runs each analysis's ticked images.
+- Channel layouts: the experiment's channel list comes from the first image; an image whose file lists the
+  same names in another order is segmented and measured in the channels of the same names (the analysis's
+  settings are not changed; the result records the channels used). Without the name, the position is kept
+  and the Plan marks the image ⚠. Per-image channel choices override both.
+- `cellquant/plan.py` groups images by layout, folder, or layout then folder. `cellquant/gui/plan_dock.py`:
+  grid and tree views, group ticks, the apply bar (selected/all images × one/all analyses: tick, untick, set
+  channel), right-click and double-click, status colours; locked while anything runs.
+- Tests: `tests/test_plan.py` (4, including the same image in another channel order giving the same objects
+  and marker values), `tests/test_gui_plan.py`.
+- An independent review found: channels mapped twice when an image of another layout was edited after
+  reopening (fixed: the per-image settings are applied once); settings saved during such an analysis could
+  store the image's channels (fixed: the analysis's own settings are saved, and changing settings then is
+  refused); HPC prep ignored the plan (fixed: it starts from the plan's images and refuses images with
+  per-image or other-layout channels, which packages cannot express yet); a failed per-image channel choice
+  could apply to some images (fixed: checked first); approvals and "mixed settings" did not allow for
+  per-image channels (fixed). A crash when a tick in the dock redrew the dock under its own signal was fixed
+  by redrawing afterwards. Suite: 307 passed, twice.
+- Known limits: the reference channel layout is the first image with named channels that match the
+  experiment's channel count; a file that names two channels the same uses the first.
+- Never false color (a standing rule): channels are shown only in the colors stored in each file (ND2
+  channel colors, ImageJ LUTs, OME-XML), black to that color, and gray when the file stores none; RGB camera
+  ND2s keep their true red, green and blue. New test: images of different channel layouts in one experiment
+  are each shown in their own file's colors and order. The sweep report's plots use chart colors, never
+  image data.
