@@ -230,3 +230,8 @@ pixels are at or above a pixel level (optionally at most an upper level).
   by redrawing afterwards. Suite: 307 passed, twice.
 - Known limits: the reference channel layout is the first image with named channels that match the
   experiment's channel count; a file that names two channels the same uses the first.
+- Never false color (a standing rule): channels are shown only in the colors stored in each file (ND2
+  channel colors, ImageJ LUTs, OME-XML), black to that color, and gray when the file stores none; RGB camera
+  ND2s keep their true red, green and blue. New test: images of different channel layouts in one experiment
+  are each shown in their own file's colors and order. The sweep report's plots use chart colors, never
+  image data.
