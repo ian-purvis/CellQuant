@@ -112,7 +112,8 @@ STEPS = (
         "5 Results",
         "Run everything and save the results",
         "Click <b>Run all images</b> to apply the same settings to every image. Then click "
-        "<b>Export results</b> and choose a folder.",
+        "<b>Export results</b> and choose a folder. With several analyses in the list at the top, "
+        "<b>Run all analyses</b> and <b>Export all analyses</b> do the same for each of them.",
         "The export folder has <i>objects.csv</i> (one row per object) and <i>image_summary.csv</i> "
         "(one row per image, with the percentages). Both open in Excel, Prism, or R.",
     ),
@@ -522,6 +523,20 @@ class ResultsSummary(QGroupBox):
         export.clicked.connect(window.export_dialog)
         layout.addWidget(run_all)
         layout.addWidget(export)
+        # Shown when the experiment has more than one analysis (the list at the top of the panel).
+        self.run_analyses = QPushButton("Run all analyses")
+        self.run_analyses.setToolTip("Run every included image with each analysis, one analysis after another.")
+        self.run_analyses.clicked.connect(window.run_all_analyses)
+        self.export_analyses = QPushButton("Export all analyses…")
+        self.export_analyses.setToolTip(
+            "Save each analysis's results in its own folder, plus all_analyses_image_summary.csv with every "
+            "analysis's per-image numbers side by side."
+        )
+        self.export_analyses.clicked.connect(window.export_all_dialog)
+        for button in (self.run_analyses, self.export_analyses):
+            button.setMinimumHeight(32)
+            button.setVisible(False)
+            layout.addWidget(button)
         self.batch = QLabel("")
         self.batch.setWordWrap(True)
         layout.addWidget(self.batch)
@@ -555,6 +570,23 @@ class ResultsSummary(QGroupBox):
         if report.failed:
             text += f", {report.failed} failed (see the messages at the bottom)"
         self.batch.setText(text + ".")
+
+    def show_analysis_actions(self, several: bool) -> None:
+        self.run_analyses.setVisible(several)
+        self.export_analyses.setVisible(several)
+
+    def show_analyses(self, reports) -> None:
+        lines = []
+        for report in reports:
+            text = f"<b>{report.analysis}</b>: {len(report.jobs)} images, {report.completed} fine"
+            if report.warnings:
+                text += f", {report.warnings} with warnings"
+            if report.failed:
+                text += f", {report.failed} failed"
+            if report.cancelled:
+                text += " (stopped)"
+            lines.append(text)
+        self.batch.setText("<br>".join(lines) + "<br>Choose an analysis at the top to check its images in step 4.")
 
     def show_exported(self, path) -> None:
         self.batch.setText(self.batch.text() + f"<br>Saved to <b>{path}</b>.")

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 
 class EditOperation(BaseModel):
@@ -25,6 +25,17 @@ class EditOperation(BaseModel):
     # segmentation, so an edit is applied only while it is the current one. Blank for
     # edits saved by older versions, which are always applied.
     segmentation: str = ""
+    # The analysis (recipe id) the edit was made in. Two analyses can share a segmentation (for
+    # example they differ only in markers), but each keeps its own deletions. Blank for edits made
+    # before analyses existed; those belong to the experiment's original analysis.
+    analysis: str = ""
+
+    @model_serializer(mode="wrap")
+    def _drop_blank_analysis(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and not data.get("analysis"):
+            data.pop("analysis", None)
+        return data
 
     @classmethod
     def create(
