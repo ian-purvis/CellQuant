@@ -2659,6 +2659,8 @@ class ObjectsPanel(QWidget):
                 "model": (self.cellpose_model.currentText() or self.engine.default_model) if local else previous.get("model"),
                 "diameter_um": diameter_um,
                 "diameter_px": diameter_px,
+                # Chosen from the hardware unless the settings name one; a named one is kept.
+                **({"precision": previous["precision"]} if previous.get("precision") else {}),
                 "flow_threshold": self.flow.value(),
                 "cellprob_threshold": self.cellprob.value(),
                 # Found on this computer; without Cellpose here, the saved value is kept.
