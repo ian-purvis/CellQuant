@@ -72,7 +72,7 @@ The bar at the bottom of the window is shared by all steps. It shows which image
 
 **Success check:** every image you expect is listed once, in the right folder; the ones you want are included; and every channel has a real name.
 
-Channels are shown in the colors saved in the file by the microscope software (for example green, red and magenta for an AXR ND2). A file with no saved colors is shown in gray. CellQuant never assigns colors of its own.
+Channels are shown in the colors saved in the file by the microscope software (for example green, red and magenta for an AXR ND2). A file with no saved colors is shown in gray. CellQuant never assigns colors of its own: each image uses its own file's colors in its own channel order, even when an analysis finds a channel by name in a file with another channel layout. (The green and gray fills in step 4 color the objects, not the channels.)
 
 ## Step 2: Find objects
 
