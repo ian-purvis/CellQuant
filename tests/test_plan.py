@@ -13,7 +13,7 @@ from cellquant.controller import AnalysisController
 from cellquant.errors import CellQuantError
 from cellquant.plan import group_images, layout_label
 from cellquant.quicksetup import marker_recipe
-from cellquant.synthetic_retina import PIXEL_SIZE_UM, Z_STEP_UM, write_retina_set
+from cellquant.synthetic_retina import PIXEL_SIZE_UM, Z_STEP_UM, _luts, write_retina_set
 
 CLASSICAL = {"sigma": 1.0, "use_watershed": True, "watershed_min_distance_px": 4, "min_area_um2": 5}
 
@@ -29,7 +29,7 @@ def _reordered_copy(source: Path, target: Path) -> None:
         np.ascontiguousarray(data[:, [2, 0, 1]]),
         imagej=True,
         resolution=(1 / PIXEL_SIZE_UM, 1 / PIXEL_SIZE_UM),
-        metadata={"axes": "ZCYX", "unit": "um", "spacing": Z_STEP_UM, "Labels": ["Far Red", "Green", "Red"]},
+        metadata={"axes": "ZCYX", "unit": "um", "spacing": Z_STEP_UM, "Labels": ["Far Red", "Green", "Red"], "LUTs": [_luts()[2], _luts()[0], _luts()[1]]},
     )
 
 
@@ -168,3 +168,27 @@ def test_export_does_not_call_per_image_channels_mixed_settings(tmp_path: Path):
     controller.run_image(ids["Control/Retina 1/control_r1.tif"])
     out = controller.export(tmp_path / "export2")
     assert (out / "mixed_settings.txt").exists()
+
+
+def test_each_file_is_shown_in_its_own_colors(tmp_path: Path):
+    """Never false color: every image is displayed with the colors stored in its own file, in its own
+    channel order, even when an analysis maps its channels by name."""
+
+    pytest.importorskip("napari")
+    from cellquant.gui.app import channel_colormaps
+    from cellquant.synthetic_retina import CHANNEL_COLORS
+
+    controller = _experiment(tmp_path)
+    ids = _ids(controller)
+    expected = {
+        "Control/Retina 1/control_r1.tif": [CHANNEL_COLORS[0], CHANNEL_COLORS[1], CHANNEL_COLORS[2]],
+        "Zeiss 40x/control_r1_reordered.tif": [CHANNEL_COLORS[2], CHANNEL_COLORS[0], CHANNEL_COLORS[1]],
+    }
+    for name, colors in expected.items():
+        record = controller.experiment.image(ids[name])
+        with controller._image_settings(record):
+            loaded = controller._load_record(record)
+        maps = channel_colormaps(loaded)
+        for colormap, color in zip(maps, colors, strict=True):
+            assert np.allclose(colormap.colors[-1][:3], np.asarray(color) / 255, atol=1 / 255)
+            assert np.allclose(colormap.colors[0][:3], 0)
