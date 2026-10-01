@@ -41,18 +41,6 @@ No real images are stored in this repository. The tests make their own images:
 
 - **Practice images** (`cellquant/practice.py`): three simple 2D images with well-separated nuclei and an exact
   answer, used by **Start → Try practice images**.
-- **Synthetic retina z-stacks** (`cellquant/synthetic_retina.py`): images made to resemble confocal z-stacks of
-  embryonic mouse retina (three channels named Green, Red and Far Red, 12-bit, 7 slices 1.5 µm apart,
-  0.575 µm pixels, crowded elongated nuclei, blur, noise, dim and partly labelled nuclei), each with its true
-  nuclei and which are reporter+ (Red), OTX2+ (Green) and PAX6-high (Far Red). Make a Control and a CRISPRi
-  set with known answers (31% and 24% of reporter+ nuclei are OTX2+) with:
-
-  ```
-  python -m cellquant.synthetic_retina "D:\CellQuant test images"
-  ```
-
-  Add the `images` folder it makes to CellQuant; the answers are in `truth`, `truth_summary.csv` and `README.txt`.
-  Add `--size 1024` for full-size images.
 
 ## Running the tests
 
