@@ -79,7 +79,8 @@ STEPS = (
         "Set <b>Source channel</b> to your nuclear stain, for example DAPI.<br>"
         "<b>Method</b>: <i>classical</i> is fast and needs no GPU. <i>cellpose</i> handles crowded "
         "or uneven nuclei better.<br>"
-        "Z-stacks: choose 2D (a projection or one slice) or 3D (link slices, or the whole volume). "
+        "The box at the top says whether an NVIDIA GPU was found and whether Cellpose will use it.<br>"
+        "<b>Z-stack mode</b> (under Method): choose 2D (a projection or one slice) or 3D (link slices, or the whole volume). "
         "The blue box recommends one for this computer, with estimated times; every option stays available.<br>"
         "Click <b>Preview</b> to try the settings on the area you are looking at, then <b>Run</b>.",
         "Outlines sit on the nuclei, with few missed, merged, or split. If not, change the settings "
@@ -136,6 +137,7 @@ HELP = {
     ("_objects_panel", "flow"): "Cellpose shape check. Lower keeps fewer, cleaner objects.",
     ("_objects_panel", "cellprob"): "Cellpose confidence. Lower finds more (and fainter) objects.",
     ("_objects_panel", "gpu"): "Use the NVIDIA GPU. Greyed out when no usable GPU was found.",
+    ("_objects_panel", "engine_choice"): "The Cellpose installed here. Cellpose-SAM (4) is most accurate, best with a GPU; Classic Cellpose (3) is faster on the CPU. Only one is installed per environment; start CellQuant with the other to use it.",
     ("_review_panel", "display"): "Which marker to color by: green positive, gray negative.",
     ("_review_panel", "histogram"): "How bright each object is for this marker (or, for the percent-of-cell rule, what percent of each object's pixels pass the pixel level). Drag the red line to set the cutoff.",
     ("_review_panel", "min_percent"): "A cell is positive when at least this percent of its pixels are at or above the pixel level.",
