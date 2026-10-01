@@ -304,3 +304,41 @@ def test_channels_use_the_file_colors(tmp_path: Path):
         assert top == {"Nuclei": (0, 0, 1), "Marker A": (0, 1, 0), "Marker B": (1, 0, 0)}
     finally:
         viewer.close()
+
+
+def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
+    from qtpy.QtWidgets import QApplication
+
+    from cellquant.engines import CellposeEngine
+
+    shell = window
+    panel = shell._objects_panel
+    panel.engine = CellposeEngine(True, "4.2.0", "cellpose4", ("cpsam",), "cpsam")  # as on a Cellpose computer
+    panel.method.setCurrentText("cellpose")
+    panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
+    assert "NVIDIA GPU found" in panel.gpu_label.text() and "Test GPU" in panel.gpu_label.text()
+    assert "NVIDIA GPU found: Test GPU" in shell._footer.log.toPlainText()
+    panel.gpu.setChecked(False)
+    assert "'Use GPU' is off" in panel.gpu_label.text() and panel.gpu_on.isVisibleTo(panel)
+    panel.gpu_on.click()
+    assert panel.gpu.isChecked() and "will run on the GPU" in panel.gpu_label.text()
+    panel.show_gpu_status({"available": False, "reason": "test"})
+    assert "No usable GPU found" in panel.gpu_label.text()
+    # The Z-stack mode sits right under Method and the Cellpose engine menu.
+    form = panel.layout().itemAt(1).layout()
+    rows = [form.getWidgetPosition(widget)[0] for widget in (panel.method, panel.engine_choice, panel.z_box)]
+    assert rows == [rows[0], rows[0] + 1, rows[0] + 2]
+    assert panel.engine_choice.isVisibleTo(panel)
+    panel.method.setCurrentText("classical")
+    assert not panel.engine_choice.isVisibleTo(panel)
+
+    shell.run_current()
+    assert shell.is_busy()
+    assert shell._run_lock_note.isVisibleTo(shell._dock)
+    assert not panel.method.isEnabled() and not panel.z_stack.isEnabled()
+    assert not shell._measurements_panel.statistic.isEnabled()
+    assert shell._review_panel.display.isEnabled()  # display only, not a setting
+    _wait(shell)
+    QApplication.processEvents()
+    assert not shell._run_lock_note.isVisibleTo(shell._dock)
+    assert panel.method.isEnabled() and shell._measurements_panel.statistic.isEnabled()
