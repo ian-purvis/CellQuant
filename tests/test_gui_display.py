@@ -314,7 +314,7 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     shell = window
     panel = shell._objects_panel
     panel.engine = CellposeEngine(True, "4.2.0", "cellpose4", ("cpsam",), "cpsam")  # as on a Cellpose computer
-    panel.method.setCurrentText("cellpose")
+    panel.method.setCurrentIndex(panel.method.findData("cellpose"))
     panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
     assert "NVIDIA GPU found" in panel.gpu_label.text() and "Test GPU" in panel.gpu_label.text()
     assert "NVIDIA GPU found: Test GPU" in shell._footer.log.toPlainText()
@@ -329,7 +329,7 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     rows = [form.getWidgetPosition(widget)[0] for widget in (panel.method, panel.engine_choice, panel.z_box)]
     assert rows == [rows[0], rows[0] + 1, rows[0] + 2]
     assert panel.engine_choice.isVisibleTo(panel)
-    panel.method.setCurrentText("classical")
+    panel.method.setCurrentIndex(panel.method.findData("classical"))
     assert not panel.engine_choice.isVisibleTo(panel)
 
     shell.run_current()
@@ -342,3 +342,47 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     QApplication.processEvents()
     assert not shell._run_lock_note.isVisibleTo(shell._dock)
     assert panel.method.isEnabled() and shell._measurements_panel.statistic.isEnabled()
+
+
+def test_plain_menus_hidden_fields_errors_and_run_bar(window):
+    shell = window
+    objects = shell._objects_panel
+    # Plain words in the menus; the saved values are unchanged.
+    assert objects.method.itemText(objects.method.findData("classical")).startswith("Classical")
+    assert objects.area_unit.itemText(objects.area_unit.findData("um2")) == "µm²"
+    # Only the settings the chosen method uses are shown.
+    objects.method.setCurrentIndex(objects.method.findData("classical"))
+    objects.threshold_method.setCurrentIndex(objects.threshold_method.findData("otsu"))
+    assert objects.threshold_method.isVisibleTo(objects) and not objects.threshold.isVisibleTo(objects)
+    objects.threshold_method.setCurrentIndex(objects.threshold_method.findData("manual"))
+    assert objects.threshold.isVisibleTo(objects)
+    box = objects.advanced_box  # collapsed until Advanced is ticked
+    assert not objects.diameter.isVisibleTo(box) and objects.fill_holes.isVisibleTo(box)
+    objects.method.setCurrentIndex(objects.method.findData("cellpose"))
+    assert not objects.threshold_method.isVisibleTo(objects) and not objects.sigma.isVisibleTo(objects)
+    assert objects.diameter.isVisibleTo(box) and not objects.fill_holes.isVisibleTo(box)
+    objects.method.setCurrentIndex(objects.method.findData("classical"))
+    objects.write_recipe()
+    assert shell.controller.recipe.object_set.algorithm == "classical"
+    measurements = shell._measurements_panel
+    measurements.region.setCurrentIndex(measurements.region.findData("ring"))
+    assert measurements.inner.isVisibleTo(measurements) and not measurements.distance.isVisibleTo(measurements)
+    measurements.region.setCurrentIndex(measurements.region.findData("object"))
+    assert not measurements.inner.isVisibleTo(measurements) and not measurements.pixel_level.isVisibleTo(measurements)
+
+    # Problems show in a red box, cleared when the next run starts.
+    shell.show_error("Test problem")
+    assert shell._error_box.isVisibleTo(shell._dock) and "Test problem" in shell._error_note.text()
+    shell.run_current()
+    assert not shell._error_box.isVisibleTo(shell._dock)
+    _wait(shell)
+
+    # The run button the step expects stands out; Page Down moves to the next image.
+    shell.go_to_step(0)
+    assert shell._footer._run_buttons["current"].styleSheet() and not shell._footer._run_buttons["all"].styleSheet()
+    shell.go_to_step(4)
+    assert shell._footer._run_buttons["all"].styleSheet() and not shell._footer._run_buttons["current"].styleSheet()
+    footer = shell._footer
+    footer._started -= 60  # one image took a minute
+    assert footer._time_left(1, 3) == " · about 2 min left"
+    assert footer._time_left(0, 3) == "" and footer._time_left(3, 3) == ""
