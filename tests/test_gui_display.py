@@ -386,3 +386,57 @@ def test_plain_menus_hidden_fields_errors_and_run_bar(window):
     footer._started -= 60  # one image took a minute
     assert footer._time_left(1, 3) == " · about 2 min left"
     assert footer._time_left(0, 3) == "" and footer._time_left(3, 3) == ""
+
+
+def test_cutoff_slider_recolors_with_chosen_colours_and_locks_during_runs(window, monkeypatch, tmp_path):
+    from qtpy.QtCore import QSettings
+    from qtpy.QtGui import QColor
+    from qtpy.QtWidgets import QApplication
+
+    from cellquant.gui import app
+
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.IniFormat)
+    monkeypatch.setattr(app, "_settings", lambda: settings)  # keep the user's real colours untouched
+    shell = window
+    shell.run_current()
+    _wait(shell)
+    panel = shell._review_panel
+    panel.display.setCurrentIndex(panel.display.findData("class_a"))
+    slider = panel.threshold_slider
+    assert slider.isVisibleTo(panel) and slider.minimum() < slider.maximum()
+
+    # Dragging to the top makes everything negative; the overlay updates after the short delay.
+    slider.setValue(slider.maximum() + 1)  # past every object
+    deadline = time.time() + 2
+    while time.time() < deadline and "Positive: 0\n" not in panel.counts.text():
+        QApplication.processEvents()
+        time.sleep(0.01)
+    assert "Positive: 0\n" in panel.counts.text()
+    slider.setValue(slider.minimum())
+    deadline = time.time() + 2
+    while time.time() < deadline and 2 not in np.unique(shell.viewer.layers["Classification"].data):
+        QApplication.processEvents()
+        time.sleep(0.01)
+    assert 2 in np.unique(shell.viewer.layers["Classification"].data)
+
+    # Default colours: green positive, red negative; a chosen colour is applied and remembered.
+    colormap = shell.viewer.layers["Classification"].colormap.color_dict
+    assert np.allclose(colormap[2][:3], app._rgba(app.DEFAULT_POSITIVE_COLOR)[:3])
+    assert np.allclose(colormap[1][:3], app._rgba(app.DEFAULT_NEGATIVE_COLOR)[:3])
+    from qtpy.QtWidgets import QColorDialog
+
+    monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *_args, **_kwargs: QColor("#3366ff")))
+    panel._choose_color(positive=True)
+    assert app.classification_colors() == ("#3366ff", app.DEFAULT_NEGATIVE_COLOR)
+    colormap = shell.viewer.layers["Classification"].colormap.color_dict
+    assert np.allclose(colormap[2][:3], app._rgba("#3366ff")[:3])
+    panel._reset_colors()
+    assert app.classification_colors() == (app.DEFAULT_POSITIVE_COLOR, app.DEFAULT_NEGATIVE_COLOR)
+
+    # Locked while a run uses the settings.
+    shell.run_current()
+    assert not slider.isEnabled()
+    assert panel.positive_color.isEnabled()  # display only
+    _wait(shell)
+    QApplication.processEvents()
+    assert slider.isEnabled()

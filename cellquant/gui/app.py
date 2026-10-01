@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 from qtpy.QtCore import Qt, QSize, QThread, QTimer, Signal
-from qtpy.QtGui import QColor, QPainter
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
@@ -130,6 +130,41 @@ def _show_row(form: QFormLayout, field: QWidget, visible: bool) -> None:
     label = form.labelForField(field)
     if label is not None:
         label.setVisible(visible)
+
+
+# Classification colours: one pair for every marker, remembered on this computer.
+DEFAULT_POSITIVE_COLOR = "#26bf59"
+DEFAULT_NEGATIVE_COLOR = "#e03c3c"
+
+
+def _settings():
+    from qtpy.QtCore import QSettings
+
+    return QSettings("CellQuant", "CellQuant")
+
+
+def classification_colors() -> tuple[str, str]:
+    """(positive, negative) colours as #rrggbb."""
+
+    try:
+        settings = _settings()
+        positive = str(settings.value("review/positive_color", DEFAULT_POSITIVE_COLOR))
+        negative = str(settings.value("review/negative_color", DEFAULT_NEGATIVE_COLOR))
+    except Exception:  # noqa: BLE001 - settings unreadable: use the defaults
+        return DEFAULT_POSITIVE_COLOR, DEFAULT_NEGATIVE_COLOR
+    valid = [value if QColor(value).isValid() else default for value, default in ((positive, DEFAULT_POSITIVE_COLOR), (negative, DEFAULT_NEGATIVE_COLOR))]
+    return valid[0], valid[1]
+
+
+def save_classification_colors(positive: str, negative: str) -> None:
+    settings = _settings()
+    settings.setValue("review/positive_color", positive)
+    settings.setValue("review/negative_color", negative)
+
+
+def _rgba(color: str) -> np.ndarray:
+    value = QColor(color)
+    return np.array([value.redF(), value.greenF(), value.blueF(), 1.0], dtype=np.float32)
 
 
 def _size_flag(name: str):
@@ -518,10 +553,10 @@ class CellQuantWindow:
             if levels:
                 self.message(
                     "Markers measured. Starting pixel levels were picked automatically and the minimum percent is yours: "
-                    "check them in this step (drag the red line to change the percent; type a new pixel level and click Apply)."
+                    "check them in this step (drag the Cutoff slider to change the percent; type a new pixel level and click Apply)."
                 )
             else:
-                self.message("Markers measured. Starting cutoffs were picked automatically: check them by dragging the red line.")
+                self.message("Markers measured. Starting cutoffs were picked automatically: check them by dragging the Cutoff slider.")
 
         self._start_job(lambda: controller.run_image(image_id), measured)
 
@@ -788,7 +823,7 @@ class CellQuantWindow:
             self._review_panel.show_fills,
             self._review_panel.show_ids,
         }
-        inputs: list[QWidget] = []
+        inputs: list[QWidget] = [self._review_panel.threshold_slider]
         panels = (self._experiment_panel, self._objects_panel, self._measurements_panel, self._review_panel, self._marker_setup)
         for panel in panels:
             for kind in (QComboBox, QAbstractSpinBox, QLineEdit, QCheckBox, QSlider):
@@ -1150,14 +1185,22 @@ class CellQuantWindow:
             return
         self._drop("Classification")
         layer = self.viewer.add_labels(overlay, name="Classification", opacity=0.85)
-        layer.colormap = DirectLabelColormap(
+        self._managed.add("Classification")
+        self.apply_classification_colors()
+
+    def apply_classification_colors(self) -> None:
+        """Positive objects in the positive colour, negative in the negative colour."""
+
+        if "Classification" not in self.viewer.layers:
+            return
+        positive, negative = classification_colors()
+        self.viewer.layers["Classification"].colormap = DirectLabelColormap(
             color_dict={
                 None: np.array([0, 0, 0, 0], dtype=np.float32),
-                1: np.array([0.55, 0.55, 0.58, 1], dtype=np.float32),
-                2: np.array([0.15, 0.75, 0.35, 1], dtype=np.float32),
+                1: _rgba(negative),
+                2: _rgba(positive),
             }
         )
-        self._managed.add("Classification")
 
     def _set_ids(self, result) -> None:
         frame = result.objects
@@ -2424,10 +2467,35 @@ class ReviewPanel(QWidget):
         self.display.currentIndexChanged.connect(lambda _index: self._recolor())
         layout.addWidget(QLabel("Display objects by"))
         layout.addWidget(self.display)
-        self.histogram = HistogramWidget()
-        self.histogram.setMaximumHeight(100)
-        self.histogram.threshold_changed.connect(self._threshold_moved)
-        layout.addWidget(self.histogram)
+        # The cutoff, set like napari's opacity: drag the slider or type the number.
+        from superqt import QLabeledDoubleSlider
+
+        self.cutoff_label = QLabel("Cutoff")
+        layout.addWidget(self.cutoff_label)
+        self.threshold_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self.threshold_slider.setRange(0.0, 1.0)
+        self.threshold_slider.valueChanged.connect(self._slider_moved)
+        layout.addWidget(self.threshold_slider)
+        # Recolor at most every 40 ms while dragging, with the latest value.
+        self._pending_cutoff: float | None = None
+        self._cutoff_timer = QTimer(self)
+        self._cutoff_timer.setSingleShot(True)
+        self._cutoff_timer.setInterval(40)
+        self._cutoff_timer.timeout.connect(self._apply_pending_cutoff)
+        colors = QHBoxLayout()
+        self.positive_color = QPushButton("Positive colour")
+        self.negative_color = QPushButton("Negative colour")
+        self.positive_color.setToolTip("Colour of positive objects (at or past the cutoff) in the image.")
+        self.negative_color.setToolTip("Colour of negative objects in the image.")
+        self.positive_color.clicked.connect(lambda: self._choose_color(positive=True))
+        self.negative_color.clicked.connect(lambda: self._choose_color(positive=False))
+        reset = QPushButton("Default colours")
+        reset.setToolTip("Green for positive, red for negative.")
+        reset.clicked.connect(self._reset_colors)
+        for button in (self.positive_color, self.negative_color, reset):
+            colors.addWidget(button)
+        layout.addLayout(colors)
+        self._show_colors()
         layout.addWidget(self._pixel_level_box())
         self.counts = QLabel("Positive: 0\nNegative: 0\nPositive: —")
         layout.addWidget(self.counts)
@@ -2568,7 +2636,7 @@ class ReviewPanel(QWidget):
         if index >= 0:
             self.display.setCurrentIndex(index)
         self.display.blockSignals(False)
-        self._show_histogram(result)
+        self._show_cutoff(result)
         area = "—" if result.qc.median_area is None else f"{result.qc.median_area:.2f}"
         border = result.qc.fraction_touching_border
         border_text = "—" if border != border else f"{100 * border:.1f}%"
@@ -2589,9 +2657,11 @@ class ReviewPanel(QWidget):
         boundaries.events.selected_label.connect(self._on_selected)
         self._toggle_layers()
 
-    def _show_histogram(self, result) -> None:
+    def _show_cutoff(self, result) -> None:
         self._show_level_box()
         classification_id = self.classification_id()
+        self.cutoff_label.setVisible(bool(classification_id))
+        self.threshold_slider.setVisible(bool(classification_id))
         if not classification_id:
             return
         classification = next(item for item in self.shell.controller.recipe.classifications if item.id == classification_id)
@@ -2599,12 +2669,7 @@ class ReviewPanel(QWidget):
             return
         values = result.objects[classification.measurement].to_numpy(dtype=float)
         percent_rule = self._current_percent_measurement() is not None
-        self.histogram.set_values(
-            values,
-            classification.threshold,
-            value_range=(0.0, 100.0) if percent_rule else None,
-            step=1.0 if percent_rule else None,
-        )
+        self._set_slider(values, float(classification.threshold), percent_rule)
         counts = self.shell.controller.histogram(
             result.provenance["image_id"], classification.measurement, classification.threshold, classification.comparison
         )
@@ -2615,6 +2680,70 @@ class ReviewPanel(QWidget):
             f"Positive when: {rule}\n"
             f"Positive: {counts['positive']}\nNegative: {counts['negative']}\nUnmeasured: {int(counts['n_missing'])}\nPositive: {percent_text}"
         )
+
+    def _set_slider(self, values: np.ndarray, threshold: float, percent_rule: bool) -> None:
+        """Range: 0-100 % for the percent rule, otherwise the objects' values (and the cutoff)."""
+
+        if percent_rule:
+            low, high, decimals = 0.0, 100.0, 1
+            self.cutoff_label.setText("Cutoff: minimum percent of the cell's pixels")
+        else:
+            finite = np.asarray(values, dtype=float)
+            finite = finite[np.isfinite(finite)]
+            low = float(min(finite.min(), threshold)) if finite.size else min(0.0, threshold)
+            high = float(max(finite.max(), threshold)) if finite.size else max(1.0, threshold)
+            if high <= low:
+                high = low + 1.0
+            decimals = 0 if high - low >= 100 else 2
+            self.cutoff_label.setText("Cutoff: drag until the right objects are positive")
+        slider = self.threshold_slider
+        slider.blockSignals(True)
+        slider.setDecimals(decimals)
+        slider.setRange(low, high)
+        slider.setSingleStep((high - low) / 100)
+        slider.setValue(threshold)
+        slider.blockSignals(False)
+
+    def _slider_moved(self, value: float) -> None:
+        self._pending_cutoff = float(value)
+        if not self._cutoff_timer.isActive():
+            self._cutoff_timer.start()
+
+    def _apply_pending_cutoff(self) -> None:
+        value, self._pending_cutoff = self._pending_cutoff, None
+        if value is not None:
+            self._threshold_moved(value)
+
+    def _show_colors(self) -> None:
+        positive, negative = classification_colors()
+        for button, color in ((self.positive_color, positive), (self.negative_color, negative)):
+            text = "white" if QColor(color).lightness() < 140 else "black"
+            button.setStyleSheet(f"QPushButton {{ background: {color}; color: {text}; }}")
+
+    def _choose_color(self, positive: bool) -> None:
+        from qtpy.QtWidgets import QColorDialog
+
+        current_positive, current_negative = classification_colors()
+        chosen = QColorDialog.getColor(
+            QColor(current_positive if positive else current_negative),
+            self,
+            "Colour of positive objects" if positive else "Colour of negative objects",
+        )
+        if not chosen.isValid():
+            return
+        if positive:
+            save_classification_colors(chosen.name(), current_negative)
+        else:
+            save_classification_colors(current_positive, chosen.name())
+        self._colors_changed()
+
+    def _reset_colors(self) -> None:
+        save_classification_colors(DEFAULT_POSITIVE_COLOR, DEFAULT_NEGATIVE_COLOR)
+        self._colors_changed()
+
+    def _colors_changed(self) -> None:
+        self._show_colors()
+        self.shell.apply_classification_colors()
 
     def _threshold_moved(self, value: float) -> None:
         controller = self.shell.controller
@@ -3199,71 +3328,6 @@ class Footer(QWidget):
             self.shell._batch.paused = False
         self.cancel.setEnabled(False)
         self.status.setText("Stopping after the current step...")
-
-
-class HistogramWidget(QWidget):
-    threshold_changed = Signal(float)
-
-    def __init__(self):
-        super().__init__()
-        self.setMinimumHeight(80)
-        self._counts = np.zeros(1)
-        self._edges = np.array([0.0, 1.0])
-        self._threshold = 0.0
-        self._step: float | None = None
-
-    def set_values(
-        self,
-        values: np.ndarray,
-        threshold: float,
-        value_range: tuple[float, float] | None = None,
-        step: float | None = None,
-    ) -> None:
-        """Show values; ``value_range`` fixes the axis (0-100 for percents); drags snap to ``step``."""
-
-        finite = np.asarray(values, dtype=float)
-        finite = finite[np.isfinite(finite)]
-        self._step = step
-        if value_range is not None:
-            self._counts, self._edges = np.histogram(finite, bins=40, range=value_range)
-        elif finite.size == 0:
-            self._counts = np.zeros(1)
-            self._edges = np.array([0.0, 1.0])
-        else:
-            self._counts, self._edges = np.histogram(finite, bins=40)
-        self._threshold = float(threshold)
-        self.update()
-
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(250, 250, 250))
-        width = max(self.width() - 8, 1)
-        height = max(self.height() - 8, 1)
-        peak = max(float(self._counts.max()), 1)
-        bin_width = width / max(len(self._counts), 1)
-        for index, count in enumerate(self._counts):
-            bar = int(height * (count / peak))
-            painter.fillRect(int(4 + index * bin_width), 4 + height - bar, max(int(bin_width) - 1, 1), bar, QColor(70, 110, 160))
-        span = float(self._edges[-1] - self._edges[0]) or 1
-        x = int(4 + width * ((self._threshold - self._edges[0]) / span))
-        painter.setPen(QColor(180, 40, 40))
-        painter.drawLine(x, 4, x, 4 + height)
-
-    def mousePressEvent(self, event) -> None:
-        self._move_threshold(event.position().x() if hasattr(event, "position") else event.x())
-
-    def mouseMoveEvent(self, event) -> None:
-        self._move_threshold(event.position().x() if hasattr(event, "position") else event.x())
-
-    def _move_threshold(self, x: float) -> None:
-        width = max(self.width() - 8, 1)
-        fraction = min(max((float(x) - 4) / width, 0), 1)
-        value = float(self._edges[0] + fraction * (self._edges[-1] - self._edges[0]))
-        if self._step:
-            value = float(round(value / self._step) * self._step)
-        self._threshold = value
-        self.update()
-        self.threshold_changed.emit(value)
 
 
 class CallWorker(QThread):
