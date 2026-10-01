@@ -168,17 +168,8 @@ pixels are at or above a pixel level (optionally at most an upper level).
   eligibility.
 - Tests: `tests/test_percent_rule.py`, `test_percent_of_cell_rule_in_the_window`.
 
-## Synthetic retina test images; release 2.0.0 (2026-09-29)
+## Release 2.0.0 (2026-09-29)
 
-- `cellquant/synthetic_retina.py` makes z-stacks that resemble the lab's 20x ND2 files (checked side by side
-  with a real image: channel names and colors, 12-bit values with camera offsets, 7 slices at 1.5 µm, 0.575 µm
-  pixels, crowded nuclei elongated across a curved band of tissue, Z-heavy blur, dimmer deep slices, uneven
-  illumination, shot and read noise, nucleoli, saturated specks), with true labels and per-nucleus truth
-  (reporter+, OTX2+ whole or partial, PAX6-high). Control and CRISPRi sets have known (Fluor+ OTX2+) / Fluor+.
-- With the true nuclei, the best single cutoff calls about 98.5% (OTX2) and 99% (reporter) of nuclei right;
-  the automatic starting cutoff misses dim positives (27.6% instead of 31.3% on one image), which is the kind
-  of error step 4 is for. Classical 3D segmentation finds 523 objects for 420 true nuclei (over-splitting).
-- Tests: `tests/test_synthetic_retina.py`. Suite: 289 passed.
 - Version 2.0.0 (version 1 ended at 0.4.0a3), MIT license, `CITATION.cff`, `CHANGELOG.md`, `.gitignore` that
   keeps images and results out of the repository. Lab file and folder names were removed from the docs.
 
@@ -199,9 +190,8 @@ pixels are at or above a pixel level (optionally at most an upper level).
 - Window: Analysis list and buttons above the steps; Run all analyses (bottom bar and step 5) and Export all
   analyses (step 5) appear when there are several; switching is refused while anything runs; settings on
   screen are saved to the analysis being left. HPC prep packages the analysis shown.
-- Tests: `tests/test_analyses.py` (10), `tests/test_gui_analyses.py`; synthetic retina z-stacks are the test
-  images. Suite: 300 passed. An independent review found four problems (a removed analysis's runs read by the
-  original one; edits shared by analyses with the same segmentation; a re-included image left "excluded"; settings
+- Tests: `tests/test_analyses.py` (10), `tests/test_gui_analyses.py`. Suite: 300 passed. An independent review
+  found four problems (a removed analysis's runs read by the original one; edits shared by analyses with the same segmentation; a re-included image left "excluded"; settings
   pages usable during Run all analyses), all fixed with tests.
 
 ## The Plan dock and other channel layouts (2.1.0, 2026-09-29)
