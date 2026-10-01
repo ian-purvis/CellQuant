@@ -278,6 +278,12 @@ class CellQuantWindow:
         dock_layout = QVBoxLayout(self._dock)
         dock_layout.setContentsMargins(0, 0, 0, 0)
         dock_layout.addWidget(self._analysis_bar)
+        # Shown while a run uses the settings, which are greyed out until it ends.
+        self._run_lock_note = QLabel("🔒 <b>Running.</b> Settings are locked until the run finishes or you click Cancel.")
+        self._run_lock_note.setWordWrap(True)
+        self._run_lock_note.setStyleSheet("QLabel { background: rgba(80, 120, 200, 0.22); border-radius: 6px; padding: 6px; }")
+        self._run_lock_note.setVisible(False)
+        dock_layout.addWidget(self._run_lock_note)
         dock_layout.addWidget(self._tabs, 1)
         self._footer = Footer(self)
         self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
@@ -312,6 +318,12 @@ class CellQuantWindow:
         self.refresh_guidance()
 
     def refresh_guidance(self) -> None:
+        if self._run_lock_note.isVisibleTo(self._dock):
+            # Settings rebuilt during a run (for example a refreshed list) start enabled; lock them too.
+            for widget in self._settings_inputs():
+                if widget.isEnabled():
+                    self._settings_restore.setdefault(widget, True)
+                    widget.setEnabled(False)
         states = guide.step_states(self)
         self._start_page.update_state(states)
         for page, state, step in zip(self._step_pages, states, guide.STEPS):
@@ -460,7 +472,6 @@ class CellQuantWindow:
             return
         from cellquant.engines import gpu_status
 
-        self._objects_panel.gpu_label.setText("Checking for a GPU...")
         self._gpu_check = CallWorker(gpu_status)
         self._gpu_check.succeeded.connect(self._objects_panel.show_gpu_status)
         self._gpu_check.failed.connect(lambda message: self._objects_panel.show_gpu_status({"available": False, "reason": message}))
@@ -662,6 +673,7 @@ class CellQuantWindow:
                 self._tabs.setEnabled(False)
                 self._footer.set_navigation_enabled(False)
             self._plan_dock.setEnabled(False)  # the plan is read when a run starts; no changes while it runs
+            self._lock_settings(True)
             self._footer.start_busy(batch=self._batch is not None)
         else:
             for button, enabled in getattr(self, "_busy_restore", {}).items():
@@ -670,6 +682,7 @@ class CellQuantWindow:
                 except RuntimeError:
                     pass  # the button was rebuilt meanwhile
             self._busy_restore = {}
+            self._lock_settings(False)
             self._footer.end_busy()
             self._plan_dock.setEnabled(True)
             self._refresh_plan()
@@ -678,6 +691,44 @@ class CellQuantWindow:
                 self._tabs.setEnabled(True)
                 self._footer.set_navigation_enabled(True)
                 self._refresh_all(keep_image=True)
+
+    def _settings_inputs(self) -> list[QWidget]:
+        """Inputs that change the analysis settings. Display-only choices stay usable during a run."""
+
+        from qtpy.QtWidgets import QAbstractSpinBox, QSlider
+
+        view_only = {
+            self._experiment_panel.show_type,
+            self._experiment_panel.filter_box,
+            self._objects_panel.advanced_toggle,
+            self._review_panel.display,
+            self._review_panel.show_boundaries,
+            self._review_panel.show_fills,
+            self._review_panel.show_ids,
+        }
+        inputs: list[QWidget] = []
+        panels = (self._experiment_panel, self._objects_panel, self._measurements_panel, self._review_panel, self._marker_setup)
+        for panel in panels:
+            for kind in (QComboBox, QAbstractSpinBox, QLineEdit, QCheckBox, QSlider):
+                inputs.extend(widget for widget in panel.findChildren(kind) if widget not in view_only)
+        return inputs
+
+    def _lock_settings(self, locked: bool) -> None:
+        """Grey out the settings while a run uses them, so menus cannot be scrolled or changed."""
+
+        if locked:
+            widgets = self._settings_inputs()
+            self._settings_restore = {widget: widget.isEnabled() for widget in widgets}
+            for widget in widgets:
+                widget.setEnabled(False)
+        else:
+            for widget, enabled in getattr(self, "_settings_restore", {}).items():
+                try:
+                    widget.setEnabled(enabled)
+                except RuntimeError:
+                    pass  # the widget was rebuilt meanwhile
+            self._settings_restore = {}
+        self._run_lock_note.setVisible(locked)
 
     def is_busy(self) -> bool:
         return self._job is not None or self._batch is not None
@@ -1627,12 +1678,51 @@ class ObjectsPanel(QWidget):
         z_column.addLayout(z_row)
         z_column.addWidget(self.z3d_box)
         self.z_stack.currentIndexChanged.connect(lambda _index: self._z_mode_changed())
-        form.addRow("Object set name", self.object_name)
-        form.addRow("Z-stacks", self.z_box)
-        form.addRow(self.z_recommend_box)  # full width, so the explanation is readable
+        from cellquant.engines import CELLPOSE_CLASSIC, CELLPOSE_SAM, ENGINE_LABELS, cellpose_engine
+
+        self.engine = cellpose_engine()
+        # Whether a GPU was found, at the top of the page so it is seen before any run.
+        self.gpu_label = QLabel("")
+        self.gpu_label.setWordWrap(True)
+        self.gpu_label.setTextFormat(Qt.RichText)
+        self.gpu_on = QPushButton("Turn on GPU")
+        self.gpu_on.setToolTip("Tick 'Use GPU' so Cellpose runs on this computer's NVIDIA GPU.")
+        self.gpu_on.setVisible(False)
+        self.gpu_banner = QWidget()
+        gpu_row = QHBoxLayout(self.gpu_banner)
+        gpu_row.setContentsMargins(0, 0, 0, 0)
+        gpu_row.addWidget(self.gpu_label, 1)
+        gpu_row.addWidget(self.gpu_on)
+        self._show_gpu_banner("Checking for an NVIDIA GPU...", "neutral")
+        layout.addWidget(self.gpu_banner)
+        # One engine is installed per environment; the other is listed so users know it exists.
+        self.engine_choice = QComboBox()
+        for key in (CELLPOSE_SAM, CELLPOSE_CLASSIC):
+            if self.engine.installed and key == self.engine.key:
+                self.engine_choice.addItem(self.engine.label, key)
+            else:
+                self.engine_choice.addItem(f"{ENGINE_LABELS[key]}: not installed here", key)
+                self.engine_choice.model().item(self.engine_choice.count() - 1).setEnabled(False)
+        if self.engine.installed:
+            self.engine_choice.setCurrentIndex(max(0, self.engine_choice.findData(self.engine.key)))
+            self.engine_choice.setToolTip(
+                "The Cellpose installed in this environment. To use the other one, start CellQuant with it "
+                "(Open CellQuant.bat asks which one)."
+            )
+        else:
+            self.engine_choice.insertItem(0, "Cellpose is not installed in this environment", None)
+            self.engine_choice.setCurrentIndex(0)
+            self.engine_choice.setEnabled(False)
+            self.engine_choice.setToolTip("Install Cellpose 3 or 4 to use the cellpose method.")
+        self.engine_choice_label = QLabel("Cellpose engine")
         self.method.currentIndexChanged.connect(lambda _index: self.update_recommendation())
+        self.method.currentIndexChanged.connect(lambda _index: self._method_changed())
+        form.addRow("Object set name", self.object_name)
         form.addRow("Source channel", self.channel)
         form.addRow("Method", self.method)
+        form.addRow(self.engine_choice_label, self.engine_choice)
+        form.addRow("Z-stack mode", self.z_box)
+        form.addRow(self.z_recommend_box)  # full width, so the explanation is readable
         form.addRow("Threshold", self.threshold_method)
         form.addRow("Manual threshold", self.threshold)
         form.addRow("Smoothing sigma", self.sigma)
@@ -1653,13 +1743,6 @@ class ObjectsPanel(QWidget):
         self.watershed_distance = QDoubleSpinBox()
         self.watershed_distance.setValue(5)
         self.compactness = QDoubleSpinBox()
-        from cellquant.engines import cellpose_engine
-
-        self.engine = cellpose_engine()
-        self.engine_label = QLabel(self.engine.label)
-        self.engine_label.setWordWrap(True)
-        self.gpu_label = QLabel("")
-        self.gpu_label.setWordWrap(True)
         # Editable so a path to a trained model can be typed in.
         self.cellpose_model = QComboBox()
         self.cellpose_model.setEditable(True)
@@ -1672,14 +1755,14 @@ class ObjectsPanel(QWidget):
         self.cellprob.setRange(-6, 6)
         self.gpu = QCheckBox("Use GPU")
         self.gpu.toggled.connect(lambda _checked: self.update_recommendation())
+        self.gpu.toggled.connect(lambda _checked: self._refresh_gpu_banner())
+        self.gpu_on.clicked.connect(lambda: self.gpu.setChecked(True))
         advanced.addRow(self.fill_holes)
         advanced.addRow("Opening radius (px)", self.opening)
         advanced.addRow("Closing radius (px)", self.closing)
         advanced.addRow(self.watershed)
         advanced.addRow("Watershed minimum distance", self.watershed_distance)
         advanced.addRow("Watershed compactness", self.compactness)
-        advanced.addRow("Cellpose engine", self.engine_label)
-        advanced.addRow("", self.gpu_label)
         advanced.addRow("Cellpose model", self.cellpose_model)
         advanced.addRow("Cellpose diameter (px)", self.diameter)
         advanced.addRow("Flow threshold", self.flow)
@@ -1696,6 +1779,7 @@ class ObjectsPanel(QWidget):
         actions.addWidget(run)
         layout.addLayout(actions)
         layout.addStretch(1)
+        self._method_changed()
 
     def refresh(self) -> None:
         controller = self.shell.controller
@@ -1750,6 +1834,12 @@ class ObjectsPanel(QWidget):
         else:
             self.max_area.setValue(float(parameters.get("max_area_px") or 0))
         self.update_recommendation()
+
+    def _method_changed(self) -> None:
+        cellpose = self.method.currentText() == "cellpose"
+        self.engine_choice_label.setVisible(cellpose)
+        self.engine_choice.setVisible(cellpose)
+        self._refresh_gpu_banner()
 
     def _z_mode_changed(self) -> None:
         mode = self.z_stack.currentData()
@@ -1836,20 +1926,60 @@ class ObjectsPanel(QWidget):
         """Called once PyTorch has been checked in the background."""
 
         self._gpu_status = dict(status)
+        self._gpu_checked = True
         if not self.engine.installed:
-            self.gpu_label.setText("")
             self.gpu.setEnabled(False)
-            self.update_recommendation()
-            return
-        if status.get("available"):
-            memory = f" ({status['memory_gb']:.0f} GB)" if status.get("memory_gb") else ""
-            self.gpu_label.setText(f"GPU: {status.get('name') or 'NVIDIA GPU'}{memory}")
+        elif status.get("available"):
             self.gpu.setEnabled(True)
         else:
-            self.gpu_label.setText(f"No GPU: Cellpose will run on the CPU. {status.get('reason', '')}".strip())
             self.gpu.setChecked(False)
             self.gpu.setEnabled(False)
+        self._refresh_gpu_banner()
+        self.shell.message(self._gpu_summary())
         self.update_recommendation()
+
+    def _gpu_summary(self) -> str:
+        status = self._gpu_status
+        if not self.engine.installed:
+            return "Cellpose is not installed, so no GPU is used; the classical method runs on the CPU."
+        if status.get("available"):
+            memory = f", {status['memory_gb']:.0f} GB" if status.get("memory_gb") else ""
+            return f"NVIDIA GPU found: {status.get('name') or 'NVIDIA GPU'}{memory}."
+        return f"No usable GPU found; Cellpose will run on the CPU (slower). {status.get('reason', '')}".strip()
+
+    def _show_gpu_banner(self, html: str, tone: str) -> None:
+        colors = {"good": "rgba(60, 170, 90, 0.22)", "warn": "rgba(217, 164, 0, 0.18)", "neutral": "rgba(128, 128, 128, 0.16)"}
+        self.gpu_label.setText(html)
+        self.gpu_label.setStyleSheet(f"QLabel {{ background: {colors[tone]}; border-radius: 6px; padding: 6px; }}")
+
+    def _refresh_gpu_banner(self) -> None:
+        """Say plainly whether a GPU was found and whether Cellpose will use it."""
+
+        if not getattr(self, "_gpu_checked", False):
+            return
+        status = self._gpu_status
+        cellpose = self.method.currentText() == "cellpose"
+        self.gpu_on.setVisible(False)
+        if not self.engine.installed:
+            self._show_gpu_banner(self._gpu_summary(), "neutral")
+        elif status.get("available"):
+            memory = f" ({status['memory_gb']:.0f} GB)" if status.get("memory_gb") else ""
+            found = f"<b>✔ NVIDIA GPU found:</b> {status.get('name') or 'NVIDIA GPU'}{memory}."
+            if self.gpu.isChecked():
+                self._show_gpu_banner(f"{found} Cellpose will run on the GPU.", "good")
+            else:
+                self._show_gpu_banner(
+                    f"{found} <b>'Use GPU' is off</b>, so Cellpose would run on the CPU (much slower)."
+                    if cellpose
+                    else f"{found} The classical method does not use it; Cellpose would.",
+                    "good",
+                )
+                self.gpu_on.setVisible(cellpose)
+        else:
+            reason = status.get("reason", "")
+            self._show_gpu_banner(
+                f"<b>No usable GPU found.</b> Cellpose will run on the CPU (slower). {reason}".strip(), "warn"
+            )
 
     def write_recipe(self) -> None:
         controller = self.shell.controller
