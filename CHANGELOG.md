@@ -16,8 +16,6 @@
 - **Other channel layouts**: an image whose file stores the channels in another order is segmented and
   measured in the channels of the same names; images without such a channel are marked for checking.
 - **Duplicate** (advanced, step 5) now makes a new analysis and keeps the old one and its results.
-- Synthetic retina sets put images in `images/` and the answers in `truth/`, so adding the images folder
-  does not pick up the answer files.
 
 ## 2.0.0 (2026-09-29)
 
@@ -35,6 +33,5 @@ not open in version 2.
 - HPC prep: packages for a Slurm GPU cluster (CU Boulder Alpine), a worker with checksums and resume, and import
   of the results as a new experiment.
 - Sweeps: compare segmentation methods, Z modes and thresholds across images, scored against hand counts.
-- Test images: synthetic retina z-stacks with known answers (`python -m cellquant.synthetic_retina`).
 - Windows installer with one environment per Cellpose engine.
 - MIT license, citation file.
