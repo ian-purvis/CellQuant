@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from qtpy.QtCore import Qt, QSize, QThread, QTimer, Signal
+from qtpy.QtCore import QObject, Qt, QSize, QThread, QTimer, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -400,6 +400,11 @@ class CellQuantWindow:
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
         self._start_gpu_check()
+        # Menus and number boxes change with the mouse wheel only after being clicked.
+        self._wheel_guard = WheelGuard(self._tabs)
+        from qtpy.QtWidgets import QApplication
+
+        QApplication.instance().installEventFilter(self._wheel_guard)
         self.viewer.layers.events.inserted.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.removed.connect(lambda _event: self._release_window_later())
         self._release_window_later()
@@ -2097,6 +2102,11 @@ class ObjectsPanel(QWidget):
         if status.get("available"):
             memory = f", {status['memory_gb']:.0f} GB" if status.get("memory_gb") else ""
             return f"NVIDIA GPU found: {status.get('name') or 'NVIDIA GPU'}{memory}."
+        if status.get("nvidia_gpu"):
+            return (
+                f"NVIDIA GPU found ({status['nvidia_gpu']}), but CellQuant cannot use it yet, so Cellpose will run on the "
+                f"CPU (slower). {status.get('reason', '')}"
+            ).strip()
         return f"No usable GPU found; Cellpose will run on the CPU (slower). {status.get('reason', '')}".strip()
 
     def _show_gpu_banner(self, html: str, tone: str) -> None:
@@ -2127,6 +2137,12 @@ class ObjectsPanel(QWidget):
                     "good",
                 )
                 self.gpu_on.setVisible(cellpose)
+        elif status.get("nvidia_gpu"):
+            self._show_gpu_banner(
+                f"<b>⚠ NVIDIA GPU found ({status['nvidia_gpu']}), but CellQuant cannot use it yet.</b> "
+                f"Cellpose will run on the CPU (much slower). {status.get('reason', '')}".strip(),
+                "warn",
+            )
         else:
             reason = status.get("reason", "")
             self._show_gpu_banner(
@@ -3328,6 +3344,22 @@ class Footer(QWidget):
             self.shell._batch.paused = False
         self.cancel.setEnabled(False)
         self.status.setText("Stopping after the current step...")
+
+
+class WheelGuard(QObject):
+    """Stop the mouse wheel from changing a dropdown or number box the user has not clicked.
+
+    The wheel then scrolls the page under the pointer instead, so scrolling past a setting never changes it.
+    """
+
+    def eventFilter(self, watched, event) -> bool:
+        from qtpy.QtCore import QEvent
+        from qtpy.QtWidgets import QAbstractSpinBox
+
+        if event.type() == QEvent.Wheel and isinstance(watched, (QComboBox, QAbstractSpinBox)) and not watched.hasFocus():
+            event.ignore()  # passed on to the scroll area around it
+            return True
+        return False
 
 
 class CallWorker(QThread):
