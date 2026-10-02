@@ -101,9 +101,10 @@ STEPS = (
         4,
         "4 Check",
         "Check the positive calls",
-        "<span style='color:#2fbf5a'><b>Green</b></span> objects are positive, gray negative. "
-        "Drag the <span style='color:#d33'><b>red line</b></span> to move the cutoff (one cutoff for "
-        "every image). For the percent-of-cell rule the red line is the minimum percent; change the "
+        "Objects glow <span style='color:#26bf59'><b>green</b></span> when positive and "
+        "<span style='color:#e03c3c'><b>red</b></span> when negative (change the colours under the slider). "
+        "Drag the <b>Cutoff</b> slider, or type a number beside it, to move the cutoff (one cutoff for "
+        "every image). For the percent-of-cell rule the slider is the minimum percent; change the "
         "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> when it looks right, then <b>Next image ▶</b> at the bottom. "
         "Hover over a button to see what it does.",
         "The green objects are the ones you would call positive by eye.",
@@ -138,8 +139,8 @@ HELP = {
     ("_objects_panel", "cellprob"): "Cellpose confidence. Lower finds more (and fainter) objects.",
     ("_objects_panel", "gpu"): "Use the NVIDIA GPU. Greyed out when no usable GPU was found.",
     ("_objects_panel", "engine_choice"): "The Cellpose installed here. Cellpose-SAM (4) is most accurate, best with a GPU; Classic Cellpose (3) is faster on the CPU. Only one is installed per environment; start CellQuant with the other to use it.",
-    ("_review_panel", "display"): "Which marker to color by: green positive, gray negative.",
-    ("_review_panel", "histogram"): "How bright each object is for this marker (or, for the percent-of-cell rule, what percent of each object's pixels pass the pixel level). Drag the red line to set the cutoff.",
+    ("_review_panel", "display"): "Which marker to color by: green positive, red negative (colours can be changed).",
+    ("_review_panel", "threshold_slider"): "The cutoff for this marker: objects at or past it are positive. Drag, or type a number. For the percent-of-cell rule it is the minimum percent of each object's pixels that must pass the pixel level.",
     ("_review_panel", "min_percent"): "A cell is positive when at least this percent of its pixels are at or above the pixel level.",
     ("_review_panel", "pixel_level"): "A pixel passes when its value is at or above this level (same units as the image). Click Apply pixel level to measure again.",
     ("_review_panel", "counts"): "Counts for this image at the current cutoff. Unmeasured objects are left out of all counts.",

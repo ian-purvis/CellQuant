@@ -10,8 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from qtpy.QtCore import Qt, QSize, QThread, QTimer, Signal
-from qtpy.QtGui import QColor, QPainter
+from qtpy.QtCore import QObject, Qt, QSize, QThread, QTimer, Signal
+from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
@@ -80,6 +80,91 @@ def channel_colormaps(loaded) -> list:
         code = "#{:02x}{:02x}{:02x}".format(*(int(round(value * 255)) for value in (red, green, blue)))
         maps.append(Colormap(colors=[[0.0, 0.0, 0.0, 1.0], [red, green, blue, 1.0]], name=f"file color {code}"))
     return maps
+
+
+# Dropdown wording: the saved value first, then the plain words shown for it.
+METHOD_OPTIONS = (("classical", "Classical (fast, no GPU)"), ("cellpose", "Cellpose (AI model)"))
+THRESHOLD_OPTIONS = (("otsu", "Automatic (Otsu)"), ("manual", "Manual cutoff"))
+AREA_UNIT_OPTIONS = (("px", "pixels"), ("um2", "µm²"))
+REGION_OPTIONS = (
+    ("object", "Whole object"),
+    ("eroded_object", "Object shrunk inward"),
+    ("expanded_object", "Object grown outward"),
+    ("ring", "Ring around the object"),
+)
+STATISTIC_OPTIONS = (
+    ("mean", "Mean brightness"),
+    ("median", "Median brightness"),
+    ("min", "Minimum brightness"),
+    ("max", "Maximum brightness"),
+    ("std", "Brightness spread (standard deviation)"),
+    ("integrated", "Total brightness (integrated)"),
+    ("area", "Area"),
+    ("equivalent_diameter", "Equivalent diameter"),
+    ("centroid_x", "Centre X"),
+    ("centroid_y", "Centre Y"),
+    ("percent_above", "Percent of pixels above a level"),
+)
+BACKGROUND_OPTIONS = (
+    ("none", "None"),
+    ("global", "Subtract image background"),
+    ("local_ring", "Subtract local background (ring)"),
+)
+
+
+def _fill_options(box: QComboBox, options) -> None:
+    for value, text in options:
+        box.addItem(text, value)
+
+
+def _choose(box: QComboBox, value) -> None:
+    index = box.findData(value)
+    if index >= 0:
+        box.setCurrentIndex(index)
+
+
+def _show_row(form: QFormLayout, field: QWidget, visible: bool) -> None:
+    """Show or hide one form row, its label included."""
+
+    field.setVisible(visible)
+    label = form.labelForField(field)
+    if label is not None:
+        label.setVisible(visible)
+
+
+# Classification colours: one pair for every marker, remembered on this computer.
+DEFAULT_POSITIVE_COLOR = "#26bf59"
+DEFAULT_NEGATIVE_COLOR = "#e03c3c"
+
+
+def _settings():
+    from qtpy.QtCore import QSettings
+
+    return QSettings("CellQuant", "CellQuant")
+
+
+def classification_colors() -> tuple[str, str]:
+    """(positive, negative) colours as #rrggbb."""
+
+    try:
+        settings = _settings()
+        positive = str(settings.value("review/positive_color", DEFAULT_POSITIVE_COLOR))
+        negative = str(settings.value("review/negative_color", DEFAULT_NEGATIVE_COLOR))
+    except Exception:  # noqa: BLE001 - settings unreadable: use the defaults
+        return DEFAULT_POSITIVE_COLOR, DEFAULT_NEGATIVE_COLOR
+    valid = [value if QColor(value).isValid() else default for value, default in ((positive, DEFAULT_POSITIVE_COLOR), (negative, DEFAULT_NEGATIVE_COLOR))]
+    return valid[0], valid[1]
+
+
+def save_classification_colors(positive: str, negative: str) -> None:
+    settings = _settings()
+    settings.setValue("review/positive_color", positive)
+    settings.setValue("review/negative_color", negative)
+
+
+def _rgba(color: str) -> np.ndarray:
+    value = QColor(color)
+    return np.array([value.redF(), value.greenF(), value.blueF(), 1.0], dtype=np.float32)
 
 
 def _size_flag(name: str):
@@ -284,8 +369,27 @@ class CellQuantWindow:
         self._run_lock_note.setStyleSheet("QLabel { background: rgba(80, 120, 200, 0.22); border-radius: 6px; padding: 6px; }")
         self._run_lock_note.setVisible(False)
         dock_layout.addWidget(self._run_lock_note)
+        # Problems are shown here, in red, until dismissed or the next run starts.
+        self._error_box = QWidget()
+        error_row = QHBoxLayout(self._error_box)
+        error_row.setContentsMargins(0, 0, 0, 0)
+        self._error_note = QLabel("")
+        self._error_note.setWordWrap(True)
+        self._error_note.setTextFormat(Qt.RichText)
+        self._error_note.setStyleSheet("QLabel { background: rgba(200, 50, 50, 0.25); border-radius: 6px; padding: 6px; }")
+        dismiss = QPushButton("✕")
+        dismiss.setToolTip("Hide this message.")
+        dismiss.setFixedWidth(28)
+        dismiss.clicked.connect(lambda: self._error_box.setVisible(False))
+        error_row.addWidget(self._error_note, 1)
+        error_row.addWidget(dismiss)
+        self._error_box.setVisible(False)
+        dock_layout.addWidget(self._error_box)
         dock_layout.addWidget(self._tabs, 1)
         self._footer = Footer(self)
+        self._tabs.currentChanged.connect(
+            lambda _index: self._footer.highlight("all" if self._tabs.currentWidget() is self._step_pages[-1] else "current")
+        )
         self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
 
@@ -296,6 +400,11 @@ class CellQuantWindow:
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
         self._start_gpu_check()
+        # Menus and number boxes change with the mouse wheel only after being clicked.
+        self._wheel_guard = WheelGuard(self._tabs)
+        from qtpy.QtWidgets import QApplication
+
+        QApplication.instance().installEventFilter(self._wheel_guard)
         self.viewer.layers.events.inserted.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.removed.connect(lambda _event: self._release_window_later())
         self._release_window_later()
@@ -318,6 +427,9 @@ class CellQuantWindow:
         self.refresh_guidance()
 
     def refresh_guidance(self) -> None:
+        # The step that runs everything is step 5; before it, try one image at a time.
+        last_step = self._tabs.currentWidget() is self._step_pages[-1]
+        self._footer.highlight("all" if last_step else "current")
         if self._run_lock_note.isVisibleTo(self._dock):
             # Settings rebuilt during a run (for example a refreshed list) start enabled; lock them too.
             for widget in self._settings_inputs():
@@ -333,6 +445,15 @@ class CellQuantWindow:
 
     def message(self, text: str) -> None:
         self._footer.message(text)
+
+    def show_error(self, text: str) -> None:
+        """A problem the user must see: a red box above the steps, and the Run log."""
+
+        import html
+
+        self._error_note.setText(f"<b>⚠ Problem:</b> {html.escape(text)}")
+        self._error_box.setVisible(True)
+        self._footer.message(f"Problem: {text}")
 
     def open_guide(self) -> None:
         guide.GuideDialog(self._tabs, guide.guide_text()).exec()
@@ -437,10 +558,10 @@ class CellQuantWindow:
             if levels:
                 self.message(
                     "Markers measured. Starting pixel levels were picked automatically and the minimum percent is yours: "
-                    "check them in this step (drag the red line to change the percent; type a new pixel level and click Apply)."
+                    "check them in this step (drag the Cutoff slider to change the percent; type a new pixel level and click Apply)."
                 )
             else:
-                self.message("Markers measured. Starting cutoffs were picked automatically: check them by dragging the red line.")
+                self.message("Markers measured. Starting cutoffs were picked automatically: check them by dragging the Cutoff slider.")
 
         self._start_job(lambda: controller.run_image(image_id), measured)
 
@@ -573,7 +694,7 @@ class CellQuantWindow:
             self._loader = None
             if self.controller is not controller:
                 return
-            self._footer.message(message)
+            self.show_error(f"{record.relative_path or record.filename} could not be shown. {message}")
             self._clear_managed()
             if self._wanted_image_id != record.image_id:
                 self.show_current()
@@ -630,7 +751,7 @@ class CellQuantWindow:
         worker = CallWorker(fn, report=True)
         self._job = worker
         worker.succeeded.connect(on_success)
-        worker.failed.connect(self._footer.message)
+        worker.failed.connect(self.show_error)
         worker.step.connect(self._footer.show_step)
         worker.finished.connect(self._clear_job)
         self.set_busy(True)
@@ -674,6 +795,7 @@ class CellQuantWindow:
                 self._footer.set_navigation_enabled(False)
             self._plan_dock.setEnabled(False)  # the plan is read when a run starts; no changes while it runs
             self._lock_settings(True)
+            self._error_box.setVisible(False)
             self._footer.start_busy(batch=self._batch is not None)
         else:
             for button, enabled in getattr(self, "_busy_restore", {}).items():
@@ -706,7 +828,7 @@ class CellQuantWindow:
             self._review_panel.show_fills,
             self._review_panel.show_ids,
         }
-        inputs: list[QWidget] = []
+        inputs: list[QWidget] = [self._review_panel.threshold_slider]
         panels = (self._experiment_panel, self._objects_panel, self._measurements_panel, self._review_panel, self._marker_setup)
         for panel in panels:
             for kind in (QComboBox, QAbstractSpinBox, QLineEdit, QCheckBox, QSlider):
@@ -841,6 +963,18 @@ class CellQuantWindow:
             (f"Stopped after {len(report.jobs)} of {planned} images. " if stopped else "")
             + f"Completed {report.completed}, warnings {report.warnings}, failed {report.failed}."
         )
+        self._show_failed_images(report.failed)
+
+    def _show_failed_images(self, count: int) -> None:
+        if not count:
+            return
+        names = self._footer.failed_files
+        listed = ", ".join(names[:5]) + (f" and {len(names) - 5} more" if len(names) > 5 else "")
+        self.show_error(
+            f"{count} image{'s' if count != 1 else ''} failed"
+            + (f": {listed}" if listed else "")
+            + ". The others finished. Open a failed image and click Run this image to see why."
+        )
 
     def _analyses_finished(self, reports, planned: int) -> None:
         done = sum(len(report.jobs) for report in reports)
@@ -858,6 +992,7 @@ class CellQuantWindow:
             (f"Stopped after {done} of {planned} image runs. " if stopped else f"Ran {len(reports)} analyses. ")
             + " | ".join(lines)
         )
+        self._show_failed_images(sum(report.failed for report in reports))
 
     def export_all_dialog(self) -> None:
         controller = self.require_controller()
@@ -1055,14 +1190,22 @@ class CellQuantWindow:
             return
         self._drop("Classification")
         layer = self.viewer.add_labels(overlay, name="Classification", opacity=0.85)
-        layer.colormap = DirectLabelColormap(
+        self._managed.add("Classification")
+        self.apply_classification_colors()
+
+    def apply_classification_colors(self) -> None:
+        """Positive objects in the positive colour, negative in the negative colour."""
+
+        if "Classification" not in self.viewer.layers:
+            return
+        positive, negative = classification_colors()
+        self.viewer.layers["Classification"].colormap = DirectLabelColormap(
             color_dict={
                 None: np.array([0, 0, 0, 0], dtype=np.float32),
-                1: np.array([0.55, 0.55, 0.58, 1], dtype=np.float32),
-                2: np.array([0.15, 0.75, 0.35, 1], dtype=np.float32),
+                1: _rgba(negative),
+                2: _rgba(positive),
             }
         )
-        self._managed.add("Classification")
 
     def _set_ids(self, result) -> None:
         frame = result.objects
@@ -1586,12 +1729,13 @@ class ObjectsPanel(QWidget):
         self.shell = shell
         layout = QVBoxLayout(self)
         form = QFormLayout()
+        self._form = form
         self.object_name = QLineEdit("Objects")
         self.channel = QComboBox()
         self.method = QComboBox()
-        self.method.addItems(["classical", "cellpose"])
+        _fill_options(self.method, METHOD_OPTIONS)
         self.threshold_method = QComboBox()
-        self.threshold_method.addItems(["otsu", "manual"])
+        _fill_options(self.threshold_method, THRESHOLD_OPTIONS)
         self.threshold = QDoubleSpinBox()
         self.threshold.setMaximum(1e9)
         self.sigma = QDoubleSpinBox()
@@ -1601,7 +1745,7 @@ class ObjectsPanel(QWidget):
         for box in (self.min_area, self.max_area):
             box.setMaximum(1e12)
         self.area_unit = QComboBox()
-        self.area_unit.addItems(["px", "um2"])
+        _fill_options(self.area_unit, AREA_UNIT_OPTIONS)
         # Z-stacks: 2D (projection or one slice) or 3D (linked slices or the whole volume).
         from cellquant.hardware import Z_OPTION_LABELS
 
@@ -1717,6 +1861,7 @@ class ObjectsPanel(QWidget):
         self.engine_choice_label = QLabel("Cellpose engine")
         self.method.currentIndexChanged.connect(lambda _index: self.update_recommendation())
         self.method.currentIndexChanged.connect(lambda _index: self._method_changed())
+        self.threshold_method.currentIndexChanged.connect(lambda _index: self._method_changed())
         form.addRow("Object set name", self.object_name)
         form.addRow("Source channel", self.channel)
         form.addRow("Method", self.method)
@@ -1735,6 +1880,7 @@ class ObjectsPanel(QWidget):
         self.advanced_box.setVisible(False)
         self.advanced_toggle.toggled.connect(self.advanced_box.setVisible)
         advanced = QFormLayout(self.advanced_box)
+        self._advanced_form = advanced
         self.fill_holes = QCheckBox("Fill holes")
         self.fill_holes.setChecked(True)
         self.opening = QSpinBox()
@@ -1756,6 +1902,7 @@ class ObjectsPanel(QWidget):
         self.gpu = QCheckBox("Use GPU")
         self.gpu.toggled.connect(lambda _checked: self.update_recommendation())
         self.gpu.toggled.connect(lambda _checked: self._refresh_gpu_banner())
+        self.watershed.toggled.connect(lambda _checked: self._method_changed())
         self.gpu_on.clicked.connect(lambda: self.gpu.setChecked(True))
         advanced.addRow(self.fill_holes)
         advanced.addRow("Opening radius (px)", self.opening)
@@ -1790,9 +1937,7 @@ class ObjectsPanel(QWidget):
             self.channel.addItem(channel.channel_name, channel.channel_index)
         recipe = controller.recipe
         self.object_name.setText(recipe.object_set.name)
-        index = self.method.findText(recipe.object_set.algorithm)
-        if index >= 0:
-            self.method.setCurrentIndex(index)
+        _choose(self.method, recipe.object_set.algorithm)
         channel_index = self.channel.findData(recipe.object_set.segmentation_channel)
         if channel_index >= 0:
             self.channel.setCurrentIndex(channel_index)
@@ -1808,7 +1953,7 @@ class ObjectsPanel(QWidget):
             self.z_box.setToolTip("None of the images are Z-stacks.")
         self._z_mode_changed()
         parameters = recipe.object_set.parameters
-        self.threshold_method.setCurrentText(str(parameters.get("threshold_method", "otsu")))
+        _choose(self.threshold_method, str(parameters.get("threshold_method", "otsu")))
         if parameters.get("threshold") is not None:
             self.threshold.setValue(float(parameters["threshold"]))
         self.sigma.setValue(float(parameters.get("sigma", 0)))
@@ -1825,7 +1970,7 @@ class ObjectsPanel(QWidget):
         self.cellprob.setValue(float(parameters.get("cellprob_threshold", 0)))
         self.gpu.setChecked(bool(parameters.get("gpu", False)))
         if parameters.get("min_area_um2") is not None:
-            self.area_unit.setCurrentText("um2")
+            _choose(self.area_unit, "um2")
             self.min_area.setValue(float(parameters["min_area_um2"]))
         else:
             self.min_area.setValue(float(parameters.get("min_area_px") or 0))
@@ -1836,9 +1981,21 @@ class ObjectsPanel(QWidget):
         self.update_recommendation()
 
     def _method_changed(self) -> None:
-        cellpose = self.method.currentText() == "cellpose"
+        """Show only the settings the chosen method uses."""
+
+        cellpose = self.method.currentData() == "cellpose"
         self.engine_choice_label.setVisible(cellpose)
         self.engine_choice.setVisible(cellpose)
+        _show_row(self._form, self.threshold_method, not cellpose)
+        _show_row(self._form, self.threshold, not cellpose and self.threshold_method.currentData() == "manual")
+        _show_row(self._form, self.sigma, not cellpose)
+        advanced = self._advanced_form
+        for widget in (self.fill_holes, self.opening, self.closing, self.watershed):
+            _show_row(advanced, widget, not cellpose)
+        for widget in (self.watershed_distance, self.compactness):
+            _show_row(advanced, widget, not cellpose and self.watershed.isChecked())
+        for widget in (self.cellpose_model, self.diameter, self.flow, self.cellprob, self.gpu):
+            _show_row(advanced, widget, cellpose)
         self._refresh_gpu_banner()
 
     def _z_mode_changed(self) -> None:
@@ -1872,7 +2029,7 @@ class ObjectsPanel(QWidget):
         ]
         known = [value for value in ratios if value]
         return recommend(
-            method=self.method.currentText(),
+            method=self.method.currentData(),
             engine=self.engine.key if self.engine.installed else None,
             use_gpu=self.gpu.isChecked(),
             stacks=stacks,
@@ -1945,6 +2102,11 @@ class ObjectsPanel(QWidget):
         if status.get("available"):
             memory = f", {status['memory_gb']:.0f} GB" if status.get("memory_gb") else ""
             return f"NVIDIA GPU found: {status.get('name') or 'NVIDIA GPU'}{memory}."
+        if status.get("nvidia_gpu"):
+            return (
+                f"NVIDIA GPU found ({status['nvidia_gpu']}), but CellQuant cannot use it yet, so Cellpose will run on the "
+                f"CPU (slower). {status.get('reason', '')}"
+            ).strip()
         return f"No usable GPU found; Cellpose will run on the CPU (slower). {status.get('reason', '')}".strip()
 
     def _show_gpu_banner(self, html: str, tone: str) -> None:
@@ -1958,7 +2120,7 @@ class ObjectsPanel(QWidget):
         if not getattr(self, "_gpu_checked", False):
             return
         status = self._gpu_status
-        cellpose = self.method.currentText() == "cellpose"
+        cellpose = self.method.currentData() == "cellpose"
         self.gpu_on.setVisible(False)
         if not self.engine.installed:
             self._show_gpu_banner(self._gpu_summary(), "neutral")
@@ -1975,6 +2137,12 @@ class ObjectsPanel(QWidget):
                     "good",
                 )
                 self.gpu_on.setVisible(cellpose)
+        elif status.get("nvidia_gpu"):
+            self._show_gpu_banner(
+                f"<b>⚠ NVIDIA GPU found ({status['nvidia_gpu']}), but CellQuant cannot use it yet.</b> "
+                f"Cellpose will run on the CPU (much slower). {status.get('reason', '')}".strip(),
+                "warn",
+            )
         else:
             reason = status.get("reason", "")
             self._show_gpu_banner(
@@ -1988,7 +2156,7 @@ class ObjectsPanel(QWidget):
         data = controller.recipe.model_dump(mode="json")
         parameters = {
             "sigma": self.sigma.value(),
-            "threshold_method": self.threshold_method.currentText(),
+            "threshold_method": self.threshold_method.currentData(),
             "fill_holes": self.fill_holes.isChecked(),
             "opening_radius_px": self.opening.value(),
             "closing_radius_px": self.closing.value(),
@@ -1996,15 +2164,15 @@ class ObjectsPanel(QWidget):
             "watershed_min_distance_px": self.watershed_distance.value(),
             "watershed_compactness": self.compactness.value(),
         }
-        if self.threshold_method.currentText() == "manual":
+        if self.threshold_method.currentData() == "manual":
             parameters["threshold"] = self.threshold.value()
         if self.min_area.value() > 0:
-            key = "min_area_um2" if self.area_unit.currentText() == "um2" else "min_area_px"
+            key = "min_area_um2" if self.area_unit.currentData() == "um2" else "min_area_px"
             parameters[key] = self.min_area.value()
         if self.max_area.value() > 0:
-            key = "max_area_um2" if self.area_unit.currentText() == "um2" else "max_area_px"
+            key = "max_area_um2" if self.area_unit.currentData() == "um2" else "max_area_px"
             parameters[key] = self.max_area.value()
-        if self.method.currentText() == "cellpose":
+        if self.method.currentData() == "cellpose":
             size_filters = {
                 key: value
                 for key, value in parameters.items()
@@ -2032,7 +2200,7 @@ class ObjectsPanel(QWidget):
         data["object_set"] = {
             "name": self.object_name.text() or "Objects",
             "segmentation_channel": int(self.channel.currentData() or 0),
-            "algorithm": self.method.currentText(),
+            "algorithm": self.method.currentData(),
             "parameters": parameters,
         }
         controller.set_recipe(data)
@@ -2086,18 +2254,17 @@ class MeasurementsPanel(QWidget):
     def _measurement_form(self) -> QFormLayout:
         self.meas_channel = QComboBox()
         self.region = QComboBox()
-        self.region.addItems(["object", "eroded_object", "expanded_object", "ring"])
+        _fill_options(self.region, REGION_OPTIONS)
+        self.region.currentIndexChanged.connect(lambda _index: self._statistic_changed())
         self.distance = QDoubleSpinBox()
         self.distance.setMaximum(10000)
         self.inner = QDoubleSpinBox()
         self.outer = QDoubleSpinBox()
         self.outer.setValue(2)
         self.statistic = QComboBox()
-        self.statistic.addItems(
-            ["mean", "median", "min", "max", "std", "integrated", "area", "equivalent_diameter", "centroid_x", "centroid_y", "percent_above"]
-        )
+        _fill_options(self.statistic, STATISTIC_OPTIONS)
         self.statistic.setToolTip(
-            "percent_above: the percent (0-100) of the region's pixels at or above the pixel level\n"
+            "Percent of pixels above a level: the percent (0-100) of the region's pixels at or above the pixel level\n"
             "(after background correction, if any). Classify it with 'at least' and a minimum percent."
         )
         self.statistic.currentIndexChanged.connect(lambda _index: self._statistic_changed())
@@ -2115,25 +2282,42 @@ class MeasurementsPanel(QWidget):
         high_row.addWidget(self.use_high)
         high_row.addWidget(self.pixel_level_high)
         self.background = QComboBox()
-        self.background.addItems(["none", "global", "local_ring"])
+        _fill_options(self.background, BACKGROUND_OPTIONS)
+        self.background.currentIndexChanged.connect(lambda _index: self._statistic_changed())
         form = QFormLayout()
+        self._measurement_rows = form
         form.addRow("Channel", self.meas_channel)
         form.addRow("Region", self.region)
         form.addRow("Distance (px)", self.distance)
         form.addRow("Ring inner (px)", self.inner)
         form.addRow("Ring outer (px)", self.outer)
         form.addRow("Statistic", self.statistic)
-        form.addRow("Pixel level (percent_above)", self.pixel_level)
-        form.addRow("Upper pixel level (optional)", high_row)
+        form.addRow("Pixel level", self.pixel_level)
+        self.high_row = QWidget()
+        self.high_row.setLayout(high_row)
+        high_row.setContentsMargins(0, 0, 0, 0)
+        form.addRow("Upper pixel level (optional)", self.high_row)
         form.addRow("Background", self.background)
         self._statistic_changed()
         return form
 
     def _statistic_changed(self) -> None:
-        percent = self.statistic.currentText() == "percent_above"
+        """Show only the settings the chosen region, statistic and background use."""
+
+        percent = self.statistic.currentData() == "percent_above"
         self.pixel_level.setEnabled(percent)
         self.use_high.setEnabled(percent)
         self.pixel_level_high.setEnabled(percent and self.use_high.isChecked())
+        form = getattr(self, "_measurement_rows", None)
+        if form is None:
+            return  # still being built
+        region = self.region.currentData()
+        ring = region == "ring" or self.background.currentData() == "local_ring"
+        _show_row(form, self.distance, region in ("eroded_object", "expanded_object"))
+        _show_row(form, self.inner, ring)
+        _show_row(form, self.outer, ring)
+        _show_row(form, self.pixel_level, percent)
+        _show_row(form, self.high_row, percent)
 
     def _class_measurement_changed(self) -> None:
         controller = self.shell.controller
@@ -2225,14 +2409,14 @@ class MeasurementsPanel(QWidget):
             return
         self.write_recipe()
         data = controller.recipe.model_dump(mode="json")
-        region_type = self.region.currentText()
+        region_type = self.region.currentData()
         region: dict = {"type": region_type}
         if region_type in {"eroded_object", "expanded_object"}:
             region["distance_px"] = self.distance.value()
         elif region_type == "ring":
             region["inner_px"] = self.inner.value()
             region["outer_px"] = self.outer.value()
-        background: dict = {"type": self.background.currentText()}
+        background: dict = {"type": self.background.currentData()}
         if background["type"] == "local_ring":
             background["inner_px"] = self.inner.value()
             background["outer_px"] = self.outer.value()
@@ -2241,7 +2425,7 @@ class MeasurementsPanel(QWidget):
             "id": measurement_id,
             "channel": int(self.meas_channel.currentData() or 0),
             "region": region,
-            "statistic": self.statistic.currentText(),
+            "statistic": self.statistic.currentData(),
             "background": background,
         }
         if entry["statistic"] == "percent_above":
@@ -2299,10 +2483,35 @@ class ReviewPanel(QWidget):
         self.display.currentIndexChanged.connect(lambda _index: self._recolor())
         layout.addWidget(QLabel("Display objects by"))
         layout.addWidget(self.display)
-        self.histogram = HistogramWidget()
-        self.histogram.setMaximumHeight(100)
-        self.histogram.threshold_changed.connect(self._threshold_moved)
-        layout.addWidget(self.histogram)
+        # The cutoff, set like napari's opacity: drag the slider or type the number.
+        from superqt import QLabeledDoubleSlider
+
+        self.cutoff_label = QLabel("Cutoff")
+        layout.addWidget(self.cutoff_label)
+        self.threshold_slider = QLabeledDoubleSlider(Qt.Horizontal)
+        self.threshold_slider.setRange(0.0, 1.0)
+        self.threshold_slider.valueChanged.connect(self._slider_moved)
+        layout.addWidget(self.threshold_slider)
+        # Recolor at most every 40 ms while dragging, with the latest value.
+        self._pending_cutoff: float | None = None
+        self._cutoff_timer = QTimer(self)
+        self._cutoff_timer.setSingleShot(True)
+        self._cutoff_timer.setInterval(40)
+        self._cutoff_timer.timeout.connect(self._apply_pending_cutoff)
+        colors = QHBoxLayout()
+        self.positive_color = QPushButton("Positive colour")
+        self.negative_color = QPushButton("Negative colour")
+        self.positive_color.setToolTip("Colour of positive objects (at or past the cutoff) in the image.")
+        self.negative_color.setToolTip("Colour of negative objects in the image.")
+        self.positive_color.clicked.connect(lambda: self._choose_color(positive=True))
+        self.negative_color.clicked.connect(lambda: self._choose_color(positive=False))
+        reset = QPushButton("Default colours")
+        reset.setToolTip("Green for positive, red for negative.")
+        reset.clicked.connect(self._reset_colors)
+        for button in (self.positive_color, self.negative_color, reset):
+            colors.addWidget(button)
+        layout.addLayout(colors)
+        self._show_colors()
         layout.addWidget(self._pixel_level_box())
         self.counts = QLabel("Positive: 0\nNegative: 0\nPositive: —")
         layout.addWidget(self.counts)
@@ -2443,7 +2652,7 @@ class ReviewPanel(QWidget):
         if index >= 0:
             self.display.setCurrentIndex(index)
         self.display.blockSignals(False)
-        self._show_histogram(result)
+        self._show_cutoff(result)
         area = "—" if result.qc.median_area is None else f"{result.qc.median_area:.2f}"
         border = result.qc.fraction_touching_border
         border_text = "—" if border != border else f"{100 * border:.1f}%"
@@ -2464,9 +2673,11 @@ class ReviewPanel(QWidget):
         boundaries.events.selected_label.connect(self._on_selected)
         self._toggle_layers()
 
-    def _show_histogram(self, result) -> None:
+    def _show_cutoff(self, result) -> None:
         self._show_level_box()
         classification_id = self.classification_id()
+        self.cutoff_label.setVisible(bool(classification_id))
+        self.threshold_slider.setVisible(bool(classification_id))
         if not classification_id:
             return
         classification = next(item for item in self.shell.controller.recipe.classifications if item.id == classification_id)
@@ -2474,12 +2685,7 @@ class ReviewPanel(QWidget):
             return
         values = result.objects[classification.measurement].to_numpy(dtype=float)
         percent_rule = self._current_percent_measurement() is not None
-        self.histogram.set_values(
-            values,
-            classification.threshold,
-            value_range=(0.0, 100.0) if percent_rule else None,
-            step=1.0 if percent_rule else None,
-        )
+        self._set_slider(values, float(classification.threshold), percent_rule)
         counts = self.shell.controller.histogram(
             result.provenance["image_id"], classification.measurement, classification.threshold, classification.comparison
         )
@@ -2490,6 +2696,70 @@ class ReviewPanel(QWidget):
             f"Positive when: {rule}\n"
             f"Positive: {counts['positive']}\nNegative: {counts['negative']}\nUnmeasured: {int(counts['n_missing'])}\nPositive: {percent_text}"
         )
+
+    def _set_slider(self, values: np.ndarray, threshold: float, percent_rule: bool) -> None:
+        """Range: 0-100 % for the percent rule, otherwise the objects' values (and the cutoff)."""
+
+        if percent_rule:
+            low, high, decimals = 0.0, 100.0, 1
+            self.cutoff_label.setText("Cutoff: minimum percent of the cell's pixels")
+        else:
+            finite = np.asarray(values, dtype=float)
+            finite = finite[np.isfinite(finite)]
+            low = float(min(finite.min(), threshold)) if finite.size else min(0.0, threshold)
+            high = float(max(finite.max(), threshold)) if finite.size else max(1.0, threshold)
+            if high <= low:
+                high = low + 1.0
+            decimals = 0 if high - low >= 100 else 2
+            self.cutoff_label.setText("Cutoff: drag until the right objects are positive")
+        slider = self.threshold_slider
+        slider.blockSignals(True)
+        slider.setDecimals(decimals)
+        slider.setRange(low, high)
+        slider.setSingleStep((high - low) / 100)
+        slider.setValue(threshold)
+        slider.blockSignals(False)
+
+    def _slider_moved(self, value: float) -> None:
+        self._pending_cutoff = float(value)
+        if not self._cutoff_timer.isActive():
+            self._cutoff_timer.start()
+
+    def _apply_pending_cutoff(self) -> None:
+        value, self._pending_cutoff = self._pending_cutoff, None
+        if value is not None:
+            self._threshold_moved(value)
+
+    def _show_colors(self) -> None:
+        positive, negative = classification_colors()
+        for button, color in ((self.positive_color, positive), (self.negative_color, negative)):
+            text = "white" if QColor(color).lightness() < 140 else "black"
+            button.setStyleSheet(f"QPushButton {{ background: {color}; color: {text}; }}")
+
+    def _choose_color(self, positive: bool) -> None:
+        from qtpy.QtWidgets import QColorDialog
+
+        current_positive, current_negative = classification_colors()
+        chosen = QColorDialog.getColor(
+            QColor(current_positive if positive else current_negative),
+            self,
+            "Colour of positive objects" if positive else "Colour of negative objects",
+        )
+        if not chosen.isValid():
+            return
+        if positive:
+            save_classification_colors(chosen.name(), current_negative)
+        else:
+            save_classification_colors(current_positive, chosen.name())
+        self._colors_changed()
+
+    def _reset_colors(self) -> None:
+        save_classification_colors(DEFAULT_POSITIVE_COLOR, DEFAULT_NEGATIVE_COLOR)
+        self._colors_changed()
+
+    def _colors_changed(self) -> None:
+        self._show_colors()
+        self.shell.apply_classification_colors()
 
     def _threshold_moved(self, value: float) -> None:
         controller = self.shell.controller
@@ -2922,8 +3192,30 @@ class Footer(QWidget):
         self.cancel = QPushButton("Cancel")
         self.pause.clicked.connect(self._pause)
         self.cancel.clicked.connect(self._cancel)
-        for button in (previous, run_current, run_selected, run_all, self.run_analyses, next_image, self.pause, self.cancel):
+        # Grouped: moving between images, running, and controlling a run.
+        for button in (previous, next_image):
             row.addWidget(button)
+        row.addSpacing(16)
+        for button in (run_current, run_selected, run_all, self.run_analyses):
+            row.addWidget(button)
+        row.addSpacing(16)
+        for button in (self.pause, self.cancel):
+            row.addWidget(button)
+        self._run_buttons = {"current": run_current, "all": run_all}
+        self.cancel.setStyleSheet("QPushButton:enabled { color: #e05050; font-weight: bold; }")
+        previous.setToolTip("Show the previous image in the experiment (Page Up).")
+        next_image.setToolTip("Show the next image in the experiment (Page Down).")
+        from qtpy.QtGui import QKeySequence
+
+        try:
+            from qtpy.QtWidgets import QShortcut
+        except ImportError:  # Qt 6 keeps it in QtGui
+            from qtpy.QtGui import QShortcut
+        window = shell.viewer.window._qt_window
+        for key, button in ((QKeySequence("PgUp"), previous), (QKeySequence("PgDown"), next_image)):
+            shortcut = QShortcut(key, window)
+            shortcut.activated.connect(lambda button=button: button.click() if button.isEnabled() else None)
+        self.failed_files: list[str] = []
         self.pause.setEnabled(False)
         self.cancel.setEnabled(False)
         self.cancel.setToolTip("Stop the running analysis after the current step. Images already finished are kept.")
@@ -2956,7 +3248,32 @@ class Footer(QWidget):
         self.status.setText(text)
         self.log.append(text)
 
+    def highlight(self, primary: str) -> None:
+        """Make the run button this step expects stand out ('current' or 'all')."""
+
+        for key, button in self._run_buttons.items():
+            button.setStyleSheet(
+                "QPushButton { background: rgba(60, 130, 220, 0.85); color: white; font-weight: bold; }"
+                "QPushButton:disabled { background: rgba(60, 130, 220, 0.3); }"
+                if key == primary
+                else ""
+            )
+
+    def _time_left(self, finished: int, total: int) -> str:
+        import time
+
+        from cellquant.hardware import format_seconds
+
+        if finished <= 0 or finished >= total:
+            return ""
+        elapsed = time.monotonic() - self._started
+        return f" · about {format_seconds(elapsed / finished * (total - finished))} left"
+
     def start_busy(self, batch: bool) -> None:
+        import time
+
+        self._started = time.monotonic()
+        self.failed_files = []
         self._batch_index = 0
         self._batch_total = 0
         self._batch_name = ""
@@ -2983,7 +3300,8 @@ class Footer(QWidget):
             done = (self._batch_index - 1 + max(fraction, 0.0)) / total
             self.progress.setRange(0, 1000)
             self.progress.setValue(int(round(1000 * done)))
-            self.status.setText(f"Image {self._batch_index} of {total} ({self._batch_name}): {text}")
+            left = self._time_left(self._batch_index - 1, total)
+            self.status.setText(f"Image {self._batch_index} of {total} ({self._batch_name}): {text}{left}")
             return
         if fraction < 0:
             self.progress.setRange(0, 0)  # busy: this step's length is unknown
@@ -2998,9 +3316,11 @@ class Footer(QWidget):
         finished = status != "running"
         self.progress.setValue(int(round(1000 * (index if finished else index - 1) / max(total, 1))))
         if finished:
+            if status == "Failure":
+                self.failed_files.append(filename)
             self.message(f"Image {index} of {total}  {filename}: {status}")
         else:
-            self.status.setText(f"Image {index} of {total} ({filename}): starting")
+            self.status.setText(f"Image {index} of {total} ({filename}): starting{self._time_left(index - 1, total)}")
 
     def _step(self, delta: int) -> None:
         if not self.shell._nav_ids:
@@ -3026,69 +3346,20 @@ class Footer(QWidget):
         self.status.setText("Stopping after the current step...")
 
 
-class HistogramWidget(QWidget):
-    threshold_changed = Signal(float)
+class WheelGuard(QObject):
+    """Stop the mouse wheel from changing a dropdown or number box the user has not clicked.
 
-    def __init__(self):
-        super().__init__()
-        self.setMinimumHeight(80)
-        self._counts = np.zeros(1)
-        self._edges = np.array([0.0, 1.0])
-        self._threshold = 0.0
-        self._step: float | None = None
+    The wheel then scrolls the page under the pointer instead, so scrolling past a setting never changes it.
+    """
 
-    def set_values(
-        self,
-        values: np.ndarray,
-        threshold: float,
-        value_range: tuple[float, float] | None = None,
-        step: float | None = None,
-    ) -> None:
-        """Show values; ``value_range`` fixes the axis (0-100 for percents); drags snap to ``step``."""
+    def eventFilter(self, watched, event) -> bool:
+        from qtpy.QtCore import QEvent
+        from qtpy.QtWidgets import QAbstractSpinBox
 
-        finite = np.asarray(values, dtype=float)
-        finite = finite[np.isfinite(finite)]
-        self._step = step
-        if value_range is not None:
-            self._counts, self._edges = np.histogram(finite, bins=40, range=value_range)
-        elif finite.size == 0:
-            self._counts = np.zeros(1)
-            self._edges = np.array([0.0, 1.0])
-        else:
-            self._counts, self._edges = np.histogram(finite, bins=40)
-        self._threshold = float(threshold)
-        self.update()
-
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(250, 250, 250))
-        width = max(self.width() - 8, 1)
-        height = max(self.height() - 8, 1)
-        peak = max(float(self._counts.max()), 1)
-        bin_width = width / max(len(self._counts), 1)
-        for index, count in enumerate(self._counts):
-            bar = int(height * (count / peak))
-            painter.fillRect(int(4 + index * bin_width), 4 + height - bar, max(int(bin_width) - 1, 1), bar, QColor(70, 110, 160))
-        span = float(self._edges[-1] - self._edges[0]) or 1
-        x = int(4 + width * ((self._threshold - self._edges[0]) / span))
-        painter.setPen(QColor(180, 40, 40))
-        painter.drawLine(x, 4, x, 4 + height)
-
-    def mousePressEvent(self, event) -> None:
-        self._move_threshold(event.position().x() if hasattr(event, "position") else event.x())
-
-    def mouseMoveEvent(self, event) -> None:
-        self._move_threshold(event.position().x() if hasattr(event, "position") else event.x())
-
-    def _move_threshold(self, x: float) -> None:
-        width = max(self.width() - 8, 1)
-        fraction = min(max((float(x) - 4) / width, 0), 1)
-        value = float(self._edges[0] + fraction * (self._edges[-1] - self._edges[0]))
-        if self._step:
-            value = float(round(value / self._step) * self._step)
-        self._threshold = value
-        self.update()
-        self.threshold_changed.emit(value)
+        if event.type() == QEvent.Wheel and isinstance(watched, (QComboBox, QAbstractSpinBox)) and not watched.hasFocus():
+            event.ignore()  # passed on to the scroll area around it
+            return True
+        return False
 
 
 class CallWorker(QThread):
