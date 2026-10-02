@@ -88,3 +88,46 @@ def test_a_real_run_records_its_speed(tmp_path):
     result = controller.run_image(controller.experiment.images[0].image_id)
     assert result.provenance["segmentation_seconds"] > 0
     assert ("classical", "cpu", "stitch_slices") in hardware._MEASURED
+
+
+def test_a_gpu_that_pytorch_cannot_use_is_named_with_the_fix(monkeypatch):
+    from cellquant import engines
+
+    monkeypatch.setattr(engines, "_torch_gpu_status", lambda: {"available": False, "name": "", "reason": "This PyTorch build has no GPU support."})
+    monkeypatch.setattr(engines, "nvidia_gpu_name", lambda: "NVIDIA GeForce RTX 4090")
+    status = engines.gpu_status()
+    assert status["nvidia_gpu"] == "NVIDIA GeForce RTX 4090"
+    assert "Install CellQuant.bat" in status["reason"] and "[U] Update" in status["reason"]
+    monkeypatch.setattr(engines, "nvidia_gpu_name", lambda: "")
+    assert "nvidia_gpu" not in engines.gpu_status()
+
+
+def test_nd2_files_that_cannot_be_memory_mapped_are_read_from_an_open_file(tmp_path, monkeypatch):
+    """OneDrive files not yet downloaded fail to memory-map with [Errno 22]."""
+
+    import io
+    import types
+
+    from cellquant import image
+
+    path = tmp_path / "online only.nd2"
+    path.write_bytes(b"nd2")
+    opened = []
+
+    class FakeND2File:
+        def __init__(self, source):
+            if not isinstance(source, io.BufferedReader):
+                raise OSError(22, "Invalid argument")
+            opened.append(source)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return None
+
+    fake = types.SimpleNamespace(ND2File=FakeND2File)
+    with image._open_nd2(fake, path) as handle:
+        assert isinstance(handle, FakeND2File) and not opened[0].closed
+    assert opened[0].closed
+    assert "Always keep on this device" in image._nd2_failure(tmp_path / "OneDrive - Lab" / "a.nd2", OSError(22, "Invalid argument"))

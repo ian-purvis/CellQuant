@@ -328,17 +328,59 @@ def _nd2_metadata(handle) -> dict:
     return meta
 
 
+class _Nd2FromHandle:
+    """An ND2 file read through an open file instead of a memory map; closes both."""
+
+    def __init__(self, nd2, path: Path):
+        self._file = open(path, "rb")  # noqa: SIM115 - closed in __exit__
+        try:
+            self._nd2 = nd2.ND2File(self._file)
+        except BaseException:
+            self._file.close()
+            raise
+
+    def __enter__(self):
+        return self._nd2.__enter__()
+
+    def __exit__(self, *exc_info):
+        try:
+            return self._nd2.__exit__(*exc_info)
+        finally:
+            self._file.close()
+
+
+def _open_nd2(nd2, path: Path):
+    """Open an ND2 file. The nd2 package memory-maps files opened by name, which fails for
+    files OneDrive (or another cloud folder) has not downloaded yet, with "[Errno 22] Invalid
+    argument". Those are read through an ordinary open file instead, which downloads them."""
+
+    try:
+        return nd2.ND2File(path)
+    except (OSError, ValueError):
+        return _Nd2FromHandle(nd2, path)
+
+
+def _nd2_failure(path: Path, exc: BaseException) -> str:
+    text = f"ND2 file could not be read: {exc}"
+    if "onedrive" in str(path).lower() or isinstance(exc, OSError):
+        text += (
+            " If the file is in OneDrive or another cloud folder, right-click the folder in File Explorer and "
+            "choose 'Always keep on this device', wait for it to download, then try again."
+        )
+    return text
+
+
 def _read_nd2(path: Path, position: int) -> tuple[np.ndarray, str, dict]:
     nd2 = _nd2_module()
     try:
-        with nd2.ND2File(path) as handle:
+        with _open_nd2(nd2, path) as handle:
             sizes = dict(handle.sizes)
             meta = _nd2_metadata(handle)
             array = np.asarray(handle.asarray())
     except ImageLoadError:
         raise
     except Exception as exc:
-        raise ImageLoadError(f"ND2 file could not be read: {exc}") from exc
+        raise ImageLoadError(_nd2_failure(path, exc)) from exc
     axes = "".join(sizes)
     if array.ndim != len(axes):
         raise ImageLoadError(f"ND2 file has an unexpected layout ({axes}).")
@@ -367,12 +409,12 @@ def _read_nd2(path: Path, position: int) -> tuple[np.ndarray, str, dict]:
 def _inspect_nd2(path: Path) -> list[ImageInfo]:
     nd2 = _nd2_module()
     try:
-        with nd2.ND2File(path) as handle:
+        with _open_nd2(nd2, path) as handle:
             sizes = dict(handle.sizes)
             meta = _nd2_metadata(handle)
             dtype = str(handle.dtype)
     except Exception as exc:
-        raise ImageLoadError(f"ND2 file could not be read: {exc}") from exc
+        raise ImageLoadError(_nd2_failure(path, exc)) from exc
     notes = []
     if sizes.get("T", 1) > 1:
         notes.append(f"time series with {sizes['T']} time points (not supported yet)")

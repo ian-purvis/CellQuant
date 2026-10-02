@@ -440,3 +440,33 @@ def test_cutoff_slider_recolors_with_chosen_colours_and_locks_during_runs(window
     _wait(shell)
     QApplication.processEvents()
     assert slider.isEnabled()
+
+
+def test_the_mouse_wheel_changes_a_menu_only_after_it_is_clicked(window):
+    from qtpy.QtCore import QPoint, QPointF, Qt
+    from qtpy.QtGui import QWheelEvent
+    from qtpy.QtWidgets import QApplication
+
+    shell = window
+    shell.go_to_step(1)
+    QApplication.processEvents()
+    box = shell._objects_panel.method
+
+    def wheel():
+        middle = QPointF(box.width() / 2, box.height() / 2)
+        event = QWheelEvent(
+            middle, QPointF(box.mapToGlobal(middle.toPoint())), QPoint(0, 0), QPoint(0, -120),
+            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False,
+        )
+        QApplication.sendEvent(box, event)
+        QApplication.processEvents()
+
+    box.clearFocus()
+    before = box.currentIndex()
+    wheel()
+    assert box.currentIndex() == before  # scrolling past it leaves it alone
+    box.setFocus()
+    QApplication.processEvents()
+    if box.hasFocus():  # focus needs an active window, which some test displays lack
+        wheel()
+        assert box.currentIndex() != before
