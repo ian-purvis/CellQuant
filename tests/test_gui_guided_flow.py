@@ -142,7 +142,7 @@ def test_percent_of_cell_rule_in_the_window(tmp_path: Path, monkeypatch):
 
         # Advanced: a percent measurement added by hand, with an upper level, classified "at least".
         measurements = shell._measurements_panel
-        measurements.statistic.setCurrentText("percent_above")
+        measurements.statistic.setCurrentIndex(measurements.statistic.findData("percent_above"))
         assert measurements.pixel_level.isEnabled() and not measurements.pixel_level_high.isEnabled()
         measurements.pixel_level.setValue(100.0)
         measurements.use_high.setChecked(True)
