@@ -28,7 +28,7 @@ The CellQuant panel has a **Start** tab and five numbered tabs. Work from left t
 2. **1 Images**: add images and name the channels.
 3. **2 Find objects**: pick the nuclear channel, **Preview**, then **Run**.
 4. **3 Markers**: tick the marker channels, **Set up markers**.
-5. **4 Check**: drag the red line until the green (positive) objects look right, then **Approve**.
+5. **4 Check**: drag the **Cutoff** slider until the green (positive) objects look right, then **Approve**.
 6. **5 Results**: **Run all images**, then **Export results…**
 
 A ✓ appears on each tab as you finish it. The **Start** tab shows your progress and a **Continue** button that takes you to the next unfinished step.
@@ -117,16 +117,16 @@ CellQuant measures each marker inside every object and calls each object positiv
 
 ## Step 4: Check
 
-1. Choose a marker under **Display objects by**. Green objects are positive, gray are negative.
-2. Drag the **red line** in the histogram. The histogram shows how bright each object is for this marker, and the counts below it change as you drag. The same cutoff is used for every image, so choose one that works across your images, not just this one.
-   With the percent rule, the histogram shows what percent of each cell's pixels pass, and the red line is the minimum percent (you can also type it). To change the pixel level, type it under **Percent-of-cell rule** and click **Apply pixel level**: this image is measured again (objects and your edits are kept). Tick **at most** to ignore pixels brighter than a second level, such as saturated spots. The line above the counts says the rule in words, for example *at least 30% of pixels ≥ 1200*.
+1. Choose a marker under **Display objects by**. Objects glow green when positive and red when negative. **Positive colour** and **Negative colour** change the colours (remembered on this computer); **Default colours** puts green and red back.
+2. Drag the **Cutoff** slider, or type a number beside it. The slider runs from the dimmest to the brightest object for this marker; the objects recolor and the counts below change as you drag. The same cutoff is used for every image, so choose one that works across your images, not just this one.
+   With the percent rule, the slider is the minimum percent of each cell's pixels that must pass (0-100%). To change the pixel level, type it under **Percent-of-cell rule** and click **Apply pixel level**: this image is measured again (objects and your edits are kept). Tick **at most** to ignore pixels brighter than a second level, such as saturated spots. The line above the counts says the rule in words, for example *at least 30% of pixels ≥ 1200*.
 3. To remove something that is not a real object: click it in the image, then click **Delete object**. **Restore object** and **Undo** reverse it.
 4. When the image looks right, click **Approve**. Use **Next image ▶** at the bottom to check other images.
 
 **Success check:** the green objects are the ones you would call positive by eye.
 
 Tips:
-- Compare with a negative control image if you have one: its objects should be gray.
+- Compare with a negative control image if you have one: its objects should be red (negative).
 - An object that could not be measured is left out of every count, and the counts say how many.
 
 ## Step 5: Results

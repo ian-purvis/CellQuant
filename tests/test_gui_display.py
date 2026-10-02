@@ -314,7 +314,7 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     shell = window
     panel = shell._objects_panel
     panel.engine = CellposeEngine(True, "4.2.0", "cellpose4", ("cpsam",), "cpsam")  # as on a Cellpose computer
-    panel.method.setCurrentText("cellpose")
+    panel.method.setCurrentIndex(panel.method.findData("cellpose"))
     panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
     assert "NVIDIA GPU found" in panel.gpu_label.text() and "Test GPU" in panel.gpu_label.text()
     assert "NVIDIA GPU found: Test GPU" in shell._footer.log.toPlainText()
@@ -329,7 +329,7 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     rows = [form.getWidgetPosition(widget)[0] for widget in (panel.method, panel.engine_choice, panel.z_box)]
     assert rows == [rows[0], rows[0] + 1, rows[0] + 2]
     assert panel.engine_choice.isVisibleTo(panel)
-    panel.method.setCurrentText("classical")
+    panel.method.setCurrentIndex(panel.method.findData("classical"))
     assert not panel.engine_choice.isVisibleTo(panel)
 
     shell.run_current()
@@ -342,3 +342,131 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     QApplication.processEvents()
     assert not shell._run_lock_note.isVisibleTo(shell._dock)
     assert panel.method.isEnabled() and shell._measurements_panel.statistic.isEnabled()
+
+
+def test_plain_menus_hidden_fields_errors_and_run_bar(window):
+    shell = window
+    objects = shell._objects_panel
+    # Plain words in the menus; the saved values are unchanged.
+    assert objects.method.itemText(objects.method.findData("classical")).startswith("Classical")
+    assert objects.area_unit.itemText(objects.area_unit.findData("um2")) == "µm²"
+    # Only the settings the chosen method uses are shown.
+    objects.method.setCurrentIndex(objects.method.findData("classical"))
+    objects.threshold_method.setCurrentIndex(objects.threshold_method.findData("otsu"))
+    assert objects.threshold_method.isVisibleTo(objects) and not objects.threshold.isVisibleTo(objects)
+    objects.threshold_method.setCurrentIndex(objects.threshold_method.findData("manual"))
+    assert objects.threshold.isVisibleTo(objects)
+    box = objects.advanced_box  # collapsed until Advanced is ticked
+    assert not objects.diameter.isVisibleTo(box) and objects.fill_holes.isVisibleTo(box)
+    objects.method.setCurrentIndex(objects.method.findData("cellpose"))
+    assert not objects.threshold_method.isVisibleTo(objects) and not objects.sigma.isVisibleTo(objects)
+    assert objects.diameter.isVisibleTo(box) and not objects.fill_holes.isVisibleTo(box)
+    objects.method.setCurrentIndex(objects.method.findData("classical"))
+    objects.write_recipe()
+    assert shell.controller.recipe.object_set.algorithm == "classical"
+    measurements = shell._measurements_panel
+    measurements.region.setCurrentIndex(measurements.region.findData("ring"))
+    assert measurements.inner.isVisibleTo(measurements) and not measurements.distance.isVisibleTo(measurements)
+    measurements.region.setCurrentIndex(measurements.region.findData("object"))
+    assert not measurements.inner.isVisibleTo(measurements) and not measurements.pixel_level.isVisibleTo(measurements)
+
+    # Problems show in a red box, cleared when the next run starts.
+    shell.show_error("Test problem")
+    assert shell._error_box.isVisibleTo(shell._dock) and "Test problem" in shell._error_note.text()
+    shell.run_current()
+    assert not shell._error_box.isVisibleTo(shell._dock)
+    _wait(shell)
+
+    # The run button the step expects stands out; Page Down moves to the next image.
+    shell.go_to_step(0)
+    assert shell._footer._run_buttons["current"].styleSheet() and not shell._footer._run_buttons["all"].styleSheet()
+    shell.go_to_step(4)
+    assert shell._footer._run_buttons["all"].styleSheet() and not shell._footer._run_buttons["current"].styleSheet()
+    footer = shell._footer
+    footer._started -= 60  # one image took a minute
+    assert footer._time_left(1, 3) == " · about 2 min left"
+    assert footer._time_left(0, 3) == "" and footer._time_left(3, 3) == ""
+
+
+def test_cutoff_slider_recolors_with_chosen_colours_and_locks_during_runs(window, monkeypatch, tmp_path):
+    from qtpy.QtCore import QSettings
+    from qtpy.QtGui import QColor
+    from qtpy.QtWidgets import QApplication
+
+    from cellquant.gui import app
+
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.IniFormat)
+    monkeypatch.setattr(app, "_settings", lambda: settings)  # keep the user's real colours untouched
+    shell = window
+    shell.run_current()
+    _wait(shell)
+    panel = shell._review_panel
+    panel.display.setCurrentIndex(panel.display.findData("class_a"))
+    slider = panel.threshold_slider
+    assert slider.isVisibleTo(panel) and slider.minimum() < slider.maximum()
+
+    # Dragging to the top makes everything negative; the overlay updates after the short delay.
+    slider.setValue(slider.maximum() + 1)  # past every object
+    deadline = time.time() + 2
+    while time.time() < deadline and "Positive: 0\n" not in panel.counts.text():
+        QApplication.processEvents()
+        time.sleep(0.01)
+    assert "Positive: 0\n" in panel.counts.text()
+    slider.setValue(slider.minimum())
+    deadline = time.time() + 2
+    while time.time() < deadline and 2 not in np.unique(shell.viewer.layers["Classification"].data):
+        QApplication.processEvents()
+        time.sleep(0.01)
+    assert 2 in np.unique(shell.viewer.layers["Classification"].data)
+
+    # Default colours: green positive, red negative; a chosen colour is applied and remembered.
+    colormap = shell.viewer.layers["Classification"].colormap.color_dict
+    assert np.allclose(colormap[2][:3], app._rgba(app.DEFAULT_POSITIVE_COLOR)[:3])
+    assert np.allclose(colormap[1][:3], app._rgba(app.DEFAULT_NEGATIVE_COLOR)[:3])
+    from qtpy.QtWidgets import QColorDialog
+
+    monkeypatch.setattr(QColorDialog, "getColor", staticmethod(lambda *_args, **_kwargs: QColor("#3366ff")))
+    panel._choose_color(positive=True)
+    assert app.classification_colors() == ("#3366ff", app.DEFAULT_NEGATIVE_COLOR)
+    colormap = shell.viewer.layers["Classification"].colormap.color_dict
+    assert np.allclose(colormap[2][:3], app._rgba("#3366ff")[:3])
+    panel._reset_colors()
+    assert app.classification_colors() == (app.DEFAULT_POSITIVE_COLOR, app.DEFAULT_NEGATIVE_COLOR)
+
+    # Locked while a run uses the settings.
+    shell.run_current()
+    assert not slider.isEnabled()
+    assert panel.positive_color.isEnabled()  # display only
+    _wait(shell)
+    QApplication.processEvents()
+    assert slider.isEnabled()
+
+
+def test_the_mouse_wheel_changes_a_menu_only_after_it_is_clicked(window):
+    from qtpy.QtCore import QPoint, QPointF, Qt
+    from qtpy.QtGui import QWheelEvent
+    from qtpy.QtWidgets import QApplication
+
+    shell = window
+    shell.go_to_step(1)
+    QApplication.processEvents()
+    box = shell._objects_panel.method
+
+    def wheel():
+        middle = QPointF(box.width() / 2, box.height() / 2)
+        event = QWheelEvent(
+            middle, QPointF(box.mapToGlobal(middle.toPoint())), QPoint(0, 0), QPoint(0, -120),
+            Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False,
+        )
+        QApplication.sendEvent(box, event)
+        QApplication.processEvents()
+
+    box.clearFocus()
+    before = box.currentIndex()
+    wheel()
+    assert box.currentIndex() == before  # scrolling past it leaves it alone
+    box.setFocus()
+    QApplication.processEvents()
+    if box.hasFocus():  # focus needs an active window, which some test displays lack
+        wheel()
+        assert box.currentIndex() != before

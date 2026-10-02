@@ -12,6 +12,7 @@ from __future__ import annotations
 import functools
 import importlib.metadata
 from dataclasses import dataclass, field
+from pathlib import Path
 
 # Engine keys stored in recipes. They name the Cellpose major version.
 CELLPOSE_SAM = "cellpose4"
@@ -115,8 +116,67 @@ def _sam_models() -> tuple[tuple[str, ...], str]:
     return ordered, default
 
 
+_NVIDIA_SMI_FALLBACKS = (
+    r"C:\Windows\System32\nvidia-smi.exe",
+    r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+)
+NO_GPU_BUILD_FIX = (
+    "CellQuant's PyTorch was installed without GPU support. To add it, close CellQuant, run "
+    "Install CellQuant.bat and choose [U] Update."
+)
+
+
+def nvidia_gpu_name() -> str:
+    """The NVIDIA GPU nvidia-smi reports (the driver installs it), or "" when there is none."""
+
+    import shutil
+    import subprocess
+    import sys
+
+    candidates = [shutil.which("nvidia-smi")]
+    if sys.platform.startswith("win"):
+        candidates += list(_NVIDIA_SMI_FALLBACKS)
+    for path in candidates:
+        if not path or not Path(path).exists():
+            continue
+        try:
+            output = subprocess.run(
+                [path, "--query-gpu=name", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        names = [line.strip() for line in output.splitlines() if line.strip()]
+        if names:
+            return names[0]
+    return ""
+
+
 def gpu_status() -> dict[str, object]:
-    """Whether PyTorch can use a CUDA GPU here. Imports PyTorch."""
+    """Whether PyTorch can use a CUDA GPU here. Imports PyTorch.
+
+    When it cannot, ``nvidia_gpu`` names an NVIDIA GPU that is present anyway, and ``reason`` says how to use it.
+    """
+
+    status = _torch_gpu_status()
+    if not status.get("available"):
+        name = nvidia_gpu_name()
+        if name:
+            status["nvidia_gpu"] = name
+            if "no GPU support" in str(status.get("reason", "")) or "could not be loaded" in str(status.get("reason", "")):
+                status["reason"] = NO_GPU_BUILD_FIX
+            else:
+                status["reason"] = (
+                    f"PyTorch cannot use it ({status.get('reason') or 'no CUDA device'}). Update the NVIDIA driver, "
+                    "then run Install CellQuant.bat and choose [U] Update."
+                )
+    return status
+
+
+def _torch_gpu_status() -> dict[str, object]:
 
     try:
         import torch
