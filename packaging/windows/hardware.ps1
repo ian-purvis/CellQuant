@@ -10,6 +10,15 @@ function Get-NvidiaSmiPath {
     if ($Command) {
         return $Command.Path
     }
+    # Not on PATH: the driver also puts it in System32, older drivers in NVSMI.
+    foreach ($Candidate in @(
+            (Join-Path $env:SystemRoot 'System32\nvidia-smi.exe'),
+            (Join-Path $env:ProgramFiles 'NVIDIA Corporation\NVSMI\nvidia-smi.exe')
+        )) {
+        if ($Candidate -and (Test-Path -LiteralPath $Candidate)) {
+            return $Candidate
+        }
+    }
     return $null
 }
 
