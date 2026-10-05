@@ -77,12 +77,12 @@ STEPS = (
         "2 Find objects",
         "Find the nuclei (or cells)",
         "Set <b>Source channel</b> to your nuclear stain, for example DAPI.<br>"
-        "<b>Method</b>: <i>classical</i> is fast and needs no GPU. <i>cellpose</i> handles crowded "
+        "<b>Method</b>: <i>Classical (fast, no GPU)</i>, or <i>Cellpose (AI model)</i>, which handles crowded "
         "or uneven nuclei better.<br>"
         "The box at the top says whether an NVIDIA GPU was found and whether Cellpose will use it.<br>"
         "<b>Z-stack mode</b> (under Method): choose 2D (a projection or one slice) or 3D (link slices, or the whole volume). "
         "The blue box recommends one for this computer, with estimated times; every option stays available.<br>"
-        "Click <b>Preview</b> to try the settings on the area you are looking at, then <b>Run</b>.",
+        "Click <b>Preview</b> to try the settings on the area you are looking at, then <b>Run this image</b>.",
         "Outlines sit on the nuclei, with few missed, merged, or split. If not, change the settings "
         "and run again. Zoom in to check. In 3D, move the slice slider under the image to check every slice.",
     ),
@@ -102,7 +102,7 @@ STEPS = (
         "4 Check",
         "Check the positive calls",
         "Objects glow <span style='color:#26bf59'><b>green</b></span> when positive and "
-        "<span style='color:#e03c3c'><b>red</b></span> when negative (change the colours under the slider). "
+        "<span style='color:#d43fd4'><b>magenta</b></span> when negative (change the colors under the slider). "
         "Drag the <b>Cutoff</b> slider, or type a number beside it, to move the cutoff (one cutoff for "
         "every image). For the percent-of-cell rule the slider is the minimum percent; change the "
         "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> when it looks right, then <b>Next image ▶</b> at the bottom. "
@@ -125,21 +125,21 @@ STEPS = (
 # (panel attribute on the window, widget attribute on the panel).
 HELP = {
     ("_objects_panel", "channel"): "The channel whose signal marks every object, usually the nuclear stain (DAPI or Hoechst).",
-    ("_objects_panel", "method"): "classical: threshold and split touching objects. Fast, no GPU.\ncellpose: a trained model. Better for crowded or uneven nuclei; faster with an NVIDIA GPU.",
-    ("_objects_panel", "threshold_method"): "otsu picks a brightness cutoff automatically. manual uses the value below.",
-    ("_objects_panel", "threshold"): "Brightness above which a pixel counts as part of an object (manual only).",
+    ("_objects_panel", "method"): "Classical: threshold and split touching objects. Fast, no GPU.\nCellpose (AI model): a trained model. Better for crowded or uneven nuclei; faster with an NVIDIA GPU.",
+    ("_objects_panel", "threshold_method"): "Automatic (Otsu) picks the brightness threshold automatically. Manual threshold uses the value below.",
+    ("_objects_panel", "threshold"): "Brightness above which a pixel counts as part of an object (Manual threshold only), in the image's own units.",
     ("_objects_panel", "sigma"): "Smoothing before finding objects, in pixels. 1-2 helps with noisy images. 0 turns it off.",
-    ("_objects_panel", "min_area"): "Objects smaller than this are dropped (debris). 0 keeps everything.",
-    ("_objects_panel", "max_area"): "Objects larger than this are dropped (clumps). 0 keeps everything.",
-    ("_objects_panel", "area_unit"): "px: pixels. um2: square micrometres (needs the pixel size).",
+    ("_objects_panel", "min_area"): "Objects smaller than this are dropped (debris). 'none' keeps everything.",
+    ("_objects_panel", "max_area"): "Objects larger than this are dropped (clumps). 'none' keeps everything.",
+    ("_objects_panel", "area_unit"): "pixels, or µm² (square micrometers; needs the pixel size). Set this before the sizes above.",
     ("_objects_panel", "watershed"): "Split touching objects. Try this if two nuclei come out as one.",
     ("_objects_panel", "cellpose_model"): "The Cellpose model. The first one listed is the usual choice.",
-    ("_objects_panel", "diameter"): "Typical object diameter in pixels. 0 lets Cellpose decide.",
+    ("_objects_panel", "diameter"): "Typical object diameter in pixels. 'automatic' lets Cellpose decide.",
     ("_objects_panel", "flow"): "Cellpose shape check. Lower keeps fewer, cleaner objects.",
     ("_objects_panel", "cellprob"): "Cellpose confidence. Lower finds more (and fainter) objects.",
-    ("_objects_panel", "gpu"): "Use the NVIDIA GPU. Greyed out when no usable GPU was found.",
+    ("_objects_panel", "gpu"): "Use the NVIDIA GPU. Ticked for you when a usable GPU is found; greyed out when none was.",
     ("_objects_panel", "engine_choice"): "The Cellpose installed here. Cellpose-SAM (4) is most accurate, best with a GPU; Classic Cellpose (3) is faster on the CPU. Only one is installed per environment; start CellQuant with the other to use it.",
-    ("_review_panel", "display"): "Which marker to color by: green positive, red negative (colours can be changed).",
+    ("_review_panel", "display"): "Which marker to color by: green positive, magenta negative (colors can be changed).",
     ("_review_panel", "threshold_slider"): "The cutoff for this marker: objects at or past it are positive. Drag, or type a number. For the percent-of-cell rule it is the minimum percent of each object's pixels that must pass the pixel level.",
     ("_review_panel", "min_percent"): "A cell is positive when at least this percent of its pixels are at or above the pixel level.",
     ("_review_panel", "pixel_level"): "A pixel passes when its value is at or above this level (same units as the image). Click Apply pixel level to measure again.",
@@ -149,16 +149,16 @@ HELP = {
     ("_objects_panel", "z_stack"): (
         "2D: max projection keeps the brightest value through all slices (nuclei at different depths can merge); "
         "one slice misses nuclei outside it.\n3D: link slices segments each slice and joins outlines that overlap "
-        "in neighbouring slices; whole volume segments the stack at once (slow; needs closely spaced slices).\n"
+        "in neighboring slices; whole volume segments the stack at once (slow; needs closely spaced slices).\n"
         "Times are estimates for this computer; ★ marks the recommendation."
     ),
     ("_experiment_panel", "show_type"): "Show only ND2 or only TIFF files in the list. Then Include shown or Leave out shown acts on just those.",
     ("_experiment_panel", "use_nd2"): "Add folder takes ND2 files from the folder and its subfolders.",
     ("_experiment_panel", "use_tiff"): "Add folder takes TIFF files from the folder and its subfolders.",
-    ("_experiment_panel", "pixel_z"): "Distance between slices of a Z-stack, in micrometres. Read from ND2 files; needed for 3D volumes.",
+    ("_experiment_panel", "pixel_z"): "Distance between slices of a Z-stack, in micrometers. Read from ND2 files; needed for 3D volumes.",
     ("_experiment_panel", "meta_name"): "Add a column such as Genotype or Age. Results can be grouped by it.",
-    ("_experiment_panel", "pixel_x"): "Pixel width in micrometres. Find it in the microscope software's image properties.",
-    ("_experiment_panel", "pixel_y"): "Pixel height in micrometres. Usually the same as the width.",
+    ("_experiment_panel", "pixel_x"): "Pixel width in micrometers. Find it in the microscope software's image properties.",
+    ("_experiment_panel", "pixel_y"): "Pixel height in micrometers. Usually the same as the width.",
 }
 
 BUTTON_HELP = {
@@ -217,7 +217,7 @@ def step_states(window) -> list[StepState]:
         StepState(
             found,
             f"{len(analyzed) or len(results)} analyzed" if found else "",
-            "" if found else "Click Run to find objects in this image.",
+            "" if found else "Click Run this image to find objects in this image.",
         )
     )
     markers = controller.recipe.classifications
@@ -228,7 +228,7 @@ def step_states(window) -> list[StepState]:
     states.append(
         StepState(
             bool(reviewed),
-            f"{len(reviewed)} checked" if reviewed else ("thresholds set" if classified else ""),
+            f"{len(reviewed)} checked" if reviewed else ("cutoffs set" if classified else ""),
             "" if classified else "Measure the markers first: finish step 3.",
             "" if reviewed else "Approve images once they look right.",
         )
@@ -289,14 +289,14 @@ class StepPage(QWidget):
         layout.addWidget(_card(f"<b>Success check</b><br>{step.success}", "rgba(60, 170, 90, 0.16)"))
         self.hint = QLabel("")
         self.hint.setWordWrap(True)
-        self.hint.setStyleSheet("color: #d9a400;")
+        self.hint.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.16); border-radius: 4px; padding: 4px; }")
         layout.addWidget(self.hint)
         bar = QHBoxLayout()
         self.back = QPushButton("← Back")
         self.back.clicked.connect(lambda: window.go_to_step(index - 1))
         self.blocker = QLabel("")
         self.blocker.setWordWrap(True)
-        self.blocker.setStyleSheet("color: #e08a00;")
+        self.blocker.setStyleSheet("QLabel { background: rgba(224, 138, 0, 0.18); border-radius: 4px; padding: 4px; font-weight: bold; }")
         self.next = QPushButton(f"Next: {STEPS[index + 1].title} →" if index + 1 < len(STEPS) else "Back to Start")
         self.next.clicked.connect(lambda: window.go_to_step(index + 1) if index + 1 < len(STEPS) else window.go_to_start())
         bar.addWidget(self.back)
@@ -421,7 +421,7 @@ class MarkerSetup(QGroupBox):
             "Mean brightness: one number per cell, compared with a cutoff.\n"
             "Percent of the cell: each pixel is compared with a pixel level; the cell is positive when at least\n"
             "the minimum percent of its pixels are at or above that level. Useful when staining is patchy or\n"
-            "only part of a nucleus is labelled. Both numbers can be changed later in step 4."
+            "only part of a nucleus is labeled. Both numbers can be changed later in step 4."
         )
         self.min_percent = QDoubleSpinBox()
         self.min_percent.setRange(0.0, 100.0)
@@ -517,6 +517,7 @@ class ResultsSummary(QGroupBox):
         self.summary.setTextFormat(Qt.RichText)
         layout.addWidget(self.summary)
         run_all = QPushButton("Run all images")
+        self.run_all = run_all
         run_all.setMinimumHeight(32)
         run_all.setToolTip("Apply the current settings to every included image. Progress shows at the bottom.")
         run_all.clicked.connect(lambda: window.start_batch(None))
@@ -563,29 +564,31 @@ class ResultsSummary(QGroupBox):
             )
         unmeasured = int(result.summary.iloc[0].get("n_unmeasured", 0)) if not result.summary.empty and "n_unmeasured" in result.summary.columns else 0
         if unmeasured:
-            lines.append(f"<span style='color:#d9a400'>{unmeasured} objects could not be measured and are left out.</span>")
+            lines.append(f"<span style='background-color:rgba(217,164,0,0.2)'>{unmeasured} objects could not be measured and are left out.</span>")
         self.summary.setText("<br>".join(lines))
 
     def show_batch(self, report) -> None:
-        text = f"{len(report.jobs)} images analyzed: {report.completed} fine"
+        from cellquant.gui.app import run_outcome
+
+        text = f"{len(report.jobs)} images: {run_outcome(report.completed, report.warnings, report.failed)}."
         if report.warnings:
-            text += f", {report.warnings} with warnings (check them in step 4)"
+            text += " Check the ones that need a look in step 4."
         if report.failed:
-            text += f", {report.failed} failed (see the messages at the bottom)"
-        self.batch.setText(text + ".")
+            text += " Why each one failed is in the red box at the top and in step 1's Status column."
+        self.batch.setText(text)
 
     def show_analysis_actions(self, several: bool) -> None:
         self.run_analyses.setVisible(several)
         self.export_analyses.setVisible(several)
+        # With several analyses, say which one Run all images uses.
+        self.run_all.setText("Run all images (this analysis)" if several else "Run all images")
 
     def show_analyses(self, reports) -> None:
         lines = []
         for report in reports:
-            text = f"<b>{report.analysis}</b>: {len(report.jobs)} images, {report.completed} fine"
-            if report.warnings:
-                text += f", {report.warnings} with warnings"
-            if report.failed:
-                text += f", {report.failed} failed"
+            from cellquant.gui.app import run_outcome
+
+            text = f"<b>{report.analysis}</b>: {len(report.jobs)} images, {run_outcome(report.completed, report.warnings, report.failed)}"
             if report.cancelled:
                 text += " (stopped)"
             lines.append(text)
@@ -594,6 +597,12 @@ class ResultsSummary(QGroupBox):
     def show_exported(self, path) -> None:
         self.batch.setText(self.batch.text() + f"<br>Saved to <b>{path}</b>.")
         self.open_folder.setVisible(True)
+
+
+def readable_expression(expression: str, names: dict[str, str]) -> str:
+    """'class_1 AND NOT class_2' as 'OTX2+ and VSX2-'."""
+
+    return _readable(expression, names)
 
 
 def _readable(expression: str, names: dict[str, str]) -> str:

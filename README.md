@@ -50,7 +50,7 @@ CellQuant finds nuclei (or cells) in fluorescence microscope images and counts h
 
 ## Status
 
-This is an early version for lab testing. Results have not yet been checked against expert hand counts on real retinal images. See `docs/STATUS.md` before relying on the numbers.
+This is an early version for lab testing. Results have not yet been checked against expert hand counts on real retinal images. Read the *Known limitations* at the top of [docs/STATUS.md](docs/STATUS.md) before relying on the numbers.
 
 ## Test images
 
