@@ -463,8 +463,9 @@ def channel_warnings(experiment: Experiment) -> list[str]:
         label = record.relative_path or record.filename
         if record.number_of_channels is not None and record.number_of_channels != expected:
             messages.append(
-                f"{label}: This image has {record.number_of_channels} channels, "
-                f"but the experiment expects {expected}."
+                f"{label}: This image has {record.number_of_channels} channels, but the experiment's channel list has "
+                f"{expected}. Channels are matched by the names stored in the file; check this image (⚠ in the Plan), "
+                "or set its channel in the Plan."
             )
     named = [record for record in experiment.images if record.channel_names]
     if named:
@@ -473,7 +474,8 @@ def channel_warnings(experiment: Experiment) -> list[str]:
         if different:
             messages.append(
                 f"{len(different)} image{'s have' if len(different) != 1 else ' has'} different channel names in the file "
-                f"from {named[0].relative_path or named[0].filename} ({', '.join(first)}). Check that the channel order is the same."
+                f"from {named[0].relative_path or named[0].filename} ({', '.join(first)}). Channels are matched by name, so "
+                "another order is fine; an image without a channel of that name is marked ⚠ in the Plan."
             )
     return messages
 

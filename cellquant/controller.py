@@ -1247,6 +1247,25 @@ class AnalysisController:
             return index, "not in this image"
         return index, "analysis"
 
+    def display_channels(self, record, n_channels: int) -> list[int | None]:
+        """For each channel position in this image's file: the experiment channel it is, or None.
+
+        Matched by the names stored in the file, as for analysis, so an image with another channel
+        layout shows each layer under the right name. None: the file names a channel the experiment's
+        list does not have.
+        """
+
+        reference = self._reference_channel_names()
+        names = list(record.channel_names)
+        known = {channel.channel_index for channel in self.experiment.channels}
+        if not reference or not names or names == reference:
+            return [index if index in known else None for index in range(n_channels)]
+        owners: list[int | None] = []
+        for position in range(n_channels):
+            name = names[position] if position < len(names) else None
+            owners.append(reference.index(name) if name in reference else None)
+        return owners
+
     def measurement_channels_for(self, image_id: str, recipe_id: str | None = None) -> dict[str, tuple[int, str]]:
         """For each measurement of this analysis: the channel it reads in this image, and why."""
 

@@ -42,7 +42,7 @@ from qtpy.QtWidgets import (
 )
 
 from cellquant.controller import AnalysisController
-from cellquant.errors import CellQuantError
+from cellquant.errors import CellQuantError, RecipeValidationError
 from cellquant.gui import guide
 from napari.utils.colormaps import DirectLabelColormap
 
@@ -58,7 +58,7 @@ def launch(experiment_dir: str | Path | None = None) -> None:
 _OBJECT_LAYERS = ("Object fills", "Objects", "Classification", "Object IDs")
 
 # How a classification compares a value with its threshold (shown text, recipe value).
-COMPARISONS = (("above the threshold (>)", "above"), ("at least the threshold (≥)", "at_least"))
+COMPARISONS = (("above the cutoff (>)", "above"), ("at least the cutoff (≥)", "at_least"))
 
 
 def channel_colormaps(loaded) -> list:
@@ -84,7 +84,7 @@ def channel_colormaps(loaded) -> list:
 
 # Dropdown wording: the saved value first, then the plain words shown for it.
 METHOD_OPTIONS = (("classical", "Classical (fast, no GPU)"), ("cellpose", "Cellpose (AI model)"))
-THRESHOLD_OPTIONS = (("otsu", "Automatic (Otsu)"), ("manual", "Manual cutoff"))
+THRESHOLD_OPTIONS = (("otsu", "Automatic (Otsu)"), ("manual", "Manual threshold"))
 AREA_UNIT_OPTIONS = (("px", "pixels"), ("um2", "µm²"))
 REGION_OPTIONS = (
     ("object", "Whole object"),
@@ -101,8 +101,8 @@ STATISTIC_OPTIONS = (
     ("integrated", "Total brightness (integrated)"),
     ("area", "Area"),
     ("equivalent_diameter", "Equivalent diameter"),
-    ("centroid_x", "Centre X"),
-    ("centroid_y", "Centre Y"),
+    ("centroid_x", "Center X"),
+    ("centroid_y", "Center Y"),
     ("percent_above", "Percent of pixels above a level"),
 )
 BACKGROUND_OPTIONS = (
@@ -110,6 +110,21 @@ BACKGROUND_OPTIONS = (
     ("global", "Subtract image background"),
     ("local_ring", "Subtract local background (ring)"),
 )
+
+
+def _option_text(options, value) -> str:
+    """The plain words shown for a saved value (the value itself when it has none)."""
+
+    return next((text for key, text in options if key == value), str(value))
+
+
+def _measurement_text(controller, measurement) -> str:
+    """For example 'OTX2: Mean brightness, Whole object'."""
+
+    return (
+        f"{controller._channel_name(int(measurement.channel))}: "
+        f"{_option_text(STATISTIC_OPTIONS, measurement.statistic)}, {_option_text(REGION_OPTIONS, measurement.region.type)}"
+    )
 
 
 def _fill_options(box: QComboBox, options) -> None:
@@ -132,9 +147,10 @@ def _show_row(form: QFormLayout, field: QWidget, visible: bool) -> None:
         label.setVisible(visible)
 
 
-# Classification colours: one pair for every marker, remembered on this computer.
+# Classification colors: one pair for every marker, remembered on this computer.
+# Green and magenta: told apart with red-green color blindness, unlike green and red.
 DEFAULT_POSITIVE_COLOR = "#26bf59"
-DEFAULT_NEGATIVE_COLOR = "#e03c3c"
+DEFAULT_NEGATIVE_COLOR = "#d43fd4"
 
 
 def _settings():
@@ -144,7 +160,7 @@ def _settings():
 
 
 def classification_colors() -> tuple[str, str]:
-    """(positive, negative) colours as #rrggbb."""
+    """(positive, negative) colors as #rrggbb."""
 
     try:
         settings = _settings()
@@ -335,6 +351,7 @@ class CellQuantWindow:
         # True while work runs that switches between analyses (Run all analyses, Export all analyses):
         # the settings pages and image navigation are locked, since they would show another analysis.
         self._exclusive = False
+        self._nav_filter: str | None = None  # e.g. "failed images" while Previous / Next go through only those
         self._tabs = QTabWidget()
         self._experiment_panel = ExperimentPanel(self)
         self._objects_panel = ObjectsPanel(self)
@@ -601,8 +618,8 @@ class CellQuantWindow:
     def open_experiment(self, directory: str | Path) -> None:
         try:
             self.controller = AnalysisController.open(directory)
-        except Exception as exc:
-            self._footer.message(str(exc))
+        except Exception as exc:  # noqa: BLE001 - shown to the user; the window stays usable
+            self.show_error(f"{directory} could not be opened as an experiment. {_error_text(exc)}")
             return
         self._exported_to = None
         self._refresh_all()
@@ -618,7 +635,11 @@ class CellQuantWindow:
             self.message("That results folder already holds an experiment, so it was opened instead.")
             self.open_experiment(output)
             return
-        controller = AnalysisController.create(output, dialog.experiment_name(), input_directory=images or None)
+        try:
+            controller = AnalysisController.create(output, dialog.experiment_name(), input_directory=images or None)
+        except Exception as exc:  # noqa: BLE001 - e.g. a results folder that cannot be written
+            self.show_error(f"The experiment could not be created in {output}. {_error_text(exc)}")
+            return
         file_types = dialog.file_types() if hasattr(dialog, "file_types") else ["nd2", "tiff"]
         controller.experiment.import_file_types = list(file_types)
         self.controller = controller
@@ -649,12 +670,14 @@ class CellQuantWindow:
             return  # another analysis is active in the background; shown again when it finishes
         if controller is None or not self._nav_ids:
             self._clear_managed()
+            if controller is not None:
+                self._footer.set_position(0, 0, "")
             return
         image_id = self._nav_ids[self._nav_index]
         controller.current_image_id = image_id
         record = controller.experiment.image(image_id)
         result = controller.recall(image_id) if controller else None
-        self._footer.set_position(self._nav_index, len(self._nav_ids), record.relative_path or record.filename)
+        self._footer.set_position(self._nav_index, len(self._nav_ids), record.relative_path or record.filename, self._nav_filter)
         self._experiment_panel.set_pixel_size(record.pixel_size_x, record.pixel_size_y, record.pixel_size_z)
         # Reading the file (an ND2 stack can take a second) happens off the interface thread,
         # so the window stays responsive. If the user keeps clicking Next, only the last
@@ -728,7 +751,10 @@ class CellQuantWindow:
 
     def run_current(self) -> None:
         controller = self.require_controller()
-        if controller is None or not self._nav_ids:
+        if controller is None:
+            return
+        if not self._nav_ids:
+            self.message("No images to run: add images in step 1, or tick Include for at least one.")
             return
         self._panels_to_recipe()
         image_id = self._nav_ids[self._nav_index]
@@ -772,8 +798,9 @@ class CellQuantWindow:
             "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
             "Run ticked", "Save",
             # Buttons that change the settings: never while images are being analyzed with them.
-            "Save recipe", "Load recipe", "Duplicate", "Add measurement", "Remove measurement",
-            "Add classification", "Add result row", "Apply pixel level",
+            "Save settings", "Load settings…", "Add measurement", "Remove measurement",
+            "Add marker", "Add result row", "Remove result row", "Apply pixel level",
+            "Run all images (this analysis)", "Set sizes (µm)",
         }
     )
 
@@ -857,7 +884,10 @@ class CellQuantWindow:
 
     def preview_current(self) -> None:
         controller = self.require_controller()
-        if controller is None or not self._nav_ids:
+        if controller is None:
+            return
+        if not self._nav_ids:
+            self.message("No images to run: add images in step 1, or tick Include for at least one.")
             return
         self._panels_to_recipe()
         image_id = self._nav_ids[self._nav_index]
@@ -880,6 +910,7 @@ class CellQuantWindow:
         worker.progress.connect(self._footer.update_progress)
         worker.step.connect(self._footer.show_step)
         worker.finished_ok.connect(self._batch_finished)
+        worker.failed.connect(self._batch_failed)
         self._batch = worker
         self.set_busy(True)
         worker.start()
@@ -961,25 +992,38 @@ class CellQuantWindow:
             self.show_result(self.controller.last_results[self.controller.current_image_id])
         self._footer.message(
             (f"Stopped after {len(report.jobs)} of {planned} images. " if stopped else "")
-            + f"Completed {report.completed}, warnings {report.warnings}, failed {report.failed}."
+            + run_outcome(report.completed, report.warnings, report.failed) + "."
         )
-        self._show_failed_images(report.failed)
+        self._show_failed_images(report.failed, [report])
 
-    def _show_failed_images(self, count: int) -> None:
+    def _batch_failed(self, message: str) -> None:
+        """The batch stopped with an error before it could report: leave the running state and say why."""
+
+        self._batch = None
+        self.set_busy(False)
+        self._experiment_panel.refresh_table()
+        self.refresh_guidance()
+        self.show_error(f"The run stopped: {message} Images finished before it stopped are kept.")
+
+    def _show_failed_images(self, count: int, reports=()) -> None:
         if not count:
             return
-        names = self._footer.failed_files
-        listed = ", ".join(names[:5]) + (f" and {len(names) - 5} more" if len(names) > 5 else "")
+        reasons = [(job.filename, job.message) for report in reports for job in report.jobs if job.status == "Failure"]
+        if not reasons:
+            reasons = [(name, "") for name in self._footer.failed_files]
+        listed = "; ".join(f"{name}: {message}" if message else name for name, message in reasons[:5])
+        if len(reasons) > 5:
+            listed += f"; and {len(reasons) - 5} more"
         self.show_error(
             f"{count} image{'s' if count != 1 else ''} failed"
-            + (f": {listed}" if listed else "")
-            + ". The others finished. Open a failed image and click Run this image to see why."
+            + (f" ({listed})" if listed else "")
+            + ". The others finished. Step 1's Status column shows each reason; Check failed images (step 5) goes through them."
         )
 
     def _analyses_finished(self, reports, planned: int) -> None:
         done = sum(len(report.jobs) for report in reports)
         lines = [
-            f"{report.analysis}: completed {report.completed}, warnings {report.warnings}, failed {report.failed}"
+            f"{report.analysis}: {run_outcome(report.completed, report.warnings, report.failed)}"
             + (" (stopped)" if report.cancelled else "")
             for report in reports
         ]
@@ -992,7 +1036,7 @@ class CellQuantWindow:
             (f"Stopped after {done} of {planned} image runs. " if stopped else f"Ran {len(reports)} analyses. ")
             + " | ".join(lines)
         )
-        self._show_failed_images(sum(report.failed for report in reports))
+        self._show_failed_images(sum(report.failed for report in reports), reports)
 
     def export_all_dialog(self) -> None:
         controller = self.require_controller()
@@ -1028,7 +1072,7 @@ class CellQuantWindow:
         try:
             controller.switch_analysis(recipe_id)
         except (CellQuantError, KeyError, OSError) as exc:
-            self.message(str(exc))
+            self.show_error(str(exc))
             self._analysis_bar.refresh()
             return
         self._refresh_all(keep_image=True)
@@ -1036,13 +1080,28 @@ class CellQuantWindow:
         item = controller.active_analysis()
         self.message(f"Showing analysis '{item.name}': objects found in {controller._channel_name(controller.recipe.object_set.segmentation_channel)}.")
 
+    def set_nav_filter(self, words: str | None, ids: list[str] | None = None) -> None:
+        """Previous / Next go through only these images (words: what they are), or every included image (None)."""
+
+        self._nav_filter = words if ids else None
+        if ids:
+            self._nav_ids = list(ids)
+            self._nav_index = 0
+            self.show_current()
+            self.message(f"Previous / Next image now go through the {len(ids)} {words} only. Step 5 has Check all included images to go back.")
+        else:
+            self.update_navigation()
+            self.show_current()
+            self.message("Previous / Next image go through every included image.")
+
     def update_navigation(self) -> None:
         """Previous/Next image go through included images; keep the image on screen when possible."""
 
         if self.controller is None:
             return
+        self._nav_filter = None
         current = self._nav_ids[self._nav_index] if self._nav_ids else None
-        ids = self.controller.included_ids() or [record.image_id for record in self.controller.experiment.images]
+        ids = self.controller.included_ids()
         self._nav_ids = ids
         if current in ids:
             self._nav_index = ids.index(current)
@@ -1052,6 +1111,8 @@ class CellQuantWindow:
         if self._nav_ids and current in ids:
             record = self.controller.experiment.image(current)
             self._footer.set_position(self._nav_index, len(ids), record.relative_path or record.filename)
+        elif not ids:
+            self._footer.set_position(0, 0, "")
 
     def _panels_to_recipe(self) -> None:
         if self.controller is None:
@@ -1064,9 +1125,8 @@ class CellQuantWindow:
         if self.controller is None:
             return
         current = self._nav_ids[self._nav_index] if keep_image and self._nav_ids else None
+        self._nav_filter = None
         self._nav_ids = [record.image_id for record in self.controller.experiment.images if record.include]
-        if not self._nav_ids:
-            self._nav_ids = [record.image_id for record in self.controller.experiment.images]
         self._nav_index = self._nav_ids.index(current) if current in self._nav_ids else 0
         self._analysis_bar.refresh()
         self._refresh_plan()
@@ -1109,9 +1169,20 @@ class CellQuantWindow:
     def _show_loaded(self, loaded, record, result) -> None:
         self._clear_managed()
         self._shown_image_id = record.image_id
-        names = [channel.display_name for channel in self.controller.experiment.channels]
-        while len(names) < loaded.n_channels:
-            names.append(f"Channel {len(names) + 1}")
+        self._review_panel.clear_selection()
+        # Each layer is named after the experiment channel it holds, matched by the file's channel names,
+        # so a file with another channel order is not labeled in the experiment's order.
+        by_index = {channel.channel_index: channel for channel in self.controller.experiment.channels}
+        owners = self.controller.display_channels(record, loaded.n_channels)
+        file_names = list(record.channel_names)
+        names = []
+        for position, owner in enumerate(owners):
+            if owner is not None and owner in by_index:
+                names.append(by_index[owner].display_name)
+            elif position < len(file_names) and file_names[position]:
+                names.append(f"{file_names[position]} (not in the channel list)")
+            else:
+                names.append(f"Channel {position + 1}")
         colormaps = channel_colormaps(loaded)
         added = self.viewer.add_image(
             loaded.data,
@@ -1121,14 +1192,17 @@ class CellQuantWindow:
             blending="additive",
         )
         layers = added if isinstance(added, list) else [added]
-        for layer, channel in zip(layers, self.controller.experiment.channels, strict=False):
+        for layer, owner in zip(layers, owners, strict=False):
+            self._managed.add(layer.name)
+            channel = by_index.get(owner) if owner is not None else None
+            if channel is None:
+                continue  # not in the channel list: nothing to remember its contrast under
             limits = channel.display_settings.get("contrast_limits")
             if limits:
                 layer.contrast_limits = tuple(limits)
             layer.events.contrast_limits.connect(
                 lambda event, index=channel.channel_index: self._store_contrast(index, event)
             )
-            self._managed.add(layer.name)
         labels = result.labels if result is not None else None
         self._set_labels(labels, result)
         self._release_window_later()
@@ -1194,7 +1268,7 @@ class CellQuantWindow:
         self.apply_classification_colors()
 
     def apply_classification_colors(self) -> None:
-        """Positive objects in the positive colour, negative in the negative colour."""
+        """Positive objects in the positive color, negative in the negative color."""
 
         if "Classification" not in self.viewer.layers:
             return
@@ -1259,8 +1333,8 @@ class ExperimentPanel(QWidget):
         layout = QVBoxLayout(self)
         buttons = QHBoxLayout()
         for text, slot in (
-            ("New experiment", shell.new_experiment),
-            ("Open", self._open),
+            ("New experiment…", shell.new_experiment),
+            ("Open experiment…", self._open),
             ("Save", self._save),
             ("Add images", self._add_images),
             ("Add folder", self._add_folder),
@@ -1355,6 +1429,11 @@ class ExperimentPanel(QWidget):
         self.pixel_z.setToolTip("Distance between slices of a Z-stack, in µm. Needed for 3D volumes and shapes.")
         apply_cal = QPushButton("Set sizes (µm)")
         apply_cal.clicked.connect(self._apply_pixel_size)
+        self.size_scope = QComboBox()
+        self.size_scope.addItem("for this image and every image without a size", "missing")
+        self.size_scope.addItem("for this image only", "this")
+        self.size_scope.addItem("for every included image", "included")
+        self.size_scope.setToolTip("Which images Set sizes changes. Sizes read from a file are kept unless you choose every included image.")
         calibration.addWidget(QLabel("X"))
         calibration.addWidget(self.pixel_x)
         calibration.addWidget(QLabel("Y"))
@@ -1363,6 +1442,10 @@ class ExperimentPanel(QWidget):
         calibration.addWidget(self.pixel_z)
         calibration.addWidget(apply_cal)
         layout.addLayout(calibration)
+        scope_row = QHBoxLayout()
+        scope_row.addWidget(QLabel("Set sizes"))
+        scope_row.addWidget(self.size_scope, 1)
+        layout.addLayout(scope_row)
 
     def refresh(self) -> None:
         self.refresh_table()
@@ -1409,10 +1492,12 @@ class ExperimentPanel(QWidget):
             first_meta = 3 + len(details)
             for offset, column in enumerate(controller.experiment.metadata_columns):
                 self.table.setItem(row, first_meta + offset, QTableWidgetItem(str(record.user_metadata.get(column, ""))))
-            status = record.processing_status.replace("_", " ").capitalize()
+            status = _status_text(record)
             if record.last_message and record.last_result == "Failure":
                 status = f"{status}: {record.last_message}"
-            self.table.setItem(row, len(columns) - 1, _read_only(status))
+            status_item = _read_only(status)
+            status_item.setToolTip(record.last_message or status)
+            self.table.setItem(row, len(columns) - 1, status_item)
         header = self.table.horizontalHeader()
         for column in range(self.table.columnCount()):
             if self.table.columnWidth(column) > 220:
@@ -1600,10 +1685,19 @@ class ExperimentPanel(QWidget):
         x = self.pixel_x.value() or None
         y = self.pixel_y.value() or None
         z = self.pixel_z.value()
-        controller.set_pixel_size(image_id, x, y, z)
+        scope = self.size_scope.currentData()
+        targets = [image_id]
+        if scope == "included":
+            targets += [record.image_id for record in controller.experiment.images if record.include]
+        elif scope == "missing":
+            targets += [record.image_id for record in controller.experiment.images if not record.pixel_size_x]
+        targets = list(dict.fromkeys(targets))
+        for target in targets:
+            controller.set_pixel_size(target, x, y, z)
         self.refresh_table()
         self.shell._objects_panel.update_recommendation()
-        self.shell._footer.set_units("µm" if x and y else "pixels — no pixel size in this image")
+        self.shell._footer.set_units("µm" if x and y else "pixels — no pixel size in this image", keep_detail=True)
+        self.shell.message(f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.")
 
     def _filter(self, text: str) -> None:
         query = text.casefold()
@@ -1687,6 +1781,49 @@ class ExperimentPanel(QWidget):
         )
 
 
+# One set of words for how each image of a run went, used everywhere a run is summarized.
+JOB_WORDS = {"Success": "finished", "Warning": "needs a look", "Failure": "failed"}
+QC_WORDS = {"success": "No problems found", "warning": "Needs a look (see the message at the bottom)"}
+
+
+def run_outcome(completed: int, warnings: int, failed: int) -> str:
+    """For example '7 finished, 1 needs a look, 1 failed'."""
+
+    parts = [f"{completed} finished"]
+    if warnings:
+        parts.append(f"{warnings} need{'s' if warnings == 1 else ''} a look")
+    if failed:
+        parts.append(f"{failed} failed")
+    return ", ".join(parts)
+
+
+# Plain words for an image's state. A failed run and a run with warnings are both saved as
+# needs_attention; last_result tells them apart.
+STATUS_WORDS = {
+    "not_analyzed": "Not run",
+    "analyzed": "Analyzed",
+    "needs_attention": "Needs a look",
+    "reviewed": "Reviewed",
+    "approved": "Approved",
+    "excluded": "Left out",
+    "running": "Running",
+}
+
+
+def _status_text(record) -> str:
+    if record.last_result == "Failure" and record.processing_status == "needs_attention":
+        return "Failed"
+    return STATUS_WORDS.get(record.processing_status, record.processing_status.replace("_", " ").capitalize())
+
+
+def _expression_cell(item: QTableWidgetItem | None) -> str:
+    """The saved expression behind a result-row cell (its text for rows typed by older versions)."""
+
+    if item is None:
+        return ""
+    return str(item.data(Qt.UserRole) or item.text()).strip()
+
+
 def _read_only(text: str) -> QTableWidgetItem:
     item = QTableWidgetItem(text)
     item.setFlags(item.flags() & ~Qt.ItemIsEditable)
@@ -1708,10 +1845,9 @@ class ManifestTable(QTableWidget):
     def dropEvent(self, event) -> None:
         paths = [url.toLocalFile() for url in event.mimeData().urls()]
         controller = self.panel.shell.require_controller()
-        if controller and paths:
-            notices = controller.add_image_paths(paths)
-            self.panel.shell._refresh_all()
-            self.panel.set_notices(notices)
+        if controller is not None and paths:
+            # The same as Add images / Add folder: off the interface thread, with the ticked file types.
+            self.panel._import(controller, paths)
 
     def keyPressEvent(self, event) -> None:
         from qtpy.QtGui import QKeySequence
@@ -1743,6 +1879,8 @@ class ObjectsPanel(QWidget):
         self.min_area = QDoubleSpinBox()
         self.max_area = QDoubleSpinBox()
         for box in (self.min_area, self.max_area):
+            box.setSpecialValueText("none")  # 0 keeps every size
+        for box in (self.min_area, self.max_area):
             box.setMaximum(1e12)
         self.area_unit = QComboBox()
         _fill_options(self.area_unit, AREA_UNIT_OPTIONS)
@@ -1758,7 +1896,7 @@ class ObjectsPanel(QWidget):
         self.z_stack.setToolTip(
             "2D: max projection keeps the brightest value through all slices (nuclei at different depths "
             "can merge); one slice misses nuclei outside it.\n"
-            "3D: link slices segments each slice and joins outlines that overlap in neighbouring slices; "
+            "3D: link slices segments each slice and joins outlines that overlap in neighboring slices; "
             "whole volume segments the stack at once (slow, needs closely spaced slices).\n"
             "Times are estimates for this computer."
         )
@@ -1787,7 +1925,7 @@ class ObjectsPanel(QWidget):
         self.z_scale.addItem("Each slice separately", "slice")
         self.z_scale.setToolTip(
             "Scale brightness (and automatic thresholds) once for the whole stack, so a dim top or bottom "
-            "slice stays dim and its outlines match the neighbouring slices. 'Each slice' is Cellpose's default."
+            "slice stays dim and its outlines match the neighboring slices. 'Each slice' is Cellpose's default."
         )
         self.z_min_slices = QSpinBox()
         self.z_min_slices.setRange(1, 100)
@@ -1862,7 +2000,6 @@ class ObjectsPanel(QWidget):
         self.method.currentIndexChanged.connect(lambda _index: self.update_recommendation())
         self.method.currentIndexChanged.connect(lambda _index: self._method_changed())
         self.threshold_method.currentIndexChanged.connect(lambda _index: self._method_changed())
-        form.addRow("Object set name", self.object_name)
         form.addRow("Source channel", self.channel)
         form.addRow("Method", self.method)
         form.addRow(self.engine_choice_label, self.engine_choice)
@@ -1871,9 +2008,9 @@ class ObjectsPanel(QWidget):
         form.addRow("Threshold", self.threshold_method)
         form.addRow("Manual threshold", self.threshold)
         form.addRow("Smoothing sigma", self.sigma)
+        form.addRow("Size unit", self.area_unit)
         form.addRow("Minimum object size", self.min_area)
         form.addRow("Maximum object size", self.max_area)
-        form.addRow("Size unit", self.area_unit)
         layout.addLayout(form)
         self.advanced_toggle = QCheckBox("Advanced")
         self.advanced_box = QGroupBox("Advanced")
@@ -1895,6 +2032,7 @@ class ObjectsPanel(QWidget):
         self.cellpose_model.addItems(list(self.engine.models))
         self.diameter = QDoubleSpinBox()
         self.diameter.setMaximum(10000)
+        self.diameter.setSpecialValueText("automatic")  # 0: Cellpose estimates it
         self.flow = QDoubleSpinBox()
         self.flow.setValue(0.4)
         self.cellprob = QDoubleSpinBox()
@@ -1904,6 +2042,8 @@ class ObjectsPanel(QWidget):
         self.gpu.toggled.connect(lambda _checked: self._refresh_gpu_banner())
         self.watershed.toggled.connect(lambda _checked: self._method_changed())
         self.gpu_on.clicked.connect(lambda: self.gpu.setChecked(True))
+        self.object_name.setToolTip("The name of the objects in the results, for example Nuclei.")
+        advanced.addRow("Object name", self.object_name)
         advanced.addRow(self.fill_holes)
         advanced.addRow("Opening radius (px)", self.opening)
         advanced.addRow("Closing radius (px)", self.closing)
@@ -1919,7 +2059,8 @@ class ObjectsPanel(QWidget):
         layout.addWidget(self.advanced_box)
         actions = QHBoxLayout()
         preview = QPushButton("Preview")
-        run = QPushButton("Run")
+        run = QPushButton("Run this image")  # the same action, and name, as in the Run bar
+        run.setToolTip("Find objects in this image and measure them.")
         preview.clicked.connect(shell.preview_current)
         run.clicked.connect(shell.run_current)
         actions.addWidget(preview)
@@ -1968,7 +2109,8 @@ class ObjectsPanel(QWidget):
             self.diameter.setValue(float(parameters["diameter_px"]))
         self.flow.setValue(float(parameters.get("flow_threshold", 0.4)))
         self.cellprob.setValue(float(parameters.get("cellprob_threshold", 0)))
-        self.gpu.setChecked(bool(parameters.get("gpu", False)))
+        usable = bool(self._gpu_status.get("available")) and self.engine.installed
+        self.gpu.setChecked(bool(parameters.get("gpu", usable)))
         if parameters.get("min_area_um2") is not None:
             _choose(self.area_unit, "um2")
             self.min_area.setValue(float(parameters["min_area_um2"]))
@@ -2088,12 +2230,20 @@ class ObjectsPanel(QWidget):
             self.gpu.setEnabled(False)
         elif status.get("available"):
             self.gpu.setEnabled(True)
+            if not self._gpu_chosen():
+                self.gpu.setChecked(True)  # a usable GPU is used unless the settings say otherwise
         else:
             self.gpu.setChecked(False)
             self.gpu.setEnabled(False)
         self._refresh_gpu_banner()
         self.shell.message(self._gpu_summary())
         self.update_recommendation()
+
+    def _gpu_chosen(self) -> bool:
+        """True when the open settings already say whether to use the GPU."""
+
+        controller = self.shell.controller
+        return controller is not None and "gpu" in (controller.recipe.object_set.parameters or {})
 
     def _gpu_summary(self) -> str:
         status = self._gpu_status
@@ -2213,7 +2363,9 @@ class MeasurementsPanel(QWidget):
         layout = QVBoxLayout(self)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Id", "Channel", "Region", "Statistic", "Background", "Pixel level"])
-        layout.addWidget(QLabel("Measurements"))
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        layout.addWidget(QLabel("Measurements (what is measured in each marker channel)"))
         layout.addWidget(self.table)
         self.form = self._measurement_form()
         layout.addLayout(self.form)
@@ -2223,9 +2375,9 @@ class MeasurementsPanel(QWidget):
         remove.clicked.connect(self._remove)
         layout.addWidget(add)
         layout.addWidget(remove)
-        layout.addWidget(QLabel("Classifications"))
+        layout.addWidget(QLabel("Markers (how each object is called positive or negative)"))
         self.classes = QTableWidget(0, 4)
-        self.classes.setHorizontalHeaderLabels(["Name", "Measurement", "Threshold", "Positive when"])
+        self.classes.setHorizontalHeaderLabels(["Name", "Measurement", "Cutoff", "Positive when"])
         layout.addWidget(self.classes)
         self.class_name = QLineEdit()
         self.class_measurement = QComboBox()
@@ -2237,17 +2389,17 @@ class MeasurementsPanel(QWidget):
         for text, value in COMPARISONS:
             self.class_comparison.addItem(text, value)
         self.class_comparison.setToolTip(
-            "above: positive when the value is greater than the threshold (equal is negative).\n"
-            "at least: positive when the value is greater than or equal to the threshold.\n"
+            "above: positive when the value is greater than the cutoff (equal is negative).\n"
+            "at least: positive when the value is greater than or equal to the cutoff.\n"
             "For a percent-of-pixels measurement, 'at least' reads as 'at least N% of the pixels'."
         )
         row = QFormLayout()
         row.addRow("Name", self.class_name)
         row.addRow("Measurement", self.class_measurement)
-        row.addRow("Threshold", self.class_threshold)
+        row.addRow("Cutoff", self.class_threshold)
         row.addRow("Positive when value is", self.class_comparison)
         layout.addLayout(row)
-        add_class = QPushButton("Add classification")
+        add_class = QPushButton("Add marker")
         add_class.clicked.connect(self._add_class)
         layout.addWidget(add_class)
 
@@ -2323,7 +2475,7 @@ class MeasurementsPanel(QWidget):
         controller = self.shell.controller
         if controller is None:
             return
-        spec = next((m for m in controller.recipe.measurements if m.id == self.class_measurement.currentText()), None)
+        spec = next((m for m in controller.recipe.measurements if m.id == self.class_measurement.currentData()), None)
         if spec is not None and spec.statistic == "percent_above":
             self.class_comparison.setCurrentIndex(self.class_comparison.findData("at_least"))
             if self.class_threshold.value() <= 0 or self.class_threshold.value() > 100:
@@ -2342,22 +2494,26 @@ class MeasurementsPanel(QWidget):
         self.table.setRowCount(len(controller.recipe.measurements))
         for row, measurement in enumerate(controller.recipe.measurements):
             self.table.setItem(row, 0, QTableWidgetItem(measurement.id))
-            self.table.setItem(row, 1, QTableWidgetItem(str(measurement.channel)))
-            self.table.setItem(row, 2, QTableWidgetItem(measurement.region.type))
-            self.table.setItem(row, 3, QTableWidgetItem(measurement.statistic))
-            self.table.setItem(row, 4, QTableWidgetItem(measurement.background.type))
+            self.table.setItem(row, 1, QTableWidgetItem(controller._channel_name(int(measurement.channel))))
+            self.table.setItem(row, 2, QTableWidgetItem(_option_text(REGION_OPTIONS, measurement.region.type)))
+            self.table.setItem(row, 3, QTableWidgetItem(_option_text(STATISTIC_OPTIONS, measurement.statistic)))
+            self.table.setItem(row, 4, QTableWidgetItem(_option_text(BACKGROUND_OPTIONS, measurement.background.type)))
             level = ""
             if measurement.pixel_level is not None:
                 level = f"≥ {measurement.pixel_level:g}"
                 if measurement.pixel_level_high is not None:
                     level += f" and ≤ {measurement.pixel_level_high:g}"
             self.table.setItem(row, 5, QTableWidgetItem(level))
-            self.class_measurement.addItem(measurement.id)
+            self.class_measurement.addItem(_measurement_text(controller, measurement), measurement.id)
         self.class_measurement.blockSignals(False)
         self.classes.setRowCount(len(controller.recipe.classifications))
         for row, classification in enumerate(controller.recipe.classifications):
             self.classes.setItem(row, 0, QTableWidgetItem(classification.name))
-            self.classes.setItem(row, 1, QTableWidgetItem(classification.measurement))
+            spec = next((m for m in controller.recipe.measurements if m.id == classification.measurement), None)
+            measured = QTableWidgetItem(_measurement_text(controller, spec) if spec is not None else classification.measurement)
+            measured.setData(Qt.UserRole, classification.measurement)
+            measured.setFlags(measured.flags() & ~Qt.ItemIsEditable)
+            self.classes.setItem(row, 1, measured)
             self.classes.setItem(row, 2, QTableWidgetItem(str(classification.threshold)))
             self.classes.setCellWidget(row, 3, self._comparison_box(classification.comparison))
 
@@ -2386,8 +2542,12 @@ class MeasurementsPanel(QWidget):
         classifications = []
         for row in range(self.classes.rowCount()):
             name = self.classes.item(row, 0).text()
-            measurement = self.classes.item(row, 1).text()
-            threshold = float(self.classes.item(row, 2).text())
+            measurement_item = self.classes.item(row, 1)
+            measurement = str(measurement_item.data(Qt.UserRole) or measurement_item.text())
+            try:
+                threshold = float(self.classes.item(row, 2).text())
+            except ValueError:
+                raise RecipeValidationError(f"The cutoff of {name} must be a number.") from None
             previous = next((item for item in data["classifications"] if item["name"] == name), None)
             entry = dict(previous) if previous else {"id": f"class_{row + 1}"}
             entry.update(
@@ -2436,7 +2596,7 @@ class MeasurementsPanel(QWidget):
         try:
             controller.set_recipe(data)
         except CellQuantError as exc:
-            self.shell.message(str(exc))
+            self.shell.show_error(str(exc))
             return
         self.refresh()
 
@@ -2444,19 +2604,41 @@ class MeasurementsPanel(QWidget):
         controller = self.shell.controller
         if controller is None or self.table.currentRow() < 0:
             return
+        row = self.table.currentRow()
+        if row < 0 or row >= self.table.rowCount():
+            self.shell.message("Click a row in the Measurements table first, then Remove measurement.")
+            return
         self.write_recipe()
         data = controller.recipe.model_dump(mode="json")
-        del data["measurements"][self.table.currentRow()]
-        controller.set_recipe(data)
+        removed = data["measurements"][row]["id"]
+        users = [item["name"] for item in data["classifications"] if item["measurement"] == removed]
+        if users:
+            self.shell.message(
+                f"{removed} is used by {', '.join(users)}. Remove or change that classification first."
+            )
+            return
+        del data["measurements"][row]
+        try:
+            controller.set_recipe(data)
+        except (CellQuantError, ValueError) as exc:
+            self.shell.show_error(str(exc))
+            return
         self.refresh()
 
     def _add_class(self) -> None:
         if not self.class_name.text().strip():
+            self.shell.message("Type a name for the marker first, for example OTX2.")
+            return
+        if self.class_measurement.currentData() is None:
+            self.shell.message("Add a measurement first: a marker is called from one.")
             return
         row = self.classes.rowCount()
         self.classes.insertRow(row)
         self.classes.setItem(row, 0, QTableWidgetItem(self.class_name.text().strip()))
-        self.classes.setItem(row, 1, QTableWidgetItem(self.class_measurement.currentText()))
+        measured = QTableWidgetItem(self.class_measurement.currentText())
+        measured.setData(Qt.UserRole, self.class_measurement.currentData())
+        measured.setFlags(measured.flags() & ~Qt.ItemIsEditable)
+        self.classes.setItem(row, 1, measured)
         self.classes.setItem(row, 2, QTableWidgetItem(str(self.class_threshold.value())))
         self.classes.setCellWidget(row, 3, self._comparison_box(str(self.class_comparison.currentData())))
         self.class_name.clear()
@@ -2468,6 +2650,10 @@ class ReviewPanel(QWidget):
         self.shell = shell
         self._labels = None
         self._fills = None
+        # The object the user clicked. napari's own selected_label starts at 1, so it is not used
+        # until the user changes it; otherwise Delete object would remove object 1 unasked.
+        self._picked: int | None = None
+        self._click_bound = False
         layout = QVBoxLayout(self)
         self.show_boundaries = QCheckBox("Show object boundaries")
         self.show_fills = QCheckBox("Show object fills")
@@ -2499,23 +2685,23 @@ class ReviewPanel(QWidget):
         self._cutoff_timer.setInterval(40)
         self._cutoff_timer.timeout.connect(self._apply_pending_cutoff)
         colors = QHBoxLayout()
-        self.positive_color = QPushButton("Positive colour")
-        self.negative_color = QPushButton("Negative colour")
-        self.positive_color.setToolTip("Colour of positive objects (at or past the cutoff) in the image.")
-        self.negative_color.setToolTip("Colour of negative objects in the image.")
+        self.positive_color = QPushButton("Positive color")
+        self.negative_color = QPushButton("Negative color")
+        self.positive_color.setToolTip("Color of positive objects (at or past the cutoff) in the image.")
+        self.negative_color.setToolTip("Color of negative objects in the image.")
         self.positive_color.clicked.connect(lambda: self._choose_color(positive=True))
         self.negative_color.clicked.connect(lambda: self._choose_color(positive=False))
-        reset = QPushButton("Default colours")
-        reset.setToolTip("Green for positive, red for negative.")
+        reset = QPushButton("Default colors")
+        reset.setToolTip("Green for positive, magenta for negative (both easy to tell apart with color blindness).")
         reset.clicked.connect(self._reset_colors)
         for button in (self.positive_color, self.negative_color, reset):
             colors.addWidget(button)
         layout.addLayout(colors)
         self._show_colors()
         layout.addWidget(self._pixel_level_box())
-        self.counts = QLabel("Positive: 0\nNegative: 0\nPositive: —")
+        self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
         layout.addWidget(self.counts)
-        self.selected = QLabel("Selected object: none")
+        self.selected = QLabel("Selected object: none (click an object in the image)")
         layout.addWidget(self.selected)
         buttons = QHBoxLayout()
         for text, slot in (
@@ -2627,7 +2813,7 @@ class ReviewPanel(QWidget):
         try:
             result = controller.update_pixel_levels(image_id, {spec.id: (self.pixel_level.value(), high)})
         except CellQuantError as exc:
-            self.shell.message(str(exc))
+            self.shell.show_error(str(exc))
             return
         controller.save()
         if result is not None:
@@ -2661,7 +2847,7 @@ class ReviewPanel(QWidget):
             f"Objects: {result.qc.n_objects}\n"
             f"Median area: {area} {area_unit}\n"
             f"Touching border: {border_text}\n"
-            f"Status: {result.qc.status}"
+            f"Checks: {QC_WORDS.get(result.qc.status, result.qc.status)}"
         )
 
     def classification_id(self) -> str:
@@ -2671,7 +2857,40 @@ class ReviewPanel(QWidget):
         self._labels = boundaries
         self._fills = fills
         boundaries.events.selected_label.connect(self._on_selected)
+        self.clear_selection()
+        if not self._click_bound:
+            # A plain click on the image picks the object under the pointer, whichever layer is active.
+            self.shell.viewer.mouse_drag_callbacks.append(self._on_click)
+            self._click_bound = True
         self._toggle_layers()
+
+    def clear_selection(self) -> None:
+        self._picked = None
+        self.selected.setText("Selected object: none (click an object in the image)")
+
+    def _on_click(self, viewer, event):
+        start = tuple(event.position)
+        dragged = False
+        yield
+        while event.type == "mouse_move":
+            dragged = True
+            yield
+        if dragged or self._labels is None or self._labels not in viewer.layers:
+            return
+        try:
+            value = self._labels.get_value(start, view_direction=event.view_direction, dims_displayed=event.dims_displayed, world=True)
+        except Exception:  # noqa: BLE001 - a click outside the image picks nothing
+            value = None
+        self.pick(int(value) if isinstance(value, (int, np.integer)) else 0)
+
+    def pick(self, object_id: int) -> None:
+        """Select an object for Delete / Restore (0 clears the selection)."""
+
+        if object_id <= 0:
+            self.clear_selection()
+            return
+        self._picked = object_id
+        self.selected.setText(f"Selected object: {object_id}")
 
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
@@ -2694,7 +2913,7 @@ class ReviewPanel(QWidget):
         rule = guide.describe_rule(self.shell.controller.recipe, classification)
         self.counts.setText(
             f"Positive when: {rule}\n"
-            f"Positive: {counts['positive']}\nNegative: {counts['negative']}\nUnmeasured: {int(counts['n_missing'])}\nPositive: {percent_text}"
+            f"Positive: {counts['positive']}\nNegative: {counts['negative']}\nUnmeasured: {int(counts['n_missing'])}\nPercent positive: {percent_text}"
         )
 
     def _set_slider(self, values: np.ndarray, threshold: float, percent_rule: bool) -> None:
@@ -2743,7 +2962,7 @@ class ReviewPanel(QWidget):
         chosen = QColorDialog.getColor(
             QColor(current_positive if positive else current_negative),
             self,
-            "Colour of positive objects" if positive else "Colour of negative objects",
+            "Color of positive objects" if positive else "Color of negative objects",
         )
         if not chosen.isValid():
             return
@@ -2790,14 +3009,12 @@ class ReviewPanel(QWidget):
             viewer.layers["Object IDs"].visible = self.show_ids.isChecked()
 
     def _on_selected(self, event) -> None:
+        # Changed by napari's picker tool on the Objects layer: the same as clicking the object.
         value = int(event.value) if hasattr(event, "value") else int(self._labels.selected_label)
-        self.selected.setText("Selected object: none" if value <= 0 else f"Selected object: {value}")
+        self.pick(value)
 
     def _selected_id(self) -> int | None:
-        if self._labels is None:
-            return None
-        value = int(self._labels.selected_label)
-        return value if value > 0 else None
+        return self._picked
 
     def _delete(self) -> None:
         self._edit("delete")
@@ -2808,7 +3025,10 @@ class ReviewPanel(QWidget):
     def _edit(self, kind: str) -> None:
         controller = self.shell.require_controller()
         object_id = self._selected_id()
-        if controller is None or object_id is None or not self.shell._nav_ids:
+        if controller is None or not self.shell._nav_ids:
+            return
+        if object_id is None:
+            self.shell.message("Click an object in the image first, then Delete object or Restore object.")
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
 
@@ -2862,54 +3082,93 @@ class ResultsPanel(QWidget):
         super().__init__()
         self.shell = shell
         layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Result rows: how many objects of one kind, among another"))
         self.reports = QTableWidget(0, 2)
-        self.reports.setHorizontalHeaderLabels(["Numerator", "Denominator"])
+        self.reports.setHorizontalHeaderLabels(["Count", "Among"])
+        self.reports.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.reports.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         layout.addWidget(self.reports)
+        pick = QHBoxLayout()
+        self.report_count = QComboBox()
+        self.report_among = QComboBox()
+        self.report_count.setToolTip("Which objects to count, for example OTX2+ or OTX2+ and VSX2-.")
+        self.report_among.setToolTip("Out of which objects, for example all objects or Fluor+.")
+        pick.addWidget(QLabel("Count"))
+        pick.addWidget(self.report_count, 1)
+        pick.addWidget(QLabel("among"))
+        pick.addWidget(self.report_among, 1)
+        layout.addLayout(pick)
+        report_buttons = QHBoxLayout()
         add = QPushButton("Add result row")
         add.clicked.connect(self._add_report)
-        layout.addWidget(add)
+        remove = QPushButton("Remove result row")
+        remove.clicked.connect(self._remove_report)
+        report_buttons.addWidget(add)
+        report_buttons.addWidget(remove)
+        layout.addLayout(report_buttons)
+        layout.addWidget(QLabel("Objects of each kind in this image"))
         self.phenotypes = QTableWidget(0, 3)
-        self.phenotypes.setHorizontalHeaderLabels(["Phenotype", "Count", "Percent"])
+        self.phenotypes.setHorizontalHeaderLabels(["Kind of object", "Count", "Percent"])
         layout.addWidget(self.phenotypes)
         self.queue = QLabel("")
         self.queue.setWordWrap(True)
         layout.addWidget(self.queue)
+        # Previous / Next image go through only these images until "Check all included images".
         queue_buttons = QHBoxLayout()
-        for text, mode in (("Review flagged", "flagged"), ("Review all", "all"), ("Review failed", "failed")):
+        for text, mode, tip in (
+            ("Check images that need a look", "flagged", "Previous / Next image go through only images with warnings."),
+            ("Check failed images", "failed", "Previous / Next image go through only images that failed."),
+            ("Check all included images", "all", "Previous / Next image go through every included image again."),
+        ):
             button = QPushButton(text)
+            button.setToolTip(tip)
             button.clicked.connect(lambda _checked=False, value=mode: self._filter_nav(value))
             queue_buttons.addWidget(button)
         layout.addLayout(queue_buttons)
-        actions = QHBoxLayout()
-        for text, slot in (
-            ("Run current", shell.run_current),
-            ("Run selected", self._run_selected),
-            ("Run experiment", self._run_all),
-            ("Export", self._export),
+        settings = QHBoxLayout()
+        for text, slot, tip in (
+            ("Save settings", self._save_recipe, "Save these settings (and the experiment) in the results folder."),
+            ("Load settings…", self._load_recipe, "Use the settings from a recipe.yaml file, for example from an earlier export."),
         ):
             button = QPushButton(text)
+            button.setToolTip(tip)
             button.clicked.connect(slot)
-            actions.addWidget(button)
-        layout.addLayout(actions)
-        recipes = QHBoxLayout()
-        for text, slot in (
-            ("Save recipe", self._save_recipe),
-            ("Load recipe", self._load_recipe),
-            ("Duplicate", self._duplicate),
-        ):
-            button = QPushButton(text)
-            button.clicked.connect(slot)
-            recipes.addWidget(button)
-        layout.addLayout(recipes)
+            settings.addWidget(button)
+        layout.addLayout(settings)
 
     def refresh(self) -> None:
         controller = self.shell.controller
         if controller is None:
             return
+        names = {item.id: item.name for item in controller.recipe.classifications}
         self.reports.setRowCount(len(controller.recipe.reports))
         for row, report in enumerate(controller.recipe.reports):
-            self.reports.setItem(row, 0, QTableWidgetItem(report.numerator))
-            self.reports.setItem(row, 1, QTableWidgetItem(report.denominator))
+            for column, expression in ((0, report.numerator), (1, report.denominator)):
+                item = QTableWidgetItem(guide.readable_expression(expression, names))
+                item.setData(Qt.UserRole, expression)
+                self.reports.setItem(row, column, item)
+        self._fill_report_choices(controller)
+
+    def _fill_report_choices(self, controller) -> None:
+        """Each marker positive or negative, and pairs of two markers; 'all objects' for Among."""
+
+        markers = controller.recipe.classifications
+        choices = []
+        for item in markers:
+            choices.append((f"{item.name}+", item.id))
+            choices.append((f"{item.name}-", f"NOT {item.id}"))
+        for first_index, first in enumerate(markers):
+            for second in markers[first_index + 1 :]:
+                for first_sign in ("+", "-"):
+                    for second_sign in ("+", "-"):
+                        expression = " AND ".join(
+                            (item.id if sign == "+" else f"NOT {item.id}") for item, sign in ((first, first_sign), (second, second_sign))
+                        )
+                        choices.append((f"{first.name}{first_sign} and {second.name}{second_sign}", expression))
+        for box, extra in ((self.report_count, []), (self.report_among, [("all objects", "all_objects")])):
+            box.clear()
+            for text, value in [*extra, *choices]:
+                box.addItem(text, value)
 
     def write_reports(self) -> None:
         controller = self.shell.controller
@@ -2918,10 +3177,10 @@ class ResultsPanel(QWidget):
         data = controller.recipe.model_dump(mode="json")
         reports = []
         for row in range(self.reports.rowCount()):
-            numerator = self.reports.item(row, 0)
-            denominator = self.reports.item(row, 1)
-            if numerator and denominator and numerator.text().strip():
-                reports.append({"numerator": numerator.text().strip(), "denominator": denominator.text().strip() or "all_objects"})
+            numerator = _expression_cell(self.reports.item(row, 0))
+            denominator = _expression_cell(self.reports.item(row, 1))
+            if numerator:
+                reports.append({"numerator": numerator, "denominator": denominator or "all_objects"})
         data["reports"] = reports
         controller.set_recipe(data)
 
@@ -2934,18 +3193,26 @@ class ResultsPanel(QWidget):
             self.phenotypes.setItem(row_index, 2, QTableWidgetItem(f"{row.percent_of_objects:.1f}"))
 
     def show_queue(self, report) -> None:
-        self.queue.setText(
-            f"{len(report.jobs)} images processed\n"
-            f"Passed QC: {report.completed}\n"
-            f"Review recommended: {report.warnings}\n"
-            f"Failed: {report.failed}"
-        )
+        self.queue.setText(f"Last run, {len(report.jobs)} images: {run_outcome(report.completed, report.warnings, report.failed)}.")
 
     def _add_report(self) -> None:
+        if self.report_count.currentData() is None:
+            self.shell.message("Set up markers first (step 3): result rows count marker-positive objects.")
+            return
         row = self.reports.rowCount()
         self.reports.insertRow(row)
-        self.reports.setItem(row, 0, QTableWidgetItem("A"))
-        self.reports.setItem(row, 1, QTableWidgetItem("all_objects"))
+        for column, box in ((0, self.report_count), (1, self.report_among)):
+            item = QTableWidgetItem(box.currentText())
+            item.setData(Qt.UserRole, box.currentData())
+            self.reports.setItem(row, column, item)
+        self.shell.message(f"Added {self.report_count.currentText()} among {self.report_among.currentText()}. It is in the results from the next run.")
+
+    def _remove_report(self) -> None:
+        row = self.reports.currentRow()
+        if row < 0:
+            self.shell.message("Click a result row first, then Remove result row.")
+            return
+        self.reports.removeRow(row)
 
     def _run_selected(self) -> None:
         ids = self.shell._experiment_panel.selected_ids()
@@ -2957,53 +3224,50 @@ class ResultsPanel(QWidget):
     def _run_all(self) -> None:
         self.shell.start_batch(None)
 
-    def _export(self) -> None:
-        self.shell.export_dialog()
-
     def _save_recipe(self) -> None:
         controller = self.shell.require_controller()
         if controller:
             self.shell._panels_to_recipe()
             controller.save()
-            self.shell._footer.message("Recipe saved.")
+            self.shell._footer.message(f"Settings saved in {controller.directory}.")
 
     def _load_recipe(self) -> None:
         controller = self.shell.require_controller()
         if controller is None:
             return
-        path, _ = QFileDialog.getOpenFileName(self, "Recipe", "", "Recipe (*.yaml *.yml *.json)")
-        if path:
-            controller.import_recipe(path)
-            self.shell._refresh_all()
-
-    def _duplicate(self) -> None:
-        controller = self.shell.require_controller()
-        if controller is None:
+        path, _ = QFileDialog.getOpenFileName(self, "Load settings", str(controller.directory), "Settings (*.yaml *.yml *.json)")
+        if not path:
             return
-        name, accepted = QInputDialog.getText(self, "Duplicate settings", "Name of the new analysis")
-        if accepted:
-            self.shell._panels_to_recipe()
-            controller.duplicate_recipe(name)
-            self.shell._refresh_all(keep_image=True)
-            self.shell._footer.message(f"New analysis '{controller.active_analysis().name}' with a copy of these settings.")
+        try:
+            controller.import_recipe(path)
+        except Exception as exc:  # noqa: BLE001 - a wrong or damaged file must not close the window
+            self.shell.show_error(f"These settings could not be loaded from {path}. {_error_text(exc)}")
+            return
+        self.shell._refresh_all()
+        self.shell.message(f"Settings loaded from {path}.")
 
     def _filter_nav(self, mode: str) -> None:
         controller = self.shell.controller
         if controller is None:
             return
+        included = [record for record in controller.experiment.images if record.include]
         if mode == "all":
-            ids = [record.image_id for record in controller.experiment.images]
-        elif mode == "failed":
-            ids = [record.image_id for record in controller.experiment.images if record.last_result == "Failure"]
+            self.shell.set_nav_filter(None)
+            return
+        if mode == "failed":
+            ids = [record.image_id for record in included if record.last_result == "Failure"]
+            words = "failed images"
         else:
             ids = [
                 record.image_id
-                for record in controller.experiment.images
-                if record.processing_status == "needs_attention"
+                for record in included
+                if record.processing_status == "needs_attention" and record.last_result != "Failure"
             ]
-        self.shell._nav_ids = ids or self.shell._nav_ids
-        self.shell._nav_index = 0
-        self.shell.show_current()
+            words = "images that need a look"
+        if not ids:
+            self.shell.message(f"No {words} among the included images.")
+            return
+        self.shell.set_nav_filter(words, ids)
 
 
 class AnalysisBar(QWidget):
@@ -3064,6 +3328,7 @@ class AnalysisBar(QWidget):
         footer = getattr(self.shell, "_footer", None)
         if footer is not None:
             footer.run_analyses.setVisible(several)
+            footer.run_all.setText("Run all images (this analysis)" if several else "Run all images")
         summary = getattr(self.shell, "_results_summary", None)
         if summary is not None:
             summary.show_analysis_actions(several)
@@ -3202,6 +3467,7 @@ class Footer(QWidget):
         for button in (self.pause, self.cancel):
             row.addWidget(button)
         self._run_buttons = {"current": run_current, "all": run_all}
+        self.run_all = run_all
         self.cancel.setStyleSheet("QPushButton:enabled { color: #e05050; font-weight: bold; }")
         previous.setToolTip("Show the previous image in the experiment (Page Up).")
         next_image.setToolTip("Show the next image in the experiment (Page Down).")
@@ -3227,7 +3493,8 @@ class Footer(QWidget):
         self.status = QLabel("")
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        self.log.setMaximumHeight(80)
+        self.log.setMinimumHeight(60)
+        self.log.setMaximumHeight(160)
         layout.addWidget(self.position)
         layout.addWidget(self.units)
         layout.addWidget(self.progress)
@@ -3238,10 +3505,21 @@ class Footer(QWidget):
         for button in self._navigation:
             button.setEnabled(enabled)
 
-    def set_position(self, index: int, total: int, filename: str) -> None:
-        self.position.setText(f"Image {index + 1} / {total}  {filename}")
+    def set_position(self, index: int, total: int, filename: str, only: str | None = None) -> None:
+        if total == 0:
+            self.position.setText("No images are included. Tick Include in step 1, or add images.")
+            return
+        scope = f" ({only} only)" if only else ""
+        self.position.setText(f"Image {index + 1} of {total}{scope}: {filename}")
 
-    def set_units(self, unit: str) -> None:
+    def set_units(self, unit: str, keep_detail: bool = False) -> None:
+        """The units line; keep_detail keeps what follows it (for example 'Shown and analyzed: …')."""
+
+        separator = "   ·   "
+        if keep_detail and separator in unit + self.units.text():
+            current = self.units.text()
+            if separator in current and separator not in unit:
+                unit = unit + separator + current.split(separator, 1)[1]
         self.units.setText(f"Units: {unit}")
 
     def message(self, text: str) -> None:
@@ -3318,14 +3596,19 @@ class Footer(QWidget):
         if finished:
             if status == "Failure":
                 self.failed_files.append(filename)
-            self.message(f"Image {index} of {total}  {filename}: {status}")
+            self.message(f"Image {index} of {total} ({filename}): {JOB_WORDS.get(status, status)}")
         else:
             self.status.setText(f"Image {index} of {total} ({filename}): starting{self._time_left(index - 1, total)}")
 
     def _step(self, delta: int) -> None:
         if not self.shell._nav_ids:
+            self.message("No images are included. Tick Include in step 1, or add images.")
             return
-        self.shell._nav_index = (self.shell._nav_index + delta) % len(self.shell._nav_ids)
+        target = self.shell._nav_index + delta
+        if not 0 <= target < len(self.shell._nav_ids):
+            self.message("This is the last image." if delta > 0 else "This is the first image.")
+            return
+        self.shell._nav_index = target
         self.shell.show_current()
 
     def _pause(self) -> None:
@@ -3387,14 +3670,44 @@ class CallWorker(QThread):
             else:
                 value = self._fn()
             self.succeeded.emit(value)
-        except Exception as exc:
-            self.failed.emit(str(exc.args[0] if exc.args else exc))
+        except Exception as exc:  # noqa: BLE001 - shown to the user, with the traceback in the developer log
+            self.failed.emit(_error_text(exc))
+
+
+def _error_text(exc: BaseException) -> str:
+    """A message for the red problem box. Unexpected errors name their type; the traceback goes to the developer log."""
+
+    _log_developer_error(exc)
+    # These carry sentences written for the user; others (KeyError 'x', TypeError, ...) would read as noise.
+    if isinstance(exc, (CellQuantError, ValueError, OSError, RuntimeError)) and not isinstance(exc, (KeyError, IndexError)):
+        return str(exc.args[0] if exc.args else exc) or "The analysis failed."
+    detail = str(exc) or "no details"
+    return f"Unexpected error ({type(exc).__name__}: {detail}). Details are in cellquant_developer.log (see Start here: When something looks wrong)."
+
+
+def _log_developer_error(exc: BaseException) -> None:
+    """Append the traceback to the developer log beside the per-computer settings."""
+
+    import traceback
+
+    import os
+
+    try:
+        # Beside the per-computer install record on Windows (%LOCALAPPDATA%\\CellQuant); ~/.cellquant elsewhere.
+        local = os.environ.get("LOCALAPPDATA")
+        folder = Path(local) / "CellQuant" if local else Path.home() / ".cellquant"
+        folder.mkdir(parents=True, exist_ok=True)
+        with (folder / "cellquant_developer.log").open("a", encoding="utf-8") as handle:
+            handle.write("".join(traceback.format_exception(exc)) + "\n")
+    except Exception:  # noqa: BLE001 - logging must never hide the original problem
+        pass
 
 
 class BatchWorker(QThread):
     progress = Signal(int, int, str, str)
     step = Signal(str, float)
     finished_ok = Signal(object)
+    failed = Signal(str)
 
     def __init__(self, controller: AnalysisController, image_ids: list[str] | None, analyses: list[str] | None = None):
         super().__init__()
@@ -3421,23 +3734,27 @@ class BatchWorker(QThread):
                 self.msleep(100)
             return self.cancelled
 
-        with progress.reporting(
-            lambda text, fraction: self.step.emit(text, -1.0 if fraction is None else float(fraction)),
-            stop_requested,
-        ):
-            if self.analyses is not None:
-                report = self.controller.run_analyses(
-                    self.analyses,
-                    self.image_ids,
-                    on_progress=on_progress,
-                    should_continue=should_continue,
-                )
-            else:
-                report = self.controller.run_images(
-                    self.image_ids,
-                    on_progress=on_progress,
-                    should_continue=should_continue,
-                )
+        try:
+            with progress.reporting(
+                lambda text, fraction: self.step.emit(text, -1.0 if fraction is None else float(fraction)),
+                stop_requested,
+            ):
+                if self.analyses is not None:
+                    report = self.controller.run_analyses(
+                        self.analyses,
+                        self.image_ids,
+                        on_progress=on_progress,
+                        should_continue=should_continue,
+                    )
+                else:
+                    report = self.controller.run_images(
+                        self.image_ids,
+                        on_progress=on_progress,
+                        should_continue=should_continue,
+                    )
+        except Exception as exc:  # noqa: BLE001 - the window must leave the running state whatever happened
+            self.failed.emit(_error_text(exc))
+            return
         self.finished_ok.emit(report)
 
 
