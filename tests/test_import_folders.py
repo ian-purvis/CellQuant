@@ -63,6 +63,7 @@ def test_folder_import_finds_every_image_and_keeps_readable_names(tmp_path: Path
     assert retina2.pixel_size_x == pytest.approx(0.5) and retina2.pixel_size_z == pytest.approx(1.5)
 
     text = "\n".join(notices)
+    assert "Looking in:" in text
     assert "Found 3 images (3 TIFF) in 3 folders." in text
     assert "Unused (and its 2 subfolders)" in text
     assert "Control/Retina 1/Processed" in text
@@ -71,13 +72,29 @@ def test_folder_import_finds_every_image_and_keeps_readable_names(tmp_path: Path
     assert "3 images are Z-stacks (5-7 slices)" in text
 
 
+def test_folder_import_does_not_take_sibling_folders(tmp_path: Path):
+    """Images next to the chosen folder must not be imported (even via look-alike paths)."""
+
+    parent = tmp_path / "data"
+    e145 = parent / "E14.5"
+    adult = parent / "adult"
+    _zstack(e145 / "Retina 1" / "image.tif")
+    _zstack(adult / "Retina 1" / "image.tif")
+    controller = AnalysisController.create(tmp_path / "experiment", "E14.5 only")
+    notices = controller.add_image_paths([e145])
+    assert sorted(record.relative_path for record in controller.experiment.images) == ["Retina 1/image.tif"]
+    assert all("adult" not in (record.source_path or "").replace("\\", "/") for record in controller.experiment.images)
+    assert any("Looking in:" in line and "E14.5" in line.replace("\\", "/") for line in notices)
+    assert not any("skipped" in line and "outside" in line for line in notices)
+
+
 def test_adding_the_same_folder_twice_does_not_duplicate(tmp_path: Path):
     _tree(tmp_path / "data")
     controller = AnalysisController.create(tmp_path / "experiment", "Twice")
     controller.add_image_paths([tmp_path / "data"])
     notices = controller.add_image_paths([tmp_path / "data"])
     assert len(controller.experiment.images) == 3
-    assert "3 were already listed" in notices[0]
+    assert any("3 were already listed" in line for line in notices)
 
 
 def test_cellquant_output_inside_a_data_folder_is_not_imported(tmp_path: Path):
