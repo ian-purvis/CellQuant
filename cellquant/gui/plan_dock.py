@@ -303,7 +303,12 @@ class PlanDock(QWidget):
         controller = self.shell.controller
         if controller is not None:
             for channel in controller.experiment.channels:
-                self.channel.addItem(channel.channel_name, channel.channel_index)
+                name = (channel.channel_name or "").strip()
+                if name and not name.lower().startswith("channel "):
+                    label = f"Channel {channel.channel_index + 1} = {name}"
+                else:
+                    label = f"Channel {channel.channel_index + 1}"
+                self.channel.addItem(label, channel.channel_index)
 
     def _update_summary(self) -> None:
         controller = self.shell.controller
