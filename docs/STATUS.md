@@ -1,5 +1,15 @@
 # CellQuant status
 
+## Known limitations (read before relying on the numbers)
+
+- Counts have not yet been checked against expert hand counts on real retinal images. Check outlines and positive calls by eye (step 4) and compare with a negative control.
+- Time series are not supported. ND2 and TIFF only.
+- One Cellpose engine runs per window: to use the other (Cellpose-SAM or classic Cellpose), close CellQuant and choose it when opening. Settings made for one engine are refused by the other.
+- Cellpose's whole-volume 3D step cannot be stopped part-way; Cancel takes effect when it ends.
+- Some behavior is tested only off-screen, not in a live napari window on a lab computer: see the "Not verified" notes below.
+
+The sections below are the development log, newest last.
+
 ## M0 — known defects (2026-09-28)
 
 Done:
