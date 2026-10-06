@@ -56,12 +56,12 @@ class PlanDock(QWidget):
         self.shell = shell
         self._building = False
         layout = QVBoxLayout(self)
-        intro = QLabel(
-            "Tick which images each analysis runs. A ticked group ticks every image in it. "
+        intro = QLabel("Tick images per analysis. ⓘ")
+        intro.setToolTip(
+            "Tick which images each analysis runs. A ticked group ticks every image in it.\n"
             "★ marks a channel chosen for one image; ⚠ means that image has no channel of the analysis's "
-            "channel name, so check it. Double-click a cell to open that image with that analysis."
+            "channel name, so check it.\nDouble-click a cell to open that image with that analysis."
         )
-        intro.setWordWrap(True)
         layout.addWidget(intro)
         options = QHBoxLayout()
         options.addWidget(QLabel("Group by"))
