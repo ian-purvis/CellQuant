@@ -32,6 +32,8 @@ from qtpy.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -1023,6 +1025,8 @@ class CellQuantWindow:
         for panel in panels:
             for kind in (QComboBox, QAbstractSpinBox, QLineEdit, QCheckBox, QSlider):
                 inputs.extend(widget for widget in panel.findChildren(kind) if widget not in view_only)
+        # The crop channels are a checkable list; they change the settings too.
+        inputs.append(self._objects_panel.crop_channels)
         return inputs
 
     def _lock_settings(self, locked: bool) -> None:
@@ -1440,9 +1444,26 @@ class CellQuantWindow:
         if result is None:
             self._drop("Classification")
             self._drop("Object IDs")
+            self._drop("Crop regions")
         else:
             self._set_classification_overlay(result)
             self._set_ids(result)
+            self._set_crop_regions(result, labels.shape)
+
+    def _set_crop_regions(self, result, shape) -> None:
+        """Outline the rectangles this image was segmented in (when the analysis crops)."""
+
+        self._drop("Crop regions")
+        rectangles = result.provenance.get("crop_rectangles") if result is not None else None
+        if not rectangles or len(shape) != 2:
+            return
+        corners = [
+            np.array([[y0, x0], [y0, x1], [y1, x1], [y1, x0]], dtype=float) for y0, y1, x0, x1 in rectangles
+        ]
+        layer = self.viewer.add_shapes(
+            corners, shape_type="rectangle", name="Crop regions", edge_color="yellow", face_color="transparent", edge_width=3
+        )
+        self._managed.add(layer.name)
 
     def _set_classification_overlay(self, result) -> None:
         choice = self._review_panel.classification_id()
@@ -2129,6 +2150,36 @@ class ObjectsPanel(QWidget):
         form.addRow("Manual threshold", self.threshold)
         form.addRow("Smoothing sigma", self.sigma)
         layout.addLayout(form)
+        self.crop = QCheckBox("Crop to the region of interest before finding objects")
+        self.crop.setToolTip(
+            "Find the area(s) holding the positive cells on the channels ticked below, grow them by the margin, "
+            "and find objects only inside rectangles around them. Brightness scaling and thresholds still come "
+            "from the whole image, and results stay in full-image coordinates. Off by default."
+        )
+        self.crop_box = QGroupBox("Region of interest")
+        crop_form = QFormLayout(self.crop_box)
+        self.crop_channels = QListWidget()
+        self.crop_channels.setMaximumHeight(90)
+        self.crop_channels.setToolTip(
+            "The region must be positive on every ticked channel (AND). By default the channel of the results' "
+            "denominator (for example the reporter)."
+        )
+        self.crop_margin = QDoubleSpinBox()
+        self.crop_margin.setRange(0, 1000)
+        self.crop_margin.setValue(50.0)
+        self.crop_margin.setSuffix(" µm")
+        self.crop_warning = QLabel("")
+        self.crop_warning.setWordWrap(True)
+        self.crop_warning.setStyleSheet("QLabel { color: #b9770e; }")
+        crop_form.addRow("Positive on", self.crop_channels)
+        crop_form.addRow("Margin", self.crop_margin)
+        crop_form.addRow(self.crop_warning)
+        self.crop_box.setVisible(False)
+        self.crop.toggled.connect(self.crop_box.setVisible)
+        self.crop.toggled.connect(lambda _checked: self._crop_changed())
+        self.crop_channels.itemChanged.connect(lambda _item: self._crop_changed())
+        layout.addWidget(self.crop)
+        layout.addWidget(self.crop_box)
         self.advanced_toggle = QCheckBox("Advanced")
         self.advanced_box = QGroupBox("Advanced")
         self.advanced_box.setVisible(False)
@@ -2221,6 +2272,7 @@ class ObjectsPanel(QWidget):
         self.watershed_distance.setValue(float(parameters.get("watershed_min_distance_px", 5)))
         self.compactness.setValue(float(parameters.get("watershed_compactness", 0)))
         self.cellpose_model.setCurrentText(str(parameters.get("model") or self.engine.default_model or ""))
+        self._refresh_crop(controller)
         pixel = self._pixel_size_um()
         if parameters.get("diameter_um") is not None:
             self.nucleus_diameter_um.setValue(float(parameters["diameter_um"]))
@@ -2309,6 +2361,60 @@ class ObjectsPanel(QWidget):
             _show_row(advanced, widget, cellpose)
         self.gpu.setVisible(cellpose and self.engine.installed)
         self._refresh_gpu_banner()
+
+    def _refresh_crop(self, controller) -> None:
+        from cellquant.crop import crop_channels
+
+        recipe = controller.recipe
+        spec = recipe.crop
+        chosen = set(crop_channels(recipe))
+        self.crop_channels.blockSignals(True)
+        self.crop_channels.clear()
+        for channel in controller.experiment.channels:
+            item = QListWidgetItem(channel.channel_name)
+            item.setData(Qt.UserRole, channel.channel_index)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if channel.channel_index in chosen else Qt.Unchecked)
+            self.crop_channels.addItem(item)
+        self.crop_channels.blockSignals(False)
+        self.crop.blockSignals(True)
+        self.crop.setChecked(bool(spec is not None and spec.enabled))
+        self.crop.blockSignals(False)
+        self.crop_box.setVisible(self.crop.isChecked())
+        self.crop_margin.setValue(float(spec.margin_um) if spec is not None else 50.0)
+        self._show_crop_warning()
+
+    def crop_settings(self, recipe_data: dict) -> dict | None:
+        """The crop settings on screen, for the recipe (None when never used)."""
+
+        previous = recipe_data.get("crop") or {}
+        channels = [
+            int(self.crop_channels.item(row).data(Qt.UserRole))
+            for row in range(self.crop_channels.count())
+            if self.crop_channels.item(row).checkState() == Qt.Checked
+        ]
+        if not self.crop.isChecked() and not previous:
+            return None
+        return {**previous, "enabled": self.crop.isChecked(), "channels": channels or None, "margin_um": self.crop_margin.value()}
+
+    def _crop_changed(self) -> None:
+        controller = self.shell.controller
+        if controller is None:
+            return
+        data = controller.recipe.model_dump(mode="json")
+        data["crop"] = self.crop_settings(data)
+        try:
+            controller.set_recipe(data)
+        except Exception as exc:  # noqa: BLE001 - shown to the user
+            self.shell.message(str(exc))
+            return
+        self._show_crop_warning()
+
+    def _show_crop_warning(self) -> None:
+        controller = self.shell.controller
+        warnings = controller.crop_warnings() if controller is not None else []
+        self.crop_warning.setText(" ".join(f"⚠ {text}" for text in warnings))
+        self.crop_warning.setVisible(bool(warnings))
 
     def _apply_z_enablement(self) -> None:
         """Keep Z-stack mode usable; never leave the combo stuck disabled after a run lock.
@@ -2560,6 +2666,7 @@ class ObjectsPanel(QWidget):
         data["z_stitch_threshold"] = round(self.z_link.value(), 3)
         data["z_scale_brightness"] = self.z_scale.currentData() or "stack"
         data["z_min_slices"] = self.z_min_slices.value()
+        data["crop"] = self.crop_settings(data)
         data["object_set"] = {
             "name": self.object_name.text() or "Objects",
             "segmentation_channel": int(self.channel.currentData() or 0),

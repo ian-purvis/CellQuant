@@ -29,7 +29,7 @@ from cellquant.quantify import (
 )
 from cellquant.recipe import Recipe, load_recipe
 from cellquant.regions import isotropic_pixel_size, spatial_unit
-from cellquant.segmentation import segment_objects
+from cellquant.segmentation import segment_objects, segment_regions
 from cellquant.volume import flag_z_problems, segment_volume
 from skimage.measure import regionprops
 
@@ -177,8 +177,39 @@ def segment_channel(
     return labels
 
 
+_NOT_GIVEN = object()
+
+
 def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
+    from cellquant.crop import regions_for
+
     channel = loaded.data[recipe.object_set.segmentation_channel]
+    # Crop rectangles: given by the caller (None: the full image), or found here when cropping is on.
+    rectangles = details.pop("crop_rectangles_given", _NOT_GIVEN)
+    crop_info = details.pop("crop_info_given", None)
+    if rectangles is _NOT_GIVEN:
+        crop_info = {}
+        rectangles = regions_for(loaded, recipe, crop_info)
+    cropping = recipe.crop is not None and recipe.crop.enabled
+    if cropping and crop_info:
+        # Recorded with the result: how much of the image the region covered, and why it was not cropped.
+        details["crop_info"] = {key: crop_info[key] for key in ("fraction", "skipped", "seconds", "note") if key in crop_info}
+    if cropping and crop_info and crop_info.get("warning"):
+        details["crop_warning"] = crop_info["warning"]
+    elif cropping and loaded.is_3d:
+        details["crop_warning"] = "Cropping applies to 2D analyses only; this Z-stack was analyzed in full."
+    elif cropping and rectangles == []:
+        details["crop_warning"] = "No region of positive cells was found for cropping, so the full image was segmented."
+    if rectangles and not loaded.is_3d:
+        return segment_regions(
+            channel,
+            recipe.object_set.algorithm,
+            recipe.object_set.parameters,
+            rectangles,
+            pixel_size_x=loaded.pixel_size_x,
+            pixel_size_y=loaded.pixel_size_y,
+            details=details,
+        )
     if loaded.is_3d:
         return segment_volume(
             channel,
@@ -238,6 +269,11 @@ def assemble_result(
     )
     removed = set(excluded_object_ids(automated_labels, operations))
     touched = edited_object_ids(operations)
+    crop_details = segmentation_details or {}
+    crop_edges = set(int(value) for value in crop_details.get("crop_edge_objects") or [])
+    if crop_details.get("crop_rectangles") is not None and len(objects):
+        # Objects touching a crop edge (not the image border) may be cut: flagged, never dropped.
+        objects["at_crop_edge"] = objects["object_id"].map(lambda value: int(value) in crop_edges)
     if len(objects):
         objects["excluded"] = objects["object_id"].map(lambda value: int(value) in removed)
         objects["manual_edit_status"] = [
@@ -268,6 +304,13 @@ def assemble_result(
     engine_warnings = [engine["warning"]] if engine.get("warning") else []
     if details.get("warning_z_step"):
         engine_warnings.append(details["warning_z_step"])
+    if details.get("crop_warning"):
+        engine_warnings.append(details["crop_warning"])
+    if len(objects) and "at_crop_edge" in objects.columns and bool(objects["at_crop_edge"].any()):
+        count = int(objects["at_crop_edge"].sum())
+        engine_warnings.append(
+            f"{count} object{'s touch' if count != 1 else ' touches'} a crop edge and may be cut (column at_crop_edge)."
+        )
     qc = _qc_report(
         labels,
         with_phenotypes,
@@ -314,6 +357,9 @@ def assemble_result(
         "z_scale_brightness": parsed.z_scale_brightness if loaded.is_3d else None,
         "z_min_slices": parsed.z_min_slices if loaded.is_3d else None,
         "anisotropy": details.get("anisotropy"),
+        "crop_rectangles": details.get("crop_rectangles"),
+        "crop": details.get("crop_info"),
+        "segmentation_timings": details.get("timings"),
         "segmentation_seconds": details.get("segmentation_seconds"),
         "image_shape_yx": list(loaded.shape_yx),
         "channel_axis_source": loaded.channel_axis_source,
@@ -363,6 +409,14 @@ def segmentation_details_of(result: ImageResult) -> dict:
         details["engine"] = result.provenance["segmentation_engine"]
     if result.provenance.get("anisotropy") is not None:
         details["anisotropy"] = result.provenance["anisotropy"]
+    if result.provenance.get("crop_rectangles") is not None:
+        details["crop_rectangles"] = result.provenance["crop_rectangles"]
+        if "at_crop_edge" in result.objects.columns:
+            flags = result.objects["at_crop_edge"].fillna(False).astype(bool)
+            details["crop_edge_objects"] = [int(value) for value in result.objects.loc[flags, "object_id"]]
+    crop_warning = next((text for text in result.qc.warnings if "crop" in text and text.startswith(("Cropping", "No region"))), None)
+    if crop_warning:
+        details["crop_warning"] = crop_warning
     no_z_step = next((text for text in result.qc.warnings if text.startswith("This image has no Z step, so slices")), None)
     if no_z_step:
         details["warning_z_step"] = no_z_step
@@ -603,7 +657,7 @@ def measurement_values(result: ImageResult, recipe: Recipe) -> pd.DataFrame:
 
 def _measurement_columns(measured: pd.DataFrame, recipe: Recipe) -> pd.DataFrame:
     drop = {item.id for item in recipe.classifications}
-    drop.update({"phenotype", "excluded", "unmeasured", "manual_edit_status", "z_flag"})
+    drop.update({"phenotype", "excluded", "unmeasured", "manual_edit_status", "z_flag", "at_crop_edge"})
     columns = [column for column in measured.columns if column not in drop]
     return measured.loc[:, columns].copy()
 
