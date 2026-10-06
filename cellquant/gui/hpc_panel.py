@@ -36,8 +36,9 @@ from qtpy.QtWidgets import (
 PAGES = ("1. Images", "2. Settings", "3. Cluster", "4. Prepare", "5. Submit", "6. Import")
 
 
-def _note(text: str, color: str = "rgba(80, 120, 200, 0.14)") -> QLabel:
+def _note(text: str, color: str = "rgba(80, 120, 200, 0.14)", tip: str = "") -> QLabel:
     label = QLabel(text)
+    label.setToolTip(tip)
     label.setWordWrap(True)
     label.setTextFormat(Qt.RichText)
     label.setStyleSheet(f"QLabel {{ background: {color}; border-radius: 6px; padding: 6px; }}")
@@ -76,9 +77,10 @@ class HpcPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(
             _note(
-                "<b>HPC prep</b> makes a package of your images and frozen settings for a cluster GPU job, "
+                "<b>HPC prep</b> ⓘ",
+                tip="Makes a package of your images and frozen settings for a cluster GPU job, "
                 "gives you the commands to run there, and imports the results as a new experiment. "
-                "Local analysis stays as it was; use the other tabs to return to it."
+                "Local analysis stays as it was; use the other tabs to return to it.",
             )
         )
         self.tabs = QTabWidget()
@@ -95,7 +97,9 @@ class HpcPanel(QWidget):
     def _build_images(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(QLabel("Tick the images to send. Each row is one image: a file, or one position (field of view) of an ND2 file."))
+        send_label = QLabel("Tick images to send.")
+        send_label.setToolTip("Each row is one image: a file, or one position (field of view) of an ND2 file.")
+        layout.addWidget(send_label)
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(["Send", "Sample", "File", "Position", "Channels", "Slices", "Pixel size (µm)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -164,12 +168,12 @@ class HpcPanel(QWidget):
     def _build_settings(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(
-            QLabel(
-                "These settings are frozen into the package when it is prepared. Later changes here do not change a "
-                "prepared package; prepare a new one instead."
-            )
+        frozen = QLabel("Frozen into the package. ⓘ")
+        frozen.setToolTip(
+            "These settings are frozen into the package when it is prepared. Later changes here do not change a "
+            "prepared package; prepare a new one instead."
         )
+        layout.addWidget(frozen)
         self.settings_text = QTextEdit()
         self.settings_text.setReadOnly(True)
         layout.addWidget(self.settings_text)
@@ -201,14 +205,18 @@ class HpcPanel(QWidget):
         self.clear_overrides.setVisible(False)
         row.addWidget(self.clear_overrides)
         layout.addLayout(row)
-        self.confirm_layout = QCheckBox("Images whose channels have other names still have the same channels in the same order")
-        self.confirm_layout.setToolTip("Only tick this if you are sure. Channels are never reordered.")
+        self.confirm_layout = QCheckBox("Same channel order despite other names")
+        self.confirm_layout.setToolTip(
+            "Images whose channels have other names still have the same channels in the same order.\n"
+            "Only tick this if you are sure. Channels are never reordered."
+        )
         layout.addWidget(self.confirm_layout)
         layout.addWidget(
             _note(
-                "Manual edits, deleted objects and approvals are <b>not</b> sent: the cluster segments every image again. "
-                "Image selection, sample names and your metadata columns are kept.",
+                "Edits and approvals are <b>not</b> sent. ⓘ",
                 "rgba(230, 160, 40, 0.18)",
+                "Manual edits, deleted objects and approvals are not sent: the cluster segments every image again. "
+                "Image selection, sample names and your metadata columns are kept.",
             )
         )
         self.tabs.addTab(page, PAGES[1])
@@ -299,7 +307,7 @@ class HpcPanel(QWidget):
             if self.overrides
             else ""
         )
-        note = "" if self.profile is not None else "<p><small>Load a cluster profile (step 3) to check the engine, model and Z mode against the cluster.</small></p>"
+        note = "" if self.profile is not None else "<p><small>Load a cluster profile (step 3) to check against the cluster.</small></p>"
         self.settings_issues.setText(_issues_html(issues) + note)
 
     # -- 3. cluster ----------------------------------------------------------------------------------------
@@ -355,9 +363,10 @@ class HpcPanel(QWidget):
         layout.addWidget(self.profile_status)
         layout.addWidget(
             _note(
-                "Resource choices never change the analysis. The engine, model and enabled Z modes come from the "
-                "cluster's runtime record (a file describing the software installed on the cluster, made by whoever set it up); "
-                "a profile stays <i>experimental</i> until a test run on the cluster is recorded."
+                "Resources never change the analysis. ⓘ",
+                tip="The engine, model and enabled Z modes come from the cluster's runtime record (a file describing "
+                "the software installed on the cluster, made by whoever set it up); a profile stays experimental "
+                "until a test run on the cluster is recorded.",
             )
         )
         layout.addStretch(1)
@@ -468,7 +477,8 @@ class HpcPanel(QWidget):
         layout = QVBoxLayout(page)
         row = QHBoxLayout()
         self.output = QLineEdit()
-        self.output.setPlaceholderText("A short folder outside your image folders, e.g. D:\\CellQuant_HPC")
+        self.output.setPlaceholderText("e.g. D:\\CellQuant_HPC")
+        self.output.setToolTip("A short folder path outside your image folders.")
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._choose_output)
         row.addWidget(QLabel("Package folder:"))
@@ -484,15 +494,16 @@ class HpcPanel(QWidget):
         buttons.addWidget(self.check_button)
         buttons.addWidget(self.prepare_button)
         layout.addLayout(buttons)
-        self.plan_text = QLabel("Choose the images, a profile and a folder, then check.")
+        self.plan_text = QLabel("Choose images, profile and folder, then check.")
         self.plan_text.setWordWrap(True)
         self.plan_text.setTextFormat(Qt.RichText)
         layout.addWidget(self.plan_text)
         layout.addWidget(
             _note(
-                "Preparing copies every channel and slice of each image, unchanged, into the package, and checks each "
-                "copy against the original. It does not segment. Cancel (bottom of the window) stops between steps and "
-                "leaves a folder named '.incomplete', which is never used."
+                "Copies images unchanged; does not segment. ⓘ",
+                tip="Preparing copies every channel and slice of each image, unchanged, into the package, and checks each "
+                "copy against the original. Cancel (bottom of the window) stops between steps and "
+                "leaves a folder named '.incomplete', which is never used.",
             )
         )
         layout.addStretch(1)
@@ -625,7 +636,7 @@ class HpcPanel(QWidget):
         row.addWidget(browse)
         row.addWidget(check)
         layout.addLayout(row)
-        self.submit_status = QLabel("Prepare a package, or choose one, to see its commands.")
+        self.submit_status = QLabel("Prepare or choose a package.")
         self.submit_status.setWordWrap(True)
         self.submit_status.setTextFormat(Qt.RichText)
         layout.addWidget(self.submit_status)
@@ -741,7 +752,8 @@ bash scripts/submit.sh               # queues the GPU job and prints its ID and 
         self.results_table.setHorizontalHeaderLabels(["Image", "Sample", "State", "Note"])
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         layout.addWidget(self.results_table)
-        self.import_status = QLabel("The import makes a new experiment with its own copy of the images. Nothing existing is changed.")
+        self.import_status = QLabel("Imports as a new experiment. ⓘ")
+        self.import_status.setToolTip("The import makes a new experiment with its own copy of the images. Nothing existing is changed.")
         self.import_status.setWordWrap(True)
         self.import_status.setTextFormat(Qt.RichText)
         layout.addWidget(self.import_status)
