@@ -38,6 +38,7 @@ RESERVED_COLUMN_NAMES = frozenset(
         "z_first",
         "z_last",
         "z_flag",
+        "at_crop_edge",
     }
 )
 
@@ -224,6 +225,28 @@ class ReportSpec(BaseModel):
     denominator: str
 
 
+class CropSpec(BaseModel):
+    """Segment only rectangles around the region(s) holding the cells of interest (off by default).
+
+    The region is everything on ``channels`` (combined with AND; None: the channels the reports'
+    denominators use, e.g. the reporter) brighter than the background by ``sensitivity`` noise
+    units, after smoothing at ``bin_um`` resolution: an inclusive mask, so dim positive cells are
+    kept. It is grown by ``margin_um``; rectangles closer than ``merge_gap_um`` are merged. When the
+    rectangles would cover more than ``max_fraction`` of the image, the image is not cropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    channels: list[int] | None = None
+    margin_um: float = Field(default=50.0, ge=0.0)
+    sensitivity: float = Field(default=3.0, gt=0.0)
+    bin_um: float = Field(default=2.0, gt=0.0)
+    nucleus_diameter_um: float = Field(default=6.5, gt=0.0)
+    merge_gap_um: float = Field(default=100.0, ge=0.0)
+    max_fraction: float = Field(default=0.7, gt=0.0, le=1.0)
+
+
 class ObjectSetSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -269,6 +292,8 @@ class Recipe(BaseModel):
     # 3D objects found in fewer slices than this are removed (1 keeps all of them).
     z_min_slices: int = Field(default=1, ge=1)
     object_set: ObjectSetSpec
+    # Crop to the region of interest before segmenting (2D analyses). Part of the fingerprint when on.
+    crop: CropSpec | None = None
     measurements: list[MeasurementSpec] = Field(default_factory=list)
     classifications: list[ClassificationSpec] = Field(default_factory=list)
     reports: list[ReportSpec] = Field(default_factory=list)
@@ -319,6 +344,7 @@ class Recipe(BaseModel):
                 else {}
             ),
             "object_set": self.object_set.model_dump(mode="json"),
+            **({"crop": self.crop.model_dump(mode="json")} if self.crop is not None and self.crop.enabled else {}),
             "measurements": [item.model_dump(mode="json") for item in self.measurements],
             "classifications": [item.model_dump(mode="json") for item in self.classifications],
             "reports": [item.model_dump(mode="json") for item in self.reports],
