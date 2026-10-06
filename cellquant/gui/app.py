@@ -68,10 +68,53 @@ def choose_existing_directory(parent: QWidget | None, caption: str, start: str =
         dialog.setOption(QFileDialog.DontUseNativeDialog, True)
     if not dialog.exec():
         return ""
+    highlighted = _highlighted_directory(dialog)
+    if highlighted:
+        return highlighted
     selected = dialog.selectedFiles()
     if not selected:
         return ""
     return str(Path(selected[0]).expanduser().resolve())
+
+
+def _highlighted_directory(dialog: QFileDialog) -> str:
+    """The one folder highlighted in the dialog's list, or "" when none is.
+
+    Single-clicking a folder and pressing Choose could still return the folder
+    being looked at (its parent), so the highlighted folder is read directly.
+    """
+
+    directory = Path(dialog.directory().absolutePath())
+    for view in (dialog.findChild(QAbstractItemView, "listView"), dialog.findChild(QAbstractItemView, "treeView")):
+        if view is None or view.selectionModel() is None:
+            continue
+        names = {index.data() for index in view.selectionModel().selectedRows(0)}
+        if len(names) == 1:
+            candidate = directory / str(names.pop())
+            if candidate.is_dir():
+                return str(candidate.expanduser().resolve())
+    return ""
+
+
+def folder_image_counts(folder: str | Path) -> list[tuple[str, int]]:
+    """Images under folder, counted per top-level subfolder ("." for files directly inside)."""
+
+    import os
+
+    from cellquant.experiment import _EXPERIMENT_FOLDERS
+    from cellquant.image import IMAGE_SUFFIXES
+
+    root = Path(folder)
+    counts: dict[str, int] = {}
+    for current, subfolders, names in os.walk(root):
+        subfolders[:] = sorted(name for name in subfolders if name not in _EXPERIMENT_FOLDERS)
+        found = sum(1 for name in names if Path(name).suffix.lower() in IMAGE_SUFFIXES)
+        if not found:
+            continue
+        relative = Path(current).relative_to(root).parts
+        key = relative[0] if relative else "."
+        counts[key] = counts.get(key, 0) + found
+    return sorted(counts.items())
 
 
 def launch(experiment_dir: str | Path | None = None) -> None:
@@ -410,12 +453,18 @@ class NewExperimentDialog(QDialog):
             return
         if images:
             path = Path(images)
+            counts = folder_image_counts(path)
+            found = "\n".join(
+                f"  {'(directly in this folder)' if name == '.' else name}: {count}" for name, count in counts
+            )
+            found = f"Images found ({sum(count for _, count in counts)}), by subfolder:\n{found}" if counts else "No images found."
             answer = QMessageBox.question(
                 self,
                 "Confirm image folder",
                 "CellQuant will import every chosen file type under this folder and its subfolders:\n\n"
                 f"{path}\n\n"
                 f"Folder name: {path.name}\n\n"
+                f"{found}\n\n"
                 "Neighboring folders beside it are not included. Is this the folder you meant?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.Yes,
