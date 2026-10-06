@@ -581,24 +581,26 @@ def test_layers_are_named_by_the_channel_they_hold(tmp_path: Path):
         viewer.close()
 
 
-def test_a_popped_out_panel_has_minimize_and_maximize_and_docks_back(window):
-    from qtpy.QtCore import Qt
+def test_a_popped_out_panel_has_minimize_maximize_and_reset(window):
     from qtpy.QtWidgets import QApplication
 
-    dock = window._dock.parentWidget()
-    while dock is not None and not hasattr(dock, "setFloating"):
-        dock = dock.parentWidget()
+    header = window._floating_headers[0]
+    dock = header.dock
     dock.setFloating(True)
     end = time.time() + 2
-    while not dock.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint and time.time() < end:
+    while dock.titleBarWidget() is not header and time.time() < end:
         QApplication.processEvents()
         time.sleep(0.02)
-    assert dock.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
-    assert dock.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint
-    dock.setFloating(False)
+    assert dock.titleBarWidget() is header
+    assert [button.toolTip() for button in header.buttons.values()] == ["Minimize", "Maximize", "Reset", "Close"]
+    header.buttons["minimize"].click()
+    assert header.minimized and not dock.widget().isVisibleTo(dock)
+    header.buttons["minimize"].click()
+    assert not header.minimized and dock.widget().isVisibleTo(dock)
+    header.buttons["reset"].click()
     QApplication.processEvents()
     assert not dock.isFloating()
-    assert not dock.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
+    assert dock.titleBarWidget() is not header
 
 
 def test_find_objects_has_a_run_button(window, monkeypatch):
