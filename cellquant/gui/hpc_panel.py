@@ -95,7 +95,7 @@ class HpcPanel(QWidget):
     def _build_images(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.addWidget(QLabel("Tick the images to send. Each row is one acquisition (a file, or one position of an ND2 file)."))
+        layout.addWidget(QLabel("Tick the images to send. Each row is one image: a file, or one position (field of view) of an ND2 file."))
         self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(["Send", "Sample", "File", "Position", "Channels", "Slices", "Pixel size (µm)"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
@@ -356,7 +356,8 @@ class HpcPanel(QWidget):
         layout.addWidget(
             _note(
                 "Resource choices never change the analysis. The engine, model and enabled Z modes come from the "
-                "maintainer's runtime contract; a profile stays <i>experimental</i> until a cluster smoke test is recorded."
+                "cluster's runtime record (a file describing the software installed on the cluster, made by whoever set it up); "
+                "a profile stays <i>experimental</i> until a test run on the cluster is recorded."
             )
         )
         layout.addStretch(1)
@@ -371,7 +372,7 @@ class HpcPanel(QWidget):
         from cellquant.hpc.profiles import examples_dir
 
         self.load_profile(examples_dir() / "alpine_h200_example.json")
-        self.shell.message("Example profile loaded. Fill in your account and folders, then save it with your runtime contract.")
+        self.shell.message("Example profile loaded. Fill in your account and folders, then save it beside the cluster's runtime record (the file describing its installed software).")
 
     def load_profile(self, path) -> None:
         from cellquant.hpc.profiles import load_profile
@@ -403,7 +404,7 @@ class HpcPanel(QWidget):
             f"Runtime {runtime.runtime_id}: {runtime.engine} {runtime.cellpose_version}, model {runtime.model}, "
             f"Z modes enabled: {', '.join(runtime.supported_modes) or 'none'}; validated {runtime.runtime_validation_date or 'not yet'}."
             if runtime is not None
-            else "No runtime contract."
+            else "No runtime record (the file describing the software installed on the cluster) was found for this profile."
         )
         state = "Ready for packages." if resolved.submission_ready else "Not ready for packages yet."
         self.profile_status.setText(

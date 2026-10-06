@@ -303,7 +303,12 @@ class PlanDock(QWidget):
         controller = self.shell.controller
         if controller is not None:
             for channel in controller.experiment.channels:
-                self.channel.addItem(channel.channel_name, channel.channel_index)
+                name = (channel.channel_name or "").strip()
+                if name and not name.lower().startswith("channel "):
+                    label = f"Channel {channel.channel_index + 1} = {name}"
+                else:
+                    label = f"Channel {channel.channel_index + 1}"
+                self.channel.addItem(label, channel.channel_index)
 
     def _update_summary(self) -> None:
         controller = self.shell.controller
@@ -398,7 +403,7 @@ class PlanDock(QWidget):
         try:
             controller.set_plan_channel(ids, self.channel.currentData(), recipes)
         except Exception as exc:  # noqa: BLE001 - shown to the user
-            self.shell.message(str(exc))
+            self.shell.show_error(str(exc))
             return
         self.shell.plan_changed()
 
@@ -408,7 +413,7 @@ class PlanDock(QWidget):
         try:
             self.shell.controller.set_plan_channel([image_id], box.currentData(), [recipe_id])
         except Exception as exc:  # noqa: BLE001
-            self.shell.message(str(exc))
+            self.shell.show_error(str(exc))
         self.shell.plan_changed()
 
     def _cell(self, item, column: int) -> tuple[str | None, str | None]:
@@ -454,5 +459,5 @@ class PlanDock(QWidget):
         try:
             self.shell.controller.set_plan_channel([image_id], channel, [recipe_id])
         except Exception as exc:  # noqa: BLE001
-            self.shell.message(str(exc))
+            self.shell.show_error(str(exc))
         self.shell.plan_changed()
