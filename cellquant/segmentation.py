@@ -161,6 +161,16 @@ class CellposeBackend:
         labels, _details = self.segment_with_details(image, parameters)
         return labels
 
+    def estimate_diameter(self, scaled_image: np.ndarray, parameters: dict[str, Any]) -> float | None:
+        """Classic Cellpose's size estimate on an already scaled whole image; None for Cellpose-SAM."""
+
+        from cellquant.engines import CELLPOSE_CLASSIC
+
+        details = self.describe(parameters)
+        if details["engine"] != CELLPOSE_CLASSIC:
+            return None
+        return _estimate_classic_diameter(self._model(details, parameters), scaled_image)
+
     def _model(self, details: dict[str, Any], parameters: dict[str, Any]):
         from cellquant.engines import CELLPOSE_CLASSIC
 
@@ -264,8 +274,22 @@ class CellposeBackend:
         cellprob_threshold = float(parameters.get("cellprob_threshold", 0.0))
         min_size = int(parameters.get("min_size", 15))
         seed = parameters.get("random_seed")
+        # False when the image was already scaled (a crop scaled like the whole image).
+        normalize = bool(parameters.get("normalize", True))
         try:
             model = self._model(details, parameters)
+            timings = details.setdefault("timings", {})
+            if details["engine"] == CELLPOSE_CLASSIC and diameter is None:
+                import time
+
+                started = time.perf_counter()
+                network_before = _STAGE_TIMES["network"] if _STAGE_TIMES is not None else 0.0
+                diameter = _estimate_classic_diameter(model, np.asarray(image), normalize=normalize)
+                timings["size_estimate"] = timings.get("size_estimate", 0.0) + time.perf_counter() - started
+                if _STAGE_TIMES is not None:  # network time of the size model belongs to the size estimate
+                    timings["size_estimate_network"] = _STAGE_TIMES["network"] - network_before
+                if diameter is not None:
+                    details["estimated_diameter_px"] = diameter
             if details["engine"] == CELLPOSE_CLASSIC:
                 output = model.eval(
                     np.asarray(image),
@@ -275,6 +299,7 @@ class CellposeBackend:
                     flow_threshold=flow_threshold,
                     cellprob_threshold=cellprob_threshold,
                     min_size=min_size,
+                    normalize=normalize,
                 )
             else:
                 output = model.eval(
@@ -284,6 +309,7 @@ class CellposeBackend:
                     flow_threshold=flow_threshold,
                     cellprob_threshold=cellprob_threshold,
                     min_size=min_size,
+                    normalize=normalize,
                 )
             device = getattr(model, "device", None)
         except SegmentationError:
@@ -306,6 +332,21 @@ class CellposeBackend:
 
 _MODELS: dict[tuple, Any] = {}
 _NETWORK_MEMO: dict | None = None
+# While a ``stage_timer`` block runs: seconds spent in Cellpose's network (accumulated).
+_STAGE_TIMES: dict | None = None
+
+
+@contextmanager
+def stage_timer() -> Iterator[dict]:
+    """Collect stage times of the Cellpose calls in this block: ``network`` (seconds in the network)."""
+
+    global _STAGE_TIMES
+    previous = _STAGE_TIMES
+    _STAGE_TIMES = {"network": 0.0, "network_calls": 0}
+    try:
+        yield _STAGE_TIMES
+    finally:
+        _STAGE_TIMES = previous
 
 
 def _cached_model(models, classic: bool, name: str, gpu: bool):
@@ -357,6 +398,17 @@ def _share_network_output(model) -> None:
         return
 
     def run_net(*args, **kwargs):
+        import time
+
+        started = time.perf_counter()
+        try:
+            return _run_net_memo(*args, **kwargs)
+        finally:
+            if _STAGE_TIMES is not None:
+                _STAGE_TIMES["network"] += time.perf_counter() - started
+                _STAGE_TIMES["network_calls"] += 1
+
+    def _run_net_memo(*args, **kwargs):
         memo = _NETWORK_MEMO
         if memo is None:
             return original(*args, **kwargs)
@@ -377,14 +429,17 @@ def _share_network_output(model) -> None:
     inner._cellquant_memo = True
 
 
-def _estimate_classic_diameter(model, image: np.ndarray) -> float | None:
-    """Classic Cellpose's size model on one 2D image; None when it is not available."""
+def _estimate_classic_diameter(model, image: np.ndarray, normalize: bool = False) -> float | None:
+    """Classic Cellpose's size model on one 2D image; None when it is not available.
+
+    ``normalize=False`` for an image already scaled to 0-1 (as Cellpose would scale it).
+    """
 
     size_model = getattr(model, "sz", None)
     if size_model is None or getattr(model, "pretrained_size", None) is None:
         return None
     try:
-        diameter, _style = size_model.eval(image, channels=[0, 0], normalize=False)
+        diameter, _style = size_model.eval(image, channels=[0, 0], normalize=normalize)
     except Exception:  # noqa: BLE001 - fall back to the model's own default size
         return None
     value = float(np.asarray(diameter).ravel()[0])
@@ -466,12 +521,24 @@ def segment_objects(
         raise SegmentationError(
             f"Unknown segmentation algorithm '{algorithm}'. Available algorithms: {known}."
         )
+    import time
+
     backend = _BACKENDS[algorithm]
     with_details = getattr(backend, "segment_with_details", None)
     if with_details is not None:
-        raw, engine_details = with_details(np.asarray(channel), dict(parameters or {}))
+        started = time.perf_counter()
+        with stage_timer() as stages:
+            raw, engine_details = with_details(np.asarray(channel), dict(parameters or {}))
+        elapsed = time.perf_counter() - started
+        timings = engine_details.pop("timings", {})
         if details is not None:
             details["engine"] = engine_details
+            network = stages["network"] - timings.pop("size_estimate_network", 0.0)
+            details["timings"] = {
+                **timings,
+                "network": network,
+                "masks_and_rest": max(0.0, elapsed - network - timings.get("size_estimate", 0.0)),
+            }
     else:
         raw = backend.segment(np.asarray(channel), dict(parameters or {}))
     labels = np.asarray(raw)
@@ -496,6 +563,114 @@ def segment_objects(
         details["percent_excluded_by_size"] = (
             float("nan") if n_before == 0 else 100.0 * (n_before - n_after) / n_before
         )
+    return filtered
+
+
+def normalize_like_cellpose(image: np.ndarray, lower: float = 1.0, upper: float = 99.0) -> np.ndarray:
+    """Scale a whole 2D image as Cellpose does by default (1st to 99th percentile to 0-1)."""
+
+    data = np.asarray(image, dtype=np.float32)
+    low, high = np.percentile(data, [lower, upper])
+    if high - low <= 1e-12:
+        return data - low
+    return (data - low) / (high - low)
+
+
+def segment_regions(
+    channel: np.ndarray,
+    algorithm: str,
+    parameters: dict[str, Any] | None,
+    rectangles: list[tuple[int, int, int, int]],
+    *,
+    pixel_size_x: float | None = None,
+    pixel_size_y: float | None = None,
+    details: dict[str, Any] | None = None,
+) -> np.ndarray:
+    """Segment only inside these rectangles of one 2D channel; labels come back in the full frame.
+
+    Everything that depends on the whole image is computed on the whole image: the classical
+    threshold (after the same smoothing) and Cellpose's brightness scaling, which is applied to
+    the full image before cropping (Cellpose is then told not to scale again). Size limits apply
+    to the pasted, full-frame labels. Object numbers are unique across rectangles.
+    """
+
+    import time
+
+    from cellquant.crop import objects_at_crop_edges
+
+    timings: dict[str, float] = {}
+    if algorithm not in _BACKENDS:
+        raise SegmentationError(f"Unknown segmentation algorithm '{algorithm}'.")
+    backend = _BACKENDS[algorithm]
+    image = np.asarray(channel)
+    parameters = dict(parameters or {})
+    region_parameters = dict(parameters)
+    if algorithm == "classical":
+        parsed = _parse_classical(parameters)
+        source = image.astype(np.float64)
+        if parsed.sigma > 0:
+            source = gaussian(source, sigma=parsed.sigma, preserve_range=True)
+        if parsed.threshold_method == "otsu":
+            try:
+                threshold = float(threshold_otsu(source))
+            except ValueError as exc:
+                raise SegmentationError("The source channel has uniform intensity, so a threshold could not be computed.") from exc
+        else:
+            threshold = float(parsed.threshold)  # type: ignore[arg-type]
+        region_parameters.update(sigma=0.0, threshold_method="manual", threshold=threshold)
+    elif algorithm == "cellpose":
+        started = time.perf_counter()
+        source = normalize_like_cellpose(image)  # the whole image's scaling
+        timings["normalize"] = time.perf_counter() - started
+        region_parameters["normalize"] = False
+        if region_parameters.get("diameter_px") in (None, 0) and hasattr(backend, "estimate_diameter"):
+            # Classic Cellpose estimates the size once, on the largest crop rectangle (not a full-image
+            # pass), so every crop uses the same diameter. A diameter given in µm or pixels skips this.
+            started = time.perf_counter()
+            y0, y1, x0, x1 = max(rectangles, key=lambda box: (box[1] - box[0]) * (box[3] - box[2]))
+            estimate = backend.estimate_diameter(np.ascontiguousarray(source[y0:y1, x0:x1]), region_parameters)
+            timings["size_estimate"] = time.perf_counter() - started
+            if estimate:
+                region_parameters["diameter_px"] = estimate
+                if details is not None:
+                    details["diameter_px_used"] = estimate
+    else:
+        source = image
+    for key in ("min_area_px", "max_area_px", "min_area_um2", "max_area_um2", "exclude_border"):
+        region_parameters.pop(key, None)  # applied once, to the full frame
+    full = np.zeros(image.shape, dtype=np.int32)
+    offset = 0
+    with_details = getattr(backend, "segment_with_details", None)
+    started = time.perf_counter()
+    with stage_timer() as stages:
+        for y0, y1, x0, x1 in rectangles:
+            part = np.ascontiguousarray(source[y0:y1, x0:x1])
+            if with_details is not None:
+                raw, engine_details = with_details(part, region_parameters)
+                engine_details.pop("timings", None)
+                if details is not None:
+                    details["engine"] = engine_details
+            else:
+                raw = backend.segment(part, region_parameters)
+            labels = np.asarray(raw).astype(np.int32, copy=False)
+            if labels.shape != part.shape:
+                raise SegmentationError("Segmentation labels do not match the image shape.")
+            inside = labels > 0
+            full[y0:y1, x0:x1][inside] = labels[inside] + offset
+            offset += int(labels.max()) if labels.size else 0
+    elapsed = time.perf_counter() - started
+    timings["network"] = stages["network"]
+    timings["masks_and_rest"] = max(0.0, elapsed - stages["network"])
+    n_before = _object_count(full)
+    filtered = filter_objects(full, parameters, pixel_size_x=pixel_size_x, pixel_size_y=pixel_size_y)
+    if details is not None:
+        n_after = _object_count(filtered)
+        details["n_before_filter"] = n_before
+        details["n_after_filter"] = n_after
+        details["percent_excluded_by_size"] = float("nan") if n_before == 0 else 100.0 * (n_before - n_after) / n_before
+        details["crop_rectangles"] = [list(map(int, box)) for box in rectangles]
+        details["crop_edge_objects"] = objects_at_crop_edges(filtered, rectangles)
+        details["timings"] = {**details.get("timings", {}), **timings}
     return filtered
 
 
