@@ -52,6 +52,8 @@ from cellquant.segmentation import engine_signature
 from cellquant.storage import (
     RunLog,
     RunRecord,
+    default_unit_column,
+    equal_unit_summary,
     export_run_tables,
     file_fingerprint,
     finish_run,
@@ -61,6 +63,7 @@ from cellquant.storage import (
     read_persisted_result,
     save_edits,
     start_run,
+    unit_summary,
 )
 
 
@@ -625,7 +628,12 @@ class AnalysisController:
             active = active.loc[~active["excluded"].astype(bool)]
         return classification_counts(active[measurement_id].to_numpy(dtype=float), threshold, comparison)
 
-    def export(self, directory: str | Path, *, group_by: str | None = None) -> Path:
+    def export(self, directory: str | Path, *, group_by: str | None = None, unit: str | None = None) -> Path:
+        """Export this analysis. ``unit`` is the metadata column whose values are the biological units
+        (for example the retina); by default the folder level that holds the images. ``units_by_<unit>.csv``
+        pools each unit's images, and with ``group_by`` ``grouped_by_<group>_equal_units.csv`` gives each
+        group's mean of its units' percents (every unit counts once), with n units and SD."""
+
         destination = Path(directory)
         results = self._results_for_export()
         if not results:
@@ -661,6 +669,19 @@ class AnalysisController:
             (destination / "run.json").write_text((run_dir / "run.json").read_text(encoding="utf-8"), encoding="utf-8")
         if group_by:
             grouped_summary(summaries, group_by).to_csv(destination / f"grouped_by_{group_by}.csv", index=False)
+        unit = unit or default_unit_column(summaries)
+        for stale in destination.glob("units_by_*.csv"):
+            stale.unlink()
+        for stale in destination.glob("grouped_by_*_equal_units.csv"):
+            stale.unlink()
+        if unit and unit in summaries.columns:
+            unit_summary(summaries, unit, group_by if group_by in summaries.columns else None).to_csv(
+                destination / f"units_by_{unit}.csv", index=False
+            )
+            if group_by and group_by != unit:
+                equal_unit_summary(summaries, group_by, unit).to_csv(
+                    destination / f"grouped_by_{group_by}_equal_units.csv", index=False
+                )
         return destination
 
     def _settings_versions(self, results: list[ImageResult]) -> set:
@@ -1209,7 +1230,7 @@ class AnalysisController:
                 self.switch_analysis(original)
         return reports
 
-    def export_all(self, directory: str | Path, *, group_by: str | None = None) -> Path:
+    def export_all(self, directory: str | Path, *, group_by: str | None = None, unit: str | None = None) -> Path:
         """Export every analysis that has results, one folder each, and one table of all image summaries."""
 
         import re
@@ -1228,7 +1249,7 @@ class AnalysisController:
                 if not self._results_for_export():
                     skipped.append(item.name)
                     continue
-                folder = self.export(destination / slug, group_by=group_by)
+                folder = self.export(destination / slug, group_by=group_by, unit=unit)
                 table = pd.read_csv(folder / "image_summary.csv")
                 table.insert(0, "segmentation_channel", self._channel_name(self.recipe.object_set.segmentation_channel))
                 table.insert(0, "analysis", item.name)

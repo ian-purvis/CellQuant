@@ -250,13 +250,44 @@ def export_run_tables(run_dir: Path, destination: Path) -> tuple[Path, Path]:
     return object_path, summary_path
 
 
+def _report_prefixes(image_summary: pd.DataFrame) -> list[str]:
+    return [name[: -len("_percent")] for name in image_summary.columns if name.endswith("_percent")]
+
+
+def _pool(subset: pd.DataFrame, prefix: str) -> tuple[float, float, float, int, bool]:
+    """Pooled count, denominator and percent of one report over some images.
+
+    Images where the report is blank (it needs a marker the image does not have) are left out
+    and not counted in ``n_images``. Returns (count, denominator, percent, n_images, older) where
+    ``older`` means a summary written by an older version stored the denominator as text, so
+    nothing can be pooled.
+    """
+
+    count_column, denominator_column = f"{prefix}_count", f"{prefix}_denominator"
+    if count_column not in subset.columns or denominator_column not in subset.columns:
+        return float("nan"), float("nan"), float("nan"), 0, False
+    counts = pd.to_numeric(subset[count_column], errors="coerce")
+    denominators = pd.to_numeric(subset[denominator_column], errors="coerce")
+    raw = subset[denominator_column]
+    older = bool((denominators.isna() & raw.notna() & (raw.astype(str).str.strip() != "")).any())
+    if older:
+        return float("nan"), float("nan"), float("nan"), 0, True
+    measured = counts.notna() & denominators.notna()
+    if not measured.any():
+        return float("nan"), float("nan"), float("nan"), 0, False
+    total, denominator = float(counts[measured].sum()), float(denominators[measured].sum())
+    percent = float("nan") if denominator == 0 else 100.0 * total / denominator
+    return total, denominator, percent, int(measured.sum()), False
+
+
 def grouped_summary(image_summary: pd.DataFrame, column: str) -> pd.DataFrame:
     """Per-group mean of each image's percent, and the pooled percent from counts.
 
     These are different numbers and are stored in differently named columns.
     The SD is the sample SD (n - 1) and is blank for a group with one image.
     The pooled percent is blank when an image's summary was written by an older
-    version that stored the denominator as text.
+    version that stored the denominator as text. Images where a report is blank
+    (a marker's channel is missing) are left out of that report's values.
     """
 
     if column not in image_summary.columns:
@@ -265,7 +296,6 @@ def grouped_summary(image_summary: pd.DataFrame, column: str) -> pd.DataFrame:
         "mean_of_per_image_percent is the average of each image's percent. "
         "pooled_percent is the sum of counts divided by the sum of denominators."
     )
-    percent_columns = [name for name in image_summary.columns if name.endswith("_percent")]
     older_note = (
         " Pooled values are blank where an image's summary came from an older version "
         "that did not store denominator counts."
@@ -273,31 +303,88 @@ def grouped_summary(image_summary: pd.DataFrame, column: str) -> pd.DataFrame:
     rows = []
     for name, subset in image_summary.groupby(column, dropna=False):
         row: dict[str, object] = {column: name, "n_images": int(len(subset)), "summary_note": note}
-        for percent_column in percent_columns:
-            prefix = percent_column[: -len("_percent")]
-            values = pd.to_numeric(subset[percent_column], errors="coerce")
+        for prefix in _report_prefixes(image_summary):
+            values = pd.to_numeric(subset[f"{prefix}_percent"], errors="coerce")
             row[f"{prefix}_mean_of_per_image_percent"] = float(values.mean()) if values.notna().any() else float("nan")
             row[f"{prefix}_sd_of_per_image_percent"] = (
                 float(values.std(ddof=1)) if values.notna().sum() >= 2 else float("nan")
             )
-            count_column = f"{prefix}_count"
-            denominator_column = f"{prefix}_denominator"
-            if count_column in subset.columns and denominator_column in subset.columns:
-                count_values = pd.to_numeric(subset[count_column], errors="coerce")
-                denominator_values = pd.to_numeric(subset[denominator_column], errors="coerce")
-                if count_values.isna().any() or denominator_values.isna().any():
-                    row[f"{prefix}_pooled_count"] = float("nan")
-                    row[f"{prefix}_pooled_denominator"] = float("nan")
-                    row[f"{prefix}_pooled_percent"] = float("nan")
-                    row["summary_note"] = note + older_note
-                    continue
-                counts = count_values.sum()
-                denominators = denominator_values.sum()
-                row[f"{prefix}_pooled_count"] = float(counts)
-                row[f"{prefix}_pooled_denominator"] = float(denominators)
-                row[f"{prefix}_pooled_percent"] = (
-                    float("nan") if denominators == 0 else 100.0 * float(counts) / float(denominators)
-                )
+            if f"{prefix}_count" not in subset.columns or f"{prefix}_denominator" not in subset.columns:
+                continue
+            total, denominator, percent, _used, older = _pool(subset, prefix)
+            if older:
+                row["summary_note"] = note + older_note
+            row[f"{prefix}_pooled_count"] = total
+            row[f"{prefix}_pooled_denominator"] = denominator
+            row[f"{prefix}_pooled_percent"] = percent
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def default_unit_column(image_summary: pd.DataFrame) -> str | None:
+    """The folder level that holds the images (the deepest ``Folder N`` column), e.g. the retina."""
+
+    import re
+
+    levels = sorted(
+        (int(match.group(1)), name)
+        for name in image_summary.columns
+        if (match := re.fullmatch(r"Folder (\d+)", str(name)))
+    )
+    return levels[-1][1] if levels else None
+
+
+def unit_summary(image_summary: pd.DataFrame, unit: str, group_by: str | None = None) -> pd.DataFrame:
+    """One row per unit (for example per retina): every report pooled over the unit's images.
+
+    ``<report>_unit_pooled_percent`` is the sum of the unit's counts over the sum of its
+    denominators, so an image with more nuclei weighs more within its unit. A unit is identified
+    by its group (when given) and its own value, so "Retina 1" of two conditions stays two units.
+    """
+
+    if unit not in image_summary.columns:
+        raise KeyError(unit)
+    keys = [group_by, unit] if group_by and group_by != unit else [unit]
+    for key in keys:
+        if key not in image_summary.columns:
+            raise KeyError(key)
+    rows = []
+    for values, subset in image_summary.groupby(keys, dropna=False):
+        values = values if isinstance(values, tuple) else (values,)
+        row: dict[str, object] = dict(zip(keys, values, strict=True))
+        row["n_images"] = int(len(subset))
+        for prefix in _report_prefixes(image_summary):
+            total, denominator, percent, used, _older = _pool(subset, prefix)
+            row[f"{prefix}_unit_pooled_count"] = total
+            row[f"{prefix}_unit_pooled_denominator"] = denominator
+            row[f"{prefix}_unit_pooled_percent"] = percent
+            row[f"{prefix}_unit_n_images"] = used
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def equal_unit_summary(image_summary: pd.DataFrame, group_by: str, unit: str) -> pd.DataFrame:
+    """Per group: the mean of each unit's pooled percent, so every unit (retina) counts equally.
+
+    ``<report>_equal_unit_mean_percent`` averages the units' pooled percents;
+    ``<report>_equal_unit_sd_percent`` is their sample SD (n - 1, blank for one unit) and
+    ``<report>_n_units`` the number of units with a value. Compare with
+    ``<report>_pooled_percent`` in grouped_by_<group>.csv, which weighs every nucleus equally.
+    """
+
+    units = unit_summary(image_summary, unit, group_by)
+    note = (
+        "equal_unit_mean_percent is the mean of each unit's pooled percent (every unit counts once, "
+        f"units = '{unit}'); units_by_{unit}.csv lists them."
+    )
+    rows = []
+    for name, subset in units.groupby(group_by, dropna=False):
+        row: dict[str, object] = {group_by: name, "n_units": int(len(subset)), "summary_note": note}
+        for prefix in _report_prefixes(image_summary):
+            values = pd.to_numeric(subset[f"{prefix}_unit_pooled_percent"], errors="coerce")
+            row[f"{prefix}_n_units"] = int(values.notna().sum())
+            row[f"{prefix}_equal_unit_mean_percent"] = float(values.mean()) if values.notna().any() else float("nan")
+            row[f"{prefix}_equal_unit_sd_percent"] = float(values.std(ddof=1)) if values.notna().sum() >= 2 else float("nan")
         rows.append(row)
     return pd.DataFrame(rows)
 
