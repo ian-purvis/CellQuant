@@ -91,7 +91,7 @@ def check_against_runtime(recipe: Recipe, contract: RuntimeContract) -> list[Iss
             Issue(
                 code="E_GPU",
                 message="The settings do not ask for the GPU, so the cluster job would run Cellpose on the CPU.",
-                fix="In step 2 tick 'Use GPU' and save, then prepare the package. The setting is part of the frozen recipe.",
+                fix="In HPC prep click 'Use the GPU on the cluster', then prepare the package. The setting is part of the frozen recipe.",
             )
         )
     return issues
