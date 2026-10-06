@@ -90,6 +90,8 @@ class PlanEntry(BaseModel):
     run: bool | None = None
     # Channel to find objects in for this image only (index in this image's own channels).
     channel: int | None = None
+    # True: segment the full image even when the analysis crops to the region of interest.
+    full_image: bool | None = None
 
 
 class AnalysisRecord(BaseModel):
