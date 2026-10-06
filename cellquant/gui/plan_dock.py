@@ -451,7 +451,19 @@ class PlanDock(QWidget):
             for index, name in enumerate(self._channel_names(record)):
                 action = sub.addAction(name)
                 action.triggered.connect(lambda _checked=False, value=index: self._set_one(image_id, recipe_id, value))
+            entry = self.shell.controller._analysis(recipe_id).plan.get(image_id)
+            full = bool(entry is not None and entry.full_image)
+            crop = menu.addAction("Use the full image (no crop to the region of interest)")
+            crop.setCheckable(True)
+            crop.setChecked(full)
+            crop.triggered.connect(lambda checked=False: self._set_full(image_id, recipe_id, checked))
         menu.exec(self.tree.viewport().mapToGlobal(position))
+
+    def _set_full(self, image_id: str, recipe_id: str, full: bool) -> None:
+        if not self._guard():
+            return
+        self.shell.controller.set_full_image([image_id], bool(full), [recipe_id])
+        self.shell.plan_changed()
 
     def _set_one(self, image_id: str, recipe_id: str, channel) -> None:
         if not self._guard():
