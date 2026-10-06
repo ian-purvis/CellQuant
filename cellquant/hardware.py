@@ -26,11 +26,12 @@ SLOW_SECONDS_PER_IMAGE = 300.0
 # Measured speeds, keyed like _SECONDS_PER_MEGAPIXEL plus the Z mode.
 _MEASURED: dict[tuple[str, str, str], float] = {}
 
+# Insertion order is the Step 2 dropdown order.
 Z_OPTION_LABELS = {
-    "max_projection": "2D: max projection (all slices)",
     "single_plane": "2D: one slice",
-    "stitch_slices": "3D: link slices",
-    "full_3d": "3D: whole volume",
+    "max_projection": "2D: max projection",
+    "stitch_slices": "2D + stitching (link slices)",
+    "full_3d": "True 3D (whole volume)",
 }
 
 

@@ -26,7 +26,7 @@ The CellQuant panel has a **Start** tab and five numbered tabs. Work from left t
 
 1. **Start → Try practice images** (first time) or **New experiment…**
 2. **1 Images**: add images and name the channels.
-3. **2 Find objects**: pick the nuclear channel, **Preview**, then **Run**.
+3. **2 Find objects**: pick the nuclear channel, **Preview**, then **Run this image**.
 4. **3 Markers**: tick the marker channels, **Set up markers**.
 5. **4 Check**: drag the **Cutoff** slider until the green (positive) objects look right, then **Approve**.
 6. **5 Results**: **Run all images**, then **Export results…**
@@ -54,52 +54,54 @@ The bar at the bottom of the window is shared by all steps. It shows which image
 
 ## Step 1: Images
 
-1. Click **New experiment**. Give the experiment a name and choose two folders:
+1. Click **New experiment**. Give the experiment a name, choose two folders, and tick the file types:
    - **Image folder**: the folder that holds your images. CellQuant only reads it; your images are never changed.
    - **Look for**: tick **ND2 files**, **TIFF files**, or both. Only the ticked types are taken from the folder; the yellow note says how many of the other type were left alone.
-   - **Results folder**: where CellQuant saves its settings, results and exports. It starts as a new folder beside your images, for example *E14.5_E17.5 - CellQuant results*. Click **Browse…** to choose somewhere else. If you choose the image folder itself (or a folder inside it), CellQuant asks you to confirm.
-2. CellQuant finds every file of the chosen types in the image folder and in all its subfolders. **Add folder** and **Add images** add more later; the **Add folder looks for** boxes above the list choose ND2, TIFF or both.
-3. **Check the list before going on.** Each image is shown by its path inside the folder you chose, for example *mCherry cont/Retina 2/image.nd2*, so files with the same name in different folders are told apart. Hover over a path to see the full location. The list also shows each image's number of **Slices**, its **Channels**, **µm/pixel** and **Objective**. Subfolder names are copied into **Folder 1**, **Folder 2**, … columns, which you can use to group results.
-4. Read the yellow notes above the list. They say how many images were found, which folders had none, and anything to watch for, such as images taken at different magnifications or Z-stacks.
-5. Under the table, **name each channel** after its stain, for example *DAPI*, *OTX2*, *VSX2*. CellQuant starts with the names stored in the file (such as *Green*, *Red*, *Far Red*). These names appear in every result.
-6. If **µm/pixel** says *not set*, enter the pixel size (from the microscope software's image properties) and click **Set sizes (µm)**. Without it, sizes are in pixels. For Z-stacks, **Z step** is the distance between slices; ND2 files include it (the **Slices** column shows, for example, *7 × 1.5 µm*). 3D volumes need it.
-7. Choose which images to analyze. Everything listed is included at first. Untick **Include** to leave one image out, or work on several at once:
+   - **Results folder**: where CellQuant saves its settings, results and exports (`experiment.json`, `recipes/`, `runs/`, `exports/`). It starts as a new folder beside your images, for example *E14.5_E17.5 - CellQuant results*. Click **Browse…** to choose somewhere else. If you choose the image folder itself (or a folder inside it), CellQuant asks you to confirm.
+   Use **Open** later to reload that results folder. There is no separate **Save** — include flags, sample names, metadata and pixel sizes are written automatically. Delete the results folder yourself if you no longer want it.
+2. CellQuant finds every file of the chosen types in the image folder and in all its subfolders. Under **Advanced**: **Add folder** and **Add images** add more later; the **Add folder looks for** boxes choose ND2, TIFF or both.
+3. **Check the list before going on.** Each image is shown by its path inside the folder you chose, for example *mCherry cont/Retina 2/image.nd2*, so files with the same name in different folders are told apart. Hover over a path to see the full location. The list also shows each image's number of **Slices**, its **Channels**, **µm/pixel** and **Objective**. Subfolder names are copied into **Folder 1**, **Folder 2**, … columns, which identify the experimental condition and can group results.
+4. Read the yellow notes above the list. They say which folder was searched, how many images were found, which folders had none, and anything to watch for, such as images taken at different magnifications or Z-stacks.
+5. Open an image and check the blue **channel order** box, for example *Channel 1 = Green · Channel 2 = Red · Channel 3 = Far Red*. Names come from the file. Napari layers use the same labels. Do not rename channels to label experimental conditions — use Sample name and Folder columns for that.
+6. If **µm/pixel** says *not set*, enter the pixel size (from the microscope software's image properties) and click **Set sizes (µm)**. The menu below it chooses which images change: this image and every image without a size (the default), this image only, or every included image. Without a pixel size, sizes are in pixels. For Z-stacks, **Z step** is the distance between slices; ND2 files include it (the **Slices** column shows, for example, *7 × 1.5 µm*). 3D volumes need it.
+7. Choose which images to analyze. Everything listed is included at first. Untick **Include** to leave one image out, or open **Advanced** to work on several at once:
    - Narrow the list with **Show ND2 only** / **Show TIFF only** and the filter box (for example *Retina 2* or *Control*), then click **Include shown** or **Leave out shown**.
    - Or select rows (click, Ctrl-click, Shift-click) and click **Include only selected**.
 
    The line above the list says how many images are included. Left-out images are never deleted, are skipped by **Next image ▶**, and are not analyzed by **Run all images**. Tick them again at any time.
-8. Optional: edit **Sample name**, or add columns such as *Genotype* or *Age* (you can paste from Excel).
+8. Optional: edit **Sample name**, or under **Advanced** add columns such as *Genotype* or *Age* (you can paste from Excel).
 
-**Success check:** every image you expect is listed once, in the right folder; the ones you want are included; and every channel has a real name.
+**Success check:** every image you expect is listed once, in the right folder; the ones you want are included; and the open image shows a clear Channel 1 = … order.
 
-Channels are shown in the colors saved in the file by the microscope software (for example green, red and magenta for an AXR ND2). A file with no saved colors is shown in gray. CellQuant never assigns colors of its own: each image uses its own file's colors in its own channel order, even when an analysis finds a channel by name in a file with another channel layout. (The green and gray fills in step 4 color the objects, not the channels.)
+Channels are shown in the colors saved in the file by the microscope software (for example green, red and magenta for an AXR ND2). A file with no saved colors is shown in gray. CellQuant never assigns colors of its own: each image uses its own file's colors in its own channel order, even when an analysis finds a channel by name in a file with another channel layout. (The green and magenta fills in step 4 color the objects, not the channels.) Each channel layer is labeled from that image's own file (for example *Channel 1 = Far Red*), so a file with another channel order is labeled correctly.
 
 ## Step 2: Find objects
 
-1. If your images are Z-stacks, choose how to handle them under **Z-stacks**:
+1. Set **Source channel** to the nuclear channel (shown as *Channel N = …* from the file). Without a nuclear stain, use the channel that marks the cells you want to count.
+2. Choose a **Method**:
+   - **Classical (fast, no GPU)**: good for well separated, evenly bright nuclei. **Threshold** is *Automatic (Otsu)* or *Manual threshold* (a pixel brightness; the marker *cutoff* is set later, in step 4).
+   - **Cellpose (AI model)**: a trained model. Better for crowded or uneven nuclei. The Cellpose engine menu shows which engine is running; the box at the top says whether an NVIDIA GPU was found, and **Use GPU** is ticked for you when one can be used.
+3. If your images are Z-stacks, choose how to handle them under **Z-stack mode**:
+   - **2D: one slice**: only that plane; misses nuclei outside it.
    - **2D: max projection**: the brightest value through all slices. Fast, but nuclei at different depths can merge into one.
-   - **2D: one slice**: misses nuclei outside that slice.
-   - **3D: link slices**: finds nuclei in every slice, then joins outlines that overlap in neighbouring slices into one 3D nucleus. Nuclei stacked in depth are counted separately.
-   - **3D: whole volume**: segments the stack at once. Slow; it helps only when slices are close together (Z step no more than about twice the pixel size) and there are many of them.
+   - **2D + stitching (link slices)**: finds nuclei in every slice, then joins outlines that overlap in neighboring slices into one 3D nucleus. Nuclei stacked in depth are counted separately.
+   - **True 3D (whole volume)**: segments the stack at once. Slow; it helps only when slices are close together (Z step no more than about twice the pixel size) and there are many of them.
 
    Each option shows an estimated time per image on this computer. The blue box recommends one based on the computer's GPU and memory and on your images; click **Use recommended** to choose it. Every option stays available. After the first run, the times are measured instead of estimated. The bottom bar shows what is analyzed, for example *3D, 7 slices linked slice by slice*.
 
-   For 3D, **Link overlap** sets how much an outline must overlap the next slice's to be the same nucleus (0.25 is Cellpose's usual value; lower if nuclei split across slices, higher if stacked nuclei join). **Brightness: Whole stack** scales every slice the same way, so a dim top or bottom slice still links correctly. **Minimum slices** removes objects found in fewer slices (1 keeps all).
-2. Set **Source channel** to the nuclear stain (for example DAPI). Without a nuclear stain, use the channel that marks the cells you want to count.
-3. Choose a **Method**:
-   - **classical**: fast, no GPU needed. Good for well separated, evenly bright nuclei.
-   - **cellpose**: a trained model. Better for crowded or uneven nuclei. The **Advanced** box shows which Cellpose engine is running and whether a GPU is in use.
-4. Click **Preview** to try the settings on the area you are looking at. Nothing is saved.
-5. Click **Run** (or **Run this image** at the bottom). The bar at the bottom shows each step, for example *Finding objects: slice 4 of 7*. Run buttons are greyed out until it finishes. **Cancel** stops after the current step; nothing from the unfinished image is saved. (Cellpose's whole-volume 3D step cannot be stopped part-way; Cancel takes effect when it ends.)
-   To try other settings, change them and click **Run** again. There is no need to restart CellQuant or go back.
-6. Zoom in and check several areas. In 3D, drag the slice slider under the image to check every slice.
+   For stitching / true 3D, **Link overlap** sets how much an outline must overlap the next slice's to be the same nucleus (0.25 is Cellpose's usual value; lower if nuclei split across slices, higher if stacked nuclei join). **Brightness: Whole stack** scales every slice the same way, so a dim top or bottom slice still links correctly. **Minimum slices** removes objects found in fewer slices (1 keeps all).
+4. Set **Typical nucleus diameter (µm)** (default **6**; most nuclei are about 5–7 µm). When pixel size is known, Cellpose uses the matching pixel diameter, and **Minimum object size** defaults to **5 µm²** to drop debris. A 6 µm nucleus is about 28 µm².
+5. Click **Preview** to try the settings on the area you are looking at. Nothing is saved.
+6. Click **Run this image** at the bottom. The bar at the bottom shows each step, for example *Finding objects: slice 4 of 7*. Run buttons are greyed out until it finishes. **Cancel** stops after the current step; nothing from the unfinished image is saved. (Cellpose's whole-volume 3D step cannot be stopped part-way; Cancel takes effect when it ends.)
+   To try other settings, change them and click **Run this image** again. There is no need to restart CellQuant or go back.
+7. Zoom in and check several areas. In 3D, drag the slice slider under the image to check every slice.
 
 **Success check:** outlines sit on the nuclei. Few are missed, merged (two nuclei in one outline), or split (one nucleus in two outlines).
 
 If it is not right:
 - Merged nuclei: tick **Watershed** (classical), or use cellpose.
-- Debris counted as nuclei: set **Minimum object size**.
-- Faint nuclei missed: lower **Cell probability threshold** (cellpose), or use a manual threshold (classical).
+- Debris counted as nuclei: raise **Minimum object size**, or lower the typical diameter if Cellpose is finding too much.
+- Faint nuclei missed: lower **Cell probability threshold** (cellpose), or use a manual threshold (classical, Threshold: Manual threshold).
 
 ## Step 3: Markers
 
@@ -111,27 +113,27 @@ If it is not right:
 
 CellQuant measures each marker inside every object and calls each object positive or negative. It picks a starting cutoff (or, for the percent rule, a starting pixel level) automatically and moves you to step 4.
 
-**Success check:** step 4 opens with objects colored green (positive) and gray (negative).
+**Success check:** step 4 opens with objects colored green (positive) and magenta (negative).
 
 *Advanced:* **Show all settings** lets you measure other statistics (median, total, percent of pixels at or above a level), choose whether a value equal to the cutoff is positive (**at least**) or negative (**above**), measure a ring around each object, subtract background, or set cutoffs by hand.
 
 ## Step 4: Check
 
-1. Choose a marker under **Display objects by**. Objects glow green when positive and red when negative. **Positive colour** and **Negative colour** change the colours (remembered on this computer); **Default colours** puts green and red back.
+1. Choose a marker under **Display objects by**. Objects glow green when positive and magenta when negative (a pair that stays distinct with red-green color blindness). Under **Advanced**, **Positive color** and **Negative color** change the colors (remembered on this computer); **Default colors** puts green and magenta back.
 2. Drag the **Cutoff** slider, or type a number beside it. The slider runs from the dimmest to the brightest object for this marker; the objects recolor and the counts below change as you drag. The same cutoff is used for every image, so choose one that works across your images, not just this one.
    With the percent rule, the slider is the minimum percent of each cell's pixels that must pass (0-100%). To change the pixel level, type it under **Percent-of-cell rule** and click **Apply pixel level**: this image is measured again (objects and your edits are kept). Tick **at most** to ignore pixels brighter than a second level, such as saturated spots. The line above the counts says the rule in words, for example *at least 30% of pixels ≥ 1200*.
-3. To remove something that is not a real object: click it in the image, then click **Delete object**. **Restore object** and **Undo** reverse it.
+3. To remove something that is not a real object: click it in the image (the line *Selected object* shows its number), then click **Delete object**. **Restore object** and **Undo** reverse it. Nothing is deleted until you have clicked an object.
 4. When the image looks right, click **Approve**. Use **Next image ▶** at the bottom to check other images.
 
 **Success check:** the green objects are the ones you would call positive by eye.
 
 Tips:
-- Compare with a negative control image if you have one: its objects should be red (negative).
+- Compare with a negative control image if you have one: its objects should be magenta (negative).
 - An object that could not be measured is left out of every count, and the counts say how many.
 
 ## Step 5: Results
 
-1. Click **Run all images** (included images only), or select rows in step 1 and click **Run selected images**. The bar at the bottom shows the image and step, for example *Image 3 of 9: Finding objects: slice 2 of 7*. **Pause** waits after the current step; **Cancel** stops after it, keeping the images already finished. One image failing does not stop the others. To re-run with new settings, change them and click **Run all images** again. With several analyses (see below), **Run all analyses** runs each of them.
+1. Click **Run all images** (included images, with the analysis shown), or select rows in step 1 and click **Run selected images**. The bar at the bottom shows the image and step, for example *Image 3 of 9: Finding objects: slice 2 of 7*. **Pause** waits after the current step; **Cancel** stops after it, keeping the images already finished. One image failing does not stop the others; the red box at the top lists each failed image and why. To re-run with new settings, change them and click **Run all images** again. With several analyses (see below), **Run all analyses** runs each of them.
 2. Click **Export results…** and choose a folder.
 
 The **Results** box shows the numbers for the image on screen, for example *Marker A+ among all objects: 10 of 40 (25.0%)*.
@@ -143,11 +145,11 @@ The **Results** box shows the numbers for the image on screen, for example *Mark
 | `objects.csv` | One row per object: its position, size, each marker's brightness, and positive/negative calls. In 3D it also has `centroid_z` and `volume` (µm³), the slices each object spans (`z_slices`, `z_first`, `z_last`), and `z_flag` (*one_slice* or *possibly_merged*, for checking). `area` is the largest cross-section. |
 | `image_summary.csv` | One row per image: object count and each percentage. |
 | `settings_index.csv` | Which settings produced each image's results. |
-| `recipe.yaml` | The settings. Load it later to analyse new images the same way. |
+| `recipe.yaml` | The settings. **Load settings…** (step 5, *Show all settings*) uses it to analyze new images the same way. |
 
-If `mixed_settings.txt` is also there, some images were analysed with different settings (for example you changed a cutoff after running them). Run all images again before you report numbers.
+If `mixed_settings.txt` is also there, some images were analyzed with different settings (for example you changed a cutoff after running them). Run all images again before you report numbers.
 
-*Advanced:* **Show all settings** lets you add results such as "Marker B among Marker A-positive objects", review only flagged or failed images, and save or load settings.
+*Advanced:* **Show all settings** lets you add result rows (choose what to **Count** and **among** which objects, for example *Marker B+ among Marker A+*), go through only the images that need a look or failed (**Check images that need a look**, **Check failed images**; the bottom bar says when Previous / Next are limited, and **Check all included images** goes back), and **Save settings** or **Load settings…**.
 
 ## Several analyses of the same images
 
@@ -190,9 +192,10 @@ Open CellQuant, click **Open experiment…**, and choose the results folder. You
 | Channels look gray | The file has no saved channel colors. CellQuant shows gray rather than inventing colors. |
 | Fewer images than expected | Read the yellow note: it lists folders with no images. Files in CellQuant's own folders (runs, working, exports) are skipped. |
 | "Save results with the images?" when creating an experiment | The results folder is your image folder or inside it. Click **No** and choose another results folder, unless you want them together. |
-| "This image has 3 channels, but the experiment expects 4" | All images in one experiment need the same channels in the same order. Put different layouts in separate experiments. |
+| "This image has 3 channels, but the experiment's channel list has 4" | Channels are matched by the names stored in the file. Check that image (⚠ in the **Plan**), or set its channel in the Plan. |
 | Units say pixels | Enter the pixel size in step 1. |
-| Next is greyed out | Read the orange text beside it: it says what is missing. |
+| Next is greyed out | Read the text beside it: it says what is missing. |
+| A red box says the run stopped | Read the message; the full details are in `cellquant_developer.log` in `%LOCALAPPDATA%\CellQuant` (Windows) or `~/.cellquant` (Mac, Linux). |
 | Nothing is found, or everything is one blob | Check that **Source channel** is the nuclear stain, and try Preview with different settings. |
 | Cellpose is slow | Without an NVIDIA GPU, Cellpose runs on the CPU. Use Classic Cellpose, or the classical method. |
 | "These settings were made for Cellpose-SAM" (or classic) | Close CellQuant and open it again with the engine the settings were made with, or choose a model for the engine you have. |
