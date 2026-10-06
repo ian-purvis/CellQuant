@@ -593,8 +593,7 @@ class CellQuantWindow:
         self._plan_dock_widget = self.viewer.window.add_dock_widget(self._plan_dock, name="Plan", area="left")
         self._plan_dock_widget.hide()
         run_dock = self.viewer.window.add_dock_widget(self._footer, name="Run", area="bottom")
-        for dock in (main_dock, self._plan_dock_widget, run_dock):
-            window_buttons_when_floating(dock)
+        self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, run_dock)]
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
         self._start_gpu_check()
@@ -3977,46 +3976,129 @@ class Footer(QWidget):
         self.status.setText("Stopping after the current step...")
 
 
-def window_buttons_when_floating(dock) -> None:
-    """Give a panel popped out of the napari window minimize and maximize/restore in its title bar.
+class FloatingHeader(QWidget):
+    """Header of a panel popped out of the napari window: Minimize, Maximize, Reset (dock back), Close.
 
-    Qt gives a floating panel only a close button. Docking it back (dragging or
-    double-clicking its title) returns the usual panel frame.
+    Drag it to move the panel; drop it on the napari window, double-click it or click Reset to dock it back.
     """
 
-    window_type = Qt.WindowType
-    flags = (
-        window_type.Window
-        | window_type.CustomizeWindowHint
-        | window_type.WindowTitleHint
-        | window_type.WindowSystemMenuHint
-        | window_type.WindowMinMaxButtonsHint
-        | window_type.WindowCloseButtonHint
-    )
+    def __init__(self, dock):
+        super().__init__(dock)
+        self.dock = dock
+        self._before_maximize = None
+        self._height_before_minimize: int | None = None
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 2, 4, 2)
+        row.setSpacing(2)
+        self.title = QLabel(dock.windowTitle())
+        self.title.setStyleSheet("font-weight: bold;")
+        row.addWidget(self.title, 1)
+        self.buttons: dict[str, QPushButton] = {}
+        for key, text, tip, slot in (
+            ("minimize", "–", "Minimize", self.toggle_minimized),
+            ("maximize", "□", "Maximize", self.toggle_maximized),
+            ("reset", "⟲", "Reset", self.reset),
+            ("close", "✕", "Close", dock.close),
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.setFixedSize(26, 22)
+            button.setFlat(True)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+            self.buttons[key] = button
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip("Drag to move. Double-click or click Reset to put the panel back in the napari window.")
+
+    @property
+    def minimized(self) -> bool:
+        return self._height_before_minimize is not None
+
+    def toggle_minimized(self) -> None:
+        """Fold the panel up to this header, or open it again."""
+
+        inner = self.dock.widget()
+        if self.minimized:
+            inner.show()
+            self.dock.resize(self.dock.width(), self._height_before_minimize)
+            self._height_before_minimize = None
+            self.buttons["minimize"].setToolTip("Minimize")
+        else:
+            self._height_before_minimize = self.dock.height()
+            inner.hide()
+            self.dock.resize(self.dock.width(), self.sizeHint().height())
+            self.buttons["minimize"].setToolTip("Restore")
+
+    def toggle_maximized(self) -> None:
+        if self.minimized:
+            self.toggle_minimized()
+        if self._before_maximize is not None:
+            self.dock.setGeometry(self._before_maximize)
+            self._before_maximize = None
+            self.buttons["maximize"].setText("□")
+            self.buttons["maximize"].setToolTip("Maximize")
+            return
+        screen = self.dock.screen() if hasattr(self.dock, "screen") else None
+        if screen is None:
+            return
+        self._before_maximize = self.dock.geometry()
+        self.dock.setGeometry(screen.availableGeometry())
+        self.buttons["maximize"].setText("❐")
+        self.buttons["maximize"].setToolTip("Restore size")
+
+    def reset(self) -> None:
+        """Put the panel back where it was docked in the napari window."""
+
+        self.forget_size()
+        self.dock.setFloating(False)
+
+    def forget_size(self) -> None:
+        if self.minimized:
+            self.toggle_minimized()
+        self._before_maximize = None
+        self.buttons["maximize"].setText("□")
+        self.buttons["maximize"].setToolTip("Maximize")
+
+
+def floating_header(dock) -> FloatingHeader:
+    """When a napari panel is popped out, give it a FloatingHeader in place of the plain system title bar."""
+
+    header = FloatingHeader(dock)
+    header.hide()
 
     def apply() -> None:
         try:
-            if not dock.isFloating() or dock.windowFlags() & window_type.WindowMinimizeButtonHint:
+            if not dock.isFloating() or dock.titleBarWidget() is header:
                 return
         except RuntimeError:
             return  # the panel was closed meanwhile
         from qtpy.QtWidgets import QApplication
 
         if QApplication.mouseButtons() != Qt.MouseButton.NoButton:
-            QTimer.singleShot(200, apply)  # still being dragged; changing the frame now would drop it
+            QTimer.singleShot(200, apply)  # still being dragged; changing the header now would drop it
             return
-        geometry = dock.geometry()
-        # napari resets the frame when the panel is shown; it has nothing to change on a floating panel.
+        # napari swaps its own header in when the panel is shown; keep it from undoing this one.
         dock.blockSignals(True)
         try:
-            dock.setWindowFlags(flags)
-            dock.setGeometry(geometry)
+            dock.setTitleBarWidget(header)
+            header.show()
             dock.show()
         finally:
             dock.blockSignals(False)
 
-    dock.topLevelChanged.connect(lambda floating: QTimer.singleShot(0, apply) if floating else None)
+    def docked() -> None:
+        header.forget_size()
+        if dock.titleBarWidget() is header:
+            dock.setTitleBarWidget(None)
+            header.hide()
+            # napari puts its own docked header back when the panel is shown.
+            restore = getattr(dock, "_on_visibility_changed", None)
+            if restore is not None:
+                restore(True)
+
+    dock.topLevelChanged.connect(lambda floating: QTimer.singleShot(0, apply) if floating else docked())
     dock.visibilityChanged.connect(lambda visible: QTimer.singleShot(0, apply) if visible else None)
+    return header
 
 
 class WheelGuard(QObject):
