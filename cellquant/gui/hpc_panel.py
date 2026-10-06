@@ -293,7 +293,7 @@ class HpcPanel(QWidget):
             if recipe.object_set.algorithm == "cellpose" and not parameters.get("gpu"):
                 from cellquant.hpc.models import Issue
 
-                issues.append(Issue(code="E_GPU", message="'Use GPU' is off, so the cluster would run Cellpose on the CPU."))
+                issues.append(Issue(code="E_GPU", message="These settings were made without a GPU, so the cluster would run Cellpose on the CPU."))
         self.gpu_button.setVisible(any(issue.code == "E_GPU" for issue in issues))
         self.engine_button.setVisible(
             self.profile is not None and self.profile.runtime is not None and any(issue.code in ("E_ENGINE", "E_MODEL") for issue in issues)

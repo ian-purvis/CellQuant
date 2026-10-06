@@ -694,6 +694,8 @@ class AnalysisController:
                         **recipe,
                         "object_set": {**recipe.get("object_set", {}), "segmentation_channel": 0},
                         "measurements": [{**item, "channel": 0} for item in recipe.get("measurements", [])],
+                        # Crop channels mapped per image are not different settings either.
+                        **({"crop": {**recipe["crop"], "channels": None}} if isinstance(recipe.get("crop"), dict) else {}),
                     }
                 )
             except Exception:  # noqa: BLE001 - settings saved by another version: compare them as they are
@@ -817,6 +819,12 @@ class AnalysisController:
             "pixel_size_x": loaded.pixel_size_x,
             "pixel_size_y": loaded.pixel_size_y,
         }
+        cropping = self.recipe.crop is not None and self.recipe.crop.enabled
+        crop_info: dict = {}
+        rectangles = self._crop_rectangles(record, loaded, crop_info) if cropping else None
+        if cropping:
+            # Only when cropping is on, so keys of analyses without it do not change.
+            segmentation_payload["crop"] = rectangles
         segmentation_id = stage_key("segmentation", segmentation_payload)
         automated = self.cache.get_labels(segmentation_id)
         details = self.cache.get_meta(segmentation_id) or {}
@@ -869,7 +877,11 @@ class AnalysisController:
             user_metadata=record.user_metadata,
             manual_edits=edits,
             automated_labels=automated,
-            segmentation_details=details.get("segmentation_details"),
+            segmentation_details=(
+                details.get("segmentation_details")
+                if automated is not None or not cropping
+                else {"crop_rectangles_given": rectangles, "crop_info_given": crop_info}
+            ),
         )
         self.cache.put_labels(segmentation_id, result.automated_labels)
         stored_details = _details_to_keep(result)
@@ -877,6 +889,68 @@ class AnalysisController:
         result.provenance["segmentation_key"] = segmentation_id
         self.cache.put_table(measurement_id, measurement_values(result, self.recipe))
         return result, loaded
+
+    def _crop_rectangles(self, record, loaded: LoadedImage, info: dict | None = None):
+        """Crop rectangles for this image (None: the full image, chosen for it or not possible)."""
+
+        from cellquant.crop import regions_for
+
+        info = {} if info is None else info
+        entry = self._analysis(self.recipe.recipe_id).plan.get(record.image_id) if self.experiment.analyses else None
+        if entry is not None and entry.full_image:
+            info["note"] = "Cropping is off for this image (chosen in the Plan)."
+            return None
+        _mapped, missing = self._crop_mapping(record)
+        if missing:
+            # A region channel is missing from this image: segment it in full, with a warning.
+            info["warning"] = (
+                f"Cropping skipped: this image has no channel named '{missing[0]}' for the crop region, "
+                "so the full image was segmented."
+            )
+            return None
+        return regions_for(loaded, self.recipe, info)
+
+    def _crop_mapping(self, record) -> tuple[list[int] | None, list[str]]:
+        """The crop region channels in this image's own channel order, found by name like the markers.
+
+        Returns (channels, missing names). Channels are None when cropping is off or a region
+        channel is missing from this image.
+        """
+
+        from cellquant.crop import crop_channels
+
+        analysis = getattr(self, "_unswapped_recipe", None) or self.recipe
+        if analysis.crop is None or not analysis.crop.enabled:
+            return None, []
+        mapped, missing = [], []
+        for channel in crop_channels(analysis):
+            index, reason = self._map_channel(record, int(channel))
+            if reason == "not in this image":
+                missing.append(self._channel_name(int(channel)))
+            mapped.append(index)
+        return (None, missing) if missing else (mapped, [])
+
+    def set_full_image(self, image_ids: list[str], full: bool, recipe_ids: list[str] | None = None) -> None:
+        """Segment these images in full even when the analysis crops to the region of interest."""
+
+        targets = [self._analysis(recipe_id) for recipe_id in (recipe_ids or [self.recipe.recipe_id])]
+        for image_id in image_ids:
+            self.experiment.image(image_id)
+            for item in targets:
+                entry = item.plan.get(image_id) or PlanEntry()
+                entry.full_image = True if full else None
+                self._store_entry(item, image_id, entry)
+        self.save()
+
+    def crop_warnings(self) -> list[str]:
+        """Warnings about the channels chosen for cropping (see ``cellquant.crop.crop_channel_warnings``)."""
+
+        from cellquant.crop import crop_channel_warnings
+
+        recipe = getattr(self, "_unswapped_recipe", None) or self.recipe
+        if recipe.crop is None or not recipe.crop.enabled:
+            return []
+        return crop_channel_warnings(recipe, {channel.channel_index: channel.channel_name for channel in self.experiment.channels})
 
     def _load_record(self, record) -> LoadedImage:
         return load_record_image(
@@ -1290,7 +1364,7 @@ class AnalysisController:
         return {"not_analyzed": "not run", "excluded": "not run", "needs_attention": "needs attention"}.get(status, status)
 
     def _store_entry(self, item: AnalysisRecord, image_id: str, entry: PlanEntry) -> None:
-        if entry.run is None and entry.channel is None:
+        if entry.run is None and entry.channel is None and not entry.full_image:
             item.plan.pop(image_id, None)
         else:
             item.plan[image_id] = entry
@@ -1324,11 +1398,14 @@ class AnalysisController:
         if getattr(self, "_unswapped_recipe", None) is not None:
             yield  # already analyzing this image with its own channels: never map twice
             return
+        from cellquant.crop import crop_channels
+
+        crop_mapped, _missing = self._crop_mapping(record)
         channel, _reason = self.segmentation_channel_for(record.image_id)
         measured = {item.id: self._map_channel(record, int(item.channel))[0] for item in self.recipe.measurements}
         same = channel == self.recipe.object_set.segmentation_channel and all(
             measured[item.id] == item.channel for item in self.recipe.measurements
-        )
+        ) and (crop_mapped is None or crop_mapped == crop_channels(self.recipe))
         if same:
             yield
             return
@@ -1337,6 +1414,8 @@ class AnalysisController:
         changed.object_set.segmentation_channel = channel
         for item in changed.measurements:
             item.channel = measured[item.id]
+        if crop_mapped is not None and changed.crop is not None:
+            changed.crop.channels = list(crop_mapped)  # the region channels, by name in this image
         self.recipe = changed
         self._unswapped_recipe = saved
         try:
