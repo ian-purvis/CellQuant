@@ -275,3 +275,21 @@ def test_results_inside_the_image_folder_is_detected(tmp_path: Path):
     assert results_inside_images(images, images / "analysis")
     assert not results_inside_images(images, tmp_path / "images - CellQuant results")
     assert not results_inside_images(images / "analysis", images)
+
+
+def test_new_experiment_refuses_a_results_folder_that_holds_another_experiment(tmp_path: Path):
+    """Reusing a results folder reopened the old experiment, listing the images of a neighboring folder."""
+
+    pytest.importorskip("qtpy")
+    try:
+        from cellquant.gui.app import existing_experiment_images
+    except Exception as exc:  # noqa: BLE001 - no Qt binding installed
+        pytest.skip(f"GUI not importable: {exc}")
+    parent = tmp_path / "data"
+    _zstack(parent / "E14.5_E17.5" / "a.tif")
+    _zstack(parent / "P0_P21" / "b.tif")
+    results = tmp_path / "Outputs"
+    old = AnalysisController.create(results, "Old", input_directory=parent / "E14.5_E17.5")
+    old.add_image_paths([parent / "E14.5_E17.5"])
+    assert existing_experiment_images(results) == str((parent / "E14.5_E17.5").resolve())
+    assert existing_experiment_images(tmp_path / "P0_P21 - CellQuant results") is None
