@@ -62,7 +62,7 @@ def test_threshold_change_recolors_without_rebuilding_layers(window, monkeypatch
     def forbidden(*_args, **_kwargs):
         raise AssertionError("a threshold change must not read the image file")
 
-    monkeypatch.setattr(shell.controller, "_load_record", forbidden)
+    monkeypatch.setattr(shell.controller, "_load_display", forbidden)
     started = time.time()
     # Call the handler directly: an exception inside a Qt signal aborts the process under PyQt6.
     panel._threshold_moved(10_000.0)
@@ -91,13 +91,13 @@ def test_switching_images_does_not_block_the_window(window, monkeypatch):
 
     shell = window
     _wait(shell)
-    real = shell.controller._load_record
+    real = shell.controller._load_display
 
     def slow(record):
         time.sleep(1.0)
         return real(record)
 
-    monkeypatch.setattr(shell.controller, "_load_record", slow)
+    monkeypatch.setattr(shell.controller, "_load_display", slow)
     started = time.time()
     shell._footer._step(1)
     assert time.time() - started < 0.5, "switching images waited for the file on the interface thread"
@@ -209,6 +209,24 @@ def _stack_window(tmp_path: Path, count: int = 1, mode: str = "stitch_slices"):
     _wait(shell)
     return viewer, shell
 
+
+def test_a_z_stack_has_a_slice_slider_in_every_z_mode(tmp_path: Path):
+    viewer, shell = _stack_window(tmp_path, mode="max_projection")
+    try:
+        assert shell.viewer.dims.ndim == 3  # a slider for the 9 slices, though the analysis uses a projection
+        assert shell.viewer.dims.current_step[0] == 4  # middle slice
+        shell.run_current()
+        _wait(shell)
+        assert shell.viewer.layers["Objects"].data.shape == (64, 64)  # projection outlines over every slice
+        assert shell.viewer.dims.ndim == 3
+        assert "Analyzed: max projection of 9 slices" in shell._footer.units.text()
+    finally:
+        viewer.close()
+
+
+def test_a_single_plane_image_has_no_slice_slider(window):
+    _wait(window)
+    assert window.viewer.dims.ndim == 2
 
 def test_a_run_shows_its_progress_and_can_be_cancelled_part_way(tmp_path: Path, monkeypatch):
     from qtpy.QtWidgets import QApplication, QPushButton
@@ -659,3 +677,4 @@ def test_remove_marker_also_removes_its_result_rows_and_settings_save_themselves
     shell._settings_save_timer.timeout.emit()
     saved = AnalysisController.open(shell.controller.directory)
     assert saved.recipe.object_set.parameters["sigma"] == 2.5
+
