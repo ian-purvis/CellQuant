@@ -160,7 +160,7 @@ def test_a_failed_preparation_is_explained(window, tmp_path: Path, monkeypatch):
 
     runtime_path, runtime_bytes = write_runtime(tmp_path / "profiles")
     panel.load_profile(write_profile(tmp_path / "profiles", runtime_path, runtime_bytes))
-    if not panel.gpu_button.isHidden():  # a computer without a GPU unticks 'Use GPU' in step 2
+    if not panel.gpu_button.isHidden():  # a computer without a GPU saves gpu=False
         panel.gpu_button.click()
     panel.check_plan()
     _wait(shell)

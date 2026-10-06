@@ -324,10 +324,7 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
     assert "NVIDIA GPU found" in panel.gpu_label.text() and "Test GPU" in panel.gpu_label.text()
     assert "NVIDIA GPU found: Test GPU" in shell._footer.log.toPlainText()
-    panel.gpu.setChecked(False)
-    assert "'Use GPU' is off" in panel.gpu_label.text() and panel.gpu.isVisibleTo(panel.gpu_banner)
-    panel.gpu.click()
-    assert panel.gpu.isChecked() and "will run on the GPU" in panel.gpu_label.text()
+    assert "will run on the GPU" in panel.gpu_label.text() and panel.use_gpu()
     panel.show_gpu_status({"available": False, "reason": "test"})
     assert "No usable GPU found" in panel.gpu_label.text()
     # Source channel, then Method, then engine, then Z-stack mode.
@@ -351,6 +348,23 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     QApplication.processEvents()
     assert not shell._run_lock_note.isVisibleTo(shell._dock)
     assert panel.method.isEnabled() and shell._measurements_panel.statistic.isEnabled()
+
+
+def test_cellpose_uses_a_usable_gpu_whatever_was_saved(window):
+    from cellquant.engines import CellposeEngine
+
+    shell = window
+    _wait(shell)
+    panel = shell._objects_panel
+    panel.engine = CellposeEngine(True, "4.2.0", "cellpose4", ("cpsam",), "cpsam")
+    panel.method.setCurrentIndex(panel.method.findData("cellpose"))
+    panel.show_gpu_status({"available": False, "reason": "test"})
+    panel.write_recipe()
+    assert shell.controller.recipe.object_set.parameters["gpu"] is False
+    panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
+    panel.write_recipe()
+    assert shell.controller.recipe.object_set.parameters["gpu"] is True
+    panel.show_gpu_status({"available": False, "reason": "test"})
 
 
 def test_plain_menus_hidden_fields_errors_and_run_bar(window):
@@ -391,10 +405,16 @@ def test_plain_menus_hidden_fields_errors_and_run_bar(window):
     assert shell._footer._run_buttons["current"].styleSheet() and not shell._footer._run_buttons["all"].styleSheet()
     shell.go_to_step(5)
     assert shell._footer._run_buttons["all"].styleSheet() and not shell._footer._run_buttons["current"].styleSheet()
+    # Time left shows beside the progress bar while a run goes, with how it is worked out in the tooltip.
     footer = shell._footer
-    footer._started -= 60  # one image took a minute
-    assert footer._time_left(1, 3) == " · about 2 min left"
-    assert footer._time_left(0, 3) == "" and footer._time_left(3, 3) == ""
+    footer.start_busy(batch=True)
+    footer.update_progress(1, 3, "a.tif", "running")
+    assert footer.time_left.text() == "Estimating…"
+    footer._clock._image_start -= 60  # the first image took a minute
+    footer.update_progress(1, 3, "a.tif", "Success")
+    assert footer.time_left.text() == "~2 min left" and "per image" in footer.time_left.toolTip()
+    footer.end_busy()
+    assert footer.time_left.text() == ""
 
 
 def test_cutoff_slider_recolors_with_chosen_colours_and_locks_during_runs(window, monkeypatch, tmp_path):
