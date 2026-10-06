@@ -275,3 +275,75 @@ def test_results_inside_the_image_folder_is_detected(tmp_path: Path):
     assert results_inside_images(images, images / "analysis")
     assert not results_inside_images(images, tmp_path / "images - CellQuant results")
     assert not results_inside_images(images / "analysis", images)
+
+
+def test_new_experiment_refuses_a_results_folder_that_holds_another_experiment(tmp_path: Path):
+    """Reusing a results folder reopened the old experiment, listing the images of a neighboring folder."""
+
+    pytest.importorskip("qtpy")
+    try:
+        from cellquant.gui.app import existing_experiment_images
+    except Exception as exc:  # noqa: BLE001 - no Qt binding installed
+        pytest.skip(f"GUI not importable: {exc}")
+    parent = tmp_path / "data"
+    _zstack(parent / "E14.5_E17.5" / "a.tif")
+    _zstack(parent / "P0_P21" / "b.tif")
+    results = tmp_path / "Outputs"
+    old = AnalysisController.create(results, "Old", input_directory=parent / "E14.5_E17.5")
+    old.add_image_paths([parent / "E14.5_E17.5"])
+    assert existing_experiment_images(results) == str((parent / "E14.5_E17.5").resolve())
+    assert existing_experiment_images(tmp_path / "P0_P21 - CellQuant results") is None
+
+
+def test_image_counts_per_subfolder_show_a_parent_folder_pick(tmp_path: Path):
+    """Picking the parent of E14.5_E17.5 must be visible before import: both subfolders are listed."""
+
+    pytest.importorskip("qtpy")
+    try:
+        from cellquant.gui.app import folder_image_counts
+    except Exception as exc:  # noqa: BLE001 - no Qt binding installed
+        pytest.skip(f"GUI not importable: {exc}")
+    parent = tmp_path / "050724_CRISPRi enhancers"
+    _zstack(parent / "E14.5_E17.5" / "Control" / "a.tif")
+    _zstack(parent / "E14.5_E17.5" / "Control" / "b.tif")
+    _zstack(parent / "P0_P21" / "c.tif")
+    _zstack(parent / "loose.tif")
+    assert folder_image_counts(parent) == [(".", 1), ("E14.5_E17.5", 2), ("P0_P21", 1)]
+    assert folder_image_counts(parent / "E14.5_E17.5") == [("Control", 2)]
+
+
+def test_folder_picker_returns_the_highlighted_folder(tmp_path: Path):
+    """Single-click a folder, then Choose: the highlighted folder is returned, not its parent."""
+
+    pytest.importorskip("qtpy")
+    try:
+        from qtpy.QtCore import QItemSelectionModel
+        from qtpy.QtWidgets import QApplication, QFileDialog, QListView
+
+        from cellquant.gui.app import _highlighted_directory
+    except Exception as exc:  # noqa: BLE001 - no Qt binding installed
+        pytest.skip(f"GUI not importable: {exc}")
+    app = QApplication.instance() or QApplication([])
+    parent = tmp_path / "050724_CRISPRi enhancers"
+    for name in ("E14.5_E17.5", "P0_P21"):
+        (parent / name).mkdir(parents=True)
+    dialog = QFileDialog(None, "Pick", str(parent))
+    dialog.setFileMode(QFileDialog.Directory)
+    dialog.setOption(QFileDialog.ShowDirsOnly, True)
+    dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+    dialog.show()
+    view = dialog.findChild(QListView, "listView")
+    for _ in range(200):  # the folder listing loads in the background
+        app.processEvents()
+        if view.model().rowCount(view.rootIndex()) == 2:
+            break
+    assert _highlighted_directory(dialog) == ""
+    root = view.rootIndex()
+    index = next(
+        view.model().index(row, 0, root)
+        for row in range(view.model().rowCount(root))
+        if view.model().index(row, 0, root).data() == "E14.5_E17.5"
+    )
+    view.selectionModel().select(index, QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
+    assert _highlighted_directory(dialog) == str((parent / "E14.5_E17.5").resolve())
+    dialog.close()
