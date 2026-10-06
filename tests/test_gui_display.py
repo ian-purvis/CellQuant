@@ -225,7 +225,8 @@ def test_a_run_shows_its_progress_and_can_be_cancelled_part_way(tmp_path: Path, 
     viewer, shell = _stack_window(tmp_path)
     try:
         footer = shell._footer
-        run_buttons = [button for button in shell._tabs.findChildren(QPushButton) if button.text() == "Run"]
+        run_buttons = [button for button in shell._footer.findChildren(QPushButton) if button.text() == "Run this image"]
+        assert run_buttons, "footer Run this image button missing"
         assert footer.cancel.isEnabled() is False
         shell.run_current()
         end = time.time() + 20
@@ -263,7 +264,7 @@ def test_batch_progress_counts_images_and_slices(tmp_path: Path):
         assert any(text.startswith("Image 1 of 2") and "slice" in text for text in seen), sorted(seen)[:10]
         # The second file has the same pixels, so its saved segmentation is reused: no slices to report.
         assert any(text.startswith("Image 2 of 2") for text in seen)
-        assert "Completed 2" in shell._footer.status.text()
+        assert "2 finished" in shell._footer.status.text()
         assert shell._footer.progress.value() == 1000
     finally:
         viewer.close()
@@ -300,8 +301,16 @@ def test_channels_use_the_file_colors(tmp_path: Path):
     try:
         shell = CellQuantWindow(viewer, tmp_path / "practice" / "experiment")
         _wait(shell)
-        top = {layer.name: tuple(np.round(layer.colormap.colors[-1][:3], 3)) for layer in viewer.layers if layer.name in ("Nuclei", "Marker A", "Marker B")}
-        assert top == {"Nuclei": (0, 0, 1), "Marker A": (0, 1, 0), "Marker B": (1, 0, 0)}
+        top = {
+            layer.name: tuple(np.round(layer.colormap.colors[-1][:3], 3))
+            for layer in viewer.layers
+            if layer.name.startswith("Channel ")
+        }
+        assert top == {
+            "Channel 1 = Nuclei": (0, 0, 1),
+            "Channel 2 = Marker A": (0, 1, 0),
+            "Channel 3 = Marker B": (1, 0, 0),
+        }
     finally:
         viewer.close()
 
@@ -324,11 +333,14 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     assert panel.gpu.isChecked() and "will run on the GPU" in panel.gpu_label.text()
     panel.show_gpu_status({"available": False, "reason": "test"})
     assert "No usable GPU found" in panel.gpu_label.text()
-    # The Z-stack mode sits right under Method and the Cellpose engine menu.
+    # Source channel, then Method, then engine, then Z-stack mode.
     form = panel.layout().itemAt(1).layout()
-    rows = [form.getWidgetPosition(widget)[0] for widget in (panel.method, panel.engine_choice, panel.z_box)]
-    assert rows == [rows[0], rows[0] + 1, rows[0] + 2]
+    channel_row, method_row, engine_row, z_row = [
+        form.getWidgetPosition(widget)[0] for widget in (panel.channel, panel.method, panel.engine_choice, panel.z_box)
+    ]
+    assert channel_row < method_row < engine_row < z_row
     assert panel.engine_choice.isVisibleTo(panel)
+    assert panel.z_stack.isEnabled()
     panel.method.setCurrentIndex(panel.method.findData("classical"))
     assert not panel.engine_choice.isVisibleTo(panel)
 
@@ -470,3 +482,100 @@ def test_the_mouse_wheel_changes_a_menu_only_after_it_is_clicked(window):
     if box.hasFocus():  # focus needs an active window, which some test displays lack
         wheel()
         assert box.currentIndex() != before
+
+
+def test_review_fixes_selection_errors_navigation_and_sizes(window, monkeypatch):
+    """Fixes from the UI review: no unasked deletes, no stuck runs, plain tables, bounded navigation, sizes for many images."""
+
+    shell = window
+    controller = shell.controller
+    shell.run_current()
+    _wait(shell)
+    panel = shell._review_panel
+    image_id = shell._nav_ids[shell._nav_index]
+    before = controller.recall(image_id)
+    kept = int((~before.objects["excluded"].astype(bool)).sum())
+
+    # Nothing clicked: Delete object refuses instead of removing object 1.
+    panel._delete()
+    _wait(shell)
+    assert "Click an object" in shell._footer.status.text()
+    assert int((~controller.recall(image_id).objects["excluded"].astype(bool)).sum()) == kept
+    # A picked object is deleted.
+    panel.pick(1)
+    assert "Selected object: 1" in panel.selected.text()
+    panel._delete()
+    _wait(shell)
+    assert int((~controller.recall(image_id).objects["excluded"].astype(bool)).sum()) == kept - 1
+
+    # A batch that crashes leaves the running state and says why.
+    def boom(*_args, **_kwargs):
+        raise KeyError("missing")
+
+    monkeypatch.setattr(controller, "run_images", boom)
+    shell.start_batch(None)
+    _wait(shell)
+    assert shell._batch is None and not shell._run_lock_note.isVisibleTo(shell._dock)
+    assert shell._error_box.isVisibleTo(shell._dock) and "KeyError" in shell._error_note.text()
+
+    # Remove measurement with no row chosen removes nothing.
+    measurements = shell._measurements_panel
+    measurements.refresh()
+    count = len(controller.recipe.measurements)
+    measurements.table.setCurrentCell(-1, -1)
+    measurements._remove()
+    assert len(controller.recipe.measurements) == count
+    # The tables show channel names and plain words, not indices and keys.
+    assert measurements.table.item(0, 1).text() == controller._channel_name(int(controller.recipe.measurements[0].channel))
+    assert measurements.table.item(0, 3).text() == "Mean brightness"
+
+    # Previous / Next stop at the ends instead of wrapping around.
+    shell._nav_index = len(shell._nav_ids) - 1
+    shell._footer._step(1)
+    assert shell._nav_index == len(shell._nav_ids) - 1 and "last image" in shell._footer.status.text()
+    assert f"of {len(shell._nav_ids)}" in shell._footer.position.text()
+
+    # Set sizes (µm) by default fills every image without a size.
+    for record in controller.experiment.images:
+        record.pixel_size_x = record.pixel_size_y = None
+    shell._experiment_panel.pixel_x.setValue(0.5)
+    shell._experiment_panel.pixel_y.setValue(0.5)
+    shell._experiment_panel._apply_pixel_size()
+    assert all(record.pixel_size_x == 0.5 for record in controller.experiment.images)
+
+
+def test_layers_are_named_by_the_channel_they_hold(tmp_path: Path):
+    """An image whose file lists the channels in another order gets each layer's name right."""
+
+    from cellquant.controller import AnalysisController
+    from cellquant.gui.app import CellQuantWindow
+
+    paths = []
+    for index in range(2):
+        path = tmp_path / f"s{index}.tif"
+        _write_squares(path)
+        paths.append(path)
+    controller = AnalysisController.create(tmp_path / "experiment", "Layouts")
+    controller.add_image_paths(paths)
+    first, second = controller.experiment.images
+    first.channel_names = ["DAPI", "Red", "Green", "Far Red"]
+    second.channel_names = ["Red", "DAPI", "Green", "Far Red"]
+    controller.experiment.channels[0].channel_name = controller.experiment.channels[0].display_name = "Nuclei"
+    controller.experiment.channels[1].channel_name = controller.experiment.channels[1].display_name = "Marker"
+    assert controller.display_channels(second, 4) == [1, 0, 2, 3]
+    controller.set_recipe(_recipe())
+    controller.save()
+    try:
+        viewer = napari.Viewer(show=False)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"napari viewer could not start: {exc}")
+    try:
+        shell = CellQuantWindow(viewer, tmp_path / "experiment")
+        _wait(shell)
+        shell._nav_index = shell._nav_ids.index(second.image_id)
+        shell.show_current()
+        _wait(shell)
+        names = [layer.name for layer in viewer.layers if layer.name.startswith("Channel ")]
+        assert names[:2] == ["Channel 1 = Red", "Channel 2 = DAPI"]
+    finally:
+        viewer.close()
