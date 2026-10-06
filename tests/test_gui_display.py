@@ -270,21 +270,18 @@ def test_batch_progress_counts_images_and_slices(tmp_path: Path):
         viewer.close()
 
 
-def test_include_buttons_choose_a_subset(tmp_path: Path):
+def test_file_type_filter_hides_other_types(tmp_path: Path):
     viewer, shell = _stack_window(tmp_path, count=3, mode="max_projection")
     try:
         panel = shell._experiment_panel
         assert "3 of 3 images included" in panel.included_label.text()
-        panel.filter_box.setText("s1")
-        panel._include_rows(panel._shown_rows(), False)
-        assert "2 of 3 images included" in panel.included_label.text()
-        assert len(shell._nav_ids) == 2
-        panel.filter_box.setText("")
-        panel.table.selectRow(0)
-        panel._include_only_selected()
-        assert shell.controller.included_ids() == [shell.controller.experiment.images[0].image_id]
         panel.show_type.setCurrentIndex(panel.show_type.findData("nd2"))
-        assert panel._shown_rows() == []  # no ND2 files in this folder
+        assert all(panel.table.isRowHidden(row) for row in range(panel.table.rowCount()))  # no ND2 files here
+        from qtpy.QtWidgets import QCheckBox, QPushButton
+
+        texts = {button.text() for button in panel.findChildren(QPushButton)}
+        assert {"Add images…", "Add folder…"} <= texts
+        assert not any(box.text() == "Advanced" for box in panel.findChildren(QCheckBox))
     finally:
         viewer.close()
 
