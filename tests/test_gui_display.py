@@ -391,10 +391,16 @@ def test_plain_menus_hidden_fields_errors_and_run_bar(window):
     assert shell._footer._run_buttons["current"].styleSheet() and not shell._footer._run_buttons["all"].styleSheet()
     shell.go_to_step(4)
     assert shell._footer._run_buttons["all"].styleSheet() and not shell._footer._run_buttons["current"].styleSheet()
+    # Time left shows beside the progress bar while a run goes, with how it is worked out in the tooltip.
     footer = shell._footer
-    footer._started -= 60  # one image took a minute
-    assert footer._time_left(1, 3) == " · about 2 min left"
-    assert footer._time_left(0, 3) == "" and footer._time_left(3, 3) == ""
+    footer.start_busy(batch=True)
+    footer.update_progress(1, 3, "a.tif", "running")
+    assert footer.time_left.text() == "Estimating…"
+    footer._clock._image_start -= 60  # the first image took a minute
+    footer.update_progress(1, 3, "a.tif", "Success")
+    assert footer.time_left.text() == "~2 min left" and "per image" in footer.time_left.toolTip()
+    footer.end_busy()
+    assert footer.time_left.text() == ""
 
 
 def test_cutoff_slider_recolors_with_chosen_colours_and_locks_during_runs(window, monkeypatch, tmp_path):
