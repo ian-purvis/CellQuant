@@ -779,7 +779,8 @@ class CellQuantWindow:
             self.message(f"Results saved to {path}")
             self.refresh_guidance()
 
-        self._start_job(lambda: controller.export(directory), done)
+        options = self._results_panel.summary_options()
+        self._start_job(lambda: controller.export(directory, **options), done)
 
     def _start_gpu_check(self) -> None:
         """Load PyTorch in the background to learn whether a GPU is usable."""
@@ -1252,7 +1253,8 @@ class CellQuantWindow:
             self.message(f"Every analysis with results was saved to {path} (one folder each, and all_analyses_image_summary.csv).")
             self.refresh_guidance()
 
-        self._start_job(lambda: controller.export_all(directory), done)
+        options = self._results_panel.summary_options()
+        self._start_job(lambda: controller.export_all(directory, **options), done)
 
     # -- analyses ----------------------------------------------------------------------------------
 
@@ -3545,6 +3547,25 @@ class ResultsPanel(QWidget):
         settings.addWidget(load)
         settings.addStretch(1)
         layout.addLayout(settings)
+        # Summaries in the export: by group, and per biological unit (for example per retina).
+        summaries = QHBoxLayout()
+        group_label = QLabel("Group by")
+        group_label.setToolTip("A column of step 1, for example Folder 1 (the condition). Export adds grouped_by_<column>.csv.")
+        summaries.addWidget(group_label)
+        self.group_by = QComboBox()
+        self.group_by.setToolTip(group_label.toolTip())
+        summaries.addWidget(self.group_by, 1)
+        unit_label = QLabel("Unit")
+        unit_label.setToolTip(
+            "The biological unit, for example the retina (by default the folder that holds the images). Export adds "
+            "units_by_<column>.csv (each unit's images pooled) and, when grouped, grouped_by_<group>_equal_units.csv: "
+            "the mean of the units' percents, so every retina counts once, with n units and SD."
+        )
+        summaries.addWidget(unit_label)
+        self.unit = QComboBox()
+        self.unit.setToolTip(unit_label.toolTip())
+        summaries.addWidget(self.unit, 1)
+        layout.addLayout(summaries)
 
     def refresh(self) -> None:
         controller = self.shell.controller
@@ -3558,6 +3579,7 @@ class ResultsPanel(QWidget):
                 item.setData(Qt.UserRole, expression)
                 self.reports.setItem(row, column, item)
         self._fill_report_choices(controller)
+        self._fill_summary_options(controller)
 
     def _fill_report_choices(self, controller) -> None:
         """Each marker positive or negative, and pairs of two markers; 'all objects' for Among."""
@@ -3579,6 +3601,31 @@ class ResultsPanel(QWidget):
             box.clear()
             for text, value in [*extra, *choices]:
                 box.addItem(text, value)
+
+    def _fill_summary_options(self, controller) -> None:
+        import pandas as pd
+
+        from cellquant.storage import default_unit_column
+
+        columns = list(controller.experiment.metadata_columns)
+        default_unit = default_unit_column(pd.DataFrame(columns=columns))
+        for box, first, keep in (
+            (self.group_by, ("no grouping", None), self.group_by.currentData()),
+            (self.unit, (f"automatic ({default_unit})" if default_unit else "automatic (none)", None), self.unit.currentData()),
+        ):
+            box.blockSignals(True)
+            box.clear()
+            box.addItem(*first)
+            for column in columns:
+                box.addItem(column, column)
+            index = box.findData(keep)
+            box.setCurrentIndex(index if index >= 0 else 0)
+            box.blockSignals(False)
+
+    def summary_options(self) -> dict:
+        """``group_by`` and ``unit`` for exports, as chosen here (None: no grouping / the default unit)."""
+
+        return {"group_by": self.group_by.currentData(), "unit": self.unit.currentData()}
 
     def write_reports(self) -> None:
         controller = self.shell.controller
