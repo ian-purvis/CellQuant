@@ -65,14 +65,13 @@ STEPS = (
         "and the <b>results folder</b> (where CellQuant saves its work; by default a new folder beside your images). "
         "That results folder is reloadable with <b>Open</b> — changes are saved automatically (no separate Save).<br>"
         "Every ND2 and TIFF in the image folder and its subfolders is listed. "
-        "<b>Advanced</b> holds <b>Add folder</b>, <b>Add images</b>, and bulk include tools.<br>"
+        "<b>Add folder</b> and <b>Add images</b> add more to the same experiment later.<br>"
         "Check the list: each image is shown with its folder path, slices, channels, pixel size and "
         "objective. Sample name and Folder columns identify the experimental condition.<br>"
         "When an image is open, the blue box shows its channel order, for example "
         "<i>Channel 1 = Green · Channel 2 = Red</i>. Channel names come from the file; "
         "do not rename them to label conditions.<br>"
-        "Untick <i>Include</i> for any you do not want, or open <b>Advanced</b> and use "
-        "<b>Include shown</b> / <b>Leave out shown</b>.",
+        "Untick <i>Include</i> for any you do not want.",
         "Every image you expect is listed once, with the right folder, and channel order is clear. "
         "Read the yellow notes above the list.",
     ),
@@ -162,11 +161,8 @@ HELP = {
         "True 3D — segment the whole volume at once (slow; needs closely spaced slices).\n"
         "Times are estimates for this computer; ★ marks the recommendation."
     ),
-    ("_experiment_panel", "show_type"): "Show only ND2 or only TIFF files in the list. Under Advanced, Include shown or Leave out shown acts on just those.",
-    ("_experiment_panel", "use_nd2"): "Add folder takes ND2 files from the folder and its subfolders.",
-    ("_experiment_panel", "use_tiff"): "Add folder takes TIFF files from the folder and its subfolders.",
+    ("_experiment_panel", "show_type"): "Show only ND2 or only TIFF files in the list.",
     ("_experiment_panel", "pixel_z"): "Distance between slices of a Z-stack, in micrometers. Read from ND2 files; needed for 3D volumes.",
-    ("_experiment_panel", "meta_name"): "Add a column such as Genotype or Age. Results can be grouped by it.",
     ("_experiment_panel", "pixel_x"): "Pixel width in micrometers. Find it in the microscope software's image properties.",
     ("_experiment_panel", "pixel_y"): "Pixel height in micrometers. Usually the same as the width.",
 }
