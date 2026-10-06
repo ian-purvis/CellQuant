@@ -54,6 +54,7 @@ class Step:
     title: str
     todo: str
     success: str
+    short: str = ""  # the one line shown; todo and success are its hover text
 
 
 STEPS = (
@@ -74,6 +75,7 @@ STEPS = (
         "Untick <i>Include</i> for any you do not want.",
         "Every image you expect is listed once, with the right folder, and channel order is clear. "
         "Read the yellow notes above the list.",
+        "Add images, then check the list.",
     ),
     Step(
         2,
@@ -85,13 +87,14 @@ STEPS = (
         "If the images are Z-stacks, choose <b>Z-stack mode</b>: "
         "<i>2D: one slice</i>, <i>2D: max projection</i>, <i>2D + stitching</i>, or <i>True 3D</i>. "
         "The blue box recommends one for this computer; every option stays available.<br>"
-        "<b>Typical nucleus diameter</b> defaults to 6 µm (most nuclei are about 5–7 µm). Adjust it; "
-        "minimum object size in µm² drops debris.<br>"
+        "<b>Nucleus diameter</b> defaults to 6 µm (most nuclei are about 5–7 µm). Adjust it; "
+        "<b>Min size</b> in µm² drops debris.<br>"
         "The box at the top says whether an NVIDIA GPU was found and whether Cellpose will use it.<br>"
         "Click <b>Preview</b> to try the settings on the area you are looking at, then "
         "<b>Run this image</b> at the bottom.",
         "Outlines sit on the nuclei, with few missed, merged, or split. If not, change the settings "
         "and run again. Zoom in to check. In 3D, move the slice slider under the image to check every slice.",
+        "Pick the nuclear channel, <b>Preview</b>, then <b>Run this image</b>.",
     ),
     Step(
         3,
@@ -103,6 +106,7 @@ STEPS = (
         "pixels are at or above a pixel level (set the minimum percent here). "
         "It picks a starting cutoff (or pixel level); you check it in the next step.",
         "Every marker you want is listed, and step 4 opens with objects colored.",
+        "Tick marker channels, then <b>Set up markers</b>.",
     ),
     Step(
         4,
@@ -115,6 +119,7 @@ STEPS = (
         "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> when it looks right, then <b>Next image ▶</b> at the bottom. "
         "Hover over a button to see what it does.",
         "The green objects are the ones you would call positive by eye.",
+        "Drag <b>Cutoff</b> until green = positive, then <b>Approve</b>.",
     ),
     Step(
         5,
@@ -125,6 +130,7 @@ STEPS = (
         "<b>Run all analyses</b> (bottom) and <b>Export all analyses</b> do the same for each of them.",
         "The export folder has <i>objects.csv</i> (one row per object) and <i>image_summary.csv</i> "
         "(one row per image, with the percentages). Both open in Excel, Prism, or R.",
+        "<b>Run all images</b>, then <b>Export results</b>.",
     ),
 )
 
@@ -142,7 +148,7 @@ HELP = {
     ("_objects_panel", "nucleus_diameter_um"): "Typical nucleus diameter in micrometers. Most nuclei are about 5–7 µm. Used as Cellpose's size hint when pixel size is known.",
     ("_objects_panel", "watershed"): "Split touching objects. Try this if two nuclei come out as one.",
     ("_objects_panel", "cellpose_model"): "The Cellpose model. The first one listed is the usual choice.",
-    ("_objects_panel", "diameter"): "Optional Cellpose diameter in pixels. 0 uses Typical nucleus diameter (µm) when pixel size is known, otherwise lets Cellpose decide.",
+    ("_objects_panel", "diameter"): "Optional Cellpose diameter in pixels. 0 uses Nucleus diameter (µm) when pixel size is known, otherwise lets Cellpose decide.",
     ("_objects_panel", "flow"): "Cellpose shape check. Lower keeps fewer, cleaner objects.",
     ("_objects_panel", "cellprob"): "Cellpose confidence. Lower finds more (and fainter) objects.",
     ("_objects_panel", "gpu"): "Use the NVIDIA GPU. Ticked for you when a usable GPU is found; greyed out when none was.",
@@ -196,12 +202,12 @@ def step_states(window) -> list[StepState]:
 
     controller = window.controller
     if controller is None:
-        first = StepState(False, "", "Click New experiment, Open experiment, or Try practice images first.")
+        first = StepState(False, "", "Try practice images, or New / Open experiment.")
         return [first] + [StepState(False, "", "Finish step 1 first.") for _ in STEPS[1:]]
     images = [record for record in controller.experiment.images if record.include]
     hint = ""
     if images and not all(record.pixel_size_x for record in images):
-        hint = "Tip: some images have no pixel size, so sizes will be in pixels."
+        hint = "Some images have no pixel size: sizes in pixels."
     states = [
         StepState(
             bool(images),
@@ -218,7 +224,7 @@ def step_states(window) -> list[StepState]:
         StepState(
             found,
             f"{len(analyzed) or len(results)} analyzed" if found else "",
-            "" if found else "Click Run this image to find objects in this image.",
+            "" if found else "Run this image first.",
         )
     )
     markers = controller.recipe.classifications
@@ -230,8 +236,8 @@ def step_states(window) -> list[StepState]:
         StepState(
             bool(reviewed),
             f"{len(reviewed)} checked" if reviewed else ("cutoffs set" if classified else ""),
-            "" if classified else "Measure the markers first: finish step 3.",
-            "" if reviewed else "Approve images once they look right.",
+            "" if classified else "Finish step 3 first.",
+            "" if reviewed else "Approve images that look right.",
         )
     )
     exported = getattr(window, "_exported_to", None)
@@ -260,10 +266,13 @@ class StepPage(QWidget):
         self.index = index
         step = STEPS[index]
         layout = QVBoxLayout(self)
-        heading = QLabel(f"<b>Step {step.number} of {len(STEPS)}: {step.title}</b>")
+        heading = QLabel(f"<b>{step.number}. {step.title}</b>")
         heading.setStyleSheet("font-size: 14px;")
         layout.addWidget(heading)
-        layout.addWidget(_card(f"<b>What to do</b><br>{step.todo}", "rgba(80, 120, 200, 0.18)"))
+        # One line; the full instructions and the success check are its hover text.
+        todo = _card(f"{step.short} ⓘ", "rgba(80, 120, 200, 0.18)")
+        todo.setToolTip(f"<b>What to do</b><br>{step.todo}<br><br><b>Success check</b><br>{step.success}")
+        layout.addWidget(todo)
         if extra is not None:
             layout.addWidget(extra)
         self.panel_scroll = QScrollArea()
@@ -278,7 +287,7 @@ class StepPage(QWidget):
         self.panel_scroll.setSizePolicy(ignored, expanding)
         panel.setSizePolicy(ignored, expanding)
         if advanced:
-            self.advanced_toggle = QCheckBox("Show all settings (advanced)")
+            self.advanced_toggle = QCheckBox("Show all settings")
             self.advanced_toggle.toggled.connect(self.panel_scroll.setVisible)
             self.panel_scroll.setVisible(False)
             layout.addWidget(self.advanced_toggle)
@@ -287,7 +296,6 @@ class StepPage(QWidget):
             layout.setStretchFactor(self.panel_scroll, 1)
         else:
             layout.addStretch(1)
-        layout.addWidget(_card(f"<b>Success check</b><br>{step.success}", "rgba(60, 170, 90, 0.16)"))
         self.hint = QLabel("")
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.16); border-radius: 4px; padding: 4px; }")
@@ -318,16 +326,15 @@ class StartPage(QWidget):
         layout = QVBoxLayout(self)
         title = QLabel("<h2>CellQuant</h2>")
         layout.addWidget(title)
-        layout.addWidget(
-            _card(
-                "CellQuant finds nuclei (or cells) in fluorescence images and counts how many are "
-                "positive for each marker, for one image or a whole experiment. "
-                "Work through the numbered tabs from left to right. Each tab says what to do and "
-                "how to tell it worked.<br><small>Add images in step 1, not by dragging them onto the "
-                "image area: dragged images are not part of the experiment.</small>",
-                "rgba(80, 120, 200, 0.18)",
-            )
+        intro = _card("Work through the tabs left to right. ⓘ", "rgba(80, 120, 200, 0.18)")
+        intro.setToolTip(
+            "CellQuant finds nuclei (or cells) in fluorescence images and counts how many are "
+            "positive for each marker, for one image or a whole experiment. "
+            "Each tab says what to do; hover its blue line for details.<br>"
+            "Add images in step 1, not by dragging them onto the image area: "
+            "dragged images are not part of the experiment."
         )
+        layout.addWidget(intro)
         self.buttons = QGroupBox("Start here")
         grid = QVBoxLayout(self.buttons)
         for text, tip, slot in (
@@ -368,7 +375,7 @@ class StartPage(QWidget):
         self.continue_button.setMinimumHeight(34)
         self.continue_button.clicked.connect(self._continue)
         layout.addWidget(self.continue_button)
-        guide = QPushButton("Open the step-by-step guide")
+        guide = QPushButton("Guide")
         guide.setToolTip("The full guide, with what to check at each step and fixes for common problems.")
         guide.clicked.connect(window.open_guide)
         layout.addWidget(guide)
@@ -378,13 +385,11 @@ class StartPage(QWidget):
     def update_state(self, states: list[StepState]) -> None:
         controller = self.window.controller
         if controller is None:
-            self.experiment.setText("No experiment is open.")
+            self.experiment.setText("No experiment open.")
         else:
             images = controller.experiment.input_directory or "not set yet"
-            self.experiment.setText(
-                f"Experiment: <b>{controller.experiment.experiment_name}</b><br>"
-                f"<small>Images: {images}<br>Results: {controller.directory}</small>"
-            )
+            self.experiment.setText(f"Experiment: <b>{controller.experiment.experiment_name}</b>")
+            self.experiment.setToolTip(f"Images: {images}\nResults: {controller.directory}")
         self._next_index = next((index for index, state in enumerate(states) if not state.done), len(STEPS) - 1)
         for index, (step, state) in enumerate(zip(STEPS, states)):
             mark = "✓" if state.done else ("→" if index == self._next_index else "•")
@@ -408,7 +413,7 @@ class MarkerSetup(QGroupBox):
         super().__init__("Quick setup")
         self.window = window
         self.layout_ = QVBoxLayout(self)
-        self.note = QLabel("Markers are measured in every channel you tick. Open an experiment first.")
+        self.note = QLabel("Open an experiment first.")
         self.note.setWordWrap(True)
         self.layout_.addWidget(self.note)
         self.boxes_holder = QVBoxLayout()
@@ -416,8 +421,8 @@ class MarkerSetup(QGroupBox):
         self.boxes: list[QCheckBox] = []
         rule_form = QFormLayout()
         self.rule = QComboBox()
-        self.rule.addItem("its mean brightness is above a cutoff", RULE_MEAN)
-        self.rule.addItem("enough of its pixels are bright", RULE_PERCENT)
+        self.rule.addItem("mean brightness > cutoff", RULE_MEAN)
+        self.rule.addItem("enough pixels bright", RULE_PERCENT)
         self.rule.setToolTip(
             "Mean brightness: one number per cell, compared with a cutoff.\n"
             "Percent of the cell: each pixel is compared with a pixel level; the cell is positive when at least\n"
@@ -431,8 +436,8 @@ class MarkerSetup(QGroupBox):
         self.min_percent.setSuffix(" %")
         self.min_percent.setValue(DEFAULT_MIN_PERCENT)
         self.min_percent.setToolTip("Minimum percent of a cell's pixels that must be at or above the pixel level.")
-        rule_form.addRow("A cell is positive when", self.rule)
-        rule_form.addRow("Minimum percent of the cell", self.min_percent)
+        rule_form.addRow("Positive when", self.rule)
+        rule_form.addRow("Min % of cell", self.min_percent)
         self.rule.currentIndexChanged.connect(lambda _index: self._rule_changed())
         self.layout_.addLayout(rule_form)
         self._rule_changed()
@@ -465,13 +470,13 @@ class MarkerSetup(QGroupBox):
             self.boxes_holder.addWidget(box)
         segment_name = next((c.channel_name for c in controller.experiment.channels if c.channel_index == segmentation), "")
         self.note.setText(
-            f"Objects are found in <b>{segment_name}</b>. Tick the marker channels to count:"
+            f"Objects: <b>{segment_name}</b>. Markers to count:"
             if self.boxes
-            else "This image has only one channel, so there is no marker to count."
+            else "Only one channel: no marker to count."
         )
         markers = controller.recipe.classifications
         self.current.setText(
-            "Current markers: " + "; ".join(f"{item.name} ({describe_rule(controller.recipe, item)})" for item in markers)
+            "Markers: " + "; ".join(f"{item.name} ({describe_rule(controller.recipe, item)})" for item in markers)
             if markers
             else ""
         )
@@ -513,7 +518,7 @@ class ResultsSummary(QGroupBox):
         super().__init__("Results")
         self.window = window
         layout = QVBoxLayout(self)
-        self.summary = QLabel("Run an image to see its numbers here.")
+        self.summary = QLabel("No results yet.")
         self.summary.setWordWrap(True)
         self.summary.setTextFormat(Qt.RichText)
         layout.addWidget(self.summary)
@@ -536,14 +541,15 @@ class ResultsSummary(QGroupBox):
         self.batch = QLabel("")
         self.batch.setWordWrap(True)
         layout.addWidget(self.batch)
-        self.open_folder = QPushButton("Open the export folder")
+        self.open_folder = QPushButton("Open export folder")
         self.open_folder.setVisible(False)
         self.open_folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(window._exported_to))))
         layout.addWidget(self.open_folder)
 
     def show_result(self, result, recipe) -> None:
         if result is None or result.reports is None or result.reports.empty:
-            self.summary.setText("No results yet for this image. Set up markers (step 3) and run it.")
+            self.summary.setText("No results yet for this image.")
+            self.summary.setToolTip("Set up markers (step 3) and run it.")
             return
         names = {item.id: item.name for item in recipe.classifications}
         lines = [f"<b>{result.provenance.get('filename', '')}</b>: {result.qc.n_objects} objects"]
@@ -556,18 +562,20 @@ class ResultsSummary(QGroupBox):
             )
         unmeasured = int(result.summary.iloc[0].get("n_unmeasured", 0)) if not result.summary.empty and "n_unmeasured" in result.summary.columns else 0
         if unmeasured:
-            lines.append(f"<span style='background-color:rgba(217,164,0,0.2)'>{unmeasured} objects could not be measured and are left out.</span>")
+            lines.append(f"<span style='background-color:rgba(217,164,0,0.2)'>{unmeasured} unmeasured, left out.</span>")
         self.summary.setText("<br>".join(lines))
 
     def show_batch(self, report) -> None:
         from cellquant.gui.app import run_outcome
 
         text = f"{len(report.jobs)} images: {run_outcome(report.completed, report.warnings, report.failed)}."
-        if report.warnings:
-            text += " Check the ones that need a look in step 4."
-        if report.failed:
-            text += " Why each one failed is in the red box at the top and in step 1's Status column."
         self.batch.setText(text)
+        tips = []
+        if report.warnings:
+            tips.append("Check the ones that need a look in step 4.")
+        if report.failed:
+            tips.append("Why each one failed is in the red box at the top and in step 1's Status column.")
+        self.batch.setToolTip(" ".join(tips))
 
     def show_analysis_actions(self, several: bool) -> None:
         self.export_analyses.setVisible(several)
@@ -581,7 +589,8 @@ class ResultsSummary(QGroupBox):
             if report.cancelled:
                 text += " (stopped)"
             lines.append(text)
-        self.batch.setText("<br>".join(lines) + "<br>Choose an analysis at the top to check its images in step 4.")
+        self.batch.setText("<br>".join(lines))
+        self.batch.setToolTip("Choose an analysis at the top to check its images in step 4.")
 
     def show_exported(self, path) -> None:
         self.batch.setText(self.batch.text() + f"<br>Saved to <b>{path}</b>.")
