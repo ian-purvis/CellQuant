@@ -47,6 +47,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellquant import keep_awake
 from cellquant.controller import AnalysisController
 from cellquant.errors import CellQuantError, RecipeValidationError
 from cellquant.gui import guide
@@ -266,6 +267,17 @@ def classification_colors() -> tuple[str, str]:
         return DEFAULT_POSITIVE_COLOR, DEFAULT_NEGATIVE_COLOR
     valid = [value if QColor(value).isValid() else default for value, default in ((positive, DEFAULT_POSITIVE_COLOR), (negative, DEFAULT_NEGATIVE_COLOR))]
     return valid[0], valid[1]
+
+
+def keep_awake_preferred() -> bool:
+    try:
+        return str(_settings().value("run/keep_awake", "true")).lower() == "true"
+    except Exception:  # noqa: BLE001 - settings unreadable: use the default
+        return True
+
+
+def save_keep_awake(on: bool) -> None:
+    _settings().setValue("run/keep_awake", "true" if on else "false")
 
 
 def save_classification_colors(positive: str, negative: str) -> None:
@@ -567,6 +579,7 @@ class CellQuantWindow:
         self._error_box.setVisible(False)
         dock_layout.addWidget(self._error_box)
         dock_layout.addWidget(self._tabs, 1)
+        self._keep_awake = keep_awake.KeepAwake()
         self._footer = Footer(self)
         self._tabs.currentChanged.connect(
             lambda _index: self._footer.highlight("all" if self._tabs.currentWidget() is self._step_pages[-1] else "current")
@@ -986,6 +999,8 @@ class CellQuantWindow:
                 self._footer.set_navigation_enabled(False)
             self._plan_dock.setEnabled(False)  # the plan is read when a run starts; no changes while it runs
             self._lock_settings(True)
+            if self._footer.keep_awake.isChecked():
+                self._keep_awake.hold()
             self._error_box.setVisible(False)
             self._footer.start_busy(batch=self._batch is not None)
         else:
@@ -995,6 +1010,7 @@ class CellQuantWindow:
                 except RuntimeError:
                     pass  # the button was rebuilt meanwhile
             self._busy_restore = {}
+            self._keep_awake.release()
             self._lock_settings(False)
             self._footer.end_busy()
             self._plan_dock.setEnabled(True)
@@ -1049,6 +1065,13 @@ class CellQuantWindow:
             self._objects_panel._apply_z_enablement()
             self._objects_panel._method_changed()
         self._run_lock_note.setVisible(locked)
+
+    def _keep_awake_toggled(self, on: bool) -> None:
+        save_keep_awake(on)
+        if on and self.is_busy():
+            self._keep_awake.hold()
+        elif not on:
+            self._keep_awake.release()
 
     def is_busy(self) -> bool:
         return self._job is not None or self._batch is not None
@@ -3816,6 +3839,16 @@ class Footer(QWidget):
         row.addSpacing(16)
         for button in (self.pause, self.cancel):
             row.addWidget(button)
+        row.addSpacing(16)
+        self.keep_awake = QCheckBox("Keep computer awake (recommended) ⓘ")
+        self.keep_awake.setToolTip(
+            "While a run is going, stop this computer from going to sleep. Sleep pauses the run "
+            "until someone wakes the computer. The screen can still turn off."
+        )
+        self.keep_awake.setChecked(keep_awake_preferred())
+        self.keep_awake.setVisible(keep_awake.supported())
+        self.keep_awake.toggled.connect(shell._keep_awake_toggled)
+        row.addWidget(self.keep_awake)
         self._run_buttons = {"current": run_current, "all": run_all}
         self.run_all = run_all
         self.cancel.setStyleSheet("QPushButton:enabled { color: #e05050; font-weight: bold; }")
