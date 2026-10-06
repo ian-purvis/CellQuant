@@ -2002,6 +2002,7 @@ class ObjectsPanel(QWidget):
         from cellquant.hardware import Z_OPTION_LABELS
 
         self._gpu_status: dict = {}
+        self._gpu_clicked = False  # the user set 'Use GPU' themselves
         self._recommended: str | None = None
         self._suggest_gpu = False
         self.z_stack = QComboBox()
@@ -2160,6 +2161,7 @@ class ObjectsPanel(QWidget):
         self.cellprob.setRange(-6, 6)
         self.gpu.toggled.connect(lambda _checked: self.update_recommendation())
         self.gpu.toggled.connect(lambda _checked: self._refresh_gpu_banner())
+        self.gpu.clicked.connect(lambda _checked: setattr(self, "_gpu_clicked", True))
         self.watershed.toggled.connect(lambda _checked: self._method_changed())
         self.object_name.setToolTip("The name of the objects in the results, for example Nuclei.")
         advanced.addRow("Object set name", self.object_name)
@@ -2236,6 +2238,7 @@ class ObjectsPanel(QWidget):
         self.flow.setValue(float(parameters.get("flow_threshold", 0.4)))
         self.cellprob.setValue(float(parameters.get("cellprob_threshold", 0)))
         usable = bool(self._gpu_status.get("available")) and self.engine.installed
+        self._gpu_clicked = False
         self.gpu.setChecked(bool(parameters.get("gpu", usable)))
         has_calibration = pixel is not None
         if parameters.get("min_area_um2") is not None:
@@ -2444,6 +2447,15 @@ class ObjectsPanel(QWidget):
         self.shell.message(self._gpu_summary())
         self.update_recommendation()
 
+    def _gpu_setting_known(self) -> bool:
+        """False while 'Use GPU' only shows a placeholder: Cellpose 4, GPU not yet usable, and the user has not set it."""
+
+        from cellquant.engines import CELLPOSE_SAM
+
+        if self.engine.key != CELLPOSE_SAM or self._gpu_clicked:
+            return True
+        return bool(self._gpu_status.get("available"))
+
     def _gpu_chosen(self) -> bool:
         """True when the open settings already say whether to use the GPU."""
 
@@ -2555,6 +2567,12 @@ class ObjectsPanel(QWidget):
                 "gpu": self.gpu.isChecked(),
                 **size_filters,
             }
+            if not self._gpu_setting_known():
+                # Not yet a choice: keep what was saved, so a usable GPU can still be ticked for you.
+                if "gpu" in previous:
+                    parameters["gpu"] = previous["gpu"]
+                else:
+                    del parameters["gpu"]
         data["z_stack"] = self.z_stack.currentData() or "max_projection"
         data["z_index"] = None if self.z_stack.currentData() != "single_plane" or self.z_slice.value() == 0 else self.z_slice.value() - 1
         data["z_stitch_threshold"] = round(self.z_link.value(), 3)
