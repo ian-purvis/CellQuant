@@ -225,7 +225,8 @@ def test_a_run_shows_its_progress_and_can_be_cancelled_part_way(tmp_path: Path, 
     viewer, shell = _stack_window(tmp_path)
     try:
         footer = shell._footer
-        run_buttons = [button for button in shell._tabs.findChildren(QPushButton) if button.text() == "Run this image"]
+        run_buttons = [button for button in shell._footer.findChildren(QPushButton) if button.text() == "Run this image"]
+        assert run_buttons, "footer Run this image button missing"
         assert footer.cancel.isEnabled() is False
         shell.run_current()
         end = time.time() + 20
@@ -300,8 +301,16 @@ def test_channels_use_the_file_colors(tmp_path: Path):
     try:
         shell = CellQuantWindow(viewer, tmp_path / "practice" / "experiment")
         _wait(shell)
-        top = {layer.name: tuple(np.round(layer.colormap.colors[-1][:3], 3)) for layer in viewer.layers if layer.name in ("Nuclei", "Marker A", "Marker B")}
-        assert top == {"Nuclei": (0, 0, 1), "Marker A": (0, 1, 0), "Marker B": (1, 0, 0)}
+        top = {
+            layer.name: tuple(np.round(layer.colormap.colors[-1][:3], 3))
+            for layer in viewer.layers
+            if layer.name.startswith("Channel ")
+        }
+        assert top == {
+            "Channel 1 = Nuclei": (0, 0, 1),
+            "Channel 2 = Marker A": (0, 1, 0),
+            "Channel 3 = Marker B": (1, 0, 0),
+        }
     finally:
         viewer.close()
 
@@ -324,11 +333,14 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     assert panel.gpu.isChecked() and "will run on the GPU" in panel.gpu_label.text()
     panel.show_gpu_status({"available": False, "reason": "test"})
     assert "No usable GPU found" in panel.gpu_label.text()
-    # The Z-stack mode sits right under Method and the Cellpose engine menu.
+    # Source channel, then Method, then engine, then Z-stack mode.
     form = panel.layout().itemAt(1).layout()
-    rows = [form.getWidgetPosition(widget)[0] for widget in (panel.method, panel.engine_choice, panel.z_box)]
-    assert rows == [rows[0], rows[0] + 1, rows[0] + 2]
+    channel_row, method_row, engine_row, z_row = [
+        form.getWidgetPosition(widget)[0] for widget in (panel.channel, panel.method, panel.engine_choice, panel.z_box)
+    ]
+    assert channel_row < method_row < engine_row < z_row
     assert panel.engine_choice.isVisibleTo(panel)
+    assert panel.z_stack.isEnabled()
     panel.method.setCurrentIndex(panel.method.findData("classical"))
     assert not panel.engine_choice.isVisibleTo(panel)
 
@@ -563,7 +575,7 @@ def test_layers_are_named_by_the_channel_they_hold(tmp_path: Path):
         shell._nav_index = shell._nav_ids.index(second.image_id)
         shell.show_current()
         _wait(shell)
-        names = [layer.name for layer in viewer.layers if layer.name in ("Nuclei", "Marker")]
-        assert names == ["Marker", "Nuclei"]
+        names = [layer.name for layer in viewer.layers if layer.name.startswith("Channel ")]
+        assert names[:2] == ["Channel 1 = Red", "Channel 2 = DAPI"]
     finally:
         viewer.close()
