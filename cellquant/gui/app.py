@@ -3760,6 +3760,13 @@ class Footer(QWidget):
         self.position = QLabel("No image open.")
         self.units = QLabel("Units: pixels")
         self.progress = QProgressBar()
+        self.time_left = QLabel("")
+        self.time_left.setMinimumWidth(110)
+        self.time_left.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._clock = None  # a TimeLeft while a run is going
+        self._clock_timer = QTimer(self)
+        self._clock_timer.setInterval(1000)
+        self._clock_timer.timeout.connect(self._show_time_left)
         self.status = QLabel("")
         self.log = QTextEdit()
         self.log.setReadOnly(True)
@@ -3767,7 +3774,10 @@ class Footer(QWidget):
         self.log.setMaximumHeight(160)
         layout.addWidget(self.position)
         layout.addWidget(self.units)
-        layout.addWidget(self.progress)
+        bar = QHBoxLayout()
+        bar.addWidget(self.progress, 1)
+        bar.addWidget(self.time_left)
+        layout.addLayout(bar)
         layout.addWidget(self.status)
         layout.addWidget(self.log)
 
@@ -3807,20 +3817,31 @@ class Footer(QWidget):
                 else ""
             )
 
-    def _time_left(self, finished: int, total: int) -> str:
-        import time
+    def _show_time_left(self) -> None:
+        """Time left beside the progress bar, refreshed every second; how it is worked out is in its tooltip."""
 
         from cellquant.hardware import format_seconds
 
-        if finished <= 0 or finished >= total:
-            return ""
-        elapsed = time.monotonic() - self._started
-        return f" · about {format_seconds(elapsed / finished * (total - finished))} left"
+        if self._clock is None:
+            self.time_left.setText("")
+            self.time_left.setToolTip("")
+            return
+        left = self._clock.seconds_left()
+        if left is None:
+            text = "Estimating…"
+        elif left < 1:
+            text = "Finishing…"
+        else:
+            text = f"~{format_seconds(left)} left"
+        self.time_left.setText(text)
+        self.time_left.setToolTip(self._clock.detail())
 
     def start_busy(self, batch: bool) -> None:
-        import time
+        from cellquant.progress import TimeLeft
 
-        self._started = time.monotonic()
+        self._clock = TimeLeft()
+        self._show_time_left()
+        self._clock_timer.start()
         self.failed_files = []
         self._batch_index = 0
         self._batch_total = 0
@@ -3839,17 +3860,22 @@ class Footer(QWidget):
         self.pause.setEnabled(False)
         self.pause.setText("Pause")
         self._batch_total = 0
+        self._clock_timer.stop()
+        self._clock = None
+        self._show_time_left()
 
     def show_step(self, text: str, fraction: float) -> None:
         """One step of the running analysis, e.g. 'Finding objects: slice 3 of 7'."""
 
+        if self._clock is not None:
+            self._clock.step(text, None if fraction < 0 else fraction)
+            self._show_time_left()
         total = getattr(self, "_batch_total", 0)
         if total:
             done = (self._batch_index - 1 + max(fraction, 0.0)) / total
             self.progress.setRange(0, 1000)
             self.progress.setValue(int(round(1000 * done)))
-            left = self._time_left(self._batch_index - 1, total)
-            self.status.setText(f"Image {self._batch_index} of {total} ({self._batch_name}): {text}{left}")
+            self.status.setText(f"Image {self._batch_index} of {total} ({self._batch_name}): {text}")
             return
         if fraction < 0:
             self.progress.setRange(0, 0)  # busy: this step's length is unknown
@@ -3863,12 +3889,15 @@ class Footer(QWidget):
         self.progress.setRange(0, 1000)
         finished = status != "running"
         self.progress.setValue(int(round(1000 * (index if finished else index - 1) / max(total, 1))))
+        if self._clock is not None:
+            (self._clock.image_finished if finished else self._clock.image_started)(index, total)
+            self._show_time_left()
         if finished:
             if status == "Failure":
                 self.failed_files.append(filename)
             self.message(f"Image {index} of {total} ({filename}): {JOB_WORDS.get(status, status)}")
         else:
-            self.status.setText(f"Image {index} of {total} ({filename}): starting{self._time_left(index - 1, total)}")
+            self.status.setText(f"Image {index} of {total} ({filename}): starting")
 
     def _step(self, delta: int) -> None:
         if not self.shell._nav_ids:
@@ -3887,6 +3916,8 @@ class Footer(QWidget):
             return
         worker.paused = not worker.paused
         self.pause.setText("Resume" if worker.paused else "Pause")
+        if self._clock is not None:
+            self._clock.pause() if worker.paused else self._clock.resume()
 
     def _cancel(self) -> None:
         worker = self.shell._batch or self.shell._job
