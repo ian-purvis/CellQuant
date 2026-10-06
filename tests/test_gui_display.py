@@ -353,6 +353,32 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     assert panel.method.isEnabled() and shell._measurements_panel.statistic.isEnabled()
 
 
+def test_cellpose4_defaults_to_a_usable_gpu_unless_set(window):
+    from cellquant.engines import CellposeEngine
+
+    shell = window
+    _wait(shell)
+    panel = shell._objects_panel
+    panel.engine = CellposeEngine(True, "4.2.0", "cellpose4", ("cpsam",), "cpsam")
+    panel._gpu_status = {}
+    panel.method.setCurrentIndex(panel.method.findData("cellpose"))
+    panel.gpu.setChecked(False)
+    # Saved before PyTorch was checked: no GPU choice is stored yet.
+    panel.write_recipe()
+    assert "gpu" not in shell.controller.recipe.object_set.parameters
+    panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
+    assert panel.gpu.isChecked()
+    panel.write_recipe()
+    assert shell.controller.recipe.object_set.parameters["gpu"] is True
+    # The user's own choice wins over the default.
+    panel.gpu.click()
+    panel.write_recipe()
+    assert shell.controller.recipe.object_set.parameters["gpu"] is False
+    panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
+    assert not panel.gpu.isChecked()
+    panel.show_gpu_status({"available": False, "reason": "test"})
+
+
 def test_plain_menus_hidden_fields_errors_and_run_bar(window):
     shell = window
     objects = shell._objects_panel
