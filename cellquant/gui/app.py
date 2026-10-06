@@ -586,13 +586,15 @@ class CellQuantWindow:
         self._tabs.currentChanged.connect(
             lambda _index: self._footer.highlight("all" if self._tabs.currentWidget() is self._step_pages[-1] else "current")
         )
-        self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
+        main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
 
         self._plan_dock = PlanDock(self)
         self._plan_dock_widget = self.viewer.window.add_dock_widget(self._plan_dock, name="Plan", area="left")
         self._plan_dock_widget.hide()
-        self.viewer.window.add_dock_widget(self._footer, name="Run", area="bottom")
+        run_dock = self.viewer.window.add_dock_widget(self._footer, name="Run", area="bottom")
+        for dock in (main_dock, self._plan_dock_widget, run_dock):
+            window_buttons_when_floating(dock)
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
         self._start_gpu_check()
@@ -2303,7 +2305,12 @@ class ObjectsPanel(QWidget):
         actions = QHBoxLayout()
         preview = QPushButton("Preview")
         preview.clicked.connect(shell.preview_current)
+        preview.setToolTip("Find objects in the part of the image on screen, to check the settings quickly.")
+        run = QPushButton("Run this image")
+        run.clicked.connect(shell.run_current)
+        run.setToolTip("Find objects and measure markers in the whole image on screen.")
         actions.addWidget(preview)
+        actions.addWidget(run)
         layout.addLayout(actions)
         layout.addStretch(1)
         self._update_size_hint()
@@ -3968,6 +3975,48 @@ class Footer(QWidget):
             self.shell._batch.paused = False
         self.cancel.setEnabled(False)
         self.status.setText("Stopping after the current step...")
+
+
+def window_buttons_when_floating(dock) -> None:
+    """Give a panel popped out of the napari window minimize and maximize/restore in its title bar.
+
+    Qt gives a floating panel only a close button. Docking it back (dragging or
+    double-clicking its title) returns the usual panel frame.
+    """
+
+    window_type = Qt.WindowType
+    flags = (
+        window_type.Window
+        | window_type.CustomizeWindowHint
+        | window_type.WindowTitleHint
+        | window_type.WindowSystemMenuHint
+        | window_type.WindowMinMaxButtonsHint
+        | window_type.WindowCloseButtonHint
+    )
+
+    def apply() -> None:
+        try:
+            if not dock.isFloating() or dock.windowFlags() & window_type.WindowMinimizeButtonHint:
+                return
+        except RuntimeError:
+            return  # the panel was closed meanwhile
+        from qtpy.QtWidgets import QApplication
+
+        if QApplication.mouseButtons() != Qt.MouseButton.NoButton:
+            QTimer.singleShot(200, apply)  # still being dragged; changing the frame now would drop it
+            return
+        geometry = dock.geometry()
+        # napari resets the frame when the panel is shown; it has nothing to change on a floating panel.
+        dock.blockSignals(True)
+        try:
+            dock.setWindowFlags(flags)
+            dock.setGeometry(geometry)
+            dock.show()
+        finally:
+            dock.blockSignals(False)
+
+    dock.topLevelChanged.connect(lambda floating: QTimer.singleShot(0, apply) if floating else None)
+    dock.visibilityChanged.connect(lambda visible: QTimer.singleShot(0, apply) if visible else None)
 
 
 class WheelGuard(QObject):

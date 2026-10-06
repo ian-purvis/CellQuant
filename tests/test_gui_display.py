@@ -579,3 +579,34 @@ def test_layers_are_named_by_the_channel_they_hold(tmp_path: Path):
         assert names[:2] == ["Channel 1 = Red", "Channel 2 = DAPI"]
     finally:
         viewer.close()
+
+
+def test_a_popped_out_panel_has_minimize_and_maximize_and_docks_back(window):
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QApplication
+
+    dock = window._dock.parentWidget()
+    while dock is not None and not hasattr(dock, "setFloating"):
+        dock = dock.parentWidget()
+    dock.setFloating(True)
+    end = time.time() + 2
+    while not dock.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint and time.time() < end:
+        QApplication.processEvents()
+        time.sleep(0.02)
+    assert dock.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
+    assert dock.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint
+    dock.setFloating(False)
+    QApplication.processEvents()
+    assert not dock.isFloating()
+    assert not dock.windowFlags() & Qt.WindowType.WindowMinimizeButtonHint
+
+
+def test_find_objects_has_a_run_button(window, monkeypatch):
+    from qtpy.QtWidgets import QPushButton
+
+    ran = []
+    monkeypatch.setattr(window, "_start_job", lambda fn, done: ran.append(fn))
+    buttons = {button.text(): button for button in window._objects_panel.findChildren(QPushButton)}
+    assert "Preview" in buttons
+    buttons["Run this image"].click()
+    assert ran
