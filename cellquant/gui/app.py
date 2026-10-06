@@ -7,6 +7,9 @@ as a batch run.
 
 from __future__ import annotations
 
+import math
+import re
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -47,6 +50,29 @@ from cellquant.gui import guide
 from napari.utils.colormaps import DirectLabelColormap
 
 
+def choose_existing_directory(parent: QWidget | None, caption: str, start: str = "") -> str:
+    """Return one existing directory, or \"\" if the user cancels.
+
+    On Windows the native folder dialog returns the folder whose contents you are
+    looking at, not a child you only highlighted. Clicking E14.5 while still in
+    the parent therefore saved the parent. Use Qt's own dialog there so the
+    highlighted folder is what is returned.
+    """
+
+    dialog = QFileDialog(parent, caption, start)
+    dialog.setFileMode(QFileDialog.Directory)
+    dialog.setOption(QFileDialog.ShowDirsOnly, True)
+    dialog.setOption(QFileDialog.DontResolveSymlinks, True)
+    if sys.platform.startswith("win"):
+        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+    if not dialog.exec():
+        return ""
+    selected = dialog.selectedFiles()
+    if not selected:
+        return ""
+    return str(Path(selected[0]).expanduser().resolve())
+
+
 def launch(experiment_dir: str | Path | None = None) -> None:
     import napari
 
@@ -80,6 +106,30 @@ def channel_colormaps(loaded) -> list:
         code = "#{:02x}{:02x}{:02x}".format(*(int(round(value * 255)) for value in (red, green, blue)))
         maps.append(Colormap(colors=[[0.0, 0.0, 0.0, 1.0], [red, green, blue, 1.0]], name=f"file color {code}"))
     return maps
+
+
+def format_channel_labels(names, n_channels: int) -> list[str]:
+    """Stable labels: 'Channel 1 = Green' or 'Channel 1' when the file has no name."""
+
+    labels = []
+    for index in range(n_channels):
+        raw = ""
+        if names is not None and index < len(names) and names[index]:
+            raw = str(names[index]).strip()
+        if raw and not re.fullmatch(r"Channel\s+\d+", raw, flags=re.I):
+            labels.append(f"Channel {index + 1} = {raw}")
+        else:
+            labels.append(f"Channel {index + 1}")
+    return labels
+
+
+def format_channel_order_text(names, n_channels: int) -> str:
+    return " · ".join(format_channel_labels(names, n_channels))
+
+
+# Typical mammalian nucleus diameter users can adjust (µm). Area of a circle that wide ≈ 28 µm².
+DEFAULT_NUCLEUS_DIAMETER_UM = 6.0
+DEFAULT_MIN_AREA_UM2 = 5.0
 
 
 # Dropdown wording: the saved value first, then the plain words shown for it.
@@ -226,7 +276,8 @@ class NewExperimentDialog(QDialog):
         self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
         note = QLabel(
-            "The image folder is only read. Results (runs, measurements, and exports) "
+            "The image folder is only read — only that folder and its subfolders are scanned, "
+            "not neighboring folders beside it. Results (runs, measurements, and exports) "
             "are written in the results folder. Pick the same folder for both only if you "
             "want those results next to the images."
         )
@@ -236,9 +287,17 @@ class NewExperimentDialog(QDialog):
         self.name = QLineEdit()
         self.name.setPlaceholderText("For example: P7 OTX2 counts")
         self.images = QLineEdit()
+        self.images.setPlaceholderText("Browse to the folder that holds this experiment's images")
         self.results = QLineEdit()
         form.addRow("Experiment name", self.name)
         form.addRow("Image folder", self._browse_row(self.images, self._pick_images))
+        self.images_check = QLabel("")
+        self.images_check.setWordWrap(True)
+        self.images_check.setTextFormat(Qt.RichText)
+        self.images_check.setStyleSheet(
+            "QLabel { background: rgba(60, 130, 220, 0.10); border-radius: 6px; padding: 6px; }"
+        )
+        form.addRow("", self.images_check)
         form.addRow("Results folder", self._browse_row(self.results, self._pick_results))
         types = QHBoxLayout()
         self.use_nd2 = QCheckBox("ND2 files")
@@ -252,9 +311,15 @@ class NewExperimentDialog(QDialog):
         types.setContentsMargins(0, 0, 0, 0)
         form.addRow("Look for", types_box)
         layout.addLayout(form)
-        after = QLabel("You can leave out individual images in step 1 after they are listed.")
+        after = QLabel(
+            "After Browse, check that the blue path shows the folder you meant "
+            "(for example …\\E14.5_E17.5, not the parent that also holds P0_P21). "
+            "You can leave out individual images in step 1 after they are listed."
+        )
         after.setWordWrap(True)
         layout.addWidget(after)
+        self.images.textChanged.connect(self._update_images_check)
+        self._update_images_check()
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
@@ -282,8 +347,26 @@ class NewExperimentDialog(QDialog):
         layout.addWidget(button)
         return row
 
+    def _update_images_check(self, _text: str = "") -> None:
+        images = self.images.text().strip()
+        if not images:
+            self.images_check.setText("No image folder chosen yet.")
+            return
+        path = Path(images)
+        if not path.is_dir():
+            self.images_check.setText(f"Not a folder: {images}")
+            return
+        self.images_check.setText(
+            f"Will import from <b>{path.name}</b> only:<br>{path}<br>"
+            "Subfolders inside it are included. Folders next to it are not."
+        )
+
     def _pick_images(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Folder that contains the images")
+        folder = choose_existing_directory(
+            self,
+            "Select the image folder (highlight it, then Choose)",
+            self.images.text().strip(),
+        )
         if not folder:
             return
         self.images.setText(folder)
@@ -292,7 +375,11 @@ class NewExperimentDialog(QDialog):
             self.results.setText(str(sibling))
 
     def _pick_results(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Folder where results should be saved")
+        folder = choose_existing_directory(
+            self,
+            "Select the results folder (highlight it, then Choose)",
+            self.results.text().strip(),
+        )
         if folder:
             self.results.setText(folder)
 
@@ -308,6 +395,20 @@ class NewExperimentDialog(QDialog):
         if images and not Path(images).is_dir():
             QMessageBox.warning(self, "Image folder", f"This image folder could not be found:\n{images}")
             return
+        if images:
+            path = Path(images)
+            answer = QMessageBox.question(
+                self,
+                "Confirm image folder",
+                "CellQuant will import every chosen file type under this folder and its subfolders:\n\n"
+                f"{path}\n\n"
+                f"Folder name: {path.name}\n\n"
+                "Neighboring folders beside it are not included. Is this the folder you meant?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer != QMessageBox.Yes:
+                return
         if images and results_inside_images(images, results):
             answer = QMessageBox.question(
                 self,
@@ -679,6 +780,7 @@ class CellQuantWindow:
         result = controller.recall(image_id) if controller else None
         self._footer.set_position(self._nav_index, len(self._nav_ids), record.relative_path or record.filename, self._nav_filter)
         self._experiment_panel.set_pixel_size(record.pixel_size_x, record.pixel_size_y, record.pixel_size_z)
+        self._experiment_panel.show_channel_order(record)
         # Reading the file (an ND2 stack can take a second) happens off the interface thread,
         # so the window stays responsive. If the user keeps clicking Next, only the last
         # image asked for is shown.
@@ -790,13 +892,13 @@ class CellQuantWindow:
     # Buttons that start work, or change what is being analyzed, are unavailable while work runs.
     _BUSY_BUTTONS = frozenset(
         {
-            "Run", "Preview", "Run this image", "Run selected images", "Run all images", "Set up markers",
+            "Preview", "Run this image", "Run selected images", "Run all images", "Set up markers",
             "Export results…", "Add images", "Add folder", "New experiment", "New experiment…", "Open",
             "Open experiment…", "Try practice images", "Include shown", "Leave out shown",
             "Include only selected", "Delete object", "Restore object", "Undo", "Approve", "Use recommended",
             "HPC prep…",  # the HPC prep page manages its own buttons: a second job is refused while one runs
             "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
-            "Run ticked", "Save",
+            "Run ticked",
             # Buttons that change the settings: never while images are being analyzed with them.
             "Save settings", "Load settings…", "Add measurement", "Remove measurement",
             "Add marker", "Add result row", "Remove result row", "Apply pixel level",
@@ -849,7 +951,9 @@ class CellQuantWindow:
         view_only = {
             self._experiment_panel.show_type,
             self._experiment_panel.filter_box,
+            self._experiment_panel.advanced_toggle,
             self._objects_panel.advanced_toggle,
+            self._review_panel.advanced_toggle,
             self._review_panel.display,
             self._review_panel.show_boundaries,
             self._review_panel.show_fills,
@@ -877,6 +981,10 @@ class CellQuantWindow:
                 except RuntimeError:
                     pass  # the widget was rebuilt meanwhile
             self._settings_restore = {}
+            # Ancestor-disabled widgets were saved as False and setEnabled(False) sticks
+            # after unlock; re-apply panel rules so Z-stack mode becomes usable again.
+            self._objects_panel._apply_z_enablement()
+            self._objects_panel._method_changed()
         self._run_lock_note.setVisible(locked)
 
     def is_busy(self) -> bool:
@@ -1121,6 +1229,15 @@ class CellQuantWindow:
         self._measurements_panel.write_recipe()
         self._results_panel.write_reports()
 
+    def _autosave(self) -> None:
+        """Persist experiment.json (and current recipe panels) after Step 1 edits."""
+
+        controller = self.controller
+        if controller is None:
+            return
+        self._panels_to_recipe()
+        controller.save()
+
     def _refresh_all(self, keep_image: bool = False) -> None:
         if self.controller is None:
             return
@@ -1170,24 +1287,16 @@ class CellQuantWindow:
         self._clear_managed()
         self._shown_image_id = record.image_id
         self._review_panel.clear_selection()
-        # Each layer is named after the experiment channel it holds, matched by the file's channel names,
-        # so a file with another channel order is not labeled in the experiment's order.
+        file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
+        names = format_channel_labels(file_names, loaded.n_channels)
+        # Contrast is remembered per experiment channel, matched by the names stored in the file.
         by_index = {channel.channel_index: channel for channel in self.controller.experiment.channels}
         owners = self.controller.display_channels(record, loaded.n_channels)
-        file_names = list(record.channel_names)
-        names = []
-        for position, owner in enumerate(owners):
-            if owner is not None and owner in by_index:
-                names.append(by_index[owner].display_name)
-            elif position < len(file_names) and file_names[position]:
-                names.append(f"{file_names[position]} (not in the channel list)")
-            else:
-                names.append(f"Channel {position + 1}")
         colormaps = channel_colormaps(loaded)
         added = self.viewer.add_image(
             loaded.data,
             channel_axis=0,
-            name=names[: loaded.n_channels],
+            name=names,
             colormap=colormaps,
             blending="additive",
         )
@@ -1206,6 +1315,7 @@ class CellQuantWindow:
         labels = result.labels if result is not None else None
         self._set_labels(labels, result)
         self._release_window_later()
+        self._experiment_panel.show_channel_order(record)
 
     def _store_contrast(self, index: int, event) -> None:
         if self.controller is None:
@@ -1335,25 +1445,11 @@ class ExperimentPanel(QWidget):
         for text, slot in (
             ("New experiment…", shell.new_experiment),
             ("Open experiment…", self._open),
-            ("Save", self._save),
-            ("Add images", self._add_images),
-            ("Add folder", self._add_folder),
         ):
             button = QPushButton(text)
             button.clicked.connect(slot)
             buttons.addWidget(button)
         layout.addLayout(buttons)
-        types_row = QHBoxLayout()
-        types_row.addWidget(QLabel("Add folder looks for:"))
-        self.use_nd2 = QCheckBox("ND2 files")
-        self.use_tiff = QCheckBox("TIFF files")
-        for box in (self.use_nd2, self.use_tiff):
-            box.setChecked(True)
-            box.setToolTip("Which file types Add folder takes from a folder and its subfolders.")
-            box.toggled.connect(self._types_changed)
-            types_row.addWidget(box)
-        types_row.addStretch(1)
-        layout.addLayout(types_row)
         self.notices = QLabel("")
         self.notices.setWordWrap(True)
         self.notices.setTextFormat(Qt.RichText)
@@ -1365,7 +1461,7 @@ class ExperimentPanel(QWidget):
         self.show_type.addItem("Show all files", "all")
         self.show_type.addItem("Show ND2 only", "nd2")
         self.show_type.addItem("Show TIFF only", "tiff")
-        self.show_type.setToolTip("Show only one file type in the list. Combine with the text filter, then tick or untick what is shown.")
+        self.show_type.setToolTip("Show only one file type in the list. Combine with the text filter.")
         self.show_type.currentIndexChanged.connect(lambda _index: self._filter(self.filter_box.text()))
         self.filter_box = QLineEdit()
         self.filter_box.setPlaceholderText("Filter by folder, file or sample name, e.g. Retina 2")
@@ -1373,19 +1469,6 @@ class ExperimentPanel(QWidget):
         filter_row.addWidget(self.show_type)
         filter_row.addWidget(self.filter_box, 1)
         layout.addLayout(filter_row)
-        include_row = QHBoxLayout()
-        self.include_shown = QPushButton("Include shown")
-        self.exclude_shown = QPushButton("Leave out shown")
-        self.include_selected = QPushButton("Include only selected")
-        self.include_shown.setToolTip("Tick Include for every image in the list as filtered now.")
-        self.exclude_shown.setToolTip("Untick Include for every image in the list as filtered now. Nothing is deleted.")
-        self.include_selected.setToolTip("Include the rows you selected (Ctrl- or Shift-click) and leave out all others.")
-        self.include_shown.clicked.connect(lambda: self._include_rows(self._shown_rows(), True))
-        self.exclude_shown.clicked.connect(lambda: self._include_rows(self._shown_rows(), False))
-        self.include_selected.clicked.connect(self._include_only_selected)
-        for button in (self.include_shown, self.exclude_shown, self.include_selected):
-            include_row.addWidget(button)
-        layout.addLayout(include_row)
         self.included_label = QLabel("")
         layout.addWidget(self.included_label)
         self.table = ManifestTable(self)
@@ -1403,21 +1486,17 @@ class ExperimentPanel(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         layout.addWidget(self.table)
-        self.big_list = QPushButton("Check the image list in a large window")
-        self.big_list.setToolTip("Every image with its full folder path and details, in a window you can enlarge and copy from.")
-        self.big_list.clicked.connect(self._show_big_list)
-        layout.addWidget(self.big_list)
-        meta_row = QHBoxLayout()
-        self.meta_name = QLineEdit()
-        self.meta_name.setPlaceholderText("Metadata column")
-        add_meta = QPushButton("Add column")
-        add_meta.clicked.connect(self._add_column)
-        meta_row.addWidget(self.meta_name)
-        meta_row.addWidget(add_meta)
-        layout.addLayout(meta_row)
-        self.channels = QWidget()
-        self.channel_form = QFormLayout(self.channels)
-        layout.addWidget(self.channels)
+        self.channel_note = QLabel(
+            "Channel order comes from each image file. Experimental conditions come from "
+            "Sample name and Folder columns — not from renaming channels."
+        )
+        self.channel_note.setWordWrap(True)
+        self.channel_order = QLabel("Open an image to see its channel order.")
+        self.channel_order.setWordWrap(True)
+        self.channel_order.setTextFormat(Qt.RichText)
+        self.channel_order.setStyleSheet("QLabel { background: rgba(60, 130, 220, 0.10); border-radius: 6px; padding: 6px; }")
+        layout.addWidget(self.channel_note)
+        layout.addWidget(self.channel_order)
         calibration = QHBoxLayout()
         self.pixel_x = QDoubleSpinBox()
         self.pixel_y = QDoubleSpinBox()
@@ -1446,10 +1525,84 @@ class ExperimentPanel(QWidget):
         scope_row.addWidget(QLabel("Set sizes"))
         scope_row.addWidget(self.size_scope, 1)
         layout.addLayout(scope_row)
+        self.advanced_toggle = QCheckBox("Advanced")
+        self.advanced_box = QGroupBox("Advanced")
+        self.advanced_box.setVisible(False)
+        self.advanced_toggle.toggled.connect(self.advanced_box.setVisible)
+        advanced = QVBoxLayout(self.advanced_box)
+        add_row = QHBoxLayout()
+        for text, slot in (("Add images", self._add_images), ("Add folder", self._add_folder)):
+            button = QPushButton(text)
+            button.clicked.connect(slot)
+            add_row.addWidget(button)
+        add_row.addStretch(1)
+        advanced.addLayout(add_row)
+        types_row = QHBoxLayout()
+        types_row.addWidget(QLabel("Add folder looks for:"))
+        self.use_nd2 = QCheckBox("ND2 files")
+        self.use_tiff = QCheckBox("TIFF files")
+        for box in (self.use_nd2, self.use_tiff):
+            box.setChecked(True)
+            box.setToolTip("Which file types Add folder takes from a folder and its subfolders.")
+            box.toggled.connect(self._types_changed)
+            types_row.addWidget(box)
+        types_row.addStretch(1)
+        advanced.addLayout(types_row)
+        include_row = QHBoxLayout()
+        self.include_shown = QPushButton("Include shown")
+        self.exclude_shown = QPushButton("Leave out shown")
+        self.include_selected = QPushButton("Include only selected")
+        self.include_shown.setToolTip("Tick Include for every image in the list as filtered now.")
+        self.exclude_shown.setToolTip("Untick Include for every image in the list as filtered now. Nothing is deleted.")
+        self.include_selected.setToolTip("Include the rows you selected (Ctrl- or Shift-click) and leave out all others.")
+        self.include_shown.clicked.connect(lambda: self._include_rows(self._shown_rows(), True))
+        self.exclude_shown.clicked.connect(lambda: self._include_rows(self._shown_rows(), False))
+        self.include_selected.clicked.connect(self._include_only_selected)
+        for button in (self.include_shown, self.exclude_shown, self.include_selected):
+            include_row.addWidget(button)
+        advanced.addLayout(include_row)
+        self.big_list = QPushButton("Check the image list in a large window")
+        self.big_list.setToolTip("Every image with its full folder path and details, in a window you can enlarge and copy from.")
+        self.big_list.clicked.connect(self._show_big_list)
+        advanced.addWidget(self.big_list)
+        meta_row = QHBoxLayout()
+        self.meta_name = QLineEdit()
+        self.meta_name.setPlaceholderText("Metadata column")
+        add_meta = QPushButton("Add column")
+        add_meta.clicked.connect(self._add_column)
+        meta_row.addWidget(self.meta_name)
+        meta_row.addWidget(add_meta)
+        advanced.addLayout(meta_row)
+        layout.addWidget(self.advanced_toggle)
+        layout.addWidget(self.advanced_box)
 
     def refresh(self) -> None:
         self.refresh_table()
-        self._rebuild_channels()
+        controller = self.shell.controller
+        if controller is None:
+            self.channel_order.setText("Open an image to see its channel order.")
+            return
+        image_id = self.shell._shown_image_id or controller.current_image_id
+        if image_id:
+            try:
+                self.show_channel_order(controller.experiment.image(image_id))
+                return
+            except KeyError:
+                pass
+        if controller.experiment.images:
+            self.show_channel_order(controller.experiment.images[0])
+        else:
+            self.channel_order.setText("Open an image to see its channel order.")
+
+    def show_channel_order(self, record) -> None:
+        names = list(record.channel_names or ())
+        count = record.number_of_channels or len(names)
+        if not count:
+            self.channel_order.setText("This image has no channel information in the file.")
+            return
+        order = format_channel_order_text(names, count)
+        path = record.relative_path or record.filename
+        self.channel_order.setText(f"This image ({path}): {order}")
 
     def refresh_table(self) -> None:
         controller = self.shell.controller
@@ -1585,7 +1738,10 @@ class ExperimentPanel(QWidget):
             controller.set_sample_name(image_id, self.table.item(row, column).text())
         elif header in controller.experiment.metadata_columns:
             controller.set_metadata(image_id, header, self.table.item(row, column).text())
+        else:
+            return
         record.sample_name = controller.experiment.image(image_id).sample_name
+        self.shell._autosave()
 
     def paste_into(self, row: int, column: int, text: str) -> None:
         controller = self.shell.controller
@@ -1609,31 +1765,10 @@ class ExperimentPanel(QWidget):
                     item.setText(value)
                     self.apply_cell_edit(target_row, target_column)
 
-    def _rebuild_channels(self) -> None:
-        while self.channel_form.rowCount():
-            self.channel_form.removeRow(0)
-        controller = self.shell.controller
-        if controller is None:
-            return
-        for channel in controller.experiment.channels:
-            editor = QLineEdit(channel.channel_name)
-            editor.editingFinished.connect(
-                lambda index=channel.channel_index, box=editor: controller.set_channel_name(index, box.text())
-            )
-            editor.setToolTip("Name this channel after its stain, for example DAPI or OTX2.")
-            self.channel_form.addRow(f"Channel {channel.channel_index + 1} name", editor)
-
     def _open(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "Open experiment")
         if directory:
             self.shell.open_experiment(directory)
-
-    def _save(self) -> None:
-        controller = self.shell.require_controller()
-        if controller:
-            self.shell._panels_to_recipe()
-            controller.save()
-            self.shell._footer.message("Experiment saved.")
 
     def _add_images(self) -> None:
         controller = self.shell.require_controller()
@@ -1652,7 +1787,11 @@ class ExperimentPanel(QWidget):
         if controller is None:
             return
         start = controller.experiment.input_directory or ""
-        directory = QFileDialog.getExistingDirectory(self, "Choose a folder of images (subfolders are included)", start)
+        directory = choose_existing_directory(
+            self,
+            "Select a folder of images (highlight it, then Choose; subfolders are included)",
+            start,
+        )
         if directory:
             self._import(controller, [directory])
 
@@ -1676,6 +1815,7 @@ class ExperimentPanel(QWidget):
         controller.add_metadata_column(self.meta_name.text().strip())
         self.meta_name.clear()
         self.refresh_table()
+        self.shell._autosave()
 
     def _apply_pixel_size(self) -> None:
         controller = self.shell.controller
@@ -1698,6 +1838,7 @@ class ExperimentPanel(QWidget):
         self.shell._objects_panel.update_recommendation()
         self.shell._footer.set_units("µm" if x and y else "pixels — no pixel size in this image", keep_detail=True)
         self.shell.message(f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.")
+        self.shell._autosave()
 
     def _filter(self, text: str) -> None:
         query = text.casefold()
@@ -1726,6 +1867,7 @@ class ExperimentPanel(QWidget):
             other.blockSignals(False)
         if controller is not None:
             controller.experiment.import_file_types = self.file_types()
+            self.shell._autosave()
 
     def file_types(self) -> list[str]:
         return [kind for box, kind in ((self.use_nd2, "nd2"), (self.use_tiff, "tiff")) if box.isChecked()]
@@ -1741,6 +1883,7 @@ class ExperimentPanel(QWidget):
         controller.set_included_many(ids, include)
         self.refresh_table()
         self.shell.update_navigation()
+        self.shell._autosave()
         verb = "Included" if include else "Left out"
         self.shell.message(f"{verb} {len(ids)} image{'s' if len(ids) != 1 else ''}.")
 
@@ -1760,6 +1903,7 @@ class ExperimentPanel(QWidget):
         controller.set_included_many(sorted(chosen), True)
         self.refresh_table()
         self.shell.update_navigation()
+        self.shell._autosave()
         self.shell.message(f"Included {len(chosen)} selected images; the others are left out.")
 
     def _update_included_label(self) -> None:
@@ -1882,9 +2026,23 @@ class ObjectsPanel(QWidget):
             box.setSpecialValueText("none")  # 0 keeps every size
         for box in (self.min_area, self.max_area):
             box.setMaximum(1e12)
+        self.min_area.setValue(DEFAULT_MIN_AREA_UM2)
         self.area_unit = QComboBox()
         _fill_options(self.area_unit, AREA_UNIT_OPTIONS)
-        # Z-stacks: 2D (projection or one slice) or 3D (linked slices or the whole volume).
+        _choose(self.area_unit, "um2")
+        self.nucleus_diameter_um = QDoubleSpinBox()
+        self.nucleus_diameter_um.setRange(1.0, 50.0)
+        self.nucleus_diameter_um.setDecimals(1)
+        self.nucleus_diameter_um.setSingleStep(0.5)
+        self.nucleus_diameter_um.setValue(DEFAULT_NUCLEUS_DIAMETER_UM)
+        self.nucleus_diameter_um.setToolTip(
+            "Typical nucleus diameter in micrometres. Most nuclei are about 5–7 µm across. "
+            "Used as Cellpose's size hint when pixel size is known, and to suggest a debris floor in µm²."
+        )
+        self.size_hint = QLabel("")
+        self.size_hint.setWordWrap(True)
+        self.nucleus_diameter_um.valueChanged.connect(lambda _value: self._update_size_hint())
+        # Z-stacks: 2D (one slice / max projection), 2D + stitching, or true 3D.
         from cellquant.hardware import Z_OPTION_LABELS
 
         self._gpu_status: dict = {}
@@ -1894,10 +2052,10 @@ class ObjectsPanel(QWidget):
         for mode, text in Z_OPTION_LABELS.items():
             self.z_stack.addItem(text, mode)
         self.z_stack.setToolTip(
-            "2D: max projection keeps the brightest value through all slices (nuclei at different depths "
-            "can merge); one slice misses nuclei outside it.\n"
-            "3D: link slices segments each slice and joins outlines that overlap in neighboring slices; "
-            "whole volume segments the stack at once (slow, needs closely spaced slices).\n"
+            "2D: one slice — only that plane.\n"
+            "2D: max projection — brightest value through all slices (nuclei at different depths can merge).\n"
+            "2D + stitching — segment each slice, then join overlapping outlines into 3D objects.\n"
+            "True 3D — segment the whole volume at once (slow; needs closely spaced slices).\n"
             "Times are estimates for this computer."
         )
         self.z_slice = QSpinBox()
@@ -2000,17 +2158,21 @@ class ObjectsPanel(QWidget):
         self.method.currentIndexChanged.connect(lambda _index: self.update_recommendation())
         self.method.currentIndexChanged.connect(lambda _index: self._method_changed())
         self.threshold_method.currentIndexChanged.connect(lambda _index: self._method_changed())
+        # Root decisions first: what to segment, how, then how to treat Z, then size.
+        form.addRow("Object set name", self.object_name)
         form.addRow("Source channel", self.channel)
         form.addRow("Method", self.method)
         form.addRow(self.engine_choice_label, self.engine_choice)
         form.addRow("Z-stack mode", self.z_box)
         form.addRow(self.z_recommend_box)  # full width, so the explanation is readable
+        form.addRow("Typical nucleus diameter (µm)", self.nucleus_diameter_um)
+        form.addRow(self.size_hint)
+        form.addRow("Minimum object size", self.min_area)
+        form.addRow("Maximum object size", self.max_area)
+        form.addRow("Size unit", self.area_unit)
         form.addRow("Threshold", self.threshold_method)
         form.addRow("Manual threshold", self.threshold)
         form.addRow("Smoothing sigma", self.sigma)
-        form.addRow("Size unit", self.area_unit)
-        form.addRow("Minimum object size", self.min_area)
-        form.addRow("Maximum object size", self.max_area)
         layout.addLayout(form)
         self.advanced_toggle = QCheckBox("Advanced")
         self.advanced_box = QGroupBox("Advanced")
@@ -2031,8 +2193,12 @@ class ObjectsPanel(QWidget):
         self.cellpose_model.setEditable(True)
         self.cellpose_model.addItems(list(self.engine.models))
         self.diameter = QDoubleSpinBox()
-        self.diameter.setMaximum(10000)
-        self.diameter.setSpecialValueText("automatic")  # 0: Cellpose estimates it
+        self.diameter.setRange(0, 10000)
+        self.diameter.setSpecialValueText("from µm above")
+        self.diameter.setToolTip(
+            "Optional Cellpose diameter in pixels. Leave at 0 to convert Typical nucleus diameter (µm) "
+            "using the image pixel size, or to let Cellpose decide when pixel size is unknown."
+        )
         self.flow = QDoubleSpinBox()
         self.flow.setValue(0.4)
         self.cellprob = QDoubleSpinBox()
@@ -2043,7 +2209,6 @@ class ObjectsPanel(QWidget):
         self.watershed.toggled.connect(lambda _checked: self._method_changed())
         self.gpu_on.clicked.connect(lambda: self.gpu.setChecked(True))
         self.object_name.setToolTip("The name of the objects in the results, for example Nuclei.")
-        advanced.addRow("Object name", self.object_name)
         advanced.addRow(self.fill_holes)
         advanced.addRow("Opening radius (px)", self.opening)
         advanced.addRow("Closing radius (px)", self.closing)
@@ -2059,14 +2224,11 @@ class ObjectsPanel(QWidget):
         layout.addWidget(self.advanced_box)
         actions = QHBoxLayout()
         preview = QPushButton("Preview")
-        run = QPushButton("Run this image")  # the same action, and name, as in the Run bar
-        run.setToolTip("Find objects in this image and measure them.")
         preview.clicked.connect(shell.preview_current)
-        run.clicked.connect(shell.run_current)
         actions.addWidget(preview)
-        actions.addWidget(run)
         layout.addLayout(actions)
         layout.addStretch(1)
+        self._update_size_hint()
         self._method_changed()
 
     def refresh(self) -> None:
@@ -2075,7 +2237,8 @@ class ObjectsPanel(QWidget):
         if controller is None:
             return
         for channel in controller.experiment.channels:
-            self.channel.addItem(channel.channel_name, channel.channel_index)
+            labels = format_channel_labels([channel.channel_name], 1)
+            self.channel.addItem(labels[0], channel.channel_index)
         recipe = controller.recipe
         self.object_name.setText(recipe.object_set.name)
         _choose(self.method, recipe.object_set.algorithm)
@@ -2087,12 +2250,7 @@ class ObjectsPanel(QWidget):
         self.z_link.setValue(recipe.z_stitch_threshold)
         self.z_scale.setCurrentIndex(max(0, self.z_scale.findData(recipe.z_scale_brightness)))
         self.z_min_slices.setValue(recipe.z_min_slices)
-        has_stacks = any(record.z_planes > 1 for record in controller.experiment.images)
-        self.z_box.setEnabled(has_stacks)
-        self.z_recommend_box.setEnabled(has_stacks)
-        if not has_stacks:
-            self.z_box.setToolTip("None of the images are Z-stacks.")
-        self._z_mode_changed()
+        self._apply_z_enablement()
         parameters = recipe.object_set.parameters
         _choose(self.threshold_method, str(parameters.get("threshold_method", "otsu")))
         if parameters.get("threshold") is not None:
@@ -2105,22 +2263,73 @@ class ObjectsPanel(QWidget):
         self.watershed_distance.setValue(float(parameters.get("watershed_min_distance_px", 5)))
         self.compactness.setValue(float(parameters.get("watershed_compactness", 0)))
         self.cellpose_model.setCurrentText(str(parameters.get("model") or self.engine.default_model or ""))
-        if parameters.get("diameter_px"):
+        pixel = self._pixel_size_um()
+        if parameters.get("diameter_um") is not None:
+            self.nucleus_diameter_um.setValue(float(parameters["diameter_um"]))
+        elif parameters.get("diameter_px") and pixel:
+            self.nucleus_diameter_um.setValue(float(parameters["diameter_px"]) * float(pixel))
+        else:
+            self.nucleus_diameter_um.setValue(DEFAULT_NUCLEUS_DIAMETER_UM)
+        # Advanced px override only when the recipe stored pixels without a matching µm value.
+        if parameters.get("diameter_px") and parameters.get("diameter_um") is None and not pixel:
             self.diameter.setValue(float(parameters["diameter_px"]))
+        else:
+            self.diameter.setValue(0)
         self.flow.setValue(float(parameters.get("flow_threshold", 0.4)))
         self.cellprob.setValue(float(parameters.get("cellprob_threshold", 0)))
         usable = bool(self._gpu_status.get("available")) and self.engine.installed
         self.gpu.setChecked(bool(parameters.get("gpu", usable)))
+        has_calibration = pixel is not None
         if parameters.get("min_area_um2") is not None:
             _choose(self.area_unit, "um2")
             self.min_area.setValue(float(parameters["min_area_um2"]))
+        elif parameters.get("min_area_px") is not None:
+            _choose(self.area_unit, "px")
+            self.min_area.setValue(float(parameters["min_area_px"]))
         else:
-            self.min_area.setValue(float(parameters.get("min_area_px") or 0))
+            if has_calibration:
+                _choose(self.area_unit, "um2")
+                self.min_area.setValue(DEFAULT_MIN_AREA_UM2)
+            else:
+                _choose(self.area_unit, "px")
+                self.min_area.setValue(0)
         if parameters.get("max_area_um2") is not None:
             self.max_area.setValue(float(parameters["max_area_um2"]))
+        elif parameters.get("max_area_px") is not None:
+            self.max_area.setValue(float(parameters["max_area_px"]))
         else:
-            self.max_area.setValue(float(parameters.get("max_area_px") or 0))
+            self.max_area.setValue(0)
+        self._update_size_hint()
         self.update_recommendation()
+
+    def _pixel_size_um(self) -> float | None:
+        controller = self.shell.controller
+        if controller is None:
+            return None
+        for record in controller.experiment.images:
+            if record.include and record.pixel_size_x:
+                return float(record.pixel_size_x)
+        for record in controller.experiment.images:
+            if record.pixel_size_x:
+                return float(record.pixel_size_x)
+        return None
+
+    def _update_size_hint(self) -> None:
+        diameter = self.nucleus_diameter_um.value()
+        typical_area = math.pi * (diameter / 2.0) ** 2
+        pixel = self._pixel_size_um()
+        if pixel:
+            px = diameter / pixel
+            self.size_hint.setText(
+                f"A {diameter:g} µm nucleus is about {typical_area:.0f} µm² "
+                f"(≈ {px:.0f} px across at {pixel:g} µm/pixel). "
+                f"Minimum object size defaults to {DEFAULT_MIN_AREA_UM2:g} µm² to drop debris."
+            )
+        else:
+            self.size_hint.setText(
+                f"A {diameter:g} µm nucleus is about {typical_area:.0f} µm². "
+                "Set µm/pixel in step 1 to convert this for Cellpose and to use µm² size filters."
+            )
 
     def _method_changed(self) -> None:
         """Show only the settings the chosen method uses."""
@@ -2140,14 +2349,48 @@ class ObjectsPanel(QWidget):
             _show_row(advanced, widget, cellpose)
         self._refresh_gpu_banner()
 
+    def _apply_z_enablement(self) -> None:
+        """Keep Z-stack mode usable; never leave the combo stuck disabled after a run lock.
+
+        Locking settings calls setEnabled(False) on each child. That sticks even after the
+        parent row is re-enabled, so a refresh that only toggled z_box could leave the
+        dropdown permanently greyed out.
+        """
+
+        controller = self.shell.controller
+        has_stacks = bool(
+            controller
+            and any(record.z_planes > 1 for record in controller.experiment.images)
+        )
+        busy = self.shell.is_busy()
+        self.z_box.setEnabled(True)
+        self.z_recommend_box.setEnabled(True)
+        self.z_stack.setEnabled(not busy)
+        if not has_stacks:
+            self.z_stack.setToolTip(
+                "None of the listed images are Z-stacks yet. You can still choose a mode; "
+                "it applies when a Z-stack is analyzed."
+            )
+        else:
+            self.z_stack.setToolTip(
+                "2D: one slice — only that plane.\n"
+                "2D: max projection — brightest value through all slices (nuclei at different depths can merge).\n"
+                "2D + stitching — segment each slice, then join overlapping outlines into 3D objects.\n"
+                "True 3D — segment the whole volume at once (slow; needs closely spaced slices).\n"
+                "Times are estimates for this computer."
+            )
+        self._z_mode_changed()
+
     def _z_mode_changed(self) -> None:
         mode = self.z_stack.currentData()
+        busy = self.shell.is_busy()
         self.z_slice.setVisible(mode == "single_plane")
         self.z_slice_label.setVisible(mode == "single_plane")
-        self.z_slice.setEnabled(mode == "single_plane")
+        self.z_slice.setEnabled(not busy and mode == "single_plane")
         self.z3d_box.setVisible(mode in ("stitch_slices", "full_3d"))
-        self.z_link.setEnabled(mode == "stitch_slices")
-        self.z_scale.setEnabled(mode == "stitch_slices")  # whole-volume 3D always scales the whole stack
+        self.z_link.setEnabled(not busy and mode == "stitch_slices")
+        self.z_scale.setEnabled(not busy and mode == "stitch_slices")  # whole-volume 3D always scales the whole stack
+        self.z_min_slices.setEnabled(not busy and mode in ("stitch_slices", "full_3d"))
         self._show_recommendation_state()
 
     def recommendation(self):
@@ -2209,7 +2452,7 @@ class ObjectsPanel(QWidget):
 
     def _show_recommendation_state(self) -> None:
         chosen = self.z_stack.currentData() == self._recommended and not getattr(self, "_suggest_gpu", False)
-        self.z_use.setEnabled(self._recommended is not None and not chosen)
+        self.z_use.setEnabled(not self.shell.is_busy() and self._recommended is not None and not chosen)
         self.z_use.setText("In use" if chosen else "Use recommended")
 
     def use_recommendation(self) -> None:
@@ -2330,13 +2573,20 @@ class ObjectsPanel(QWidget):
             }
             previous = data["object_set"].get("parameters") or {}
             local = self.engine.installed and self.engine.key is not None
+            diameter_um = self.nucleus_diameter_um.value()
+            diameter_px = self.diameter.value() or None
+            if diameter_px is None and diameter_um > 0:
+                pixel = self._pixel_size_um()
+                if pixel:
+                    diameter_px = diameter_um / pixel
             parameters = {
                 # The engine is saved so these settings are not run under the other Cellpose.
                 # Without Cellpose here (for example on a computer that only prepares cluster packages),
                 # the engine and model already in the settings are kept.
                 "engine": self.engine.key if local else previous.get("engine"),
                 "model": (self.cellpose_model.currentText() or self.engine.default_model) if local else previous.get("model"),
-                "diameter_px": self.diameter.value() or None,
+                "diameter_um": diameter_um,
+                "diameter_px": diameter_px,
                 "flow_threshold": self.flow.value(),
                 "cellprob_threshold": self.cellprob.value(),
                 "gpu": self.gpu.isChecked(),
@@ -2490,7 +2740,7 @@ class MeasurementsPanel(QWidget):
             self.class_measurement.blockSignals(False)
             return
         for channel in controller.experiment.channels:
-            self.meas_channel.addItem(channel.channel_name, channel.channel_index)
+            self.meas_channel.addItem(format_channel_labels([channel.channel_name], 1)[0], channel.channel_index)
         self.table.setRowCount(len(controller.recipe.measurements))
         for row, measurement in enumerate(controller.recipe.measurements):
             self.table.setItem(row, 0, QTableWidgetItem(measurement.id))
@@ -2684,6 +2934,32 @@ class ReviewPanel(QWidget):
         self._cutoff_timer.setSingleShot(True)
         self._cutoff_timer.setInterval(40)
         self._cutoff_timer.timeout.connect(self._apply_pending_cutoff)
+        layout.addWidget(self._pixel_level_box())
+        self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
+        layout.addWidget(self.counts)
+        self.selected = QLabel("Selected object: none (click an object in the image)")
+        layout.addWidget(self.selected)
+        buttons = QHBoxLayout()
+        for text, slot in (
+            ("Delete object", self._delete),
+            ("Restore object", self._restore),
+            ("Undo", self._undo),
+        ):
+            button = QPushButton(text)
+            button.clicked.connect(slot)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        status_buttons = QHBoxLayout()
+        for text, status in (("Approve", "approved"), ("Exclude image", "excluded")):
+            button = QPushButton(text)
+            button.clicked.connect(lambda _checked=False, value=status: self._set_status(value))
+            status_buttons.addWidget(button)
+        layout.addLayout(status_buttons)
+        self.advanced_toggle = QCheckBox("Advanced")
+        self.advanced_box = QGroupBox("Advanced")
+        self.advanced_box.setVisible(False)
+        self.advanced_toggle.toggled.connect(self.advanced_box.setVisible)
+        advanced = QVBoxLayout(self.advanced_box)
         colors = QHBoxLayout()
         self.positive_color = QPushButton("Positive color")
         self.negative_color = QPushButton("Negative color")
@@ -2696,30 +2972,16 @@ class ReviewPanel(QWidget):
         reset.clicked.connect(self._reset_colors)
         for button in (self.positive_color, self.negative_color, reset):
             colors.addWidget(button)
-        layout.addLayout(colors)
+        advanced.addLayout(colors)
         self._show_colors()
-        layout.addWidget(self._pixel_level_box())
-        self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
-        layout.addWidget(self.counts)
-        self.selected = QLabel("Selected object: none (click an object in the image)")
-        layout.addWidget(self.selected)
-        buttons = QHBoxLayout()
-        for text, slot in (
-            ("Delete object", self._delete),
-            ("Restore object", self._restore),
-            ("Undo", self._undo),
-            ("Record drawn edits", self._commit),
-        ):
-            button = QPushButton(text)
-            button.clicked.connect(slot)
-            buttons.addWidget(button)
-        layout.addLayout(buttons)
-        status_buttons = QHBoxLayout()
-        for text, status in (("Mark reviewed", "reviewed"), ("Approve", "approved"), ("Exclude image", "excluded")):
-            button = QPushButton(text)
-            button.clicked.connect(lambda _checked=False, value=status: self._set_status(value))
-            status_buttons.addWidget(button)
-        layout.addLayout(status_buttons)
+        drawn = QPushButton("Record drawn edits")
+        drawn.clicked.connect(self._commit)
+        advanced.addWidget(drawn)
+        mark_reviewed = QPushButton("Mark reviewed")
+        mark_reviewed.clicked.connect(lambda _checked=False: self._set_status("reviewed"))
+        advanced.addWidget(mark_reviewed)
+        layout.addWidget(self.advanced_toggle)
+        layout.addWidget(self.advanced_box)
         self.qc = QLabel("")
         self.qc.setWordWrap(True)
         layout.addWidget(self.qc)
@@ -3066,6 +3328,7 @@ class ReviewPanel(QWidget):
         controller.set_status(image_id, status)
         if status == "excluded":
             controller.set_included(image_id, False)
+        self.shell._autosave()
         self.shell._experiment_panel.refresh_table()
         self.shell._refresh_plan()
         words = {

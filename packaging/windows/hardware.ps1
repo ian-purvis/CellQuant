@@ -51,7 +51,9 @@ function Get-NvidiaDriverCudaVersion {
     } catch {
         return $null
     }
-    $Match = [regex]::Match([string]$Overview, 'CUDA Version:\s*([0-9]+(?:\.[0-9]+)?)')
+    # Older drivers print "CUDA Version: 12.x". Newer ones (e.g. 616.x) print
+    # "CUDA UMD Version: 13.x" in the same header slot.
+    $Match = [regex]::Match([string]$Overview, 'CUDA (?:UMD )?Version:\s*([0-9]+(?:\.[0-9]+)?)')
     if (-not $Match.Success) {
         return $null
     }
@@ -114,14 +116,16 @@ function Get-CellQuantHardware {
         ram_gb = $null
     }
 
-    $Names = Invoke-NvidiaSmiQuery -Field 'name'
+    # @() keeps a single nvidia-smi line as a one-element array. Without it,
+    # PowerShell unwraps the string and [0] is the first character ("N", "6", ...).
+    $Names = @(Invoke-NvidiaSmiQuery -Field 'name')
     if ($Names.Count -gt 0) {
         $Hardware.gpu_name = [string]$Names[0]
-        $Memory = Invoke-NvidiaSmiQuery -Field 'memory.total'
+        $Memory = @(Invoke-NvidiaSmiQuery -Field 'memory.total')
         if ($Memory.Count -gt 0 -and $Memory[0] -match '^\d+') {
             $Hardware.gpu_memory_gb = [math]::Round(([double]$Matches[0]) / 1024, 1)
         }
-        $Caps = Invoke-NvidiaSmiQuery -Field 'compute_cap'
+        $Caps = @(Invoke-NvidiaSmiQuery -Field 'compute_cap')
         $Cap = $null
         if ($Caps.Count -gt 0 -and $Caps[0] -match '^\d+\.\d+$') {
             $Cap = [version]$Caps[0]
