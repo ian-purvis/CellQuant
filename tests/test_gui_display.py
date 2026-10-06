@@ -270,21 +270,18 @@ def test_batch_progress_counts_images_and_slices(tmp_path: Path):
         viewer.close()
 
 
-def test_include_buttons_choose_a_subset(tmp_path: Path):
+def test_file_type_filter_hides_other_types(tmp_path: Path):
     viewer, shell = _stack_window(tmp_path, count=3, mode="max_projection")
     try:
         panel = shell._experiment_panel
         assert "3 of 3 images included" in panel.included_label.text()
-        panel.filter_box.setText("s1")
-        panel._include_rows(panel._shown_rows(), False)
-        assert "2 of 3 images included" in panel.included_label.text()
-        assert len(shell._nav_ids) == 2
-        panel.filter_box.setText("")
-        panel.table.selectRow(0)
-        panel._include_only_selected()
-        assert shell.controller.included_ids() == [shell.controller.experiment.images[0].image_id]
         panel.show_type.setCurrentIndex(panel.show_type.findData("nd2"))
-        assert panel._shown_rows() == []  # no ND2 files in this folder
+        assert all(panel.table.isRowHidden(row) for row in range(panel.table.rowCount()))  # no ND2 files here
+        from qtpy.QtWidgets import QCheckBox, QPushButton
+
+        texts = {button.text() for button in panel.findChildren(QPushButton)}
+        assert {"Add images…", "Add folder…"} <= texts
+        assert not any(box.text() == "Advanced" for box in panel.findChildren(QCheckBox))
     finally:
         viewer.close()
 
@@ -579,3 +576,36 @@ def test_layers_are_named_by_the_channel_they_hold(tmp_path: Path):
         assert names[:2] == ["Channel 1 = Red", "Channel 2 = DAPI"]
     finally:
         viewer.close()
+
+
+def test_a_popped_out_panel_has_minimize_maximize_and_reset(window):
+    from qtpy.QtWidgets import QApplication
+
+    header = window._floating_headers[0]
+    dock = header.dock
+    dock.setFloating(True)
+    end = time.time() + 2
+    while dock.titleBarWidget() is not header and time.time() < end:
+        QApplication.processEvents()
+        time.sleep(0.02)
+    assert dock.titleBarWidget() is header
+    assert [button.toolTip() for button in header.buttons.values()] == ["Minimize", "Maximize", "Reset", "Close"]
+    header.buttons["minimize"].click()
+    assert header.minimized and not dock.widget().isVisibleTo(dock)
+    header.buttons["minimize"].click()
+    assert not header.minimized and dock.widget().isVisibleTo(dock)
+    header.buttons["reset"].click()
+    QApplication.processEvents()
+    assert not dock.isFloating()
+    assert dock.titleBarWidget() is not header
+
+
+def test_find_objects_has_a_run_button(window, monkeypatch):
+    from qtpy.QtWidgets import QPushButton
+
+    ran = []
+    monkeypatch.setattr(window, "_start_job", lambda fn, done: ran.append(fn))
+    buttons = {button.text(): button for button in window._objects_panel.findChildren(QPushButton)}
+    assert "Preview" in buttons
+    buttons["Run this image"].click()
+    assert ran

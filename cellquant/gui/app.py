@@ -586,13 +586,14 @@ class CellQuantWindow:
         self._tabs.currentChanged.connect(
             lambda _index: self._footer.highlight("all" if self._tabs.currentWidget() is self._step_pages[-1] else "current")
         )
-        self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
+        main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
 
         self._plan_dock = PlanDock(self)
         self._plan_dock_widget = self.viewer.window.add_dock_widget(self._plan_dock, name="Plan", area="left")
         self._plan_dock_widget.hide()
-        self.viewer.window.add_dock_widget(self._footer, name="Run", area="bottom")
+        run_dock = self.viewer.window.add_dock_widget(self._footer, name="Run", area="bottom")
+        self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, run_dock)]
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
         self._start_gpu_check()
@@ -1029,7 +1030,6 @@ class CellQuantWindow:
         view_only = {
             self._experiment_panel.show_type,
             self._experiment_panel.filter_box,
-            self._experiment_panel.advanced_toggle,
             self._objects_panel.advanced_toggle,
             self._review_panel.advanced_toggle,
             self._review_panel.display,
@@ -1523,6 +1523,8 @@ class ExperimentPanel(QWidget):
         for text, slot in (
             ("New experiment…", shell.new_experiment),
             ("Open experiment…", self._open),
+            ("Add images…", self._add_images),
+            ("Add folder…", self._add_folder),
         ):
             button = QPushButton(text)
             button.clicked.connect(slot)
@@ -1603,56 +1605,6 @@ class ExperimentPanel(QWidget):
         scope_row.addWidget(QLabel("Set sizes"))
         scope_row.addWidget(self.size_scope, 1)
         layout.addLayout(scope_row)
-        self.advanced_toggle = QCheckBox("Advanced")
-        self.advanced_box = QGroupBox("Advanced")
-        self.advanced_box.setVisible(False)
-        self.advanced_toggle.toggled.connect(self.advanced_box.setVisible)
-        advanced = QVBoxLayout(self.advanced_box)
-        add_row = QHBoxLayout()
-        for text, slot in (("Add images", self._add_images), ("Add folder", self._add_folder)):
-            button = QPushButton(text)
-            button.clicked.connect(slot)
-            add_row.addWidget(button)
-        add_row.addStretch(1)
-        advanced.addLayout(add_row)
-        types_row = QHBoxLayout()
-        types_row.addWidget(QLabel("Add folder looks for:"))
-        self.use_nd2 = QCheckBox("ND2 files")
-        self.use_tiff = QCheckBox("TIFF files")
-        for box in (self.use_nd2, self.use_tiff):
-            box.setChecked(True)
-            box.setToolTip("Which file types Add folder takes from a folder and its subfolders.")
-            box.toggled.connect(self._types_changed)
-            types_row.addWidget(box)
-        types_row.addStretch(1)
-        advanced.addLayout(types_row)
-        include_row = QHBoxLayout()
-        self.include_shown = QPushButton("Include shown")
-        self.exclude_shown = QPushButton("Leave out shown")
-        self.include_selected = QPushButton("Include only selected")
-        self.include_shown.setToolTip("Tick Include for every image in the list as filtered now.")
-        self.exclude_shown.setToolTip("Untick Include for every image in the list as filtered now. Nothing is deleted.")
-        self.include_selected.setToolTip("Include the rows you selected (Ctrl- or Shift-click) and leave out all others.")
-        self.include_shown.clicked.connect(lambda: self._include_rows(self._shown_rows(), True))
-        self.exclude_shown.clicked.connect(lambda: self._include_rows(self._shown_rows(), False))
-        self.include_selected.clicked.connect(self._include_only_selected)
-        for button in (self.include_shown, self.exclude_shown, self.include_selected):
-            include_row.addWidget(button)
-        advanced.addLayout(include_row)
-        self.big_list = QPushButton("Check the image list in a large window")
-        self.big_list.setToolTip("Every image with its full folder path and details, in a window you can enlarge and copy from.")
-        self.big_list.clicked.connect(self._show_big_list)
-        advanced.addWidget(self.big_list)
-        meta_row = QHBoxLayout()
-        self.meta_name = QLineEdit()
-        self.meta_name.setPlaceholderText("Metadata column")
-        add_meta = QPushButton("Add column")
-        add_meta.clicked.connect(self._add_column)
-        meta_row.addWidget(self.meta_name)
-        meta_row.addWidget(add_meta)
-        advanced.addLayout(meta_row)
-        layout.addWidget(self.advanced_toggle)
-        layout.addWidget(self.advanced_box)
 
     def refresh(self) -> None:
         self.refresh_table()
@@ -1736,56 +1688,8 @@ class ExperimentPanel(QWidget):
         header.setStretchLastSection(True)
         self.table.blockSignals(False)
         self._filter(self.filter_box.text())
-        for box, kind in ((self.use_nd2, "nd2"), (self.use_tiff, "tiff")):
-            box.blockSignals(True)
-            box.setChecked(kind in controller.experiment.import_file_types)
-            box.blockSignals(False)
         self._update_included_label()
         self.shell._release_window_later()
-
-    def _show_big_list(self) -> None:
-        from qtpy.QtWidgets import QApplication, QDialog
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Images in this experiment")
-        dialog.resize(1300, 650)
-        box = QVBoxLayout(dialog)
-        count = self.table.rowCount()
-        included = sum(1 for row in range(count) if self.table.item(row, 0) and self.table.item(row, 0).checkState() == Qt.Checked)
-        box.addWidget(QLabel(f"{count} images, {included} included. Hover over a path for the full location on disk."))
-        table = QTableWidget(count, self.table.columnCount())
-        headers = [self.table.horizontalHeaderItem(index).text() for index in range(self.table.columnCount())]
-        table.setHorizontalHeaderLabels(headers)
-        for row in range(count):
-            for column in range(self.table.columnCount()):
-                source = self.table.item(row, column)
-                if source is None:
-                    continue
-                text = source.text() if column else ("yes" if source.checkState() == Qt.Checked else "no")
-                item = _read_only(text)
-                item.setToolTip(source.toolTip())
-                table.setItem(row, column, item)
-        table.resizeColumnsToContents()
-        box.addWidget(table)
-        copy = QPushButton("Copy the list (paste into Excel)")
-
-        def copy_list() -> None:
-            lines = ["\t".join(headers)]
-            for row in range(count):
-                lines.append("\t".join(table.item(row, column).text() if table.item(row, column) else "" for column in range(len(headers))))
-            QApplication.clipboard().setText("\n".join(lines))
-            copy.setText("Copied")
-
-        copy.clicked.connect(copy_list)
-        close = QPushButton("Close")
-        close.clicked.connect(dialog.accept)
-        row = QHBoxLayout()
-        row.addWidget(copy)
-        row.addStretch(1)
-        row.addWidget(close)
-        box.addLayout(row)
-        self._big_list_dialog = dialog
-        dialog.show()
 
     def set_notices(self, notices: list[str]) -> None:
         self.notices.setText("<br>".join(f"• {text}" for text in notices))
@@ -1886,15 +1790,6 @@ class ExperimentPanel(QWidget):
         types = self.file_types()
         self.shell._start_job(lambda: controller.add_image_paths(paths, file_types=types), listed)
 
-    def _add_column(self) -> None:
-        controller = self.shell.require_controller()
-        if controller is None or not self.meta_name.text().strip():
-            return
-        controller.add_metadata_column(self.meta_name.text().strip())
-        self.meta_name.clear()
-        self.refresh_table()
-        self.shell._autosave()
-
     def _apply_pixel_size(self) -> None:
         controller = self.shell.controller
         if controller is None or not self.shell._nav_ids:
@@ -1934,55 +1829,15 @@ class ExperimentPanel(QWidget):
                 hidden = hidden or not path.endswith(suffixes)
             self.table.setRowHidden(row, hidden)
 
-    def _types_changed(self) -> None:
-        controller = self.shell.controller
-        if not self.use_nd2.isChecked() and not self.use_tiff.isChecked():
-            # At least one type: turn the other one back on.
-            sender = self.sender()
-            other = self.use_tiff if sender is self.use_nd2 else self.use_nd2
-            other.blockSignals(True)
-            other.setChecked(True)
-            other.blockSignals(False)
-        if controller is not None:
-            controller.experiment.import_file_types = self.file_types()
-            self.shell._autosave()
-
     def file_types(self) -> list[str]:
-        return [kind for box, kind in ((self.use_nd2, "nd2"), (self.use_tiff, "tiff")) if box.isChecked()]
+        """The file types Add images and Add folder take: those chosen when the experiment was made."""
 
-    def _shown_rows(self) -> list[int]:
-        return [row for row in range(self.table.rowCount()) if not self.table.isRowHidden(row)]
-
-    def _include_rows(self, rows: list[int], include: bool) -> None:
         controller = self.shell.controller
-        if controller is None or not rows:
-            return
-        ids = [self.table.item(row, 0).data(Qt.UserRole) for row in rows if self.table.item(row, 0) is not None]
-        controller.set_included_many(ids, include)
-        self.refresh_table()
-        self.shell.update_navigation()
-        self.shell._autosave()
-        verb = "Included" if include else "Left out"
-        self.shell.message(f"{verb} {len(ids)} image{'s' if len(ids) != 1 else ''}.")
+        return list(controller.experiment.import_file_types) if controller and controller.experiment.import_file_types else ["nd2", "tiff"]
 
     def selected_ids(self) -> list[str]:
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
         return [self.table.item(row, 0).data(Qt.UserRole) for row in rows if self.table.item(row, 0) is not None]
-
-    def _include_only_selected(self) -> None:
-        controller = self.shell.controller
-        chosen = set(self.selected_ids())
-        if controller is None:
-            return
-        if not chosen:
-            self.shell.message("Select rows in the list first (click, Ctrl-click or Shift-click).")
-            return
-        controller.set_included_many([record.image_id for record in controller.experiment.images if record.image_id not in chosen], False)
-        controller.set_included_many(sorted(chosen), True)
-        self.refresh_table()
-        self.shell.update_navigation()
-        self.shell._autosave()
-        self.shell.message(f"Included {len(chosen)} selected images; the others are left out.")
 
     def _update_included_label(self) -> None:
         controller = self.shell.controller
@@ -2303,7 +2158,12 @@ class ObjectsPanel(QWidget):
         actions = QHBoxLayout()
         preview = QPushButton("Preview")
         preview.clicked.connect(shell.preview_current)
+        preview.setToolTip("Find objects in the part of the image on screen, to check the settings quickly.")
+        run = QPushButton("Run this image")
+        run.clicked.connect(shell.run_current)
+        run.setToolTip("Find objects and measure markers in the whole image on screen.")
         actions.addWidget(preview)
+        actions.addWidget(run)
         layout.addLayout(actions)
         layout.addStretch(1)
         self._update_size_hint()
@@ -3968,6 +3828,131 @@ class Footer(QWidget):
             self.shell._batch.paused = False
         self.cancel.setEnabled(False)
         self.status.setText("Stopping after the current step...")
+
+
+class FloatingHeader(QWidget):
+    """Header of a panel popped out of the napari window: Minimize, Maximize, Reset (dock back), Close.
+
+    Drag it to move the panel; drop it on the napari window, double-click it or click Reset to dock it back.
+    """
+
+    def __init__(self, dock):
+        super().__init__(dock)
+        self.dock = dock
+        self._before_maximize = None
+        self._height_before_minimize: int | None = None
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 2, 4, 2)
+        row.setSpacing(2)
+        self.title = QLabel(dock.windowTitle())
+        self.title.setStyleSheet("font-weight: bold;")
+        row.addWidget(self.title, 1)
+        self.buttons: dict[str, QPushButton] = {}
+        for key, text, tip, slot in (
+            ("minimize", "–", "Minimize", self.toggle_minimized),
+            ("maximize", "□", "Maximize", self.toggle_maximized),
+            ("reset", "⟲", "Reset", self.reset),
+            ("close", "✕", "Close", dock.close),
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.setFixedSize(26, 22)
+            button.setFlat(True)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+            self.buttons[key] = button
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip("Drag to move. Double-click or click Reset to put the panel back in the napari window.")
+
+    @property
+    def minimized(self) -> bool:
+        return self._height_before_minimize is not None
+
+    def toggle_minimized(self) -> None:
+        """Fold the panel up to this header, or open it again."""
+
+        inner = self.dock.widget()
+        if self.minimized:
+            inner.show()
+            self.dock.resize(self.dock.width(), self._height_before_minimize)
+            self._height_before_minimize = None
+            self.buttons["minimize"].setToolTip("Minimize")
+        else:
+            self._height_before_minimize = self.dock.height()
+            inner.hide()
+            self.dock.resize(self.dock.width(), self.sizeHint().height())
+            self.buttons["minimize"].setToolTip("Restore")
+
+    def toggle_maximized(self) -> None:
+        if self.minimized:
+            self.toggle_minimized()
+        if self._before_maximize is not None:
+            self.dock.setGeometry(self._before_maximize)
+            self._before_maximize = None
+            self.buttons["maximize"].setText("□")
+            self.buttons["maximize"].setToolTip("Maximize")
+            return
+        screen = self.dock.screen() if hasattr(self.dock, "screen") else None
+        if screen is None:
+            return
+        self._before_maximize = self.dock.geometry()
+        self.dock.setGeometry(screen.availableGeometry())
+        self.buttons["maximize"].setText("❐")
+        self.buttons["maximize"].setToolTip("Restore size")
+
+    def reset(self) -> None:
+        """Put the panel back where it was docked in the napari window."""
+
+        self.forget_size()
+        self.dock.setFloating(False)
+
+    def forget_size(self) -> None:
+        if self.minimized:
+            self.toggle_minimized()
+        self._before_maximize = None
+        self.buttons["maximize"].setText("□")
+        self.buttons["maximize"].setToolTip("Maximize")
+
+
+def floating_header(dock) -> FloatingHeader:
+    """When a napari panel is popped out, give it a FloatingHeader in place of the plain system title bar."""
+
+    header = FloatingHeader(dock)
+    header.hide()
+
+    def apply() -> None:
+        try:
+            if not dock.isFloating() or dock.titleBarWidget() is header:
+                return
+        except RuntimeError:
+            return  # the panel was closed meanwhile
+        from qtpy.QtWidgets import QApplication
+
+        if QApplication.mouseButtons() != Qt.MouseButton.NoButton:
+            QTimer.singleShot(200, apply)  # still being dragged; changing the header now would drop it
+            return
+        # napari swaps its own header in when the panel is shown; keep it from undoing this one.
+        dock.blockSignals(True)
+        try:
+            dock.setTitleBarWidget(header)
+            header.show()
+            dock.show()
+        finally:
+            dock.blockSignals(False)
+
+    def docked() -> None:
+        header.forget_size()
+        if dock.titleBarWidget() is header:
+            dock.setTitleBarWidget(None)
+            header.hide()
+            # napari puts its own docked header back when the panel is shown.
+            restore = getattr(dock, "_on_visibility_changed", None)
+            if restore is not None:
+                restore(True)
+
+    dock.topLevelChanged.connect(lambda floating: QTimer.singleShot(0, apply) if floating else docked())
+    dock.visibilityChanged.connect(lambda visible: QTimer.singleShot(0, apply) if visible else None)
+    return header
 
 
 class WheelGuard(QObject):
