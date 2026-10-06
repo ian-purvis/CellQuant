@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Cellpose-SAM precision and CPU threads from the hardware**: bfloat16 only where the GPU or CPU computes it natively, otherwise float32 (recorded in provenance; recipe key `precision` overrides). The installer times Cellpose at a few CPU thread counts and later runs use the fastest. Restored from unpublished local work.
 - **Crop to the region of interest** (step 2, off by default, 2D analyses): finds the area holding the positive cells on the ticked channels (by default the reports' denominator, e.g. the reporter), grows it by a margin (50 µm), and finds objects only inside rectangles around it. Brightness scaling and cutoffs come from the whole image; an image whose region covers more than 70% of it is analyzed in full. Objects touching a crop edge are flagged (`at_crop_edge`), review outlines the rectangles, and the Plan's right-click menu has **Use the full image** per image. Restored from unpublished local work.
 - **Step 4**: the marker cutoff is a slider with an editable number. Positive objects are green and negative ones magenta by default (a pair that stays distinct with red-green color blindness); **Positive color** / **Negative color** change them.
 - **Clicking an object selects it** for **Delete object** / **Restore object**. Nothing is deleted until an object has been clicked (before, Delete object could remove object 1).
