@@ -1,4 +1,4 @@
-"""Quick marker setup (step 3), without any interface code.
+"""Quick marker setup (step 4), without any interface code.
 
 ``marker_recipe`` turns a list of marker channels into measurements,
 positive/negative calls and results rows. ``starting_threshold`` proposes a
@@ -110,7 +110,7 @@ def describe_rule(recipe, classification) -> str:
 
 
 def starting_threshold(values: np.ndarray) -> float:
-    """A first guess at the cutoff, for the user to check in step 4.
+    """A first guess at the cutoff, for the user to check in step 5.
 
     Otsu's criterion (the split into two groups with the largest between-group
     variance) evaluated at every gap between the sorted object values, with the
