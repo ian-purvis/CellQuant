@@ -160,7 +160,7 @@ HELP = {
     ("_objects_panel", "nucleus_diameter_um"): "Typical nucleus diameter in micrometers. Most nuclei are about 5–7 µm. Used as Cellpose's size hint when pixel size is known.",
     ("_objects_panel", "watershed"): "Split touching objects. Try this if two nuclei come out as one.",
     ("_objects_panel", "cellpose_model"): "The Cellpose model. The first one listed is the usual choice.",
-    ("_objects_panel", "diameter"): "Optional Cellpose diameter in pixels. 0 uses Nucleus diameter (µm) when pixel size is known, otherwise lets Cellpose decide.",
+    ("_objects_panel", "diameter"): "Optional Cellpose diameter in pixels, the same in every image. 0 converts Nucleus diameter (µm) with each image's own pixel size, or lets Cellpose decide when it is unknown.",
     ("_objects_panel", "flow"): "Cellpose shape check. Lower keeps fewer, cleaner objects.",
     ("_objects_panel", "cellprob"): "Cellpose confidence. Lower finds more (and fainter) objects.",
     ("_objects_panel", "engine_choice"): "The Cellpose installed here. Cellpose-SAM (4) is most accurate, best with a GPU; Classic Cellpose (3) is faster on the CPU. Only one is installed per environment; start CellQuant with the other to use it.",
