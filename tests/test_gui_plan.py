@@ -140,12 +140,12 @@ def test_plan_dock(tmp_path: Path):
         assert controller.plan_status(ids["Control/Retina 1/control_r1.tif"], second) == "analyzed"
         result_image = ids["Control/Retina 1/control_r1.tif"]
 
-        # Open a cell: that analysis, that image, step 4.
+        # Open a cell: that analysis, that image, step 5.
         shell.open_in_analysis(result_image, second)
         _wait(shell)
         assert controller.recipe.recipe_id == second
         assert shell._nav_ids[shell._nav_index] == result_image
-        assert shell._tabs.currentWidget() is shell._step_pages[3]
+        assert shell._tabs.currentWidget() is shell._step_pages[4]
         result = controller.recall(result_image)
         assert result.provenance["recipe"]["object_set"]["segmentation_channel"] == 0
     finally:
