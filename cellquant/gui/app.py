@@ -605,6 +605,7 @@ class CellQuantWindow:
         self.viewer.layers.events.inserted.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.removed.connect(lambda _event: self._release_window_later())
         self._release_window_later()
+        self._watch_settings()
         if experiment_dir:
             self.open_experiment(experiment_dir)
         self.refresh_guidance()
@@ -974,13 +975,12 @@ class CellQuantWindow:
             "Preview", "Run this image", "Run selected images", "Run all images", "Set up markers",
             "Export results…", "Add images", "Add folder", "New experiment", "New experiment…", "Open",
             "Open experiment…", "Try practice images", "Include shown", "Leave out shown",
-            "Include only selected", "Delete object", "Restore object", "Undo", "Approve", "Use recommended",
+            "Include only selected", "Delete object", "Restore object", "Undo", "Record drawn edits", "Approve", "Use recommended",
             "HPC prep…",  # the HPC prep page manages its own buttons: a second job is refused while one runs
             "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
-            "Run ticked",
             # Buttons that change the settings: never while images are being analyzed with them.
-            "Save settings", "Load settings…", "Add measurement", "Remove measurement",
-            "Add marker", "Add result row", "Remove result row", "Apply pixel level",
+            "Load settings…", "Add measurement", "Remove measurement",
+            "Add marker", "Remove marker", "Add result row", "Remove result row", "Apply pixel level",
             "Run all images (this analysis)", "Set sizes (µm)",
         }
     )
@@ -1316,6 +1316,39 @@ class CellQuantWindow:
         self._panels_to_recipe()
         controller.save()
 
+    def _watch_settings(self) -> None:
+        """Save the settings shortly after the user changes one, when the step changes, and on closing.
+
+        Only signals sent by the user are watched, so filling the pages from saved settings saves nothing.
+        """
+
+        self._settings_save_timer = QTimer(self._dock)  # goes with the window, so it never fires after it
+        self._settings_save_timer.setSingleShot(True)
+        self._settings_save_timer.setInterval(800)
+        self._settings_save_timer.timeout.connect(self._save_settings_quietly)
+        save_soon = self._settings_save_timer.start
+        from qtpy.QtWidgets import QAbstractSpinBox
+
+        for widget in self._settings_inputs():
+            if isinstance(widget, QComboBox):
+                widget.activated.connect(lambda *_args: save_soon())
+            elif isinstance(widget, (QAbstractSpinBox, QLineEdit)):
+                widget.editingFinished.connect(save_soon)
+            elif isinstance(widget, QCheckBox):
+                widget.clicked.connect(lambda *_args: save_soon())
+        self._tabs.currentChanged.connect(lambda _index: save_soon())
+        self._close_watcher = CloseWatcher(self._save_settings_quietly, self._dock)
+        self.viewer.window._qt_window.installEventFilter(self._close_watcher)
+
+    def _save_settings_quietly(self) -> None:
+        # Never while a run uses the settings; a half-typed value is reported when the user runs.
+        if self.controller is None or self.is_busy() or self._exclusive:
+            return
+        try:
+            self._autosave()
+        except (CellQuantError, ValueError):
+            pass
+
     def _refresh_all(self, keep_image: bool = False) -> None:
         if self.controller is None:
             return
@@ -1566,6 +1599,13 @@ class ExperimentPanel(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         layout.addWidget(self.table)
+        run_row = QHBoxLayout()
+        run_row.addStretch(1)
+        run_selected = QPushButton("Run selected images")
+        run_selected.setToolTip("Run the images selected in the table (click rows; Ctrl or Shift for more), for example to rerun failed ones.")
+        run_selected.clicked.connect(lambda: shell._results_panel._run_selected())
+        run_row.addWidget(run_selected)
+        layout.addLayout(run_row)
         self.channel_note = QLabel(
             "Channel order comes from each image file. Experimental conditions come from "
             "Sample name and Folder columns — not from renaming channels."
@@ -2058,14 +2098,14 @@ class ObjectsPanel(QWidget):
         self.gpu_label = QLabel("")
         self.gpu_label.setWordWrap(True)
         self.gpu_label.setTextFormat(Qt.RichText)
-        self.gpu_on = QPushButton("Turn on GPU")
-        self.gpu_on.setToolTip("Tick 'Use GPU' so Cellpose runs on this computer's NVIDIA GPU.")
-        self.gpu_on.setVisible(False)
+        # The one GPU switch, beside the banner that says whether a GPU was found.
+        self.gpu = QCheckBox("Use GPU")
+        self.gpu.setToolTip("Run Cellpose on this computer's NVIDIA GPU (much faster than the CPU).")
         self.gpu_banner = QWidget()
         gpu_row = QHBoxLayout(self.gpu_banner)
         gpu_row.setContentsMargins(0, 0, 0, 0)
         gpu_row.addWidget(self.gpu_label, 1)
-        gpu_row.addWidget(self.gpu_on)
+        gpu_row.addWidget(self.gpu)
         self._show_gpu_banner("Checking for an NVIDIA GPU...", "neutral")
         layout.addWidget(self.gpu_banner)
         # One engine is installed per environment; the other is listed so users know it exists.
@@ -2092,7 +2132,6 @@ class ObjectsPanel(QWidget):
         self.method.currentIndexChanged.connect(lambda _index: self._method_changed())
         self.threshold_method.currentIndexChanged.connect(lambda _index: self._method_changed())
         # Root decisions first: what to segment, how, then how to treat Z, then size.
-        form.addRow("Object set name", self.object_name)
         form.addRow("Source channel", self.channel)
         form.addRow("Method", self.method)
         form.addRow(self.engine_choice_label, self.engine_choice)
@@ -2100,9 +2139,9 @@ class ObjectsPanel(QWidget):
         form.addRow(self.z_recommend_box)  # full width, so the explanation is readable
         form.addRow("Typical nucleus diameter (µm)", self.nucleus_diameter_um)
         form.addRow(self.size_hint)
+        form.addRow("Size unit", self.area_unit)
         form.addRow("Minimum object size", self.min_area)
         form.addRow("Maximum object size", self.max_area)
-        form.addRow("Size unit", self.area_unit)
         form.addRow("Threshold", self.threshold_method)
         form.addRow("Manual threshold", self.threshold)
         form.addRow("Smoothing sigma", self.sigma)
@@ -2136,12 +2175,11 @@ class ObjectsPanel(QWidget):
         self.flow.setValue(0.4)
         self.cellprob = QDoubleSpinBox()
         self.cellprob.setRange(-6, 6)
-        self.gpu = QCheckBox("Use GPU")
         self.gpu.toggled.connect(lambda _checked: self.update_recommendation())
         self.gpu.toggled.connect(lambda _checked: self._refresh_gpu_banner())
         self.watershed.toggled.connect(lambda _checked: self._method_changed())
-        self.gpu_on.clicked.connect(lambda: self.gpu.setChecked(True))
         self.object_name.setToolTip("The name of the objects in the results, for example Nuclei.")
+        advanced.addRow("Object set name", self.object_name)
         advanced.addRow(self.fill_holes)
         advanced.addRow("Opening radius (px)", self.opening)
         advanced.addRow("Closing radius (px)", self.closing)
@@ -2152,7 +2190,6 @@ class ObjectsPanel(QWidget):
         advanced.addRow("Cellpose diameter (px)", self.diameter)
         advanced.addRow("Flow threshold", self.flow)
         advanced.addRow("Cell probability threshold", self.cellprob)
-        advanced.addRow(self.gpu)
         layout.addWidget(self.advanced_toggle)
         layout.addWidget(self.advanced_box)
         actions = QHBoxLayout()
@@ -2283,8 +2320,9 @@ class ObjectsPanel(QWidget):
             _show_row(advanced, widget, not cellpose)
         for widget in (self.watershed_distance, self.compactness):
             _show_row(advanced, widget, not cellpose and self.watershed.isChecked())
-        for widget in (self.cellpose_model, self.diameter, self.flow, self.cellprob, self.gpu):
+        for widget in (self.cellpose_model, self.diameter, self.flow, self.cellprob):
             _show_row(advanced, widget, cellpose)
+        self.gpu.setVisible(cellpose and self.engine.installed)
         self._refresh_gpu_banner()
 
     def _apply_z_enablement(self) -> None:
@@ -2452,7 +2490,6 @@ class ObjectsPanel(QWidget):
             return
         status = self._gpu_status
         cellpose = self.method.currentData() == "cellpose"
-        self.gpu_on.setVisible(False)
         if not self.engine.installed:
             self._show_gpu_banner(self._gpu_summary(), "neutral")
         elif status.get("available"):
@@ -2462,12 +2499,11 @@ class ObjectsPanel(QWidget):
                 self._show_gpu_banner(f"{found} Cellpose will run on the GPU.", "good")
             else:
                 self._show_gpu_banner(
-                    f"{found} <b>'Use GPU' is off</b>, so Cellpose would run on the CPU (much slower)."
+                    f"{found} <b>'Use GPU' is off</b>, so Cellpose would run on the CPU (much slower). Tick it to use the GPU."
                     if cellpose
                     else f"{found} The classical method does not use it; Cellpose would.",
                     "good",
                 )
-                self.gpu_on.setVisible(cellpose)
         elif status.get("nvidia_gpu"):
             self._show_gpu_banner(
                 f"<b>⚠ NVIDIA GPU found ({status['nvidia_gpu']}), but CellQuant cannot use it yet.</b> "
@@ -2587,9 +2623,15 @@ class MeasurementsPanel(QWidget):
         row.addRow("Cutoff", self.class_threshold)
         row.addRow("Positive when value is", self.class_comparison)
         layout.addLayout(row)
+        class_buttons = QHBoxLayout()
         add_class = QPushButton("Add marker")
         add_class.clicked.connect(self._add_class)
-        layout.addWidget(add_class)
+        remove_class = QPushButton("Remove marker")
+        remove_class.setToolTip("Remove the marker selected in the Markers table, and the result rows that use it.")
+        remove_class.clicked.connect(self._remove_class)
+        class_buttons.addWidget(add_class)
+        class_buttons.addWidget(remove_class)
+        layout.addLayout(class_buttons)
 
     def _measurement_form(self) -> QFormLayout:
         self.meas_channel = QComboBox()
@@ -2737,7 +2779,15 @@ class MeasurementsPanel(QWidget):
             except ValueError:
                 raise RecipeValidationError(f"The cutoff of {name} must be a number.") from None
             previous = next((item for item in data["classifications"] if item["name"] == name), None)
-            entry = dict(previous) if previous else {"id": f"class_{row + 1}"}
+            if previous:
+                entry = dict(previous)
+            else:
+                # A new marker gets an id no other marker uses (a removed marker can leave a gap).
+                taken = {item["id"] for item in data["classifications"]} | {item["id"] for item in classifications}
+                number = row + 1
+                while f"class_{number}" in taken:
+                    number += 1
+                entry = {"id": f"class_{number}"}
             entry.update(
                 {
                     "name": name,
@@ -2831,6 +2881,46 @@ class MeasurementsPanel(QWidget):
         self.classes.setCellWidget(row, 3, self._comparison_box(str(self.class_comparison.currentData())))
         self.class_name.clear()
 
+    def _remove_class(self) -> None:
+        controller = self.shell.controller
+        if controller is None:
+            return
+        row = self.classes.currentRow()
+        if row < 0 or row >= self.classes.rowCount():
+            self.shell.message("Click a row in the Markers table first, then Remove marker.")
+            return
+        try:
+            self.write_recipe()
+        except (CellQuantError, ValueError) as exc:
+            self.shell.show_error(str(exc))
+            return
+        data = controller.recipe.model_dump(mode="json")
+        removed = data["classifications"][row]
+        # Result rows name a marker by its id or its name, as one word of the expression.
+        tokens = "|".join(re.escape(token) for token in {removed["id"], removed["name"]} if token)
+        uses = re.compile(rf"(?<![^\s()])(?:{tokens})(?![^\s()])")
+        used_by = [item for item in data["reports"] if uses.search(f"{item['numerator']} {item['denominator']}")]
+        if used_by:
+            answer = QMessageBox.question(
+                self,
+                "Remove marker?",
+                f"{len(used_by)} result row(s) use {removed['name']} and will be removed too. Continue?",
+            )
+            if answer != QMessageBox.Yes:
+                return
+        data["classifications"] = [item for index, item in enumerate(data["classifications"]) if index != row]
+        data["reports"] = [item for item in data["reports"] if item not in used_by]
+        try:
+            controller.set_recipe(data)
+        except (CellQuantError, ValueError) as exc:
+            self.shell.show_error(str(exc))
+            return
+        controller.save()
+        self.refresh()
+        self.shell._results_panel.refresh()
+        self.shell._marker_setup.refresh()
+        self.shell.message(f"Removed the marker {removed['name']}.")
+
 
 class ReviewPanel(QWidget):
     def __init__(self, shell: CellQuantWindow):
@@ -2882,6 +2972,7 @@ class ReviewPanel(QWidget):
             ("Delete object", self._delete),
             ("Restore object", self._restore),
             ("Undo", self._undo),
+            ("Record drawn edits", self._commit),
         ):
             button = QPushButton(text)
             button.clicked.connect(slot)
@@ -2893,6 +2984,18 @@ class ReviewPanel(QWidget):
             button.clicked.connect(lambda _checked=False, value=status: self._set_status(value))
             status_buttons.addWidget(button)
         layout.addLayout(status_buttons)
+        # Previous / Next image go through only these images until "Check all included images".
+        queue_buttons = QHBoxLayout()
+        for text, mode, tip in (
+            ("Check images that need a look", "flagged", "Previous / Next image go through only images with warnings."),
+            ("Check failed images", "failed", "Previous / Next image go through only images that failed."),
+            ("Check all included images", "all", "Previous / Next image go through every included image again."),
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _checked=False, value=mode: self.shell._results_panel._filter_nav(value))
+            queue_buttons.addWidget(button)
+        layout.addLayout(queue_buttons)
         self.advanced_toggle = QCheckBox("Advanced")
         self.advanced_box = QGroupBox("Advanced")
         self.advanced_box.setVisible(False)
@@ -2912,12 +3015,6 @@ class ReviewPanel(QWidget):
             colors.addWidget(button)
         advanced.addLayout(colors)
         self._show_colors()
-        drawn = QPushButton("Record drawn edits")
-        drawn.clicked.connect(self._commit)
-        advanced.addWidget(drawn)
-        mark_reviewed = QPushButton("Mark reviewed")
-        mark_reviewed.clicked.connect(lambda _checked=False: self._set_status("reviewed"))
-        advanced.addWidget(mark_reviewed)
         layout.addWidget(self.advanced_toggle)
         layout.addWidget(self.advanced_box)
         self.qc = QLabel("")
@@ -3271,7 +3368,6 @@ class ReviewPanel(QWidget):
         self.shell._refresh_plan()
         words = {
             "approved": "Approved. Use Next image ▶ at the bottom to check the next image, or go on to step 5.",
-            "reviewed": "Marked as reviewed.",
             "excluded": "This image is now left out of the results.",
         }
         self.shell.message(words.get(status, ""))
@@ -3314,27 +3410,13 @@ class ResultsPanel(QWidget):
         self.queue = QLabel("")
         self.queue.setWordWrap(True)
         layout.addWidget(self.queue)
-        # Previous / Next image go through only these images until "Check all included images".
-        queue_buttons = QHBoxLayout()
-        for text, mode, tip in (
-            ("Check images that need a look", "flagged", "Previous / Next image go through only images with warnings."),
-            ("Check failed images", "failed", "Previous / Next image go through only images that failed."),
-            ("Check all included images", "all", "Previous / Next image go through every included image again."),
-        ):
-            button = QPushButton(text)
-            button.setToolTip(tip)
-            button.clicked.connect(lambda _checked=False, value=mode: self._filter_nav(value))
-            queue_buttons.addWidget(button)
-        layout.addLayout(queue_buttons)
+        # Settings save automatically; loading them from an earlier export stays.
         settings = QHBoxLayout()
-        for text, slot, tip in (
-            ("Save settings", self._save_recipe, "Save these settings (and the experiment) in the results folder."),
-            ("Load settings…", self._load_recipe, "Use the settings from a recipe.yaml file, for example from an earlier export."),
-        ):
-            button = QPushButton(text)
-            button.setToolTip(tip)
-            button.clicked.connect(slot)
-            settings.addWidget(button)
+        load = QPushButton("Load settings…")
+        load.setToolTip("Use the settings from a recipe.yaml file, for example from an earlier export.")
+        load.clicked.connect(self._load_recipe)
+        settings.addWidget(load)
+        settings.addStretch(1)
         layout.addLayout(settings)
 
     def refresh(self) -> None:
@@ -3418,19 +3500,12 @@ class ResultsPanel(QWidget):
     def _run_selected(self) -> None:
         ids = self.shell._experiment_panel.selected_ids()
         if not ids:
-            self.shell.message("Select images in step 1's list first (click, Ctrl-click or Shift-click), or use Run all images.")
+            self.shell.message("Select images in the list first (click, Ctrl-click or Shift-click), or use Run all images.")
             return
         self.shell.start_batch(ids)
 
     def _run_all(self) -> None:
         self.shell.start_batch(None)
-
-    def _save_recipe(self) -> None:
-        controller = self.shell.require_controller()
-        if controller:
-            self.shell._panels_to_recipe()
-            controller.save()
-            self.shell._footer.message(f"Settings saved in {controller.directory}.")
 
     def _load_recipe(self) -> None:
         controller = self.shell.require_controller()
@@ -3637,7 +3712,6 @@ class Footer(QWidget):
         previous = QPushButton("◀ Previous image")
         next_image = QPushButton("Next image ▶")
         run_current = QPushButton("Run this image")
-        run_selected = QPushButton("Run selected images")
         run_all = QPushButton("Run all images")
         self.run_analyses = QPushButton("Run all analyses")
         self.run_analyses.setToolTip("Run each analysis on the images ticked for it in the Plan (every included image unless you changed the Plan), one analysis after another.")
@@ -3646,13 +3720,11 @@ class Footer(QWidget):
         previous.setToolTip("Show the previous image in the experiment.")
         next_image.setToolTip("Show the next image in the experiment.")
         run_current.setToolTip("Find objects and measure markers in the image on screen.")
-        run_selected.setToolTip("Run the images selected in step 1's table.")
         run_all.setToolTip("Run every included image with the current settings.")
         previous.clicked.connect(lambda: self._step(-1))
         next_image.clicked.connect(lambda: self._step(1))
         self._navigation = (previous, next_image)
         run_current.clicked.connect(shell.run_current)
-        run_selected.clicked.connect(shell._results_panel._run_selected)
         run_all.clicked.connect(shell._results_panel._run_all)
         self.pause = QPushButton("Pause")
         self.cancel = QPushButton("Cancel")
@@ -3662,7 +3734,7 @@ class Footer(QWidget):
         for button in (previous, next_image):
             row.addWidget(button)
         row.addSpacing(16)
-        for button in (run_current, run_selected, run_all, self.run_analyses):
+        for button in (run_current, run_all, self.run_analyses):
             row.addWidget(button)
         row.addSpacing(16)
         for button in (self.pause, self.cancel):
@@ -3953,6 +4025,21 @@ def floating_header(dock) -> FloatingHeader:
     dock.topLevelChanged.connect(lambda floating: QTimer.singleShot(0, apply) if floating else docked())
     dock.visibilityChanged.connect(lambda visible: QTimer.singleShot(0, apply) if visible else None)
     return header
+
+
+class CloseWatcher(QObject):
+    """Call a function when the window it watches is about to close, while its widgets still exist."""
+
+    def __init__(self, on_close, parent=None):
+        super().__init__(parent)
+        self._on_close = on_close
+
+    def eventFilter(self, watched, event) -> bool:
+        from qtpy.QtCore import QEvent
+
+        if event.type() == QEvent.Close:
+            self._on_close()
+        return False
 
 
 class WheelGuard(QObject):
