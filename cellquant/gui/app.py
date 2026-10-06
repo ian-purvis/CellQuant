@@ -516,6 +516,7 @@ class CellQuantWindow:
         self._tabs = QTabWidget()
         self._experiment_panel = ExperimentPanel(self)
         self._objects_panel = ObjectsPanel(self)
+        self._edit_panel = EditPanel(self)
         self._measurements_panel = MeasurementsPanel(self)
         self._review_panel = ReviewPanel(self)
         self._results_panel = ResultsPanel(self)
@@ -528,9 +529,10 @@ class CellQuantWindow:
         self._step_pages = [
             guide.StepPage(self, 0, self._experiment_panel),
             guide.StepPage(self, 1, self._objects_panel),
-            guide.StepPage(self, 2, self._measurements_panel, extra=self._marker_setup, advanced=True),
-            guide.StepPage(self, 3, self._review_panel),
-            guide.StepPage(self, 4, self._results_panel, extra=self._results_summary, advanced=True),
+            guide.StepPage(self, 2, self._edit_panel),
+            guide.StepPage(self, 3, self._measurements_panel, extra=self._marker_setup, advanced=True),
+            guide.StepPage(self, 4, self._review_panel),
+            guide.StepPage(self, 5, self._results_panel, extra=self._results_summary, advanced=True),
         ]
         self._tabs.addTab(self._start_page, "Start")
         for page, step in zip(self._step_pages, guide.STEPS):
@@ -608,7 +610,7 @@ class CellQuantWindow:
         self.refresh_guidance()
 
     def refresh_guidance(self) -> None:
-        # The step that runs everything is step 5; before it, try one image at a time.
+        # The step that runs everything is step 6; before it, try one image at a time.
         last_step = self._tabs.currentWidget() is self._step_pages[-1]
         self._footer.highlight("all" if last_step else "current")
         if self._run_lock_note.isVisibleTo(self._dock):
@@ -683,7 +685,7 @@ class CellQuantWindow:
         rule: str = guide.RULE_MEAN,
         min_percent: float = guide.DEFAULT_MIN_PERCENT,
     ) -> None:
-        """Step 3 quick setup: define the markers, measure this image, and pick starting cutoffs.
+        """Step 4 quick setup: define the markers, measure this image, and pick starting cutoffs.
 
         With the percent rule the minimum percent is the user's; the starting pixel level of
         each marker is the automatic cutoff between dim and bright cells' mean brightness.
@@ -730,7 +732,7 @@ class CellQuantWindow:
             self._measurements_panel.refresh()
             self._marker_setup.refresh()
             self.show_result(updated)
-            self.go_to_step(3)
+            self.go_to_step(4)
             first = controller.recipe.classifications[0].id if controller.recipe.classifications else None
             panel = self._review_panel
             if first is not None and panel.display.findData(first) >= 0:
@@ -1126,7 +1128,7 @@ class CellQuantWindow:
         QTimer.singleShot(0, redraw)
 
     def open_in_analysis(self, image_id: str, recipe_id: str | None) -> None:
-        """Show this image with this analysis (from the Plan dock), in step 4."""
+        """Show this image with this analysis (from the Plan dock), in step 5."""
 
         controller = self.controller
         if controller is None:
@@ -1141,7 +1143,7 @@ class CellQuantWindow:
             return
         self._nav_index = self._nav_ids.index(image_id)
         self.show_current()
-        self.go_to_step(3)
+        self.go_to_step(4)
 
     def _batch_finished(self, report) -> None:
         planned = getattr(self._footer, "_batch_total", 0)
@@ -1184,7 +1186,7 @@ class CellQuantWindow:
         self.show_error(
             f"{count} image{'s' if count != 1 else ''} failed"
             + (f" ({listed})" if listed else "")
-            + ". Reasons: step 1 Status column. Step 4 Check: Failed goes through them."
+            + ". Reasons: step 1 Status column. Step 5 Check: Failed goes through them."
         )
 
     def _analyses_finished(self, reports, planned: int) -> None:
@@ -1378,7 +1380,7 @@ class CellQuantWindow:
     def _show_loaded(self, loaded, record, result) -> None:
         self._clear_managed()
         self._shown_image_id = record.image_id
-        self._review_panel.clear_selection()
+        self._edit_panel.clear_selection()
         file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
         names = format_channel_labels(file_names, loaded.n_channels)
         # Contrast is remembered per experiment channel, matched by the names stored in the file.
@@ -1437,6 +1439,7 @@ class CellQuantWindow:
             boundaries.contour = 2
             self._managed.update({"Object fills", "Objects"})
             self._review_panel.bind_labels(boundaries, fills)
+            self._edit_panel.bind_labels(boundaries)
         if result is None:
             self._drop("Classification")
             self._drop("Object IDs")
@@ -2915,16 +2918,132 @@ class MeasurementsPanel(QWidget):
         self.shell.message(f"Removed the marker {removed['name']}.")
 
 
+class EditPanel(QWidget):
+    """Step 3: fix the objects found in step 2 before markers are measured."""
+
+    def __init__(self, shell: CellQuantWindow):
+        super().__init__()
+        self.shell = shell
+        self._labels = None
+        # The object the user clicked. napari's own selected_label starts at 1, so it is not used
+        # until the user changes it; otherwise Delete object would remove object 1 unasked.
+        self._picked: int | None = None
+        self._click_bound = False
+        layout = QVBoxLayout(self)
+        self.selected = QLabel("Selected object: none")
+        self.selected.setToolTip("Click an object in the image to select it.")
+        layout.addWidget(self.selected)
+        buttons = QHBoxLayout()
+        for text, slot in (
+            ("Delete object", self._delete),
+            ("Restore object", self._restore),
+            ("Undo", self._undo),
+            ("Record drawn edits", self._commit),
+        ):
+            button = QPushButton(text)
+            button.clicked.connect(slot)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        layout.addStretch(1)
+
+    def refresh(self) -> None:
+        return
+
+    def bind_labels(self, boundaries) -> None:
+        self._labels = boundaries
+        boundaries.events.selected_label.connect(self._on_selected)
+        self.clear_selection()
+        if not self._click_bound:
+            # A plain click on the image picks the object under the pointer, whichever layer is active.
+            self.shell.viewer.mouse_drag_callbacks.append(self._on_click)
+            self._click_bound = True
+
+    def clear_selection(self) -> None:
+        self._picked = None
+        self.selected.setText("Selected object: none")
+
+    def _on_click(self, viewer, event):
+        start = tuple(event.position)
+        dragged = False
+        yield
+        while event.type == "mouse_move":
+            dragged = True
+            yield
+        if dragged or self._labels is None or self._labels not in viewer.layers:
+            return
+        try:
+            value = self._labels.get_value(start, view_direction=event.view_direction, dims_displayed=event.dims_displayed, world=True)
+        except Exception:  # noqa: BLE001 - a click outside the image picks nothing
+            value = None
+        self.pick(int(value) if isinstance(value, (int, np.integer)) else 0)
+
+    def pick(self, object_id: int) -> None:
+        """Select an object for Delete / Restore (0 clears the selection)."""
+
+        if object_id <= 0:
+            self.clear_selection()
+            return
+        self._picked = object_id
+        self.selected.setText(f"Selected object: {object_id}")
+
+    def _on_selected(self, event) -> None:
+        # Changed by napari's picker tool on the Objects layer: the same as clicking the object.
+        value = int(event.value) if hasattr(event, "value") else int(self._labels.selected_label)
+        self.pick(value)
+
+    def _selected_id(self) -> int | None:
+        return self._picked
+
+    def _delete(self) -> None:
+        self._edit("delete")
+
+    def _restore(self) -> None:
+        self._edit("restore")
+
+    def _edit(self, kind: str) -> None:
+        controller = self.shell.require_controller()
+        object_id = self._selected_id()
+        if controller is None or not self.shell._nav_ids:
+            return
+        if object_id is None:
+            self.shell.message("Click an object in the image first, then Delete object or Restore object.")
+            return
+        image_id = self.shell._nav_ids[self.shell._nav_index]
+
+        def finish(result) -> None:
+            self.shell.show_result(result)
+
+        if kind == "delete":
+            self.shell._start_job(lambda: controller.delete_object(image_id, object_id), finish)
+        else:
+            self.shell._start_job(lambda: controller.restore_object(image_id, object_id), finish)
+
+    def _undo(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or not self.shell._nav_ids:
+            return
+        image_id = self.shell._nav_ids[self.shell._nav_index]
+        self.shell._start_job(lambda: controller.undo(image_id), lambda result: self.shell.show_result(result) if result is not None else None)
+
+    def _commit(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or "Objects" not in self.shell.viewer.layers or not self.shell._nav_ids:
+            return
+        drawn = np.asarray(self.shell.viewer.layers["Objects"].data)
+        image_id = self.shell._nav_ids[self.shell._nav_index]
+        self.shell._start_job(
+            lambda: controller.commit_drawn_labels(image_id, drawn),
+            self.shell.show_result,
+        )
+
+
+
 class ReviewPanel(QWidget):
     def __init__(self, shell: CellQuantWindow):
         super().__init__()
         self.shell = shell
         self._labels = None
         self._fills = None
-        # The object the user clicked. napari's own selected_label starts at 1, so it is not used
-        # until the user changes it; otherwise Delete object would remove object 1 unasked.
-        self._picked: int | None = None
-        self._click_bound = False
         layout = QVBoxLayout(self)
         self.show_boundaries = QCheckBox("Show object boundaries")
         self.show_fills = QCheckBox("Show object fills")
@@ -2959,20 +3078,6 @@ class ReviewPanel(QWidget):
         layout.addWidget(self._pixel_level_box())
         self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
         layout.addWidget(self.counts)
-        self.selected = QLabel("Selected object: none")
-        self.selected.setToolTip("Click an object in the image to select it.")
-        layout.addWidget(self.selected)
-        buttons = QHBoxLayout()
-        for text, slot in (
-            ("Delete object", self._delete),
-            ("Restore object", self._restore),
-            ("Undo", self._undo),
-            ("Record drawn edits", self._commit),
-        ):
-            button = QPushButton(text)
-            button.clicked.connect(slot)
-            buttons.addWidget(button)
-        layout.addLayout(buttons)
         status_buttons = QHBoxLayout()
         for text, status in (("Approve", "approved"), ("Exclude image", "excluded")):
             button = QPushButton(text)
@@ -3149,41 +3254,7 @@ class ReviewPanel(QWidget):
     def bind_labels(self, boundaries, fills) -> None:
         self._labels = boundaries
         self._fills = fills
-        boundaries.events.selected_label.connect(self._on_selected)
-        self.clear_selection()
-        if not self._click_bound:
-            # A plain click on the image picks the object under the pointer, whichever layer is active.
-            self.shell.viewer.mouse_drag_callbacks.append(self._on_click)
-            self._click_bound = True
         self._toggle_layers()
-
-    def clear_selection(self) -> None:
-        self._picked = None
-        self.selected.setText("Selected object: none")
-
-    def _on_click(self, viewer, event):
-        start = tuple(event.position)
-        dragged = False
-        yield
-        while event.type == "mouse_move":
-            dragged = True
-            yield
-        if dragged or self._labels is None or self._labels not in viewer.layers:
-            return
-        try:
-            value = self._labels.get_value(start, view_direction=event.view_direction, dims_displayed=event.dims_displayed, world=True)
-        except Exception:  # noqa: BLE001 - a click outside the image picks nothing
-            value = None
-        self.pick(int(value) if isinstance(value, (int, np.integer)) else 0)
-
-    def pick(self, object_id: int) -> None:
-        """Select an object for Delete / Restore (0 clears the selection)."""
-
-        if object_id <= 0:
-            self.clear_selection()
-            return
-        self._picked = object_id
-        self.selected.setText(f"Selected object: {object_id}")
 
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
@@ -3301,56 +3372,6 @@ class ReviewPanel(QWidget):
         if "Object IDs" in viewer.layers:
             viewer.layers["Object IDs"].visible = self.show_ids.isChecked()
 
-    def _on_selected(self, event) -> None:
-        # Changed by napari's picker tool on the Objects layer: the same as clicking the object.
-        value = int(event.value) if hasattr(event, "value") else int(self._labels.selected_label)
-        self.pick(value)
-
-    def _selected_id(self) -> int | None:
-        return self._picked
-
-    def _delete(self) -> None:
-        self._edit("delete")
-
-    def _restore(self) -> None:
-        self._edit("restore")
-
-    def _edit(self, kind: str) -> None:
-        controller = self.shell.require_controller()
-        object_id = self._selected_id()
-        if controller is None or not self.shell._nav_ids:
-            return
-        if object_id is None:
-            self.shell.message("Click an object in the image first, then Delete object or Restore object.")
-            return
-        image_id = self.shell._nav_ids[self.shell._nav_index]
-
-        def finish(result) -> None:
-            self.shell.show_result(result)
-
-        if kind == "delete":
-            self.shell._start_job(lambda: controller.delete_object(image_id, object_id), finish)
-        else:
-            self.shell._start_job(lambda: controller.restore_object(image_id, object_id), finish)
-
-    def _undo(self) -> None:
-        controller = self.shell.require_controller()
-        if controller is None or not self.shell._nav_ids:
-            return
-        image_id = self.shell._nav_ids[self.shell._nav_index]
-        self.shell._start_job(lambda: controller.undo(image_id), lambda result: self.shell.show_result(result) if result is not None else None)
-
-    def _commit(self) -> None:
-        controller = self.shell.require_controller()
-        if controller is None or "Objects" not in self.shell.viewer.layers or not self.shell._nav_ids:
-            return
-        drawn = np.asarray(self.shell.viewer.layers["Objects"].data)
-        image_id = self.shell._nav_ids[self.shell._nav_index]
-        self.shell._start_job(
-            lambda: controller.commit_drawn_labels(image_id, drawn),
-            self.shell.show_result,
-        )
-
     def _set_status(self, status: str) -> None:
         controller = self.shell.require_controller()
         if controller is None or not self.shell._nav_ids:
@@ -3363,7 +3384,7 @@ class ReviewPanel(QWidget):
         self.shell._experiment_panel.refresh_table()
         self.shell._refresh_plan()
         words = {
-            "approved": "Approved. Use Next image ▶ at the bottom to check the next image, or go on to step 5.",
+            "approved": "Approved. Use Next image ▶ at the bottom to check the next image, or go on to step 6.",
             "excluded": "This image is now left out of the results.",
         }
         self.shell.message(words.get(status, ""))
@@ -3478,7 +3499,7 @@ class ResultsPanel(QWidget):
 
     def _add_report(self) -> None:
         if self.report_count.currentData() is None:
-            self.shell.message("Set up markers first (step 3): result rows count marker-positive objects.")
+            self.shell.message("Set up markers first (step 4): result rows count marker-positive objects.")
             return
         row = self.reports.rowCount()
         self.reports.insertRow(row)
