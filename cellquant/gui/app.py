@@ -32,6 +32,8 @@ from qtpy.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -45,6 +47,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellquant import keep_awake
 from cellquant.controller import AnalysisController
 from cellquant.errors import CellQuantError, RecipeValidationError
 from cellquant.gui import guide
@@ -264,6 +267,17 @@ def classification_colors() -> tuple[str, str]:
         return DEFAULT_POSITIVE_COLOR, DEFAULT_NEGATIVE_COLOR
     valid = [value if QColor(value).isValid() else default for value, default in ((positive, DEFAULT_POSITIVE_COLOR), (negative, DEFAULT_NEGATIVE_COLOR))]
     return valid[0], valid[1]
+
+
+def keep_awake_preferred() -> bool:
+    try:
+        return str(_settings().value("run/keep_awake", "true")).lower() == "true"
+    except Exception:  # noqa: BLE001 - settings unreadable: use the default
+        return True
+
+
+def save_keep_awake(on: bool) -> None:
+    _settings().setValue("run/keep_awake", "true" if on else "false")
 
 
 def save_classification_colors(positive: str, negative: str) -> None:
@@ -567,6 +581,7 @@ class CellQuantWindow:
         self._error_box.setVisible(False)
         dock_layout.addWidget(self._error_box)
         dock_layout.addWidget(self._tabs, 1)
+        self._keep_awake = keep_awake.KeepAwake()
         self._footer = Footer(self)
         self._tabs.currentChanged.connect(
             lambda _index: self._footer.highlight("all" if self._tabs.currentWidget() is self._step_pages[-1] else "current")
@@ -986,6 +1001,8 @@ class CellQuantWindow:
                 self._footer.set_navigation_enabled(False)
             self._plan_dock.setEnabled(False)  # the plan is read when a run starts; no changes while it runs
             self._lock_settings(True)
+            if self._footer.keep_awake.isChecked():
+                self._keep_awake.hold()
             self._error_box.setVisible(False)
             self._footer.start_busy(batch=self._batch is not None)
         else:
@@ -995,6 +1012,7 @@ class CellQuantWindow:
                 except RuntimeError:
                     pass  # the button was rebuilt meanwhile
             self._busy_restore = {}
+            self._keep_awake.release()
             self._lock_settings(False)
             self._footer.end_busy()
             self._plan_dock.setEnabled(True)
@@ -1025,6 +1043,8 @@ class CellQuantWindow:
         for panel in panels:
             for kind in (QComboBox, QAbstractSpinBox, QLineEdit, QCheckBox, QSlider):
                 inputs.extend(widget for widget in panel.findChildren(kind) if widget not in view_only)
+        # The crop channels are a checkable list; they change the settings too.
+        inputs.append(self._objects_panel.crop_channels)
         return inputs
 
     def _lock_settings(self, locked: bool) -> None:
@@ -1047,6 +1067,13 @@ class CellQuantWindow:
             self._objects_panel._apply_z_enablement()
             self._objects_panel._method_changed()
         self._run_lock_note.setVisible(locked)
+
+    def _keep_awake_toggled(self, on: bool) -> None:
+        save_keep_awake(on)
+        if on and self.is_busy():
+            self._keep_awake.hold()
+        elif not on:
+            self._keep_awake.release()
 
     def is_busy(self) -> bool:
         return self._job is not None or self._batch is not None
@@ -1443,9 +1470,26 @@ class CellQuantWindow:
         if result is None:
             self._drop("Classification")
             self._drop("Object IDs")
+            self._drop("Crop regions")
         else:
             self._set_classification_overlay(result)
             self._set_ids(result)
+            self._set_crop_regions(result, labels.shape)
+
+    def _set_crop_regions(self, result, shape) -> None:
+        """Outline the rectangles this image was segmented in (when the analysis crops)."""
+
+        self._drop("Crop regions")
+        rectangles = result.provenance.get("crop_rectangles") if result is not None else None
+        if not rectangles or len(shape) != 2:
+            return
+        corners = [
+            np.array([[y0, x0], [y0, x1], [y1, x1], [y1, x0]], dtype=float) for y0, y1, x0, x1 in rectangles
+        ]
+        layer = self.viewer.add_shapes(
+            corners, shape_type="rectangle", name="Crop regions", edge_color="yellow", face_color="transparent", edge_width=3
+        )
+        self._managed.add(layer.name)
 
     def _set_classification_overlay(self, result) -> None:
         choice = self._review_panel.classification_id()
@@ -2006,7 +2050,6 @@ class ObjectsPanel(QWidget):
 
         self._gpu_status: dict = {}
         self._recommended: str | None = None
-        self._suggest_gpu = False
         self.z_stack = QComboBox()
         for mode, text in Z_OPTION_LABELS.items():
             self.z_stack.addItem(text, mode)
@@ -2084,14 +2127,11 @@ class ObjectsPanel(QWidget):
         self.gpu_label = QLabel("")
         self.gpu_label.setWordWrap(True)
         self.gpu_label.setTextFormat(Qt.RichText)
-        # The one GPU switch, beside the banner that says whether a GPU was found.
-        self.gpu = QCheckBox("Use GPU")
-        self.gpu.setToolTip("Run Cellpose on this computer's NVIDIA GPU (much faster than the CPU).")
+        # No GPU switch: Cellpose uses a usable GPU on its own; the banner says which is used.
         self.gpu_banner = QWidget()
         gpu_row = QHBoxLayout(self.gpu_banner)
         gpu_row.setContentsMargins(0, 0, 0, 0)
         gpu_row.addWidget(self.gpu_label, 1)
-        gpu_row.addWidget(self.gpu)
         self._show_gpu_banner("Checking for an NVIDIA GPU...", "neutral")
         layout.addWidget(self.gpu_banner)
         # One engine is installed per environment; the other is listed so users know it exists.
@@ -2132,6 +2172,36 @@ class ObjectsPanel(QWidget):
         form.addRow("Manual threshold", self.threshold)
         form.addRow("Smoothing sigma", self.sigma)
         layout.addLayout(form)
+        self.crop = QCheckBox("Crop to the region of interest before finding objects")
+        self.crop.setToolTip(
+            "Find the area(s) holding the positive cells on the channels ticked below, grow them by the margin, "
+            "and find objects only inside rectangles around them. Brightness scaling and thresholds still come "
+            "from the whole image, and results stay in full-image coordinates. Off by default."
+        )
+        self.crop_box = QGroupBox("Region of interest")
+        crop_form = QFormLayout(self.crop_box)
+        self.crop_channels = QListWidget()
+        self.crop_channels.setMaximumHeight(90)
+        self.crop_channels.setToolTip(
+            "The region must be positive on every ticked channel (AND). By default the channel of the results' "
+            "denominator (for example the reporter)."
+        )
+        self.crop_margin = QDoubleSpinBox()
+        self.crop_margin.setRange(0, 1000)
+        self.crop_margin.setValue(50.0)
+        self.crop_margin.setSuffix(" µm")
+        self.crop_warning = QLabel("")
+        self.crop_warning.setWordWrap(True)
+        self.crop_warning.setStyleSheet("QLabel { color: #b9770e; }")
+        crop_form.addRow("Positive on", self.crop_channels)
+        crop_form.addRow("Margin", self.crop_margin)
+        crop_form.addRow(self.crop_warning)
+        self.crop_box.setVisible(False)
+        self.crop.toggled.connect(self.crop_box.setVisible)
+        self.crop.toggled.connect(lambda _checked: self._crop_changed())
+        self.crop_channels.itemChanged.connect(lambda _item: self._crop_changed())
+        layout.addWidget(self.crop)
+        layout.addWidget(self.crop_box)
         self.advanced_toggle = QCheckBox("Advanced")
         self.advanced_box = QGroupBox("Advanced")
         self.advanced_box.setVisible(False)
@@ -2161,8 +2231,6 @@ class ObjectsPanel(QWidget):
         self.flow.setValue(0.4)
         self.cellprob = QDoubleSpinBox()
         self.cellprob.setRange(-6, 6)
-        self.gpu.toggled.connect(lambda _checked: self.update_recommendation())
-        self.gpu.toggled.connect(lambda _checked: self._refresh_gpu_banner())
         self.watershed.toggled.connect(lambda _checked: self._method_changed())
         self.object_name.setToolTip("The name of the objects in the results, for example Nuclei.")
         advanced.addRow("Object set name", self.object_name)
@@ -2224,6 +2292,7 @@ class ObjectsPanel(QWidget):
         self.watershed_distance.setValue(float(parameters.get("watershed_min_distance_px", 5)))
         self.compactness.setValue(float(parameters.get("watershed_compactness", 0)))
         self.cellpose_model.setCurrentText(str(parameters.get("model") or self.engine.default_model or ""))
+        self._refresh_crop(controller)
         pixel = self._pixel_size_um()
         if parameters.get("diameter_um") is not None:
             self.nucleus_diameter_um.setValue(float(parameters["diameter_um"]))
@@ -2238,8 +2307,6 @@ class ObjectsPanel(QWidget):
             self.diameter.setValue(0)
         self.flow.setValue(float(parameters.get("flow_threshold", 0.4)))
         self.cellprob.setValue(float(parameters.get("cellprob_threshold", 0)))
-        usable = bool(self._gpu_status.get("available")) and self.engine.installed
-        self.gpu.setChecked(bool(parameters.get("gpu", usable)))
         has_calibration = pixel is not None
         if parameters.get("min_area_um2") is not None:
             _choose(self.area_unit, "um2")
@@ -2310,8 +2377,61 @@ class ObjectsPanel(QWidget):
             _show_row(advanced, widget, not cellpose and self.watershed.isChecked())
         for widget in (self.cellpose_model, self.diameter, self.flow, self.cellprob):
             _show_row(advanced, widget, cellpose)
-        self.gpu.setVisible(cellpose and self.engine.installed)
         self._refresh_gpu_banner()
+
+    def _refresh_crop(self, controller) -> None:
+        from cellquant.crop import crop_channels
+
+        recipe = controller.recipe
+        spec = recipe.crop
+        chosen = set(crop_channels(recipe))
+        self.crop_channels.blockSignals(True)
+        self.crop_channels.clear()
+        for channel in controller.experiment.channels:
+            item = QListWidgetItem(channel.channel_name)
+            item.setData(Qt.UserRole, channel.channel_index)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if channel.channel_index in chosen else Qt.Unchecked)
+            self.crop_channels.addItem(item)
+        self.crop_channels.blockSignals(False)
+        self.crop.blockSignals(True)
+        self.crop.setChecked(bool(spec is not None and spec.enabled))
+        self.crop.blockSignals(False)
+        self.crop_box.setVisible(self.crop.isChecked())
+        self.crop_margin.setValue(float(spec.margin_um) if spec is not None else 50.0)
+        self._show_crop_warning()
+
+    def crop_settings(self, recipe_data: dict) -> dict | None:
+        """The crop settings on screen, for the recipe (None when never used)."""
+
+        previous = recipe_data.get("crop") or {}
+        channels = [
+            int(self.crop_channels.item(row).data(Qt.UserRole))
+            for row in range(self.crop_channels.count())
+            if self.crop_channels.item(row).checkState() == Qt.Checked
+        ]
+        if not self.crop.isChecked() and not previous:
+            return None
+        return {**previous, "enabled": self.crop.isChecked(), "channels": channels or None, "margin_um": self.crop_margin.value()}
+
+    def _crop_changed(self) -> None:
+        controller = self.shell.controller
+        if controller is None:
+            return
+        data = controller.recipe.model_dump(mode="json")
+        data["crop"] = self.crop_settings(data)
+        try:
+            controller.set_recipe(data)
+        except Exception as exc:  # noqa: BLE001 - shown to the user
+            self.shell.message(str(exc))
+            return
+        self._show_crop_warning()
+
+    def _show_crop_warning(self) -> None:
+        controller = self.shell.controller
+        warnings = controller.crop_warnings() if controller is not None else []
+        self.crop_warning.setText(" ".join(f"⚠ {text}" for text in warnings))
+        self.crop_warning.setVisible(bool(warnings))
 
     def _apply_z_enablement(self) -> None:
         """Keep Z-stack mode usable; never leave the combo stuck disabled after a run lock.
@@ -2380,7 +2500,7 @@ class ObjectsPanel(QWidget):
         return recommend(
             method=self.method.currentData(),
             engine=self.engine.key if self.engine.installed else None,
-            use_gpu=self.gpu.isChecked(),
+            use_gpu=self.use_gpu(),
             stacks=stacks,
             anisotropy=sorted(known)[len(known) // 2] if known else None,
             hardware=detect_hardware(self._gpu_status),
@@ -2411,12 +2531,11 @@ class ObjectsPanel(QWidget):
             self.z_stack.setItemText(index, text)
         self.z_recommend.setText(f"<b>Recommended here:</b> {Z_OPTION_LABELS[suggestion.mode]}")
         self.z_recommend.setToolTip(suggestion.reason)
-        self._suggest_gpu = suggestion.use_gpu
         self.z_recommend_box.setVisible(True)
         self._show_recommendation_state()
 
     def _show_recommendation_state(self) -> None:
-        chosen = self.z_stack.currentData() == self._recommended and not getattr(self, "_suggest_gpu", False)
+        chosen = self.z_stack.currentData() == self._recommended
         self.z_use.setEnabled(not self.shell.is_busy() and self._recommended is not None and not chosen)
         self.z_use.setText("In use" if chosen else "Use recommended")
 
@@ -2424,8 +2543,6 @@ class ObjectsPanel(QWidget):
         if self._recommended is None:
             return
         self.z_stack.setCurrentIndex(max(0, self.z_stack.findData(self._recommended)))
-        if getattr(self, "_suggest_gpu", False) and self.gpu.isEnabled():
-            self.gpu.setChecked(True)
         self.update_recommendation()
         self.shell.message(f"Z-stacks: using {self.z_stack.currentText().split('  (')[0]}.")
 
@@ -2434,24 +2551,14 @@ class ObjectsPanel(QWidget):
 
         self._gpu_status = dict(status)
         self._gpu_checked = True
-        if not self.engine.installed:
-            self.gpu.setEnabled(False)
-        elif status.get("available"):
-            self.gpu.setEnabled(True)
-            if not self._gpu_chosen():
-                self.gpu.setChecked(True)  # a usable GPU is used unless the settings say otherwise
-        else:
-            self.gpu.setChecked(False)
-            self.gpu.setEnabled(False)
         self._refresh_gpu_banner()
         self.shell.message(self._gpu_summary())
         self.update_recommendation()
 
-    def _gpu_chosen(self) -> bool:
-        """True when the open settings already say whether to use the GPU."""
+    def use_gpu(self) -> bool:
+        """Cellpose uses the GPU whenever this computer has a usable one."""
 
-        controller = self.shell.controller
-        return controller is not None and "gpu" in (controller.recipe.object_set.parameters or {})
+        return self.engine.installed and bool(self._gpu_status.get("available"))
 
     def _gpu_summary(self) -> str:
         status = self._gpu_status
@@ -2485,14 +2592,8 @@ class ObjectsPanel(QWidget):
         elif status.get("available"):
             memory = f" ({status['memory_gb']:.0f} GB)" if status.get("memory_gb") else ""
             found = f"<b>✔ NVIDIA GPU found:</b> {status.get('name') or 'NVIDIA GPU'}{memory}."
-            if self.gpu.isChecked():
+            if cellpose:
                 self._show_gpu_banner(f"{found} Cellpose will run on the GPU.", "good")
-            elif cellpose:
-                self._show_gpu_banner(
-                    f"{found} <b>'Use GPU' is off</b> (CPU, slower).",
-                    "good",
-                    "Cellpose would run on the CPU (much slower). Tick Use GPU to use the GPU.",
-                )
             else:
                 self._show_gpu_banner(found, "good", "The classical method does not use the GPU; Cellpose would.")
         elif status.get("nvidia_gpu"):
@@ -2555,7 +2656,8 @@ class ObjectsPanel(QWidget):
                 "diameter_px": diameter_px,
                 "flow_threshold": self.flow.value(),
                 "cellprob_threshold": self.cellprob.value(),
-                "gpu": self.gpu.isChecked(),
+                # Found on this computer; without Cellpose here, the saved value is kept.
+                "gpu": self.use_gpu() if local else bool(previous.get("gpu", False)),
                 **size_filters,
             }
         data["z_stack"] = self.z_stack.currentData() or "max_projection"
@@ -2563,6 +2665,7 @@ class ObjectsPanel(QWidget):
         data["z_stitch_threshold"] = round(self.z_link.value(), 3)
         data["z_scale_brightness"] = self.z_scale.currentData() or "stack"
         data["z_min_slices"] = self.z_min_slices.value()
+        data["crop"] = self.crop_settings(data)
         data["object_set"] = {
             "name": self.object_name.text() or "Objects",
             "segmentation_channel": int(self.channel.currentData() or 0),
@@ -3757,6 +3860,16 @@ class Footer(QWidget):
         row.addSpacing(16)
         for button in (self.pause, self.cancel):
             row.addWidget(button)
+        row.addSpacing(16)
+        self.keep_awake = QCheckBox("Keep computer awake (recommended) ⓘ")
+        self.keep_awake.setToolTip(
+            "While a run is going, stop this computer from going to sleep. Sleep pauses the run "
+            "until someone wakes the computer. The screen can still turn off."
+        )
+        self.keep_awake.setChecked(keep_awake_preferred())
+        self.keep_awake.setVisible(keep_awake.supported())
+        self.keep_awake.toggled.connect(shell._keep_awake_toggled)
+        row.addWidget(self.keep_awake)
         self._run_buttons = {"current": run_current, "all": run_all}
         self.run_all = run_all
         self.cancel.setStyleSheet("QPushButton:enabled { color: #e05050; font-weight: bold; }")
@@ -3781,6 +3894,13 @@ class Footer(QWidget):
         self.position = QLabel("No image open.")
         self.units = QLabel("Units: pixels")
         self.progress = QProgressBar()
+        self.time_left = QLabel("")
+        self.time_left.setMinimumWidth(110)
+        self.time_left.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._clock = None  # a TimeLeft while a run is going
+        self._clock_timer = QTimer(self)
+        self._clock_timer.setInterval(1000)
+        self._clock_timer.timeout.connect(self._show_time_left)
         self.status = QLabel("")
         self.log = QTextEdit()
         self.log.setReadOnly(True)
@@ -3788,7 +3908,10 @@ class Footer(QWidget):
         self.log.setMaximumHeight(160)
         layout.addWidget(self.position)
         layout.addWidget(self.units)
-        layout.addWidget(self.progress)
+        bar = QHBoxLayout()
+        bar.addWidget(self.progress, 1)
+        bar.addWidget(self.time_left)
+        layout.addLayout(bar)
         layout.addWidget(self.status)
         layout.addWidget(self.log)
 
@@ -3828,20 +3951,31 @@ class Footer(QWidget):
                 else ""
             )
 
-    def _time_left(self, finished: int, total: int) -> str:
-        import time
+    def _show_time_left(self) -> None:
+        """Time left beside the progress bar, refreshed every second; how it is worked out is in its tooltip."""
 
         from cellquant.hardware import format_seconds
 
-        if finished <= 0 or finished >= total:
-            return ""
-        elapsed = time.monotonic() - self._started
-        return f" · about {format_seconds(elapsed / finished * (total - finished))} left"
+        if self._clock is None:
+            self.time_left.setText("")
+            self.time_left.setToolTip("")
+            return
+        left = self._clock.seconds_left()
+        if left is None:
+            text = "Estimating…"
+        elif left < 1:
+            text = "Finishing…"
+        else:
+            text = f"~{format_seconds(left)} left"
+        self.time_left.setText(text)
+        self.time_left.setToolTip(self._clock.detail())
 
     def start_busy(self, batch: bool) -> None:
-        import time
+        from cellquant.progress import TimeLeft
 
-        self._started = time.monotonic()
+        self._clock = TimeLeft()
+        self._show_time_left()
+        self._clock_timer.start()
         self.failed_files = []
         self._batch_index = 0
         self._batch_total = 0
@@ -3860,17 +3994,22 @@ class Footer(QWidget):
         self.pause.setEnabled(False)
         self.pause.setText("Pause")
         self._batch_total = 0
+        self._clock_timer.stop()
+        self._clock = None
+        self._show_time_left()
 
     def show_step(self, text: str, fraction: float) -> None:
         """One step of the running analysis, e.g. 'Finding objects: slice 3 of 7'."""
 
+        if self._clock is not None:
+            self._clock.step(text, None if fraction < 0 else fraction)
+            self._show_time_left()
         total = getattr(self, "_batch_total", 0)
         if total:
             done = (self._batch_index - 1 + max(fraction, 0.0)) / total
             self.progress.setRange(0, 1000)
             self.progress.setValue(int(round(1000 * done)))
-            left = self._time_left(self._batch_index - 1, total)
-            self.status.setText(f"Image {self._batch_index} of {total} ({self._batch_name}): {text}{left}")
+            self.status.setText(f"Image {self._batch_index} of {total} ({self._batch_name}): {text}")
             return
         if fraction < 0:
             self.progress.setRange(0, 0)  # busy: this step's length is unknown
@@ -3884,12 +4023,15 @@ class Footer(QWidget):
         self.progress.setRange(0, 1000)
         finished = status != "running"
         self.progress.setValue(int(round(1000 * (index if finished else index - 1) / max(total, 1))))
+        if self._clock is not None:
+            (self._clock.image_finished if finished else self._clock.image_started)(index, total)
+            self._show_time_left()
         if finished:
             if status == "Failure":
                 self.failed_files.append(filename)
             self.message(f"Image {index} of {total} ({filename}): {JOB_WORDS.get(status, status)}")
         else:
-            self.status.setText(f"Image {index} of {total} ({filename}): starting{self._time_left(index - 1, total)}")
+            self.status.setText(f"Image {index} of {total} ({filename}): starting")
 
     def _step(self, delta: int) -> None:
         if not self.shell._nav_ids:
@@ -3908,6 +4050,8 @@ class Footer(QWidget):
             return
         worker.paused = not worker.paused
         self.pause.setText("Resume" if worker.paused else "Pause")
+        if self._clock is not None:
+            self._clock.pause() if worker.paused else self._clock.resume()
 
     def _cancel(self) -> None:
         worker = self.shell._batch or self.shell._job

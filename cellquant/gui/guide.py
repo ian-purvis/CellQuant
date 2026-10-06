@@ -163,7 +163,6 @@ HELP = {
     ("_objects_panel", "diameter"): "Optional Cellpose diameter in pixels. 0 uses Nucleus diameter (µm) when pixel size is known, otherwise lets Cellpose decide.",
     ("_objects_panel", "flow"): "Cellpose shape check. Lower keeps fewer, cleaner objects.",
     ("_objects_panel", "cellprob"): "Cellpose confidence. Lower finds more (and fainter) objects.",
-    ("_objects_panel", "gpu"): "Use the NVIDIA GPU. Ticked for you when a usable GPU is found; greyed out when none was.",
     ("_objects_panel", "engine_choice"): "The Cellpose installed here. Cellpose-SAM (4) is most accurate, best with a GPU; Classic Cellpose (3) is faster on the CPU. Only one is installed per environment; start CellQuant with the other to use it.",
     ("_review_panel", "display"): "Which marker to color by: green positive, magenta negative (colors can be changed).",
     ("_review_panel", "threshold_slider"): "The cutoff for this marker: objects at or past it are positive. Drag, or type a number. For the percent-of-cell rule it is the minimum percent of each object's pixels that must pass the pixel level.",

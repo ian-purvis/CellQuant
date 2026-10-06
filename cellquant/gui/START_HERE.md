@@ -210,7 +210,7 @@ Open CellQuant, click **Open experiment…**, and choose the results folder. You
 | "The GPU was requested but Cellpose ran on the CPU" | The NVIDIA driver may need updating. Run the installer again after updating it. |
 | 3D: one nucleus appears as two (split across slices) | Lower **Link overlap**, and keep **Brightness** on *Whole stack*. The results flag these as *one_slice*. |
 | 3D: two stacked nuclei counted as one | Raise **Link overlap**. The results flag these as *possibly_merged*. |
-| 3D option is very slow | The estimate beside each option shows why. Tick **Use GPU** (step 2, top) if there is an NVIDIA GPU, or use Classic Cellpose, or a max projection. |
+| 3D option is very slow | The estimate beside each option shows why. Check the GPU box (step 2, top): a usable NVIDIA GPU is used automatically. Or use Classic Cellpose, or a max projection. |
 | Percentages changed after rerunning | The cutoff or settings changed. `settings_index.csv` shows which settings each image used. |
 
 For how CellQuant works inside, see `CellQuant_v2_manifest_rev2.md` and `docs/STATUS.md`.

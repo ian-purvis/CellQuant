@@ -208,3 +208,58 @@ def test_cancelling_a_batch_keeps_finished_images(tmp_path: Path):
     with progress.reporting(lambda text, fraction: None, lambda: state["images"] >= 2):
         report = controller.run_images(on_progress=on_image)
     assert len(report.jobs) == 1 and report.jobs[0].status in ("Success", "Warning")
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_time_left_from_slices_then_finished_images():
+    clock = _Clock()
+    eta = progress.TimeLeft(clock)
+    eta.image_started(1, 3)
+    assert eta.seconds_left() is None  # nothing timed yet
+    clock.now = 4  # reading the file
+    eta.step("Finding objects with Cellpose: slice 1 of 10", 0.0)
+    clock.now = 6
+    eta.step("Finding objects with Cellpose: slice 2 of 10", 0.1)
+    # 2 s per slice: 18 s of slices left, plus a 4 s guess for after them; two more images of 28 s each.
+    assert eta.seconds_left() == pytest.approx(22 + 2 * 28)
+    clock.now = 7  # the estimate counts down between updates
+    assert eta.seconds_left() == pytest.approx(21 + 2 * 28)
+    assert "2.0 s per slice" in eta.detail()
+    clock.now = 24
+    eta.step("Linking outlines across slices", None)
+    clock.now = 30
+    eta.image_finished(1, 3)
+    assert eta.seconds_left() == pytest.approx(2 * 30)
+    # In the second image, the time after the slices comes from the first image (6 s).
+    eta.image_started(2, 3)
+    clock.now = 34
+    eta.step("Finding objects with Cellpose: slice 1 of 10", 0.0)
+    clock.now = 37
+    eta.step("Finding objects with Cellpose: slice 2 of 10", 0.1)
+    assert eta.seconds_left() == pytest.approx(27 + 6 + 30)
+    clock.now = 64
+    eta.step("Linking outlines across slices", None)
+    clock.now = 66
+    assert eta.seconds_left() == pytest.approx(4 + 30)
+
+
+def test_time_left_skips_paused_time():
+    clock = _Clock()
+    eta = progress.TimeLeft(clock)
+    eta.image_started(1, 2)
+    clock.now = 10
+    eta.image_finished(1, 2)
+    eta.image_started(2, 2)
+    clock.now = 12
+    eta.pause()
+    clock.now = 100
+    assert eta.seconds_left() == pytest.approx(8)
+    eta.resume()
+    assert eta.seconds_left() == pytest.approx(8)
