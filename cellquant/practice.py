@@ -80,7 +80,7 @@ def write_practice_images(folder: str | Path, seed: int = 7) -> list[Path]:
             np.clip(image, 0, 65535).astype(np.uint16),
             imagej=True,
             resolution=(1 / PIXEL_SIZE_UM, 1 / PIXEL_SIZE_UM),
-            metadata={"axes": "CYX", "unit": "um", "LUTs": _luts()},
+            metadata={"axes": "CYX", "unit": "um", "LUTs": _luts(), "Labels": list(CHANNEL_NAMES)},
         )
         paths.append(path)
     return paths

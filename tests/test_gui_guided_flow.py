@@ -151,7 +151,7 @@ def test_percent_of_cell_rule_in_the_window(tmp_path: Path, monkeypatch):
         added = shell.controller.recipe.measurements[-1]
         assert (added.statistic, added.pixel_level, added.pixel_level_high) == ("percent_above", 100.0, 5000.0)
         measurements.class_name.setText("Manual")
-        measurements.class_measurement.setCurrentText(added.id)
+        measurements.class_measurement.setCurrentIndex(measurements.class_measurement.findData(added.id))
         assert measurements.class_comparison.currentData() == "at_least"
         measurements.class_threshold.setValue(20.0)
         measurements._add_class()

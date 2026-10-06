@@ -123,7 +123,7 @@ def test_channel_mismatch_is_reported(tmp_path: Path):
     _write_squares(narrow, channels=3)
     controller = AnalysisController.create(tmp_path / "experiment", "Channels")
     notices = controller.add_image_paths([wide, narrow])
-    assert any("has 3 channels, but the experiment expects 4" in notice for notice in notices)
+    assert any("has 3 channels, but the experiment's channel list has 4" in notice for notice in notices)
 
 
 def test_corrupt_segmentation_cache_is_recomputed(tmp_path: Path, monkeypatch):

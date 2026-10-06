@@ -76,7 +76,7 @@ def test_analyses_in_the_window(tmp_path: Path, monkeypatch):
         assert not bar.choice.isEnabled()  # no switching while analyses run
         # The settings pages and image navigation are locked: they would show another analysis.
         assert not shell._tabs.isEnabled() and not shell._footer._navigation[1].isEnabled()
-        save = next(button for button in shell._results_panel.findChildren(type(shell._footer.cancel)) if button.text() == "Save recipe")
+        save = next(button for button in shell._results_panel.findChildren(type(shell._footer.cancel)) if button.text() == "Save settings")
         assert not save.isEnabled()
         _wait(shell, 300)
         assert bar.choice.isEnabled() and shell._tabs.isEnabled() and shell._footer._navigation[1].isEnabled()

@@ -219,10 +219,15 @@ class ImportReport:
     skipped_experiment_files: int = 0
     # Files of a type that was not chosen, e.g. {"TIFF": 12} when only ND2 was chosen.
     skipped_types: dict[str, int] = field(default_factory=dict)
+    # Paths that resolved outside the chosen folder (junctions / links).
+    skipped_outside: int = 0
+    search_roots: list[str] = field(default_factory=list)
     file_types: tuple[str, ...] = ("nd2", "tiff")
 
     def lines(self) -> list[str]:
         out = []
+        for root in self.search_roots:
+            out.append(f"Looking in: {root}")
         if self.added or self.already_listed:
             kinds = ", ".join(f"{count} {kind}" for kind, count in sorted(self.by_type.items()))
             where = len(self.folders_with_images)
@@ -238,6 +243,11 @@ class ImportReport:
         else:
             chosen = " or ".join(kind.upper() for kind in self.file_types) or "TIFF or ND2"
             out.append(f"No {chosen} images were found.")
+        if self.skipped_outside:
+            out.append(
+                f"{self.skipped_outside} file{'s were' if self.skipped_outside != 1 else ' was'} skipped "
+                "because they are outside the chosen folder."
+            )
         for kind, count in sorted(self.skipped_types.items()):
             out.append(
                 f"{count} {kind} file{'s were' if count != 1 else ' was'} not added, because only "
@@ -282,12 +292,19 @@ def add_images(
         path = Path(raw_path)
         if path.is_dir():
             root = path
+            report.search_roots.append(_resolved(root))
             files = _find_images(root, report, chosen)
         else:
             root = path.parent
             files = [path]
         for number, file in enumerate(files, start=1):
+            if not _is_under(file, root):
+                report.skipped_outside += 1
+                continue
             relative = _relative(file, root)
+            if relative is None:
+                report.skipped_outside += 1
+                continue
             progress.update(f"Reading file {number} of {len(files)}: {relative}", number - 1, len(files))
             try:
                 infos = inspect_image(file)
@@ -331,10 +348,15 @@ def _find_images(root: Path, report: ImportReport, file_types: tuple[str, ...] =
     """Every image of the chosen types under root, skipping CellQuant's own folders."""
 
     wanted = {suffix for kind in file_types for suffix in FILE_TYPES[kind]}
+    root_resolved = root.resolve()
 
     found: list[Path] = []
     folders: dict[str, int] = {}
     for folder, subfolders, names in _walk(root):
+        if not _is_under(folder, root_resolved):
+            subfolders[:] = []
+            report.skipped_outside += 1
+            continue
         if (folder / "experiment.json").is_file():
             skipped = [name for name in subfolders if name in _EXPERIMENT_FOLDERS]
             if skipped:
@@ -342,11 +364,16 @@ def _find_images(root: Path, report: ImportReport, file_types: tuple[str, ...] =
             subfolders[:] = [name for name in subfolders if name not in _EXPERIMENT_FOLDERS]
         subfolders.sort()
         every = sorted(folder / name for name in names if Path(name).suffix.lower() in IMAGE_SUFFIXES)
-        images = [path for path in every if path.suffix.lower() in wanted]
+        images = []
         for path in every:
+            if not _is_under(path, root_resolved):
+                report.skipped_outside += 1
+                continue
             if path.suffix.lower() not in wanted:
                 kind = "ND2" if path.suffix.lower() == ".nd2" else "TIFF"
                 report.skipped_types[kind] = report.skipped_types.get(kind, 0) + 1
+                continue
+            images.append(path)
         relative_folder = _relative(folder, root) or "."
         # A folder holding only files of an unchosen type is not reported as empty.
         folders[relative_folder] = len(every)
@@ -376,11 +403,23 @@ def _walk(root: Path):
         yield Path(folder), subfolders, names
 
 
-def _relative(path: Path, root: Path) -> str:
+def _is_under(path: Path, root: Path) -> bool:
+    """True when path resolves inside root (rejects sibling folders reached via junctions)."""
+
     try:
-        return path.relative_to(root).as_posix()
-    except ValueError:
-        return path.name
+        path.resolve().relative_to(Path(root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _relative(path: Path, root: Path) -> str | None:
+    """Path relative to root using resolved paths, or None when outside root."""
+
+    try:
+        return path.resolve().relative_to(Path(root).resolve()).as_posix()
+    except (ValueError, OSError):
+        return None
 
 
 def _resolved(path: Path) -> str:
@@ -463,8 +502,9 @@ def channel_warnings(experiment: Experiment) -> list[str]:
         label = record.relative_path or record.filename
         if record.number_of_channels is not None and record.number_of_channels != expected:
             messages.append(
-                f"{label}: This image has {record.number_of_channels} channels, "
-                f"but the experiment expects {expected}."
+                f"{label}: This image has {record.number_of_channels} channels, but the experiment's channel list has "
+                f"{expected}. Channels are matched by the names stored in the file; check this image (⚠ in the Plan), "
+                "or set its channel in the Plan."
             )
     named = [record for record in experiment.images if record.channel_names]
     if named:
@@ -473,7 +513,8 @@ def channel_warnings(experiment: Experiment) -> list[str]:
         if different:
             messages.append(
                 f"{len(different)} image{'s have' if len(different) != 1 else ' has'} different channel names in the file "
-                f"from {named[0].relative_path or named[0].filename} ({', '.join(first)}). Check that the channel order is the same."
+                f"from {named[0].relative_path or named[0].filename} ({', '.join(first)}). Channels are matched by name, so "
+                "another order is fine; an image without a channel of that name is marked ⚠ in the Plan."
             )
     return messages
 
