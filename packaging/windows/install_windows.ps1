@@ -276,9 +276,9 @@ function Install-CellQuantEngine {
         Write-Host "  $ModelWarning" -ForegroundColor Yellow
     }
 
-    # 6. A small test analysis.
-    Write-CellQuantStep '  Running a test analysis...'
-    $Smoke = Get-EnvPythonOutput -Prefix $Prefix -PythonArgs @((Join-Path $ScriptDir 'smoke_test.py'), $Engine)
+    # 6. A small test analysis, then the fastest CPU thread count for Cellpose on this computer.
+    Write-CellQuantStep '  Running a test analysis and measuring CPU speed...'
+    $Smoke = Get-EnvPythonOutput -Prefix $Prefix -PythonArgs @((Join-Path $ScriptDir 'smoke_test.py'), $Engine, '--benchmark-threads')
     $SmokeLine = @($Smoke.lines | Where-Object { $_ -like 'CELLQUANT_SMOKE *' }) | Select-Object -Last 1
     $Report = $null
     if ($SmokeLine) {
@@ -289,6 +289,11 @@ function Install-CellQuantEngine {
         throw "The test analysis failed in $Prefix`n$Detail"
     }
     Write-Host "  Test passed: $($Report.test_analysis). napari $($Report.napari), Qt $($Report.qt), default model $($Report.default_model)."
+    if ($Report.cpu_threads -and $Report.cpu_threads.threads -and -not $Report.cpu_threads.error) {
+        Write-Host "  Cellpose will use $($Report.cpu_threads.threads) CPU threads (fastest here)."
+    } elseif ($Report.cpu_threads -and $Report.cpu_threads.error) {
+        Write-Host "  CPU speed not measured; Cellpose uses PyTorch's default threads. $($Report.cpu_threads.error)" -ForegroundColor Yellow
+    }
 
     return [ordered]@{
         prefix = $Prefix
