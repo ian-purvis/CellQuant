@@ -6,7 +6,9 @@
 - **Clicking an object selects it** for **Delete object** / **Restore object**. Nothing is deleted until an object has been clicked (before, Delete object could remove object 1).
 - **Problems appear in a red box** above the steps: failed runs (with each failed image and its reason), images that cannot be shown or opened, and settings that cannot be loaded. A run that stops on an unexpected error no longer leaves the window locked; the details go to `cellquant_developer.log`.
 - **Plain words throughout**: menus such as "Cellpose (AI model)" and "Automatic (Otsu)"; *cutoff* rather than threshold; *settings* rather than recipe; the Measurements and Markers tables show channel names and plain statistics; result rows are chosen from menus (**Count** … **among** …). Runs are summarized the same way everywhere ("7 finished, 1 needs a look, 1 failed"), and step 1's Status column tells failed images from ones that need a look.
-- **Channel layers** of an image with another channel layout are named after the channels they hold, matched by the names in the file.
+- **Channel layers** are labeled from each image's own file (*Channel 1 = Far Red*), and step 1 shows that image's channel order; contrast is remembered per channel, matched by name.
+- **Step 1**: Browse picks the highlighted folder on Windows and confirms it; edits save automatically (no Save button); Add images/Add folder, Include shown and metadata columns are under **Advanced**.
+- **Step 2**: **Typical nucleus diameter (µm)** (default 6) sets Cellpose's size and a 5 µm² debris floor; Z-stack mode stays usable after a run.
 - **Set sizes (µm)** can set the pixel size for this image and every image without one (the default), this image only, or every included image.
 - **Use GPU** is ticked automatically when a usable NVIDIA GPU is found and the settings do not say otherwise. The GPU banner names a GPU that PyTorch cannot use and says how to fix it.
 - **Navigation**: Previous / Next stop at the first and last image, the bottom bar says when they go through only failed images or images that need a look, and an experiment with no included images says so.

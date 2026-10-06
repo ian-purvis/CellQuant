@@ -63,26 +63,34 @@ STEPS = (
         "Add your images",
         "Click <b>New experiment</b> and choose two folders: the <b>image folder</b> (only read, never changed) "
         "and the <b>results folder</b> (where CellQuant saves its work; by default a new folder beside your images). "
+        "That results folder is reloadable with <b>Open</b> — changes are saved automatically (no separate Save).<br>"
         "Every ND2 and TIFF in the image folder and its subfolders is listed. "
-        "<b>Add folder</b> or <b>Add images</b> adds more later.<br>"
+        "<b>Advanced</b> holds <b>Add folder</b>, <b>Add images</b>, and bulk include tools.<br>"
         "Check the list: each image is shown with its folder path, slices, channels, pixel size and "
-        "objective. Untick <i>Include</i> for any you do not want, or filter the list and use "
-        "<b>Include shown</b> / <b>Leave out shown</b>.<br>"
-        "Name each channel after its stain, for example <i>DAPI</i> or <i>OTX2</i>.",
-        "Every image you expect is listed once, with the right folder, and every channel has a real name. "
+        "objective. Sample name and Folder columns identify the experimental condition.<br>"
+        "When an image is open, the blue box shows its channel order, for example "
+        "<i>Channel 1 = Green · Channel 2 = Red</i>. Channel names come from the file; "
+        "do not rename them to label conditions.<br>"
+        "Untick <i>Include</i> for any you do not want, or open <b>Advanced</b> and use "
+        "<b>Include shown</b> / <b>Leave out shown</b>.",
+        "Every image you expect is listed once, with the right folder, and channel order is clear. "
         "Read the yellow notes above the list.",
     ),
     Step(
         2,
         "2 Find objects",
         "Find the nuclei (or cells)",
-        "Set <b>Source channel</b> to your nuclear stain, for example DAPI.<br>"
+        "Set <b>Source channel</b> to the nuclear channel (for example Channel 1 = Far Red).<br>"
         "<b>Method</b>: <i>Classical (fast, no GPU)</i>, or <i>Cellpose (AI model)</i>, which handles crowded "
-        "or uneven nuclei better.<br>"
+        "or uneven nuclei better (pick the Cellpose engine when that method is selected).<br>"
+        "If the images are Z-stacks, choose <b>Z-stack mode</b>: "
+        "<i>2D: one slice</i>, <i>2D: max projection</i>, <i>2D + stitching</i>, or <i>True 3D</i>. "
+        "The blue box recommends one for this computer; every option stays available.<br>"
+        "<b>Typical nucleus diameter</b> defaults to 6 µm (most nuclei are about 5–7 µm). Adjust it; "
+        "minimum object size in µm² drops debris.<br>"
         "The box at the top says whether an NVIDIA GPU was found and whether Cellpose will use it.<br>"
-        "<b>Z-stack mode</b> (under Method): choose 2D (a projection or one slice) or 3D (link slices, or the whole volume). "
-        "The blue box recommends one for this computer, with estimated times; every option stays available.<br>"
-        "Click <b>Preview</b> to try the settings on the area you are looking at, then <b>Run this image</b>.",
+        "Click <b>Preview</b> to try the settings on the area you are looking at, then "
+        "<b>Run this image</b> at the bottom.",
         "Outlines sit on the nuclei, with few missed, merged, or split. If not, change the settings "
         "and run again. Zoom in to check. In 3D, move the slice slider under the image to check every slice.",
     ),
@@ -124,17 +132,18 @@ STEPS = (
 # Hover help, in the spirit of CellQuant v1's help_text.py. Keys are
 # (panel attribute on the window, widget attribute on the panel).
 HELP = {
-    ("_objects_panel", "channel"): "The channel whose signal marks every object, usually the nuclear stain (DAPI or Hoechst).",
+    ("_objects_panel", "channel"): "The channel whose signal marks every object, usually the nuclear stain. Labels show Channel N = the name from the file.",
     ("_objects_panel", "method"): "Classical: threshold and split touching objects. Fast, no GPU.\nCellpose (AI model): a trained model. Better for crowded or uneven nuclei; faster with an NVIDIA GPU.",
     ("_objects_panel", "threshold_method"): "Automatic (Otsu) picks the brightness threshold automatically. Manual threshold uses the value below.",
     ("_objects_panel", "threshold"): "Brightness above which a pixel counts as part of an object (Manual threshold only), in the image's own units.",
     ("_objects_panel", "sigma"): "Smoothing before finding objects, in pixels. 1-2 helps with noisy images. 0 turns it off.",
-    ("_objects_panel", "min_area"): "Objects smaller than this are dropped (debris). 'none' keeps everything.",
+    ("_objects_panel", "min_area"): "Objects smaller than this are dropped (debris). Defaults to 5 µm² when pixel size is known. 'none' keeps everything.",
     ("_objects_panel", "max_area"): "Objects larger than this are dropped (clumps). 'none' keeps everything.",
-    ("_objects_panel", "area_unit"): "pixels, or µm² (square micrometers; needs the pixel size). Set this before the sizes above.",
+    ("_objects_panel", "area_unit"): "pixels, or µm² (square micrometers; needs the pixel size).",
+    ("_objects_panel", "nucleus_diameter_um"): "Typical nucleus diameter in micrometers. Most nuclei are about 5–7 µm. Used as Cellpose's size hint when pixel size is known.",
     ("_objects_panel", "watershed"): "Split touching objects. Try this if two nuclei come out as one.",
     ("_objects_panel", "cellpose_model"): "The Cellpose model. The first one listed is the usual choice.",
-    ("_objects_panel", "diameter"): "Typical object diameter in pixels. 'automatic' lets Cellpose decide.",
+    ("_objects_panel", "diameter"): "Optional Cellpose diameter in pixels. 0 uses Typical nucleus diameter (µm) when pixel size is known, otherwise lets Cellpose decide.",
     ("_objects_panel", "flow"): "Cellpose shape check. Lower keeps fewer, cleaner objects.",
     ("_objects_panel", "cellprob"): "Cellpose confidence. Lower finds more (and fainter) objects.",
     ("_objects_panel", "gpu"): "Use the NVIDIA GPU. Ticked for you when a usable GPU is found; greyed out when none was.",
@@ -147,12 +156,13 @@ HELP = {
     ("_experiment_panel", "filter_box"): "Show only images whose file or sample name contains this text.",
     ("_experiment_panel", "table"): "Image: where the file is inside the folder you added (hover for the full path). Untick Include to leave an image out without deleting it. Sample names and Folder columns can be edited or pasted from Excel; results can be grouped by them.",
     ("_objects_panel", "z_stack"): (
-        "2D: max projection keeps the brightest value through all slices (nuclei at different depths can merge); "
-        "one slice misses nuclei outside it.\n3D: link slices segments each slice and joins outlines that overlap "
-        "in neighboring slices; whole volume segments the stack at once (slow; needs closely spaced slices).\n"
+        "2D: one slice — only that plane.\n"
+        "2D: max projection — brightest value through all slices (nuclei at different depths can merge).\n"
+        "2D + stitching — segment each slice, then join overlapping outlines into 3D objects.\n"
+        "True 3D — segment the whole volume at once (slow; needs closely spaced slices).\n"
         "Times are estimates for this computer; ★ marks the recommendation."
     ),
-    ("_experiment_panel", "show_type"): "Show only ND2 or only TIFF files in the list. Then Include shown or Leave out shown acts on just those.",
+    ("_experiment_panel", "show_type"): "Show only ND2 or only TIFF files in the list. Under Advanced, Include shown or Leave out shown acts on just those.",
     ("_experiment_panel", "use_nd2"): "Add folder takes ND2 files from the folder and its subfolders.",
     ("_experiment_panel", "use_tiff"): "Add folder takes TIFF files from the folder and its subfolders.",
     ("_experiment_panel", "pixel_z"): "Distance between slices of a Z-stack, in micrometers. Read from ND2 files; needed for 3D volumes.",
@@ -194,12 +204,8 @@ def step_states(window) -> list[StepState]:
         first = StepState(False, "", "Click New experiment, Open experiment, or Try practice images first.")
         return [first] + [StepState(False, "", "Finish step 1 first.") for _ in STEPS[1:]]
     images = [record for record in controller.experiment.images if record.include]
-    channels = controller.experiment.channels
-    unnamed = [channel for channel in channels if re.fullmatch(r"Channel \d+", channel.channel_name)]
     hint = ""
-    if unnamed:
-        hint = "Tip: give the channels real names (for example DAPI). They are used in every result."
-    elif images and not all(record.pixel_size_x for record in images):
+    if images and not all(record.pixel_size_x for record in images):
         hint = "Tip: some images have no pixel size, so sizes will be in pixels."
     states = [
         StepState(
