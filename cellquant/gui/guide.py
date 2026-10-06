@@ -98,19 +98,31 @@ STEPS = (
     ),
     Step(
         3,
-        "3 Markers",
+        "3 Edit objects",
+        "Fix the objects",
+        "Click an object in the image, then <b>Delete object</b> (debris, a bad outline) or <b>Restore object</b>. "
+        "To redraw outlines, select the <i>Objects</i> layer, paint or erase with napari's tools, then click "
+        "<b>Record drawn edits</b>. <b>Undo</b> takes back the last edit. "
+        "The objects found in step 2 are kept; edits are saved as a list applied on top. "
+        "Running step 2 again with new settings gives new objects, and these edits no longer apply to them.",
+        "Each object is one nucleus: no debris, merges, or splits left. Skip this step if step 2 looked right.",
+        "Click an object, then <b>Delete object</b>, or paint and <b>Record drawn edits</b>.",
+    ),
+    Step(
+        4,
+        "4 Markers",
         "Choose the markers to count",
         "Tick the channels you want to count, then click <b>Set up markers</b>. CellQuant measures "
         "each marker's brightness inside every object and calls the object positive or negative. "
         "Choose how: by the object's <b>mean brightness</b>, or by the <b>percent of the cell</b> whose "
         "pixels are at or above a pixel level (set the minimum percent here). "
         "It picks a starting cutoff (or pixel level); you check it in the next step.",
-        "Every marker you want is listed, and step 4 opens with objects colored.",
+        "Every marker you want is listed, and step 5 opens with objects colored.",
         "Tick marker channels, then <b>Set up markers</b>.",
     ),
     Step(
-        4,
-        "4 Check",
+        5,
+        "5 Check",
         "Check the positive calls",
         "Objects glow <span style='color:#26bf59'><b>green</b></span> when positive and "
         "<span style='color:#d43fd4'><b>magenta</b></span> when negative (change the colors under the slider). "
@@ -122,8 +134,8 @@ STEPS = (
         "Drag <b>Cutoff</b> until green = positive, then <b>Approve</b>.",
     ),
     Step(
-        5,
-        "5 Results",
+        6,
+        "6 Results",
         "Run everything and save the results",
         "Click <b>Run all images</b> in the Run window at the bottom to apply the same settings to every image. "
         "Then click <b>Export results</b> and choose a folder. With several analyses in the list at the top, "
@@ -197,7 +209,7 @@ class StepState:
 
 
 def step_states(window) -> list[StepState]:
-    """Progress through the five steps, from state already in memory. No file access."""
+    """Progress through the six steps, from state already in memory. No file access."""
 
     controller = window.controller
     if controller is None:
@@ -227,6 +239,15 @@ def step_states(window) -> list[StepState]:
         )
     )
     markers = controller.recipe.classifications
+    # Editing is optional: done once objects were edited or the user has moved on to markers.
+    edited = any(controller.edits.get(record.image_id) for record in images)
+    states.append(
+        StepState(
+            found and (edited or bool(markers)),
+            "edited" if edited else "",
+            "" if found else "Finish step 2 first.",
+        )
+    )
     names = ", ".join(item.name for item in markers)
     states.append(StepState(bool(markers), names, "" if markers else "Set up at least one marker."))
     classified = any(all(item.id in result.objects.columns for item in markers) for result in results) if markers else False
@@ -235,7 +256,7 @@ def step_states(window) -> list[StepState]:
         StepState(
             bool(reviewed),
             f"{len(reviewed)} checked" if reviewed else ("cutoffs set" if classified else ""),
-            "" if classified else "Finish step 3 first.",
+            "" if classified else "Finish step 4 first.",
             "" if reviewed else "Approve images that look right.",
         )
     )
@@ -406,7 +427,7 @@ class StartPage(QWidget):
 
 
 class MarkerSetup(QGroupBox):
-    """Step 3: one measurement, one positive/negative call and one result per marker channel."""
+    """Step 4: one measurement, one positive/negative call and one result per marker channel."""
 
     def __init__(self, window):
         super().__init__("Quick setup")
@@ -426,7 +447,7 @@ class MarkerSetup(QGroupBox):
             "Mean brightness: one number per cell, compared with a cutoff.\n"
             "Percent of the cell: each pixel is compared with a pixel level; the cell is positive when at least\n"
             "the minimum percent of its pixels are at or above that level. Useful when staining is patchy or\n"
-            "only part of a nucleus is labeled. Both numbers can be changed later in step 4."
+            "only part of a nucleus is labeled. Both numbers can be changed later in step 5."
         )
         self.min_percent = QDoubleSpinBox()
         self.min_percent.setRange(0.0, 100.0)
@@ -511,7 +532,7 @@ class MarkerSetup(QGroupBox):
 
 
 class ResultsSummary(QGroupBox):
-    """Step 5: the numbers for the image on screen, in words, and the two main actions."""
+    """Step 6: the numbers for the image on screen, in words, and the two main actions."""
 
     def __init__(self, window):
         super().__init__("Results")
@@ -548,7 +569,7 @@ class ResultsSummary(QGroupBox):
     def show_result(self, result, recipe) -> None:
         if result is None or result.reports is None or result.reports.empty:
             self.summary.setText("No results yet for this image.")
-            self.summary.setToolTip("Set up markers (step 3) and run it.")
+            self.summary.setToolTip("Set up markers (step 4) and run it.")
             return
         names = {item.id: item.name for item in recipe.classifications}
         lines = [f"<b>{result.provenance.get('filename', '')}</b>: {result.qc.n_objects} objects"]
@@ -571,7 +592,7 @@ class ResultsSummary(QGroupBox):
         self.batch.setText(text)
         tips = []
         if report.warnings:
-            tips.append("Check the ones that need a look in step 4.")
+            tips.append("Check the ones that need a look in step 5.")
         if report.failed:
             tips.append("Why each one failed is in the red box at the top and in step 1's Status column.")
         self.batch.setToolTip(" ".join(tips))
@@ -589,7 +610,7 @@ class ResultsSummary(QGroupBox):
                 text += " (stopped)"
             lines.append(text)
         self.batch.setText("<br>".join(lines))
-        self.batch.setToolTip("Choose an analysis at the top to check its images in step 4.")
+        self.batch.setToolTip("Choose an analysis at the top to check its images in step 5.")
 
     def show_exported(self, path) -> None:
         self.batch.setText(self.batch.text() + f"<br>Saved to <b>{path}</b>.")

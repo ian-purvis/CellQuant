@@ -403,7 +403,7 @@ def test_plain_menus_hidden_fields_errors_and_run_bar(window):
     # The run button the step expects stands out; Page Down moves to the next image.
     shell.go_to_step(0)
     assert shell._footer._run_buttons["current"].styleSheet() and not shell._footer._run_buttons["all"].styleSheet()
-    shell.go_to_step(4)
+    shell.go_to_step(5)
     assert shell._footer._run_buttons["all"].styleSheet() and not shell._footer._run_buttons["current"].styleSheet()
     # Time left shows beside the progress bar while a run goes, with how it is worked out in the tooltip.
     footer = shell._footer
@@ -508,7 +508,7 @@ def test_review_fixes_selection_errors_navigation_and_sizes(window, monkeypatch)
     controller = shell.controller
     shell.run_current()
     _wait(shell)
-    panel = shell._review_panel
+    panel = shell._edit_panel
     image_id = shell._nav_ids[shell._nav_index]
     before = controller.recall(image_id)
     kept = int((~before.objects["excluded"].astype(bool)).sum())
