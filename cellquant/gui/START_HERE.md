@@ -78,7 +78,7 @@ Channels are shown in the colors saved in the file by the microscope software (f
 1. Set **Source channel** to the nuclear channel (shown as *Channel N = …* from the file). Without a nuclear stain, use the channel that marks the cells you want to count.
 2. Choose a **Method**:
    - **Classical (fast, no GPU)**: good for well separated, evenly bright nuclei. **Threshold** is *Automatic (Otsu)* or *Manual threshold* (a pixel brightness; the marker *cutoff* is set later, in step 5).
-   - **Cellpose (AI model)**: a trained model. Better for crowded or uneven nuclei. The Cellpose engine menu shows which engine is running; the box at the top says whether an NVIDIA GPU was found, and **Use GPU** beside it is ticked for you when one can be used.
+   - **Cellpose (AI model)**: a trained model. Better for crowded or uneven nuclei. The Cellpose engine menu shows which engine is running; the box at the top says whether an NVIDIA GPU was found; Cellpose uses it automatically when it can.
 3. If your images are Z-stacks, choose how to handle them under **Z-stack mode**:
    - **2D: one slice**: only that plane; misses nuclei outside it.
    - **2D: max projection**: the brightest value through all slices. Fast, but nuclei at different depths can merge into one.
