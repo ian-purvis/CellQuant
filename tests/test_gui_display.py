@@ -324,10 +324,7 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
     assert "NVIDIA GPU found" in panel.gpu_label.text() and "Test GPU" in panel.gpu_label.text()
     assert "NVIDIA GPU found: Test GPU" in shell._footer.log.toPlainText()
-    panel.gpu.setChecked(False)
-    assert "'Use GPU' is off" in panel.gpu_label.text() and panel.gpu.isVisibleTo(panel.gpu_banner)
-    panel.gpu.click()
-    assert panel.gpu.isChecked() and "will run on the GPU" in panel.gpu_label.text()
+    assert "will run on the GPU" in panel.gpu_label.text() and panel.use_gpu()
     panel.show_gpu_status({"available": False, "reason": "test"})
     assert "No usable GPU found" in panel.gpu_label.text()
     # Source channel, then Method, then engine, then Z-stack mode.
@@ -353,29 +350,20 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     assert panel.method.isEnabled() and shell._measurements_panel.statistic.isEnabled()
 
 
-def test_cellpose4_defaults_to_a_usable_gpu_unless_set(window):
+def test_cellpose_uses_a_usable_gpu_whatever_was_saved(window):
     from cellquant.engines import CellposeEngine
 
     shell = window
     _wait(shell)
     panel = shell._objects_panel
     panel.engine = CellposeEngine(True, "4.2.0", "cellpose4", ("cpsam",), "cpsam")
-    panel._gpu_status = {}
     panel.method.setCurrentIndex(panel.method.findData("cellpose"))
-    panel.gpu.setChecked(False)
-    # Saved before PyTorch was checked: no GPU choice is stored yet.
-    panel.write_recipe()
-    assert "gpu" not in shell.controller.recipe.object_set.parameters
-    panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
-    assert panel.gpu.isChecked()
-    panel.write_recipe()
-    assert shell.controller.recipe.object_set.parameters["gpu"] is True
-    # The user's own choice wins over the default.
-    panel.gpu.click()
+    panel.show_gpu_status({"available": False, "reason": "test"})
     panel.write_recipe()
     assert shell.controller.recipe.object_set.parameters["gpu"] is False
     panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
-    assert not panel.gpu.isChecked()
+    panel.write_recipe()
+    assert shell.controller.recipe.object_set.parameters["gpu"] is True
     panel.show_gpu_status({"available": False, "reason": "test"})
 
 
