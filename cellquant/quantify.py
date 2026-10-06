@@ -289,6 +289,21 @@ def summarize_image(
     return pd.DataFrame(report_rows), exclusive, combination, warnings
 
 
+def expression_classifications(expression: str, classifications: list[ClassificationSpec]) -> set[str]:
+    """Ids of the classifications one report expression uses (none for all_objects)."""
+
+    needed: set[str] = set()
+    text = expression.strip()
+    if not text or text.casefold() in {"all_objects", "all_measured_objects"}:
+        return needed
+    for token in _AND.split(text):
+        try:
+            needed.add(_token_column(token.strip(), classifications)[1])
+        except RecipeValidationError:
+            continue
+    return needed
+
+
 def image_summary_row(
     *,
     sample_name: str,
