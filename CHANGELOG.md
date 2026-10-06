@@ -10,6 +10,7 @@
 - **Channel layers** are labeled from each image's own file (*Channel 1 = Far Red*), and step 1 shows that image's channel order; contrast is remembered per channel, matched by name.
 - **Step 1**: Browse picks the highlighted folder on Windows and confirms it; edits save automatically (no Save button); Add images/Add folder, Include shown and metadata columns are under **Advanced**.
 - **Step 2**: **Typical nucleus diameter (µm)** (default 6) sets Cellpose's size and a 5 µm² debris floor; Z-stack mode stays usable after a run.
+- **Nucleus diameter (µm) per image**: each image converts it with its own µm/pixel when it runs (before, the first image's pixel size was used for all), so 20x and 40x images get the same physical size; the pixel diameter used is in provenance (`diameter_px_used`). A diameter in pixels (Advanced) is still the same in every image.
 - **Set sizes (µm)** can set the pixel size for this image and every image without one (the default), this image only, or every included image.
 - **Use GPU** is ticked automatically when a usable NVIDIA GPU is found and the settings do not say otherwise. The GPU banner names a GPU that PyTorch cannot use and says how to fix it.
 - **Navigation**: Previous / Next stop at the first and last image, the bottom bar says when they go through only failed images or images that need a look, and an experiment with no included images says so.
