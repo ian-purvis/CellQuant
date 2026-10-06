@@ -59,17 +59,15 @@ The bar at the bottom of the window is shared by all steps. It shows which image
    - **Look for**: tick **ND2 files**, **TIFF files**, or both. Only the ticked types are taken from the folder; the yellow note says how many of the other type were left alone.
    - **Results folder**: where CellQuant saves its settings, results and exports (`experiment.json`, `recipes/`, `runs/`, `exports/`). It starts as a new folder beside your images, for example *E14.5_E17.5 - CellQuant results*. Click **Browse…** to choose somewhere else. If you choose the image folder itself (or a folder inside it), CellQuant asks you to confirm.
    Use **Open** later to reload that results folder. There is no separate **Save** — include flags, sample names, metadata and pixel sizes are written automatically. Delete the results folder yourself if you no longer want it.
-2. CellQuant finds every file of the chosen types in the image folder and in all its subfolders. Under **Advanced**: **Add folder** and **Add images** add more later; the **Add folder looks for** boxes choose ND2, TIFF or both.
+2. CellQuant finds every file of the chosen types in the image folder and in all its subfolders. **Add folder…** and **Add images…** (beside New experiment) add more to the same experiment later, taking the file types chosen in New experiment.
 3. **Check the list before going on.** Each image is shown by its path inside the folder you chose, for example *mCherry cont/Retina 2/image.nd2*, so files with the same name in different folders are told apart. Hover over a path to see the full location. The list also shows each image's number of **Slices**, its **Channels**, **µm/pixel** and **Objective**. Subfolder names are copied into **Folder 1**, **Folder 2**, … columns, which identify the experimental condition and can group results.
 4. Read the yellow notes above the list. They say which folder was searched, how many images were found, which folders had none, and anything to watch for, such as images taken at different magnifications or Z-stacks.
 5. Open an image and check the blue **channel order** box, for example *Channel 1 = Green · Channel 2 = Red · Channel 3 = Far Red*. Names come from the file. Napari layers use the same labels. Do not rename channels to label experimental conditions — use Sample name and Folder columns for that.
 6. If **µm/pixel** says *not set*, enter the pixel size (from the microscope software's image properties) and click **Set sizes (µm)**. The menu below it chooses which images change: this image and every image without a size (the default), this image only, or every included image. Without a pixel size, sizes are in pixels. For Z-stacks, **Z step** is the distance between slices; ND2 files include it (the **Slices** column shows, for example, *7 × 1.5 µm*). 3D volumes need it.
-7. Choose which images to analyze. Everything listed is included at first. Untick **Include** to leave one image out, or open **Advanced** to work on several at once:
-   - Narrow the list with **Show ND2 only** / **Show TIFF only** and the filter box (for example *Retina 2* or *Control*), then click **Include shown** or **Leave out shown**.
-   - Or select rows (click, Ctrl-click, Shift-click) and click **Include only selected**.
+7. Choose which images to analyze. Everything listed is included at first. Untick **Include** to leave an image out. **Show ND2 only** / **Show TIFF only** and the filter box (for example *Retina 2* or *Control*) narrow the list.
 
    The line above the list says how many images are included. Left-out images are never deleted, are skipped by **Next image ▶**, and are not analyzed by **Run all images**. Tick them again at any time.
-8. Optional: edit **Sample name**, or under **Advanced** add columns such as *Genotype* or *Age* (you can paste from Excel).
+8. Optional: edit **Sample name**, or paste columns such as *Genotype* or *Age* from Excel to the right of the table.
 
 **Success check:** every image you expect is listed once, in the right folder; the ones you want are included; and the open image shows a clear Channel 1 = … order.
 
