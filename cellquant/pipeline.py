@@ -180,10 +180,39 @@ def segment_channel(
 _NOT_GIVEN = object()
 
 
+def cellpose_diameter_px(parameters: dict, pixel_size_x: float | None, pixel_size_y: float | None) -> float | None:
+    """The Cellpose diameter in pixels for one image: ``diameter_um`` divided by that image's own
+    µm per pixel, else ``diameter_px`` (the same in every image), else None (Cellpose decides)."""
+
+    micrometres = parameters.get("diameter_um")
+    pixel_size = isotropic_pixel_size(pixel_size_x, pixel_size_y)
+    if micrometres not in (None, 0) and pixel_size:
+        return float(micrometres) / float(pixel_size)
+    if micrometres not in (None, 0):
+        return None  # no pixel size: Cellpose decides
+    pixels = parameters.get("diameter_px", parameters.get("diameter"))
+    return None if pixels in (None, 0) else float(pixels)
+
+
+def _segmentation_parameters(loaded: LoadedImage, recipe: Recipe, details: dict) -> dict:
+    """The object-finding settings for this image, with a µm diameter converted with its own pixel size."""
+
+    parameters = dict(recipe.object_set.parameters or {})
+    if recipe.object_set.algorithm != "cellpose":
+        return parameters
+    diameter = cellpose_diameter_px(parameters, loaded.pixel_size_x, loaded.pixel_size_y)
+    parameters.pop("diameter", None)
+    parameters["diameter_px"] = diameter
+    if diameter is not None:
+        details["diameter_px_used"] = diameter
+    return parameters
+
+
 def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
     from cellquant.crop import regions_for
 
     channel = loaded.data[recipe.object_set.segmentation_channel]
+    parameters = _segmentation_parameters(loaded, recipe, details)
     # Crop rectangles: given by the caller (None: the full image), or found here when cropping is on.
     rectangles = details.pop("crop_rectangles_given", _NOT_GIVEN)
     crop_info = details.pop("crop_info_given", None)
@@ -204,7 +233,7 @@ def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
         return segment_regions(
             channel,
             recipe.object_set.algorithm,
-            recipe.object_set.parameters,
+            parameters,
             rectangles,
             pixel_size_x=loaded.pixel_size_x,
             pixel_size_y=loaded.pixel_size_y,
@@ -214,7 +243,7 @@ def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
         return segment_volume(
             channel,
             recipe.object_set.algorithm,
-            recipe.object_set.parameters,
+            parameters,
             loaded.z_mode,
             stitch_threshold=recipe.z_stitch_threshold,
             scale=recipe.z_scale_brightness,
@@ -227,7 +256,7 @@ def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
     return segment_objects(
         channel,
         recipe.object_set.algorithm,
-        recipe.object_set.parameters,
+        parameters,
         pixel_size_x=loaded.pixel_size_x,
         pixel_size_y=loaded.pixel_size_y,
         details=details,
@@ -357,6 +386,7 @@ def assemble_result(
         "z_scale_brightness": parsed.z_scale_brightness if loaded.is_3d else None,
         "z_min_slices": parsed.z_min_slices if loaded.is_3d else None,
         "anisotropy": details.get("anisotropy"),
+        "diameter_px_used": details.get("diameter_px_used") if details.get("diameter_px_used") is not None else engine.get("estimated_diameter_px"),
         "crop_rectangles": details.get("crop_rectangles"),
         "crop": details.get("crop_info"),
         "segmentation_timings": details.get("timings"),
@@ -409,6 +439,8 @@ def segmentation_details_of(result: ImageResult) -> dict:
         details["engine"] = result.provenance["segmentation_engine"]
     if result.provenance.get("anisotropy") is not None:
         details["anisotropy"] = result.provenance["anisotropy"]
+    if result.provenance.get("diameter_px_used") is not None:
+        details["diameter_px_used"] = result.provenance["diameter_px_used"]
     if result.provenance.get("crop_rectangles") is not None:
         details["crop_rectangles"] = result.provenance["crop_rectangles"]
         if "at_crop_edge" in result.objects.columns:

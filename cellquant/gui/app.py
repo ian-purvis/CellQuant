@@ -2230,7 +2230,7 @@ class ObjectsPanel(QWidget):
         self.diameter.setSpecialValueText("from µm")
         self.diameter.setToolTip(
             "Optional Cellpose diameter in pixels. Leave at 0 to convert Nucleus diameter (µm) "
-            "using the image pixel size, or to let Cellpose decide when pixel size is unknown."
+            "with each image's own pixel size, or to let Cellpose decide when pixel size is unknown."
         )
         self.flow = QDoubleSpinBox()
         self.flow.setValue(0.4)
@@ -2305,8 +2305,8 @@ class ObjectsPanel(QWidget):
             self.nucleus_diameter_um.setValue(float(parameters["diameter_px"]) * float(pixel))
         else:
             self.nucleus_diameter_um.setValue(DEFAULT_NUCLEUS_DIAMETER_UM)
-        # Advanced px override only when the recipe stored pixels without a matching µm value.
-        if parameters.get("diameter_px") and parameters.get("diameter_um") is None and not pixel:
+        # Advanced px override only when the recipe stored pixels without a µm value.
+        if parameters.get("diameter_px") and parameters.get("diameter_um") is None:
             self.diameter.setValue(float(parameters["diameter_px"]))
         else:
             self.diameter.setValue(0)
@@ -2645,12 +2645,10 @@ class ObjectsPanel(QWidget):
             }
             previous = data["object_set"].get("parameters") or {}
             local = self.engine.installed and self.engine.key is not None
-            diameter_um = self.nucleus_diameter_um.value()
+            # The µm diameter is converted with each image's own pixel size when it runs;
+            # a diameter in pixels (Advanced) is used as is in every image instead.
             diameter_px = self.diameter.value() or None
-            if diameter_px is None and diameter_um > 0:
-                pixel = self._pixel_size_um()
-                if pixel:
-                    diameter_px = diameter_um / pixel
+            diameter_um = None if diameter_px else self.nucleus_diameter_um.value()
             parameters = {
                 # The engine is saved so these settings are not run under the other Cellpose.
                 # Without Cellpose here (for example on a computer that only prepares cluster packages),
