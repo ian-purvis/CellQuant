@@ -1,10 +1,12 @@
 """Check a finished CellQuant environment.
 
-Usage: python smoke_test.py <cellpose4|cellpose3>
+Usage: python smoke_test.py <cellpose4|cellpose3> [--benchmark-threads]
 
 Imports the app, confirms the expected Cellpose engine, runs a small analysis
 with the classical method, and reports whether PyTorch can use the GPU. The
 last line is ``CELLQUANT_SMOKE <json>``. Exit code 0 means the environment works.
+With ``--benchmark-threads`` it also times Cellpose at a few CPU thread counts and
+keeps the fastest for this computer (``cellquant.hardware.benchmark_threads``).
 """
 
 from __future__ import annotations
@@ -14,7 +16,8 @@ import sys
 
 
 def main() -> int:
-    expected = sys.argv[1] if len(sys.argv) > 1 else ""
+    arguments = [item for item in sys.argv[1:] if not item.startswith("--")]
+    expected = arguments[0] if arguments else ""
     report: dict[str, object] = {"ok": False}
     try:
         import numpy as np
@@ -62,6 +65,13 @@ def main() -> int:
             return _finish(report, 1)
         report["test_analysis"] = "2 objects, 50% positive"
         report["gpu"] = gpu_status()
+        if "--benchmark-threads" in sys.argv[1:]:
+            from cellquant.hardware import benchmark_threads
+
+            try:
+                report["cpu_threads"] = benchmark_threads(engine.key)
+            except Exception as exc:  # noqa: BLE001 - speed only: the environment still works
+                report["cpu_threads"] = {"error": f"{type(exc).__name__}: {exc}"}
     except Exception as exc:  # noqa: BLE001 - reported to the installer
         report["error"] = f"{type(exc).__name__}: {exc}"
         return _finish(report, 1)
