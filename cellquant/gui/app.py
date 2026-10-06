@@ -7,6 +7,7 @@ as a batch run.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import sys
@@ -391,6 +392,18 @@ class NewExperimentDialog(QDialog):
         if not self.file_types():
             QMessageBox.warning(self, "File types", "Tick ND2 files, TIFF files, or both.")
             return
+        existing = existing_experiment_images(results)
+        if existing is not None:
+            QMessageBox.warning(
+                self,
+                "Results folder already used",
+                "This results folder already holds another experiment:\n\n"
+                f"{results}\n\n"
+                f"Its images come from:\n{existing or 'no image folder recorded'}\n\n"
+                "Choose a new or empty results folder for this experiment. "
+                "To continue the earlier one, use Open experiment instead.",
+            )
+            return
         images = self.images.text().strip()
         if images and not Path(images).is_dir():
             QMessageBox.warning(self, "Image folder", f"This image folder could not be found:\n{images}")
@@ -434,6 +447,22 @@ def results_inside_images(images: str | Path, results: str | Path) -> bool:
     except OSError:
         return False
     return result_root == image_root or image_root in result_root.parents
+
+
+def existing_experiment_images(results: str | Path) -> str | None:
+    """The image folder of an experiment already saved in results, or None when there is none.
+
+    Starting a new experiment there would reopen that one and list its images,
+    not the ones in the folder just chosen.
+    """
+
+    path = Path(results).expanduser() / "experiment.json"
+    if not path.is_file():
+        return None
+    try:
+        return str(json.loads(path.read_text(encoding="utf-8")).get("input_directory") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
 
 
 class CellQuantWindow:
