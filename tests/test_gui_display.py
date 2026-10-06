@@ -324,10 +324,7 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
     assert "NVIDIA GPU found" in panel.gpu_label.text() and "Test GPU" in panel.gpu_label.text()
     assert "NVIDIA GPU found: Test GPU" in shell._footer.log.toPlainText()
-    panel.gpu.setChecked(False)
-    assert "'Use GPU' is off" in panel.gpu_label.text() and panel.gpu.isVisibleTo(panel.gpu_banner)
-    panel.gpu.click()
-    assert panel.gpu.isChecked() and "will run on the GPU" in panel.gpu_label.text()
+    assert "will run on the GPU" in panel.gpu_label.text() and panel.use_gpu()
     panel.show_gpu_status({"available": False, "reason": "test"})
     assert "No usable GPU found" in panel.gpu_label.text()
     # Source channel, then Method, then engine, then Z-stack mode.
@@ -351,6 +348,23 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     QApplication.processEvents()
     assert not shell._run_lock_note.isVisibleTo(shell._dock)
     assert panel.method.isEnabled() and shell._measurements_panel.statistic.isEnabled()
+
+
+def test_cellpose_uses_a_usable_gpu_whatever_was_saved(window):
+    from cellquant.engines import CellposeEngine
+
+    shell = window
+    _wait(shell)
+    panel = shell._objects_panel
+    panel.engine = CellposeEngine(True, "4.2.0", "cellpose4", ("cpsam",), "cpsam")
+    panel.method.setCurrentIndex(panel.method.findData("cellpose"))
+    panel.show_gpu_status({"available": False, "reason": "test"})
+    panel.write_recipe()
+    assert shell.controller.recipe.object_set.parameters["gpu"] is False
+    panel.show_gpu_status({"available": True, "name": "Test GPU", "memory_gb": 24})
+    panel.write_recipe()
+    assert shell.controller.recipe.object_set.parameters["gpu"] is True
+    panel.show_gpu_status({"available": False, "reason": "test"})
 
 
 def test_plain_menus_hidden_fields_errors_and_run_bar(window):

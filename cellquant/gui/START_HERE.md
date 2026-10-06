@@ -78,7 +78,7 @@ Channels are shown in the colors saved in the file by the microscope software (f
 1. Set **Source channel** to the nuclear channel (shown as *Channel N = …* from the file). Without a nuclear stain, use the channel that marks the cells you want to count.
 2. Choose a **Method**:
    - **Classical (fast, no GPU)**: good for well separated, evenly bright nuclei. **Threshold** is *Automatic (Otsu)* or *Manual threshold* (a pixel brightness; the marker *cutoff* is set later, in step 4).
-   - **Cellpose (AI model)**: a trained model. Better for crowded or uneven nuclei. The Cellpose engine menu shows which engine is running; the box at the top says whether an NVIDIA GPU was found, and **Use GPU** beside it is ticked for you when one can be used.
+   - **Cellpose (AI model)**: a trained model. Better for crowded or uneven nuclei. The Cellpose engine menu shows which engine is running; the box at the top says whether an NVIDIA GPU was found; Cellpose uses it automatically when it can.
 3. If your images are Z-stacks, choose how to handle them under **Z-stack mode**:
    - **2D: one slice**: only that plane; misses nuclei outside it.
    - **2D: max projection**: the brightest value through all slices. Fast, but nuclei at different depths can merge into one.
@@ -200,7 +200,7 @@ Open CellQuant, click **Open experiment…**, and choose the results folder. You
 | "The GPU was requested but Cellpose ran on the CPU" | The NVIDIA driver may need updating. Run the installer again after updating it. |
 | 3D: one nucleus appears as two (split across slices) | Lower **Link overlap**, and keep **Brightness** on *Whole stack*. The results flag these as *one_slice*. |
 | 3D: two stacked nuclei counted as one | Raise **Link overlap**. The results flag these as *possibly_merged*. |
-| 3D option is very slow | The estimate beside each option shows why. Tick **Use GPU** (step 2, top) if there is an NVIDIA GPU, or use Classic Cellpose, or a max projection. |
+| 3D option is very slow | The estimate beside each option shows why. Check the GPU box (step 2, top): a usable NVIDIA GPU is used automatically. Or use Classic Cellpose, or a max projection. |
 | Percentages changed after rerunning | The cutoff or settings changed. `settings_index.csv` shows which settings each image used. |
 
 For how CellQuant works inside, see `CellQuant_v2_manifest_rev2.md` and `docs/STATUS.md`.
