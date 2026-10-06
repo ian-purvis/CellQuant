@@ -173,6 +173,7 @@ class CellposeBackend:
             ) from exc
         gpu = bool(parameters.get("gpu", False))
         _seed_everything(parameters.get("random_seed"))
+        _opt_out_of_sparse_checks()
         return _cached_model(models, details["engine"] == CELLPOSE_CLASSIC, details["model"], gpu)
 
     def _finish(self, model, details: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
@@ -411,6 +412,24 @@ def _seed_everything(seed: object) -> None:
 
         torch.manual_seed(value)
     except Exception:  # noqa: BLE001 - PyTorch is optional for classical runs
+        return
+
+
+def _opt_out_of_sparse_checks() -> None:
+    """Say explicitly that PyTorch should skip sparse tensor checks, as it already does by default.
+
+    Cellpose builds a sparse tensor when it finds masks; newer PyTorch warns
+    ("Sparse invariant checks are implicitly disabled") unless the choice is made.
+    A choice already made (for example checks turned on) is kept.
+    """
+
+    try:
+        import torch
+
+        checks = torch.sparse.check_sparse_tensor_invariants
+        if not checks.is_enabled():
+            checks.disable()
+    except Exception:  # noqa: BLE001 - older PyTorch without this switch never warns
         return
 
 
