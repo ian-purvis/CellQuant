@@ -22,7 +22,7 @@ If the install fails, it opens `install_last.log` in Notepad. See [When somethin
 
 ## What to click (the short version)
 
-The CellQuant panel has a **Start** tab and five numbered tabs. Work from left to right. Every tab has a one-line "what to do" at the top (hover it for details and how to tell it worked) and a **Next →** button. If Next is greyed out, the line beside it says why.
+The CellQuant panel has a **Start** tab and six numbered tabs. Work from left to right. Every tab has a one-line "what to do" at the top (hover it for details and how to tell it worked) and a **Next →** button. If Next is greyed out, the line beside it says why.
 
 1. **Start → Try practice images** (first time) or **New experiment…**
 2. **1 Images**: add images and name the channels.
@@ -48,7 +48,7 @@ The bar at the bottom of the window is shared by all steps. It shows which image
    | practice_2.tif | 20 (50%) | 10 (25%) | 5 |
    | practice_3.tif | 30 (75%) | 20 (50%) | 15 |
 
-**Success check:** after step 5, your numbers match the table.
+**Success check:** after step 6, your numbers match the table.
 
 ---
 
@@ -71,13 +71,13 @@ The bar at the bottom of the window is shared by all steps. It shows which image
 
 **Success check:** every image you expect is listed once, in the right folder; the ones you want are included; and the open image shows a clear Channel 1 = … order.
 
-Channels are shown in the colors saved in the file by the microscope software (for example green, red and magenta for an AXR ND2). A file with no saved colors is shown in gray. CellQuant never assigns colors of its own: each image uses its own file's colors in its own channel order, even when an analysis finds a channel by name in a file with another channel layout. (The green and magenta fills in step 4 color the objects, not the channels.) Each channel layer is labeled from that image's own file (for example *Channel 1 = Far Red*), so a file with another channel order is labeled correctly.
+Channels are shown in the colors saved in the file by the microscope software (for example green, red and magenta for an AXR ND2). A file with no saved colors is shown in gray. CellQuant never assigns colors of its own: each image uses its own file's colors in its own channel order, even when an analysis finds a channel by name in a file with another channel layout. (The green and magenta fills in step 5 color the objects, not the channels.) Each channel layer is labeled from that image's own file (for example *Channel 1 = Far Red*), so a file with another channel order is labeled correctly.
 
 ## Step 2: Find objects
 
 1. Set **Source channel** to the nuclear channel (shown as *Channel N = …* from the file). Without a nuclear stain, use the channel that marks the cells you want to count.
 2. Choose a **Method**:
-   - **Classical (fast, no GPU)**: good for well separated, evenly bright nuclei. **Threshold** is *Automatic (Otsu)* or *Manual threshold* (a pixel brightness; the marker *cutoff* is set later, in step 4).
+   - **Classical (fast, no GPU)**: good for well separated, evenly bright nuclei. **Threshold** is *Automatic (Otsu)* or *Manual threshold* (a pixel brightness; the marker *cutoff* is set later, in step 5).
    - **Cellpose (AI model)**: a trained model. Better for crowded or uneven nuclei. The Cellpose engine menu shows which engine is running; the box at the top says whether an NVIDIA GPU was found, and **Use GPU** beside it is ticked for you when one can be used.
 3. If your images are Z-stacks, choose how to handle them under **Z-stack mode**:
    - **2D: one slice**: only that plane; misses nuclei outside it.
@@ -101,7 +101,18 @@ If it is not right:
 - Debris counted as nuclei: raise **Min size**, or lower the typical diameter if Cellpose is finding too much.
 - Faint nuclei missed: lower **Cell probability threshold** (cellpose), or use a manual threshold (classical, Threshold: Manual threshold).
 
-## Step 3: Markers
+## Step 3: Edit objects
+
+Fix the objects before markers are measured. Skip this step if step 2 looked right.
+
+1. To remove something that is not a real object: click it in the image (the line *Selected object* shows its number), then click **Delete object**. **Restore object** and **Undo** reverse it. Nothing is deleted until you have clicked an object.
+2. To redraw outlines: select the *Objects* layer, paint or erase with napari's tools, then click **Record drawn edits** to keep them.
+
+The objects found in step 2 are kept; edits are saved as a list applied on top. Running step 2 again with new settings gives new objects, and these edits no longer apply to them.
+
+**Success check:** each object is one nucleus: no debris, merges, or splits left.
+
+## Step 4: Markers
 
 1. Tick the channels you want to count. The channel used to find objects is not listed.
 2. Under **Positive when**, choose how a cell is called positive:
@@ -109,19 +120,18 @@ If it is not right:
    - **enough pixels bright**: each pixel of the cell is compared with a *pixel level*, and the cell is positive when at least the **Min % of cell** (for example 30%) is at or above that level. Useful when staining is patchy or covers only part of a nucleus. This is the "positive fraction" rule of CellQuant v1.
 3. Click **Set up markers**.
 
-CellQuant measures each marker inside every object and calls each object positive or negative. It picks a starting cutoff (or, for the percent rule, a starting pixel level) automatically and moves you to step 4.
+CellQuant measures each marker inside every object and calls each object positive or negative. It picks a starting cutoff (or, for the percent rule, a starting pixel level) automatically and moves you to step 5.
 
-**Success check:** step 4 opens with objects colored green (positive) and magenta (negative).
+**Success check:** step 5 opens with objects colored green (positive) and magenta (negative).
 
 *Advanced:* **Show all settings** lets you measure other statistics (median, total, percent of pixels at or above a level), choose whether a value equal to the cutoff is positive (**at least**) or negative (**above**), measure a ring around each object, subtract background, or set cutoffs by hand. **Remove marker** removes the marker selected in the Markers table, and the result rows that use it.
 
-## Step 4: Check
+## Step 5: Check
 
 1. Choose a marker under **Display objects by**. Objects glow green when positive and magenta when negative (a pair that stays distinct with red-green color blindness). Under **Advanced**, **Positive color** and **Negative color** change the colors (remembered on this computer); **Default colors** puts green and magenta back.
 2. Drag the **Cutoff** slider, or type a number beside it. The slider runs from the dimmest to the brightest object for this marker; the objects recolor and the counts below change as you drag. The same cutoff is used for every image, so choose one that works across your images, not just this one.
    With the percent rule, the slider is the minimum percent of each cell's pixels that must pass (0-100%). To change the pixel level, type it under **Percent-of-cell rule** and click **Apply pixel level**: this image is measured again (objects and your edits are kept). Tick **at most** to ignore pixels brighter than a second level, such as saturated spots. The line above the counts says the rule in words, for example *at least 30% of pixels ≥ 1200*.
-3. To remove something that is not a real object: click it in the image (the line *Selected object* shows its number), then click **Delete object**. **Restore object** and **Undo** reverse it. Nothing is deleted until you have clicked an object. If you paint outlines by hand in the *Objects* layer, click **Record drawn edits** to keep them.
-4. When the image looks right, click **Approve**. Use **Next image ▶** at the bottom to check other images. After a run, **Check: Needs a look** or **Failed** makes Previous / Next go through only those (the bottom bar says so); **All included** goes back.
+3. When the image looks right, click **Approve**. Use **Next image ▶** at the bottom to check other images. After a run, **Check: Needs a look** or **Failed** makes Previous / Next go through only those (the bottom bar says so); **All included** goes back.
 
 **Success check:** the green objects are the ones you would call positive by eye.
 
@@ -129,7 +139,7 @@ Tips:
 - Compare with a negative control image if you have one: its objects should be magenta (negative).
 - An object that could not be measured is left out of every count, and the counts say how many.
 
-## Step 5: Results
+## Step 6: Results
 
 1. Click **Run all images** (included images, with the analysis shown), or select rows in step 1 and click **Run selected images**. The bar at the bottom shows the image and step, for example *Image 3 of 9: Finding objects: slice 2 of 7*. **Pause** waits after the current step; **Cancel** stops after it, keeping the images already finished. One image failing does not stop the others; the red box at the top lists each failed image and why. To re-run with new settings, change them and click **Run all images** again. With several analyses (see below), **Run all analyses** runs each of them.
 2. Click **Export results…** and choose a folder.
@@ -143,7 +153,7 @@ The **Results** box shows the numbers for the image on screen, for example *Mark
 | `objects.csv` | One row per object: its position, size, each marker's brightness, and positive/negative calls. In 3D it also has `centroid_z` and `volume` (µm³), the slices each object spans (`z_slices`, `z_first`, `z_last`), and `z_flag` (*one_slice* or *possibly_merged*, for checking). `area` is the largest cross-section. |
 | `image_summary.csv` | One row per image: object count and each percentage. |
 | `settings_index.csv` | Which settings produced each image's results. |
-| `recipe.yaml` | The settings. **Load settings…** (step 5, *Show all settings*) uses it to analyze new images the same way. |
+| `recipe.yaml` | The settings. **Load settings…** (step 6, *Show all settings*) uses it to analyze new images the same way. |
 
 If `mixed_settings.txt` is also there, some images were analyzed with different settings (for example you changed a cutoff after running them). Run all images again before you report numbers.
 
@@ -154,10 +164,10 @@ If `mixed_settings.txt` is also there, some images were analyzed with different 
 The **Analysis** list at the top of the CellQuant panel lets one experiment hold several analyses of the same images, for example finding objects in each channel in turn, or trying two segmentation methods. Each analysis has its own settings, its own results, its own deleted objects and approvals.
 
 - **One per channel…**: tick the channels; each gets an analysis that finds objects in that channel with the current settings otherwise (method, Z-stack mode, markers).
-- **New analysis…**: a copy of the current settings under a new name. Change what you need in steps 2-4, for example the channel in step 2.
+- **New analysis…**: a copy of the current settings under a new name. Change what you need in steps 2-5, for example the channel in step 2.
 - Choose an analysis in the list to see, change, check or run it. Steps 2-5 always show the analysis chosen.
-- **Run all analyses** (bottom bar, and step 5) runs every included image with each analysis, one after another. Pause and Cancel work as for one analysis; Cancel keeps what is finished and skips the analyses not started.
-- **Export all analyses…** (step 5) saves each analysis in its own folder, plus `all_analyses_image_summary.csv`: every analysis's per-image numbers in one table, with `analysis` and `segmentation_channel` columns.
+- **Run all analyses** (bottom bar, and step 6) runs every included image with each analysis, one after another. Pause and Cancel work as for one analysis; Cancel keeps what is finished and skips the analyses not started.
+- **Export all analyses…** (step 6) saves each analysis in its own folder, plus `all_analyses_image_summary.csv`: every analysis's per-image numbers in one table, with `analysis` and `segmentation_channel` columns.
 - **Rename…** and **Remove** change the list. Removing only takes an analysis off the list; its settings and results stay in the experiment folder.
 
 **Success check:** after **Run all analyses**, choosing each analysis in the list shows outlines found in its channel.
@@ -169,7 +179,7 @@ Click **Plan…** (next to the Analysis list) to open the Plan beside the image.
 - **Grid: images × analyses**: one column per analysis. A tick means that analysis runs that image; the cell shows its status (green when analyzed, amber when it needs a look, red when it failed) and the channel objects are found in. Ticking a group's box ticks every image in it.
 - **Tree: image ▸ analyses**: under each image, one row per analysis, each with a tick and a **Find objects in** menu.
 
-The bar at the bottom applies a choice to the **selected images** or **all images**, in **all analyses** or one: **Tick**, **Untick**, or **Set channel** (find objects in that channel for those images only; ★ marks such a choice). Right-click a cell for the same choice for one image. Double-click a cell to open that image with that analysis in step 4. **Run all analyses** (here or at the bottom) runs each analysis on its ticked images.
+The bar at the bottom applies a choice to the **selected images** or **all images**, in **all analyses** or one: **Tick**, **Untick**, or **Set channel** (find objects in that channel for those images only; ★ marks such a choice). Right-click a cell for the same choice for one image. Double-click a cell to open that image with that analysis in step 5. **Run all analyses** (here or at the bottom) runs each analysis on its ticked images.
 
 Images with another channel layout are analyzed with the channels of the same names: if an analysis finds objects in *Far Red*, a file that stores Far Red first is segmented in its first channel, and each marker is read from the channel with its name. ⚠ marks an image that has no channel of that name, so the position is used; check it, or set its channel.
 

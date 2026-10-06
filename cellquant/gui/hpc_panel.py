@@ -855,7 +855,7 @@ bash scripts/submit.sh               # queues the GPU job and prints its ID and 
     def _open_imported(self) -> None:
         if self.imported_to is not None:
             self.shell.open_experiment(self.imported_to)
-            self.shell.go_to_step(3)
+            self.shell.go_to_step(4)
 
 
 def summary_json(panel: HpcPanel) -> str:

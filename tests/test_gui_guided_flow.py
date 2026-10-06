@@ -52,11 +52,12 @@ def test_practice_run_through_all_steps(tmp_path: Path, monkeypatch):
         shell.run_current()
         _wait(shell)
         assert pages[1].next.isEnabled()
-        assert not pages[2].next.isEnabled()
+        assert pages[2].next.isEnabled()  # editing objects is optional
+        assert not pages[3].next.isEnabled()
 
         shell._marker_setup.button.click()
         _wait(shell)
-        assert shell._tabs.currentWidget() is pages[3]
+        assert shell._tabs.currentWidget() is pages[4]
         assert "Positive: 10" in shell._review_panel.counts.text()
 
         # A dragged cutoff is kept when the image is run again.
@@ -73,14 +74,14 @@ def test_practice_run_through_all_steps(tmp_path: Path, monkeypatch):
         counts = [tuple(row) for row in summary[["report_1_count", "report_2_count", "report_3_count"]].to_numpy()]
         assert counts == [(item.marker_a, item.marker_b, item.both) for item in expected_answers()]
         states = guide.step_states(shell)
-        assert [state.done for state in states] == [True, True, True, False, True]  # step 4 needs an approval
+        assert [state.done for state in states] == [True, True, True, True, False, True]  # step 5 needs an approval
     finally:
         viewer.close()
 
 
 def test_percent_of_cell_rule_in_the_window(tmp_path: Path, monkeypatch):
     """Quick setup with 'enough of its pixels are bright', then the minimum percent and pixel
-    level changed in step 4; the settings survive the Measurements table and a rerun."""
+    level changed in step 5; the settings survive the Measurements table and a rerun."""
 
     from qtpy.QtWidgets import QFileDialog
 
