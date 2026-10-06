@@ -226,7 +226,7 @@ def recommend(
     stitched = estimates["stitch_slices"]
     full = estimates["full_3d"]
     where = hardware.describe()
-    gpu_note = " Turn on 'Use GPU' (step 2, Advanced)." if turn_on_gpu else ""
+    gpu_note = " Tick 'Use GPU' (step 2, beside the GPU box at the top)." if turn_on_gpu else ""
     if (
         method == "cellpose"
         and gpu_on

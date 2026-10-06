@@ -120,9 +120,9 @@ STEPS = (
         5,
         "5 Results",
         "Run everything and save the results",
-        "Click <b>Run all images</b> to apply the same settings to every image. Then click "
-        "<b>Export results</b> and choose a folder. With several analyses in the list at the top, "
-        "<b>Run all analyses</b> and <b>Export all analyses</b> do the same for each of them.",
+        "Click <b>Run all images</b> in the Run window at the bottom to apply the same settings to every image. "
+        "Then click <b>Export results</b> and choose a folder. With several analyses in the list at the top, "
+        "<b>Run all analyses</b> (bottom) and <b>Export all analyses</b> do the same for each of them.",
         "The export folder has <i>objects.csv</i> (one row per object) and <i>image_summary.csv</i> "
         "(one row per image, with the percentages). Both open in Excel, Prism, or R.",
     ),
@@ -174,7 +174,6 @@ BUTTON_HELP = {
     "Restore object": "Bring back a deleted object.",
     "Undo": "Undo the last edit.",
     "Record drawn edits": "Save outlines you painted by hand in the Objects layer.",
-    "Mark reviewed": "Note that you looked at this image.",
     "Approve": "Mark this image as checked and correct. Editing it later clears the approval.",
     "Exclude image": "Leave this image out of the results.",
 }
@@ -518,31 +517,22 @@ class ResultsSummary(QGroupBox):
         self.summary.setWordWrap(True)
         self.summary.setTextFormat(Qt.RichText)
         layout.addWidget(self.summary)
-        run_all = QPushButton("Run all images")
-        self.run_all = run_all
-        run_all.setMinimumHeight(32)
-        run_all.setToolTip("Apply the current settings to every included image. Progress shows at the bottom.")
-        run_all.clicked.connect(lambda: window.start_batch(None))
+        # Running is in the Run window at the bottom (Run all images, Run all analyses).
         export = QPushButton("Export results…")
         export.setMinimumHeight(32)
         export.setToolTip("Save objects.csv, image_summary.csv and the settings to a folder you choose.")
         export.clicked.connect(window.export_dialog)
-        layout.addWidget(run_all)
         layout.addWidget(export)
         # Shown when the experiment has more than one analysis (the list at the top of the panel).
-        self.run_analyses = QPushButton("Run all analyses")
-        self.run_analyses.setToolTip("Run every included image with each analysis, one analysis after another.")
-        self.run_analyses.clicked.connect(window.run_all_analyses)
         self.export_analyses = QPushButton("Export all analyses…")
         self.export_analyses.setToolTip(
             "Save each analysis's results in its own folder, plus all_analyses_image_summary.csv with every "
             "analysis's per-image numbers side by side."
         )
         self.export_analyses.clicked.connect(window.export_all_dialog)
-        for button in (self.run_analyses, self.export_analyses):
-            button.setMinimumHeight(32)
-            button.setVisible(False)
-            layout.addWidget(button)
+        self.export_analyses.setMinimumHeight(32)
+        self.export_analyses.setVisible(False)
+        layout.addWidget(self.export_analyses)
         self.batch = QLabel("")
         self.batch.setWordWrap(True)
         layout.addWidget(self.batch)
@@ -580,10 +570,7 @@ class ResultsSummary(QGroupBox):
         self.batch.setText(text)
 
     def show_analysis_actions(self, several: bool) -> None:
-        self.run_analyses.setVisible(several)
         self.export_analyses.setVisible(several)
-        # With several analyses, say which one Run all images uses.
-        self.run_all.setText("Run all images (this analysis)" if several else "Run all images")
 
     def show_analyses(self, reports) -> None:
         lines = []
