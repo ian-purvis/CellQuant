@@ -22,7 +22,7 @@ If the install fails, it opens `install_last.log` in Notepad. See [When somethin
 
 ## What to click (the short version)
 
-The CellQuant panel has a **Start** tab and five numbered tabs. Work from left to right. Every tab says what to do at the top, how to tell it worked at the bottom, and has a **Next →** button. If Next is greyed out, the line beside it says why.
+The CellQuant panel has a **Start** tab and five numbered tabs. Work from left to right. Every tab has a one-line "what to do" at the top (hover it for details and how to tell it worked) and a **Next →** button. If Next is greyed out, the line beside it says why.
 
 1. **Start → Try practice images** (first time) or **New experiment…**
 2. **1 Images**: add images and name the channels.
@@ -88,7 +88,7 @@ Channels are shown in the colors saved in the file by the microscope software (f
    Each option shows an estimated time per image on this computer. The blue box recommends one based on the computer's GPU and memory and on your images; click **Use recommended** to choose it. Every option stays available. After the first run, the times are measured instead of estimated. The bottom bar shows what is analyzed, for example *3D, 7 slices linked slice by slice*.
 
    For stitching / true 3D, **Link overlap** sets how much an outline must overlap the next slice's to be the same nucleus (0.25 is Cellpose's usual value; lower if nuclei split across slices, higher if stacked nuclei join). **Brightness: Whole stack** scales every slice the same way, so a dim top or bottom slice still links correctly. **Minimum slices** removes objects found in fewer slices (1 keeps all).
-4. Set **Typical nucleus diameter (µm)** (default **6**; most nuclei are about 5–7 µm). When pixel size is known, Cellpose uses the matching pixel diameter, and **Minimum object size** defaults to **5 µm²** to drop debris. A 6 µm nucleus is about 28 µm².
+4. Set **Nucleus diameter (µm)** (default **6**; most nuclei are about 5–7 µm). When pixel size is known, Cellpose uses the matching pixel diameter, and **Min size** defaults to **5 µm²** to drop debris. A 6 µm nucleus is about 28 µm².
 5. Click **Preview** to try the settings on the area you are looking at. Nothing is saved.
 6. Click **Run this image** at the bottom. The bar at the bottom shows each step, for example *Finding objects: slice 4 of 7*. Run buttons are greyed out until it finishes. **Cancel** stops after the current step; nothing from the unfinished image is saved. (Cellpose's whole-volume 3D step cannot be stopped part-way; Cancel takes effect when it ends.)
    To try other settings, change them and click **Run this image** again. There is no need to restart CellQuant or go back.
@@ -98,15 +98,15 @@ Channels are shown in the colors saved in the file by the microscope software (f
 
 If it is not right:
 - Merged nuclei: tick **Watershed** (classical), or use cellpose.
-- Debris counted as nuclei: raise **Minimum object size**, or lower the typical diameter if Cellpose is finding too much.
+- Debris counted as nuclei: raise **Min size**, or lower the typical diameter if Cellpose is finding too much.
 - Faint nuclei missed: lower **Cell probability threshold** (cellpose), or use a manual threshold (classical, Threshold: Manual threshold).
 
 ## Step 3: Markers
 
 1. Tick the channels you want to count. The channel used to find objects is not listed.
-2. Under **A cell is positive when**, choose how a cell is called positive:
-   - **its mean brightness is above a cutoff** (the usual choice): one number per cell, compared with a cutoff.
-   - **enough of its pixels are bright**: each pixel of the cell is compared with a *pixel level*, and the cell is positive when at least the **Minimum percent of the cell** (for example 30%) is at or above that level. Useful when staining is patchy or covers only part of a nucleus. This is the "positive fraction" rule of CellQuant v1.
+2. Under **Positive when**, choose how a cell is called positive:
+   - **mean brightness > cutoff** (the usual choice): one number per cell, compared with a cutoff.
+   - **enough pixels bright**: each pixel of the cell is compared with a *pixel level*, and the cell is positive when at least the **Min % of cell** (for example 30%) is at or above that level. Useful when staining is patchy or covers only part of a nucleus. This is the "positive fraction" rule of CellQuant v1.
 3. Click **Set up markers**.
 
 CellQuant measures each marker inside every object and calls each object positive or negative. It picks a starting cutoff (or, for the percent rule, a starting pixel level) automatically and moves you to step 4.
@@ -121,7 +121,7 @@ CellQuant measures each marker inside every object and calls each object positiv
 2. Drag the **Cutoff** slider, or type a number beside it. The slider runs from the dimmest to the brightest object for this marker; the objects recolor and the counts below change as you drag. The same cutoff is used for every image, so choose one that works across your images, not just this one.
    With the percent rule, the slider is the minimum percent of each cell's pixels that must pass (0-100%). To change the pixel level, type it under **Percent-of-cell rule** and click **Apply pixel level**: this image is measured again (objects and your edits are kept). Tick **at most** to ignore pixels brighter than a second level, such as saturated spots. The line above the counts says the rule in words, for example *at least 30% of pixels ≥ 1200*.
 3. To remove something that is not a real object: click it in the image (the line *Selected object* shows its number), then click **Delete object**. **Restore object** and **Undo** reverse it. Nothing is deleted until you have clicked an object. If you paint outlines by hand in the *Objects* layer, click **Record drawn edits** to keep them.
-4. When the image looks right, click **Approve**. Use **Next image ▶** at the bottom to check other images. After a run, **Check images that need a look** or **Check failed images** makes Previous / Next go through only those (the bottom bar says so); **Check all included images** goes back.
+4. When the image looks right, click **Approve**. Use **Next image ▶** at the bottom to check other images. After a run, **Check: Needs a look** or **Failed** makes Previous / Next go through only those (the bottom bar says so); **All included** goes back.
 
 **Success check:** the green objects are the ones you would call positive by eye.
 
