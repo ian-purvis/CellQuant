@@ -380,3 +380,25 @@ def test_linking_groups_outlines_exactly_like_cellpose_stitch3d():
         planes = np.stack([ndimage.label(p > np.percentile(p, rng.integers(55, 80)))[0] for p in field]).astype(np.int64)
         threshold = float(rng.choice([0.05, 0.25, 0.5]))
         assert _same_partition(stitch_slices(planes, threshold), _cellpose_stitch3d(planes, threshold))
+
+
+@pytest.mark.parametrize("mode", ["max_projection", "single_plane", "stitch_slices"])
+def test_the_viewer_gets_every_slice_whatever_the_z_handling(tmp_path: Path, mode: str):
+    path = tmp_path / "stack.tif"
+    _stack(path)
+    controller = AnalysisController.create(tmp_path / "results", "Viewer")
+    controller.add_image_paths([path])
+    controller.set_recipe(_recipe(mode))
+    record = controller.experiment.images[0]
+    shown = controller._load_display(record)
+    assert shown.data.shape == (2, 9, 64, 64)
+    assert shown.z_description == controller._load_record(record).z_description
+
+
+def test_a_single_plane_file_has_no_slices_to_scroll(tmp_path: Path):
+    path = tmp_path / "flat.tif"
+    tifffile.imwrite(path, np.zeros((2, 32, 32), dtype=np.uint16), metadata={"axes": "CYX"})
+    controller = AnalysisController.create(tmp_path / "results", "Viewer")
+    controller.add_image_paths([path])
+    controller.set_recipe(_recipe("max_projection"))
+    assert controller._load_display(controller.experiment.images[0]).data.shape == (2, 32, 32)
