@@ -325,8 +325,8 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     assert "NVIDIA GPU found" in panel.gpu_label.text() and "Test GPU" in panel.gpu_label.text()
     assert "NVIDIA GPU found: Test GPU" in shell._footer.log.toPlainText()
     panel.gpu.setChecked(False)
-    assert "'Use GPU' is off" in panel.gpu_label.text() and panel.gpu_on.isVisibleTo(panel)
-    panel.gpu_on.click()
+    assert "'Use GPU' is off" in panel.gpu_label.text() and panel.gpu.isVisibleTo(panel.gpu_banner)
+    panel.gpu.click()
     assert panel.gpu.isChecked() and "will run on the GPU" in panel.gpu_label.text()
     panel.show_gpu_status({"available": False, "reason": "test"})
     assert "No usable GPU found" in panel.gpu_label.text()
@@ -609,3 +609,33 @@ def test_find_objects_has_a_run_button(window, monkeypatch):
     assert "Preview" in buttons
     buttons["Run this image"].click()
     assert ran
+
+
+def test_remove_marker_also_removes_its_result_rows_and_settings_save_themselves(window, monkeypatch):
+    from qtpy.QtWidgets import QMessageBox
+
+    from cellquant.controller import AnalysisController
+
+    shell = window
+    panel = shell._measurements_panel
+    panel.refresh()
+    panel.classes.setCurrentCell(1, 0)  # marker B, used by the row "A AND B among A"
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    panel._remove_class()
+    recipe = shell.controller.recipe
+    assert [item.name for item in recipe.classifications] == ["A"]
+    assert [(item.numerator, item.denominator) for item in recipe.reports] == [("A", "all_objects")]
+    # A new marker never reuses an id still taken.
+    panel.class_name.setText("C")
+    panel._add_class()
+    panel.write_recipe()
+    ids = [item.id for item in shell.controller.recipe.classifications]
+    assert len(ids) == len(set(ids))
+
+    # A changed step 2 setting is saved without a Save button.
+    objects = shell._objects_panel
+    objects.sigma.setValue(2.5)
+    objects.sigma.editingFinished.emit()
+    shell._settings_save_timer.timeout.emit()
+    saved = AnalysisController.open(shell.controller.directory)
+    assert saved.recipe.object_set.parameters["sigma"] == 2.5

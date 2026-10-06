@@ -70,13 +70,13 @@ def test_analyses_in_the_window(tmp_path: Path, monkeypatch):
         bar.make_per_channel([0, 1, 2])
         assert bar.choice.count() == 3 and bar.choice.currentText() == "Analysis 1"
         assert shell._footer.run_analyses.isVisibleTo(shell._footer)
-        assert shell._results_summary.run_analyses.isVisibleTo(shell._results_summary)
+        assert shell._results_summary.export_analyses.isVisibleTo(shell._results_summary)
 
         shell.run_all_analyses()
         assert not bar.choice.isEnabled()  # no switching while analyses run
         # The settings pages and image navigation are locked: they would show another analysis.
         assert not shell._tabs.isEnabled() and not shell._footer._navigation[1].isEnabled()
-        save = next(button for button in shell._results_panel.findChildren(type(shell._footer.cancel)) if button.text() == "Save settings")
+        save = next(button for button in shell._results_panel.findChildren(type(shell._footer.cancel)) if button.text() == "Load settings…")
         assert not save.isEnabled()
         _wait(shell, 300)
         assert bar.choice.isEnabled() and shell._tabs.isEnabled() and shell._footer._navigation[1].isEnabled()
