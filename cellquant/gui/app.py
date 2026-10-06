@@ -2024,7 +2024,6 @@ class ObjectsPanel(QWidget):
 
         self._gpu_status: dict = {}
         self._recommended: str | None = None
-        self._suggest_gpu = False
         self.z_stack = QComboBox()
         for mode, text in Z_OPTION_LABELS.items():
             self.z_stack.addItem(text, mode)
@@ -2102,14 +2101,11 @@ class ObjectsPanel(QWidget):
         self.gpu_label = QLabel("")
         self.gpu_label.setWordWrap(True)
         self.gpu_label.setTextFormat(Qt.RichText)
-        # The one GPU switch, beside the banner that says whether a GPU was found.
-        self.gpu = QCheckBox("Use GPU")
-        self.gpu.setToolTip("Run Cellpose on this computer's NVIDIA GPU (much faster than the CPU).")
+        # No GPU switch: Cellpose uses a usable GPU on its own; the banner says which is used.
         self.gpu_banner = QWidget()
         gpu_row = QHBoxLayout(self.gpu_banner)
         gpu_row.setContentsMargins(0, 0, 0, 0)
         gpu_row.addWidget(self.gpu_label, 1)
-        gpu_row.addWidget(self.gpu)
         self._show_gpu_banner("Checking for an NVIDIA GPU...", "neutral")
         layout.addWidget(self.gpu_banner)
         # One engine is installed per environment; the other is listed so users know it exists.
@@ -2209,8 +2205,6 @@ class ObjectsPanel(QWidget):
         self.flow.setValue(0.4)
         self.cellprob = QDoubleSpinBox()
         self.cellprob.setRange(-6, 6)
-        self.gpu.toggled.connect(lambda _checked: self.update_recommendation())
-        self.gpu.toggled.connect(lambda _checked: self._refresh_gpu_banner())
         self.watershed.toggled.connect(lambda _checked: self._method_changed())
         self.object_name.setToolTip("The name of the objects in the results, for example Nuclei.")
         advanced.addRow("Object set name", self.object_name)
@@ -2287,8 +2281,6 @@ class ObjectsPanel(QWidget):
             self.diameter.setValue(0)
         self.flow.setValue(float(parameters.get("flow_threshold", 0.4)))
         self.cellprob.setValue(float(parameters.get("cellprob_threshold", 0)))
-        usable = bool(self._gpu_status.get("available")) and self.engine.installed
-        self.gpu.setChecked(bool(parameters.get("gpu", usable)))
         has_calibration = pixel is not None
         if parameters.get("min_area_um2") is not None:
             _choose(self.area_unit, "um2")
@@ -2359,7 +2351,6 @@ class ObjectsPanel(QWidget):
             _show_row(advanced, widget, not cellpose and self.watershed.isChecked())
         for widget in (self.cellpose_model, self.diameter, self.flow, self.cellprob):
             _show_row(advanced, widget, cellpose)
-        self.gpu.setVisible(cellpose and self.engine.installed)
         self._refresh_gpu_banner()
 
     def _refresh_crop(self, controller) -> None:
@@ -2483,7 +2474,7 @@ class ObjectsPanel(QWidget):
         return recommend(
             method=self.method.currentData(),
             engine=self.engine.key if self.engine.installed else None,
-            use_gpu=self.gpu.isChecked(),
+            use_gpu=self.use_gpu(),
             stacks=stacks,
             anisotropy=sorted(known)[len(known) // 2] if known else None,
             hardware=detect_hardware(self._gpu_status),
@@ -2514,12 +2505,11 @@ class ObjectsPanel(QWidget):
             self.z_stack.setItemText(index, text)
         self.z_recommend.setText(f"<b>Recommended here:</b> {Z_OPTION_LABELS[suggestion.mode]}")
         self.z_recommend.setToolTip(suggestion.reason)
-        self._suggest_gpu = suggestion.use_gpu
         self.z_recommend_box.setVisible(True)
         self._show_recommendation_state()
 
     def _show_recommendation_state(self) -> None:
-        chosen = self.z_stack.currentData() == self._recommended and not getattr(self, "_suggest_gpu", False)
+        chosen = self.z_stack.currentData() == self._recommended
         self.z_use.setEnabled(not self.shell.is_busy() and self._recommended is not None and not chosen)
         self.z_use.setText("In use" if chosen else "Use recommended")
 
@@ -2527,8 +2517,6 @@ class ObjectsPanel(QWidget):
         if self._recommended is None:
             return
         self.z_stack.setCurrentIndex(max(0, self.z_stack.findData(self._recommended)))
-        if getattr(self, "_suggest_gpu", False) and self.gpu.isEnabled():
-            self.gpu.setChecked(True)
         self.update_recommendation()
         self.shell.message(f"Z-stacks: using {self.z_stack.currentText().split('  (')[0]}.")
 
@@ -2537,24 +2525,14 @@ class ObjectsPanel(QWidget):
 
         self._gpu_status = dict(status)
         self._gpu_checked = True
-        if not self.engine.installed:
-            self.gpu.setEnabled(False)
-        elif status.get("available"):
-            self.gpu.setEnabled(True)
-            if not self._gpu_chosen():
-                self.gpu.setChecked(True)  # a usable GPU is used unless the settings say otherwise
-        else:
-            self.gpu.setChecked(False)
-            self.gpu.setEnabled(False)
         self._refresh_gpu_banner()
         self.shell.message(self._gpu_summary())
         self.update_recommendation()
 
-    def _gpu_chosen(self) -> bool:
-        """True when the open settings already say whether to use the GPU."""
+    def use_gpu(self) -> bool:
+        """Cellpose uses the GPU whenever this computer has a usable one."""
 
-        controller = self.shell.controller
-        return controller is not None and "gpu" in (controller.recipe.object_set.parameters or {})
+        return self.engine.installed and bool(self._gpu_status.get("available"))
 
     def _gpu_summary(self) -> str:
         status = self._gpu_status
@@ -2588,14 +2566,8 @@ class ObjectsPanel(QWidget):
         elif status.get("available"):
             memory = f" ({status['memory_gb']:.0f} GB)" if status.get("memory_gb") else ""
             found = f"<b>✔ NVIDIA GPU found:</b> {status.get('name') or 'NVIDIA GPU'}{memory}."
-            if self.gpu.isChecked():
+            if cellpose:
                 self._show_gpu_banner(f"{found} Cellpose will run on the GPU.", "good")
-            elif cellpose:
-                self._show_gpu_banner(
-                    f"{found} <b>'Use GPU' is off</b> (CPU, slower).",
-                    "good",
-                    "Cellpose would run on the CPU (much slower). Tick Use GPU to use the GPU.",
-                )
             else:
                 self._show_gpu_banner(found, "good", "The classical method does not use the GPU; Cellpose would.")
         elif status.get("nvidia_gpu"):
@@ -2658,7 +2630,8 @@ class ObjectsPanel(QWidget):
                 "diameter_px": diameter_px,
                 "flow_threshold": self.flow.value(),
                 "cellprob_threshold": self.cellprob.value(),
-                "gpu": self.gpu.isChecked(),
+                # Found on this computer; without Cellpose here, the saved value is kept.
+                "gpu": self.use_gpu() if local else bool(previous.get("gpu", False)),
                 **size_filters,
             }
         data["z_stack"] = self.z_stack.currentData() or "max_projection"
