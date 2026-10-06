@@ -853,7 +853,7 @@ class CellQuantWindow:
 
     def _load_in_background(self, record, result) -> None:
         controller = self.controller
-        worker = CallWorker(lambda: controller._load_record(record))
+        worker = CallWorker(lambda: controller._load_display(record))
         self._loader = worker
 
         def shown(loaded) -> None:
@@ -873,7 +873,7 @@ class CellQuantWindow:
                 if record.pixel_size_x and record.pixel_size_y
                 else "pixels — no pixel size in this image"
             )
-            self._footer.set_units(f"{unit}   ·   Shown and analyzed: {loaded.z_description}")
+            self._footer.set_units(f"{unit}   ·   Analyzed: {loaded.z_description}")
             self._footer.message(f"Showing {record.relative_path or record.filename}")
 
         def failed(message: str) -> None:
@@ -910,7 +910,7 @@ class CellQuantWindow:
         self._results_summary.show_result(result, self.controller.recipe)
         unit = "µm" if result.spatial_unit == "um" else "pixels — no pixel size in this image"
         described = result.provenance.get("z_description")
-        self._footer.set_units(f"{unit}   ·   Shown and analyzed: {described}" if described else unit)
+        self._footer.set_units(f"{unit}   ·   Analyzed: {described}" if described else unit)
 
     def run_current(self) -> None:
         controller = self.require_controller()
@@ -1404,6 +1404,11 @@ class CellQuantWindow:
             layer.events.contrast_limits.connect(
                 lambda event, index=channel.channel_index: self._store_contrast(index, event)
             )
+        if loaded.data.ndim == 4:
+            # Every slice is loaded, so the slider under the image scrolls the stack. Start on the
+            # slice a one-slice analysis used, else the middle one.
+            slice_index = loaded.z_index if loaded.z_mode == "single_plane" else loaded.data.shape[1] // 2
+            self.viewer.dims.set_current_step(0, int(slice_index))
         labels = result.labels if result is not None else None
         self._set_labels(labels, result)
         self._release_window_later()
@@ -3783,7 +3788,7 @@ class Footer(QWidget):
         self.position.setText(f"Image {index + 1} of {total}{scope}: {filename}")
 
     def set_units(self, unit: str, keep_detail: bool = False) -> None:
-        """The units line; keep_detail keeps what follows it (for example 'Shown and analyzed: …')."""
+        """The units line; keep_detail keeps what follows it (for example 'Analyzed: …')."""
 
         separator = "   ·   "
         if keep_detail and separator in unit + self.units.text():

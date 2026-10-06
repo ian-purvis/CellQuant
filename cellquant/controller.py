@@ -32,7 +32,7 @@ from cellquant.experiment import (
     set_channel_name,
 )
 from cellquant.image import LoadedImage
-from cellquant.inputs import load_record_image, resolve_source_path
+from cellquant.inputs import load_record_display, load_record_image, resolve_source_path
 from cellquant.hpc.lineage import segmentation_settings
 from cellquant import progress
 from cellquant.progress import AnalysisCancelled
@@ -880,6 +880,16 @@ class AnalysisController:
 
     def _load_record(self, record) -> LoadedImage:
         return load_record_image(
+            record,
+            z_mode=self.recipe.z_stack,
+            z_index=self.recipe.z_index,
+            experiment_dir=self.directory,
+        )
+
+    def _load_display(self, record) -> LoadedImage:
+        """The image as the viewer shows it: every Z slice, whatever the analysis Z handling."""
+
+        return load_record_display(
             record,
             z_mode=self.recipe.z_stack,
             z_index=self.recipe.z_index,
