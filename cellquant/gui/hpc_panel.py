@@ -12,6 +12,7 @@ from pathlib import Path
 
 from qtpy.QtCore import Qt, QTimer
 
+from cellquant.gui.guide import add_range_tip
 from cellquant.quicksetup import describe_rule
 from qtpy.QtWidgets import (
     QApplication,
@@ -342,6 +343,8 @@ class HpcPanel(QWidget):
         self.hours = QDoubleSpinBox()
         self.hours.setRange(0.1, 24 * 14)
         self.hours.setSuffix(" h")
+        for box in (self.cpus, self.memory, self.hours):
+            add_range_tip(box)
         for label, widget in (
             ("Slurm account", self.account),
             ("Project folder on the cluster", self.durable),
