@@ -38,6 +38,7 @@ from cellquant import progress
 from cellquant.progress import AnalysisCancelled
 from cellquant.pipeline import (
     ImageResult,
+    apply_count_area,
     assemble_result,
     carry_segmentation_provenance,
     measurement_values,
@@ -46,6 +47,7 @@ from cellquant.pipeline import (
     remeasure_persisted_result,
     segmentation_details_of,
 )
+from cellquant.count_area import outside
 from cellquant.quantify import classification_counts
 from cellquant.recipe import Recipe, load_recipe, save_recipe
 from cellquant.segmentation import engine_signature
@@ -158,9 +160,41 @@ class AnalysisController:
         for folder in self._result_folders():
             result = read_persisted_result(folder, image_id)
             if result is not None:
+                result = self._with_count_area(image_id, result)
                 self.last_results[image_id] = result
                 return result
         return None
+
+    def _with_count_area(self, image_id: str, result: ImageResult) -> ImageResult:
+        """The result counted in this image's current count area (saved results may predate it)."""
+
+        try:
+            record = self.experiment.image(image_id)
+        except KeyError:
+            return result
+        return apply_count_area(result, record.count_area)
+
+    def set_count_area(self, image_ids: list[str], polygons) -> None:
+        """Count only objects inside these polygons (pixels, (row, column)) in these images. Empty: whole image.
+
+        Nothing is segmented or measured again. An approval is cleared when the area changes.
+        """
+
+        from cellquant.count_area import clean
+
+        area = clean(polygons)
+        for image_id in image_ids:
+            record = self.experiment.image(image_id)
+            if record.count_area == area:
+                continue
+            record.count_area = area
+            if record.processing_status == "approved":
+                record.processing_status = "analyzed"
+                record.last_message = "Approval was cleared because the count area changed."
+            result = self.last_results.get(image_id)
+            if result is not None:
+                self.last_results[image_id] = apply_count_area(result, record.count_area)
+        self.save()
 
     def _result_folders(self) -> list[Path]:
         """Where saved results are looked for: open work, the latest run, then earlier runs, newest first.
@@ -565,6 +599,7 @@ class AnalysisController:
             manual_edits=self._active_edits(image_id),
             automated_labels=prior.automated_labels,
             segmentation_details=_details_to_keep(prior),
+            count_area=record.count_area,
         )
         carry_segmentation_provenance(prior, result)
         self.last_results[image_id] = result
@@ -626,6 +661,7 @@ class AnalysisController:
         active = result.objects
         if "excluded" in active.columns:
             active = active.loc[~active["excluded"].astype(bool)]
+        active = active.loc[~outside(active)]
         return classification_counts(active[measurement_id].to_numpy(dtype=float), threshold, comparison)
 
     def export(self, directory: str | Path, *, group_by: str | None = None, unit: str | None = None) -> Path:
@@ -743,7 +779,7 @@ class AnalysisController:
                     break
                 result = read_persisted_result(folder, record.image_id)
             if result is not None:
-                results.append(result)
+                results.append(apply_count_area(result, record.count_area))
         return results
 
     def objects_for_export(self) -> pd.DataFrame:
@@ -815,6 +851,7 @@ class AnalysisController:
                 run_id=self.run_record.run_id if self.run_record else self.experiment.latest_run_id,
                 filename=record.filename,
                 user_metadata=record.user_metadata,
+                count_area=record.count_area,
             )
             return result, loaded
         if not allow_segmentation:
@@ -882,6 +919,7 @@ class AnalysisController:
                 run_id=self.run_record.run_id if self.run_record else self.experiment.latest_run_id,
                 filename=record.filename,
                 user_metadata=record.user_metadata,
+                count_area=record.count_area,
             )
             result.provenance["segmentation_key"] = segmentation_id
             return result, loaded
@@ -903,6 +941,7 @@ class AnalysisController:
                 if automated is not None or not cropping
                 else {"crop_rectangles_given": rectangles, "crop_info_given": crop_info}
             ),
+            count_area=record.count_area,
         )
         self.cache.put_labels(segmentation_id, result.automated_labels)
         stored_details = _details_to_keep(result)
