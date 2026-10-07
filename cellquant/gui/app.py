@@ -833,8 +833,7 @@ class CellQuantWindow:
         output = Path(dialog.results_folder())
         images = dialog.images_folder()
         if (output / "experiment.json").is_file():
-            self.message("That results folder already holds an experiment, so it was opened instead.")
-            self.open_experiment(output)
+            self.message("That results folder already has an experiment. Use Open experiment… to open it, or choose another folder.")
             return
         try:
             controller = AnalysisController.create(output, dialog.experiment_name(), input_directory=images or None)
@@ -4023,8 +4022,10 @@ class Footer(QWidget):
         run_current.clicked.connect(shell.run_current)
         run_all.clicked.connect(shell._results_panel._run_all)
         self.pause = QPushButton("Pause")
+        self.resume = QPushButton("Resume")
         self.cancel = QPushButton("Cancel")
         self.pause.clicked.connect(self._pause)
+        self.resume.clicked.connect(self._resume)
         self.cancel.clicked.connect(self._cancel)
         # Grouped: moving between images, running, and controlling a run.
         for button in (previous, next_image):
@@ -4033,7 +4034,7 @@ class Footer(QWidget):
         for button in (run_current, run_all, self.run_analyses):
             row.addWidget(button)
         row.addSpacing(16)
-        for button in (self.pause, self.cancel):
+        for button in (self.pause, self.resume, self.cancel):
             row.addWidget(button)
         row.addSpacing(16)
         self.keep_awake = QCheckBox("Keep computer awake (recommended) ⓘ")
@@ -4062,9 +4063,11 @@ class Footer(QWidget):
             shortcut.activated.connect(lambda button=button: button.click() if button.isEnabled() else None)
         self.failed_files: list[str] = []
         self.pause.setEnabled(False)
+        self.resume.setEnabled(False)
         self.cancel.setEnabled(False)
         self.cancel.setToolTip("Stop the running analysis after the current step. Images already finished are kept.")
-        self.pause.setToolTip("Pause a batch between steps; click again to resume.")
+        self.pause.setToolTip("Pause a batch after the current step.")
+        self.resume.setToolTip("Carry on with a paused batch.")
         layout.addLayout(row)
         self.position = QLabel("No image open.")
         self.units = QLabel("Units: pixels")
@@ -4160,14 +4163,14 @@ class Footer(QWidget):
         self.progress.setFormat("%p%")
         self.cancel.setEnabled(True)
         self.pause.setEnabled(batch)
-        self.pause.setText("Pause")
+        self.resume.setEnabled(False)
 
     def end_busy(self) -> None:
         self.progress.setRange(0, 1000)
         self.progress.setValue(1000 if self.progress.value() > 0 else 0)
         self.cancel.setEnabled(False)
         self.pause.setEnabled(False)
-        self.pause.setText("Pause")
+        self.resume.setEnabled(False)
         self._batch_total = 0
         self._clock_timer.stop()
         self._clock = None
@@ -4220,13 +4223,20 @@ class Footer(QWidget):
         self.shell.show_current()
 
     def _pause(self) -> None:
+        self._set_paused(True)
+
+    def _resume(self) -> None:
+        self._set_paused(False)
+
+    def _set_paused(self, paused: bool) -> None:
         worker = self.shell._batch
-        if worker is None:
+        if worker is None or worker.paused == paused:
             return
-        worker.paused = not worker.paused
-        self.pause.setText("Resume" if worker.paused else "Pause")
+        worker.paused = paused
+        self.pause.setEnabled(not paused)
+        self.resume.setEnabled(paused)
         if self._clock is not None:
-            self._clock.pause() if worker.paused else self._clock.resume()
+            self._clock.pause() if paused else self._clock.resume()
 
     def _cancel(self) -> None:
         worker = self.shell._batch or self.shell._job
@@ -4235,12 +4245,14 @@ class Footer(QWidget):
         worker.cancelled = True
         if self.shell._batch is not None:
             self.shell._batch.paused = False
+        self.pause.setEnabled(False)
+        self.resume.setEnabled(False)
         self.cancel.setEnabled(False)
         self.status.setText("Stopping after the current step...")
 
 
 class FloatingHeader(QWidget):
-    """Header of a panel popped out of the napari window: Minimize, Maximize, Reset (dock back), Close.
+    """Header of a panel popped out of the napari window: Minimize, Maximize, Restore size, Reset (dock back), Close.
 
     Drag it to move the panel; drop it on the napari window, double-click it or click Reset to dock it back.
     """
@@ -4258,8 +4270,9 @@ class FloatingHeader(QWidget):
         row.addWidget(self.title, 1)
         self.buttons: dict[str, QPushButton] = {}
         for key, text, tip, slot in (
-            ("minimize", "–", "Minimize", self.toggle_minimized),
-            ("maximize", "□", "Maximize", self.toggle_maximized),
+            ("minimize", "–", "Minimize", self.minimize),
+            ("maximize", "□", "Maximize", self.maximize),
+            ("restore", "❐", "Restore size", self.restore),
             ("reset", "⟲", "Reset", self.reset),
             ("close", "✕", "Close", dock.close),
         ):
@@ -4270,6 +4283,7 @@ class FloatingHeader(QWidget):
             button.clicked.connect(slot)
             row.addWidget(button)
             self.buttons[key] = button
+        self._update_buttons()
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.setToolTip("Drag to move. Double-click or click Reset to put the panel back in the napari window.")
 
@@ -4277,37 +4291,54 @@ class FloatingHeader(QWidget):
     def minimized(self) -> bool:
         return self._height_before_minimize is not None
 
-    def toggle_minimized(self) -> None:
-        """Fold the panel up to this header, or open it again."""
+    @property
+    def maximized(self) -> bool:
+        return self._before_maximize is not None
 
-        inner = self.dock.widget()
-        if self.minimized:
-            inner.show()
-            self.dock.resize(self.dock.width(), self._height_before_minimize)
-            self._height_before_minimize = None
-            self.buttons["minimize"].setToolTip("Minimize")
-        else:
-            self._height_before_minimize = self.dock.height()
-            inner.hide()
-            self.dock.resize(self.dock.width(), self.sizeHint().height())
-            self.buttons["minimize"].setToolTip("Restore")
+    def minimize(self) -> None:
+        """Fold the panel up to this header."""
 
-    def toggle_maximized(self) -> None:
         if self.minimized:
-            self.toggle_minimized()
-        if self._before_maximize is not None:
-            self.dock.setGeometry(self._before_maximize)
-            self._before_maximize = None
-            self.buttons["maximize"].setText("□")
-            self.buttons["maximize"].setToolTip("Maximize")
+            return
+        self._height_before_minimize = self.dock.height()
+        self.dock.widget().hide()
+        self.dock.resize(self.dock.width(), self.sizeHint().height())
+        self._update_buttons()
+
+    def maximize(self) -> None:
+        """Fill the screen with the panel."""
+
+        if self.maximized:
             return
         screen = self.dock.screen() if hasattr(self.dock, "screen") else None
         if screen is None:
             return
+        self._unfold()
         self._before_maximize = self.dock.geometry()
         self.dock.setGeometry(screen.availableGeometry())
-        self.buttons["maximize"].setText("❐")
-        self.buttons["maximize"].setToolTip("Restore size")
+        self._update_buttons()
+
+    def restore(self) -> None:
+        """Undo Minimize or Maximize: back to the size the panel had before."""
+
+        if self.minimized:
+            self._unfold()
+        elif self.maximized:
+            self.dock.setGeometry(self._before_maximize)
+            self._before_maximize = None
+        self._update_buttons()
+
+    def _unfold(self) -> None:
+        if self.minimized:
+            self.dock.widget().show()
+            self.dock.resize(self.dock.width(), self._height_before_minimize)
+            self._height_before_minimize = None
+
+    def _update_buttons(self) -> None:
+        changed = self.minimized or self.maximized
+        self.buttons["minimize"].setEnabled(not self.minimized)
+        self.buttons["maximize"].setEnabled(not self.maximized)
+        self.buttons["restore"].setEnabled(changed)
 
     def reset(self) -> None:
         """Put the panel back where it was docked in the napari window."""
@@ -4316,11 +4347,9 @@ class FloatingHeader(QWidget):
         self.dock.setFloating(False)
 
     def forget_size(self) -> None:
-        if self.minimized:
-            self.toggle_minimized()
+        self._unfold()
         self._before_maximize = None
-        self.buttons["maximize"].setText("□")
-        self.buttons["maximize"].setToolTip("Maximize")
+        self._update_buttons()
 
 
 def floating_header(dock) -> FloatingHeader:
