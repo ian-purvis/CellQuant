@@ -57,4 +57,3 @@ Script: `docs/hpc_evidence/parity_check.py`; raw results: `docs/hpc_evidence/par
   starting images and keeps finished ones. `scancel` (SIGTERM) also stops inside the current image.
 - **Offline jobs.** Job scripts set `CELLPOSE_LOCAL_MODELS_PATH` from the runtime contract and Hugging Face
   offline mode, so Cellpose-SAM cannot download weights inside a job.
-- **Feature switch.** HPC prep is shown only with `CELLQUANT_ENABLE_HPC=1` or `~/.cellquant/enable_hpc`.
