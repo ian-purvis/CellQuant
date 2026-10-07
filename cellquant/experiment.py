@@ -75,6 +75,9 @@ class ImageRecord(BaseModel):
     approved_settings_sha256: str = ""
     content_hash: str = ""
     file_signature: str = ""
+    # Count area: polygons of (row, column) pixel vertices drawn in step 5. Only objects whose
+    # centroid is inside are counted; empty counts the whole image. Shared by every analysis.
+    count_area: list[list[list[float]]] = Field(default_factory=list)
 
 
 # Review state of one image that belongs to one analysis (see AnalysisRecord.image_states).
