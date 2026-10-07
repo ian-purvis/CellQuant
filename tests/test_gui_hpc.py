@@ -38,7 +38,6 @@ def _until(shell, condition, seconds: float = 60) -> None:
 
 @pytest.fixture
 def window(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("CELLQUANT_ENABLE_HPC", "1")
     from cellquant.gui.app import CellQuantWindow
 
     try:
@@ -49,23 +48,6 @@ def window(tmp_path: Path, monkeypatch):
     yield shell
     _wait(shell)
     viewer.close()
-
-
-def test_hpc_prep_is_hidden_unless_switched_on(tmp_path: Path, monkeypatch):
-    monkeypatch.delenv("CELLQUANT_ENABLE_HPC", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("USERPROFILE", str(tmp_path))
-    from cellquant.gui.app import CellQuantWindow
-
-    try:
-        viewer = napari.Viewer(show=False)
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"napari viewer could not start: {exc}")
-    shell = CellQuantWindow(viewer, None)
-    try:
-        assert shell._start_page.hpc_button is None
-    finally:
-        viewer.close()
 
 
 def test_prepare_submit_and_import_in_the_window(window, tmp_path: Path, monkeypatch):
