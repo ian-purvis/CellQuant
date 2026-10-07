@@ -12,11 +12,9 @@ the cluster, and CellQuant imports the results as a **new experiment** that you 
 > `docs/HPC_ACCEPTANCE.md`). **No real Alpine job has been run yet**, so every profile is *experimental*
 > until the maintainer's smoke test (section 9) is recorded.
 
-## 1. Switch it on
+## 1. Open it
 
-HPC prep is hidden until switched on. Either set the environment variable `CELLQUANT_ENABLE_HPC=1`, or
-create an empty file named `enable_hpc` in the `.cellquant` folder in your home folder
-(`C:\Users\<you>\.cellquant\enable_hpc`). Then open CellQuant, open your experiment, and click
+Open CellQuant, open your experiment, and click
 **HPC prep…** on the Start tab. A new **HPC prep** tab appears; your local tabs keep their settings.
 
 ## 2. What you need
