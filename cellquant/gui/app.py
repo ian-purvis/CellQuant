@@ -49,6 +49,7 @@ from qtpy.QtWidgets import (
 
 from cellquant import keep_awake
 from cellquant.controller import AnalysisController
+from cellquant.count_area import outside
 from cellquant.errors import CellQuantError, RecipeValidationError
 from cellquant.gui import guide
 from napari.utils.colormaps import DirectLabelColormap
@@ -129,6 +130,8 @@ def launch(experiment_dir: str | Path | None = None) -> None:
 
 
 _OBJECT_LAYERS = ("Object fills", "Objects", "Classification", "Object IDs")
+# Polygons drawn in step 5; only objects whose center is inside them are counted.
+COUNT_AREA_LAYER = "Count area"
 
 # How a classification compares a value with its threshold (shown text, recipe value).
 COMPARISONS = (("above the cutoff (>)", "above"), ("at least the cutoff (≥)", "at_least"))
@@ -153,6 +156,24 @@ def channel_colormaps(loaded) -> list:
         code = "#{:02x}{:02x}{:02x}".format(*(int(round(value * 255)) for value in (red, green, blue)))
         maps.append(Colormap(colors=[[0.0, 0.0, 0.0, 1.0], [red, green, blue, 1.0]], name=f"file color {code}"))
     return maps
+
+
+def drawn_polygons(layer) -> list[list[list[float]]]:
+    """Closed shapes in a napari Shapes layer as (row, column) polygons. Lines and paths have no area."""
+
+    polygons = []
+    for vertices, kind in zip(layer.data, layer.shape_type, strict=False):
+        corners = np.asarray(vertices, dtype=float)[:, -2:]
+        if kind == "ellipse" and len(corners) == 4:
+            # napari stores an ellipse as the four corners of its bounding box.
+            angles = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)[:, None]
+            half_a, half_b = (corners[1] - corners[0]) / 2.0, (corners[2] - corners[1]) / 2.0
+            corners = corners.mean(axis=0) + np.cos(angles) * half_a + np.sin(angles) * half_b
+        elif kind not in ("polygon", "rectangle"):
+            continue
+        if len(corners) >= 3:
+            polygons.append(corners.tolist())
+    return polygons
 
 
 def format_channel_labels(names, n_channels: int) -> list[str]:
@@ -1442,6 +1463,7 @@ class CellQuantWindow:
             self.viewer.dims.set_current_step(0, int(slice_index))
         labels = result.labels if result is not None else None
         self._set_labels(labels, result)
+        self.show_count_area(record)
         self._release_window_later()
         self._experiment_panel.show_channel_order(record)
 
@@ -1498,6 +1520,30 @@ class CellQuantWindow:
         )
         self._managed.add(layer.name)
 
+    def show_count_area(self, record) -> None:
+        """Outline this image's saved count area (none: no layer)."""
+
+        self._drop(COUNT_AREA_LAYER)
+        if record.count_area:
+            self.count_area_layer([np.asarray(polygon, dtype=float) for polygon in record.count_area])
+
+    def count_area_layer(self, polygons=None):
+        """The Count area shapes layer, added (with these polygons) when missing."""
+
+        if COUNT_AREA_LAYER in self.viewer.layers:
+            return self.viewer.layers[COUNT_AREA_LAYER]
+        layer = self.viewer.add_shapes(
+            polygons or None,
+            ndim=2,
+            shape_type="polygon",
+            name=COUNT_AREA_LAYER,
+            edge_color="cyan",
+            face_color="transparent",
+            edge_width=3,
+        )
+        self._managed.add(layer.name)
+        return layer
+
     def _set_classification_overlay(self, result) -> None:
         choice = self._review_panel.classification_id()
         if not choice or choice not in result.objects.columns:
@@ -1506,6 +1552,7 @@ class CellQuantWindow:
         frame = result.objects
         if "excluded" in frame.columns:
             frame = frame.loc[~frame["excluded"].astype(bool)]
+        frame = frame.loc[~outside(frame)]  # objects outside the count area are not colored
         # One lookup per pixel instead of one full-image comparison per object.
         labels = np.asarray(result.labels)
         codes = np.zeros(int(labels.max(initial=0)) + 1, dtype=np.int32)
@@ -3197,6 +3244,7 @@ class ReviewPanel(QWidget):
         layout.addWidget(self._pixel_level_box())
         self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
         layout.addWidget(self.counts)
+        layout.addWidget(self._count_area_box())
         status_buttons = QHBoxLayout()
         for text, status in (("Approve", "approved"), ("Exclude image", "excluded")):
             button = QPushButton(text)
@@ -3241,6 +3289,71 @@ class ReviewPanel(QWidget):
         self.qc.setWordWrap(True)
         layout.addWidget(self.qc)
         layout.addStretch(1)
+
+    def _count_area_box(self) -> QGroupBox:
+        """Optional area to count in, drawn on the image after objects are found."""
+
+        box = QGroupBox("Count area (optional) ⓘ")
+        box.setToolTip(
+            "Count only objects whose center is inside the drawn area, for example to skip damaged tissue. "
+            "Objects outside stay in objects.csv with in_count_area = False. No area: the whole image counts. "
+            "Not the same as cropping in step 2, which limits where objects are found."
+        )
+        row = QHBoxLayout(box)
+        for text, slot, tip in (
+            ("Draw", self._draw_count_area, "Draw polygons in the Count area layer: click the corners, double-click to finish."),
+            ("Use for this image", lambda: self._use_count_area(every_image=False), "Count only inside the drawn area in this image."),
+            ("Use for all images", lambda: self._use_count_area(every_image=True), "Count only inside the drawn area in every image, at the same pixel positions."),
+            ("Clear", self._clear_count_area, "Remove this image's count area, so the whole image counts."),
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+        return box
+
+    def _draw_count_area(self) -> None:
+        if self.shell.require_controller() is None or not self.shell._nav_ids:
+            return
+        layer = self.shell.count_area_layer()
+        self.shell.viewer.layers.selection.active = layer
+        layer.mode = "add_polygon"
+
+    def _use_count_area(self, every_image: bool) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or not self.shell._nav_ids:
+            return
+        polygons = drawn_polygons(self.shell.viewer.layers[COUNT_AREA_LAYER]) if COUNT_AREA_LAYER in self.shell.viewer.layers else []
+        if not polygons:
+            self.shell.message("Click Draw and outline the area to count first.")
+            return
+        image_id = self.shell._nav_ids[self.shell._nav_index]
+        targets = [record.image_id for record in controller.experiment.images] if every_image else [image_id]
+        self._set_count_area(targets, polygons)
+        self.shell.message(
+            "Every image now counts only inside this area." if every_image else "This image now counts only inside this area."
+        )
+
+    def _clear_count_area(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or not self.shell._nav_ids:
+            return
+        self._set_count_area([self.shell._nav_ids[self.shell._nav_index]], [])
+        self.shell.message("This image counts the whole image again.")
+
+    def _set_count_area(self, image_ids: list[str], polygons) -> None:
+        controller = self.shell.controller
+        image_id = self.shell._nav_ids[self.shell._nav_index]
+        try:
+            controller.set_count_area(image_ids, polygons)
+        except CellQuantError as exc:
+            self.shell.show_error(str(exc))
+            return
+        self.shell.show_count_area(controller.experiment.image(image_id))
+        self.shell._experiment_panel.refresh_table()
+        result = controller.last_results.get(image_id)
+        if result is not None:
+            self.shell.show_classification(result)
 
     def _pixel_level_box(self) -> QGroupBox:
         """Shown for a marker called by the percent of its pixels: the two numbers that decide it."""
