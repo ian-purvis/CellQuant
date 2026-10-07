@@ -10,10 +10,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 import json
+import re
 
 import numpy as np
 import pandas as pd
 
+from cellquant import count_area as count_areas
 from cellquant import progress
 from cellquant.__version__ import __version__
 from cellquant.edits import EditOperation, apply_edits, edited_object_ids, excluded_object_ids
@@ -77,6 +79,7 @@ def process_image(
     manual_edits: list | None = None,
     automated_labels: np.ndarray | None = None,
     segmentation_details: dict | None = None,
+    count_area: list | None = None,
 ) -> ImageResult:
     """Run segmentation, measurement, classification, and summaries for one image.
 
@@ -136,6 +139,7 @@ def process_image(
         run_id=run_id,
         filename=filename,
         user_metadata=user_metadata,
+        count_area=count_area,
     )
 
 
@@ -279,8 +283,13 @@ def assemble_result(
     run_id: str | None = None,
     filename: str | None = None,
     user_metadata: dict | None = None,
+    count_area: list | None = None,
 ) -> ImageResult:
-    """Classify and summarize measurements without rerunning segmentation."""
+    """Classify and summarize measurements without rerunning segmentation.
+
+    ``count_area`` (polygons in pixels, see ``cellquant.count_area``) limits the counts to
+    objects whose centroid is inside it; the others stay in the table, marked.
+    """
 
     parsed = load_recipe(recipe)
     operations = _parse_edits(edits)
@@ -296,6 +305,10 @@ def assemble_result(
         filename=resolved_filename,
         object_set=parsed.object_set.name,
     )
+    pixel_size = isotropic_pixel_size(loaded.pixel_size_x, loaded.pixel_size_y)
+    polygons = count_areas.clean(count_area)
+    objects = count_areas.mark_objects(objects, polygons, pixel_size)
+    area_counted = count_areas.area(polygons, tuple(np.asarray(labels).shape[-2:]), pixel_size)
     removed = set(excluded_object_ids(automated_labels, operations))
     touched = edited_object_ids(operations)
     crop_details = segmentation_details or {}
@@ -357,6 +370,7 @@ def assemble_result(
         reports=reports,
         metadata=metadata,
         n_unmeasured=count_unmeasured(with_phenotypes),
+        count_area=area_counted,
     )
     provenance = {
         "software": "cellquant",
@@ -406,6 +420,10 @@ def assemble_result(
         "manual_edits": [item.model_dump(mode="json") for item in operations],
         "excluded_object_ids": sorted(removed),
     }
+    if polygons:
+        # Only with a count area, so results without one are unchanged.
+        provenance["count_area"] = polygons
+        provenance["count_area_size"] = area_counted
     return ImageResult(
         labels=np.asarray(labels, dtype=np.int32),
         automated_labels=np.array(automated_labels, dtype=np.int32, copy=True),
@@ -418,6 +436,76 @@ def assemble_result(
         provenance=provenance,
         spatial_unit=provenance["spatial_unit"],
     )
+
+
+NO_OBJECTS_IN_COUNT_AREA = "No objects are inside the count area."
+
+
+def apply_count_area(result: ImageResult, count_area: list | None) -> ImageResult:
+    """Count only the objects inside ``count_area`` (none: the whole image). Nothing is measured again."""
+
+    polygons = count_areas.clean(count_area)
+    if polygons == (result.provenance.get("count_area") or []):
+        return result
+    pixel_size = isotropic_pixel_size(result.provenance.get("pixel_size_x_um"), result.provenance.get("pixel_size_y_um"))
+    shape = tuple(np.asarray(result.labels).shape[-2:])
+    area_counted = count_areas.area(polygons, shape, pixel_size)
+    objects = count_areas.mark_objects(result.objects, polygons, pixel_size)
+    parsed = load_recipe(result.provenance["recipe"])
+    reports, phenotype_counts, combination_counts, summary_warnings = summarize_image(
+        objects, parsed.reports, parsed.classifications
+    )
+    # Warnings about counts are made again below; the others (segmentation, Z, crop) are kept.
+    kept = [
+        text
+        for text in result.qc.warnings
+        if text not in _COUNT_WARNINGS and not _UNMEASURED_WARNING.match(text)
+    ]
+    qc = _qc_report(
+        result.labels,
+        objects,
+        result.automated_labels,
+        list(dict.fromkeys(kept + summary_warnings)),
+        result.qc.percent_excluded_by_size,
+    )
+    provenance = dict(result.provenance)
+    provenance.pop("count_area", None)
+    provenance.pop("count_area_size", None)
+    if polygons:
+        provenance["count_area"] = polygons
+        provenance["count_area_size"] = area_counted
+    provenance["warnings"] = qc.warnings
+    summary = image_summary_row(
+        sample_name=str(provenance.get("sample_name") or ""),
+        filename=str(provenance.get("filename") or ""),
+        image_id=str(provenance.get("image_id") or ""),
+        n_objects=qc.n_objects,
+        qc_status=qc.status,
+        reports=reports,
+        metadata=dict(provenance.get("user_metadata") or {}),
+        n_unmeasured=count_unmeasured(objects),
+        count_area=area_counted,
+    )
+    return ImageResult(
+        labels=result.labels,
+        automated_labels=result.automated_labels,
+        objects=objects,
+        summary=summary,
+        phenotype_counts=phenotype_counts,
+        combination_counts=combination_counts,
+        reports=reports,
+        qc=qc,
+        provenance=provenance,
+        spatial_unit=result.spatial_unit,
+    )
+
+
+_COUNT_WARNINGS = {
+    "Segmentation returned no objects.",
+    "All detected objects were excluded or could not be measured.",
+    NO_OBJECTS_IN_COUNT_AREA,
+}
+_UNMEASURED_WARNING = re.compile(r"^\d+ objects? could not be measured and (were|was) left out of all counts\.$")
 
 
 # Provenance that describes where a segmentation came from; kept when the same labels are measured again.
@@ -474,6 +562,7 @@ def remeasure_persisted_result(
     run_id: str | None = None,
     filename: str | None = None,
     user_metadata: dict | None = None,
+    count_area: list | None = None,
 ) -> ImageResult:
     """Measure a saved segmentation again: apply edits to its automated labels, measure, classify.
 
@@ -500,6 +589,7 @@ def remeasure_persisted_result(
         manual_edits=manual_edits,
         automated_labels=persisted.automated_labels,
         segmentation_details=segmentation_details_of(persisted),
+        count_area=count_area,
     )
     return carry_segmentation_provenance(persisted, result)
 
@@ -530,6 +620,7 @@ def reclassify_result(result: ImageResult, recipe: Recipe | dict | str | Path) -
         reports=reports,
         metadata=metadata,
         n_unmeasured=count_unmeasured(with_phenotypes),
+        count_area=result.provenance.get("count_area_size"),
     )
     provenance = dict(result.provenance)
     provenance["recipe"] = parsed.canonical_dict()
@@ -602,11 +693,15 @@ def _qc_report(
         for column in ("excluded", "unmeasured"):
             if column in objects.columns:
                 counted &= ~objects[column].fillna(False).astype(bool).to_numpy()
+        outside_area = count_areas.outside(objects)
+        counted &= ~outside_area
         active = objects.loc[counted]
     n_objects = int(len(active))
     automated_count = int(np.count_nonzero(np.unique(automated_labels))) if automated_labels.size else 0
     if automated_count == 0:
         collected.append("Segmentation returned no objects.")
+    elif n_objects == 0 and len(objects) and bool(outside_area.any()):
+        collected.append(NO_OBJECTS_IN_COUNT_AREA)
     elif n_objects == 0:
         collected.append("All detected objects were excluded or could not be measured.")
     if n_objects == 0:
@@ -689,7 +784,7 @@ def measurement_values(result: ImageResult, recipe: Recipe) -> pd.DataFrame:
 
 def _measurement_columns(measured: pd.DataFrame, recipe: Recipe) -> pd.DataFrame:
     drop = {item.id for item in recipe.classifications}
-    drop.update({"phenotype", "excluded", "unmeasured", "manual_edit_status", "z_flag", "at_crop_edge"})
+    drop.update({"phenotype", "excluded", "unmeasured", "manual_edit_status", "z_flag", "at_crop_edge", "in_count_area"})
     columns = [column for column in measured.columns if column not in drop]
     return measured.loc[:, columns].copy()
 
