@@ -144,6 +144,10 @@ def test_new_experiment_keeps_results_out_of_the_image_folder(tmp_path: Path, mo
         assert [record.relative_path for record in shell.controller.experiment.images] == ["Retina 1/a.tif"]
         assert (results / "experiment.json").is_file()
         assert sorted(path.name for path in (tmp_path / "images").rglob("*")) == ["Retina 1", "a.tif"]
+        # New experiment only makes new ones: a folder that already has one is not opened instead.
+        shell.controller = None
+        shell.new_experiment()
+        assert shell.controller is None
     finally:
         viewer.close()
 
@@ -273,6 +277,11 @@ def test_batch_progress_counts_images_and_slices(tmp_path: Path):
         seen = set()
         shell.start_batch(None)
         assert shell._footer.pause.isEnabled() and shell._footer.cancel.isEnabled()
+        assert not shell._footer.resume.isEnabled()
+        shell._footer.pause.click()
+        assert shell._batch.paused and shell._footer.resume.isEnabled() and not shell._footer.pause.isEnabled()
+        shell._footer.resume.click()
+        assert not shell._batch.paused and shell._footer.pause.isEnabled() and not shell._footer.resume.isEnabled()
         end = time.time() + 60
         while shell._batch is not None and time.time() < end:
             QApplication.processEvents()
@@ -627,11 +636,15 @@ def test_a_popped_out_panel_has_minimize_maximize_and_reset(window):
         QApplication.processEvents()
         time.sleep(0.02)
     assert dock.titleBarWidget() is header
-    assert [button.toolTip() for button in header.buttons.values()] == ["Minimize", "Maximize", "Reset", "Close"]
+    assert [button.toolTip() for button in header.buttons.values()] == ["Minimize", "Maximize", "Restore size", "Reset", "Close"]
+    assert not header.buttons["restore"].isEnabled()
     header.buttons["minimize"].click()
     assert header.minimized and not dock.widget().isVisibleTo(dock)
-    header.buttons["minimize"].click()
+    # Each button does one thing: Minimize again is unavailable; Restore size unfolds.
+    assert not header.buttons["minimize"].isEnabled() and header.buttons["restore"].isEnabled()
+    header.buttons["restore"].click()
     assert not header.minimized and dock.widget().isVisibleTo(dock)
+    assert header.buttons["minimize"].isEnabled() and not header.buttons["restore"].isEnabled()
     header.buttons["reset"].click()
     QApplication.processEvents()
     assert not dock.isFloating()
