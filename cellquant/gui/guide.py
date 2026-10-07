@@ -380,17 +380,13 @@ class StartPage(QWidget):
             button.setMinimumHeight(32)
             button.clicked.connect(slot)
             grid.addWidget(button)
-        from cellquant.hpc import feature_enabled
-
-        self.hpc_button = None
-        if feature_enabled():
-            self.hpc_button = QPushButton("HPC prep…")
-            self.hpc_button.setToolTip(
-                "Prepare the open experiment for a cluster GPU job, get the commands to run there, and import the results."
-            )
-            self.hpc_button.setMinimumHeight(32)
-            self.hpc_button.clicked.connect(window.open_hpc_prep)
-            grid.addWidget(self.hpc_button)
+        self.hpc_button = QPushButton("HPC prep…")
+        self.hpc_button.setToolTip(
+            "Prepare the open experiment for a cluster GPU job, get the commands to run there, and import the results."
+        )
+        self.hpc_button.setMinimumHeight(32)
+        self.hpc_button.clicked.connect(window.open_hpc_prep)
+        grid.addWidget(self.hpc_button)
         layout.addWidget(self.buttons)
         self.experiment = QLabel("")
         self.experiment.setWordWrap(True)
@@ -432,8 +428,7 @@ class StartPage(QWidget):
         target = STEPS[self._next_index]
         self.continue_button.setText(f"Continue: {target.number}. {target.title} →")
         self.continue_button.setEnabled(controller is not None)
-        if self.hpc_button is not None:
-            self.hpc_button.setEnabled(controller is not None)
+        self.hpc_button.setEnabled(controller is not None)
 
     def _continue(self) -> None:
         self.window.go_to_step(self._next_index)
