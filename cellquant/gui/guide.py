@@ -269,6 +269,19 @@ def step_states(window) -> list[StepState]:
 # Widgets
 
 
+def add_range_tip(box, unit: str = "") -> None:
+    """Append the spin box's own minimum and maximum to its hover text, so the two cannot disagree."""
+
+    box.setProperty("range_unit", unit)  # apply_help re-adds the range after replacing the text
+    shown = box.suffix() or (f" {unit}" if unit else "")
+    low, high = f"{box.minimum():g}", f"{box.maximum():g}"
+    line = f"Range: {low} to {high}{shown}"
+    if box.specialValueText():
+        line += f" ({low} = {box.specialValueText()})"
+    tip = box.toolTip()
+    box.setToolTip(f"{tip}\n{line}" if tip else line)
+
+
 def _card(text: str, color: str) -> QLabel:
     label = QLabel(text)
     label.setWordWrap(True)
@@ -456,6 +469,7 @@ class MarkerSetup(QGroupBox):
         self.min_percent.setSuffix(" %")
         self.min_percent.setValue(DEFAULT_MIN_PERCENT)
         self.min_percent.setToolTip("Minimum percent of a cell's pixels that must be at or above the pixel level.")
+        add_range_tip(self.min_percent)
         rule_form.addRow("Positive when", self.rule)
         rule_form.addRow("Min % of cell", self.min_percent)
         self.rule.currentIndexChanged.connect(lambda _index: self._rule_changed())
@@ -666,6 +680,8 @@ def apply_help(window) -> None:
         widget = getattr(panel, widget_name, None) if panel is not None else None
         if widget is not None:
             widget.setToolTip(text)
+            if widget.property("range_unit") is not None:
+                add_range_tip(widget, widget.property("range_unit"))
     for panel_name in ("_objects_panel", "_review_panel", "_experiment_panel", "_results_panel"):
         panel = getattr(window, panel_name, None)
         if panel is None:

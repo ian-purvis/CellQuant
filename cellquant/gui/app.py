@@ -2030,6 +2030,7 @@ class ObjectsPanel(QWidget):
         self.threshold.setMaximum(1e9)
         self.sigma = QDoubleSpinBox()
         self.sigma.setMaximum(100)
+        guide.add_range_tip(self.sigma, "px")
         self.min_area = QDoubleSpinBox()
         self.max_area = QDoubleSpinBox()
         for box in (self.min_area, self.max_area):
@@ -2049,6 +2050,7 @@ class ObjectsPanel(QWidget):
             "Typical nucleus diameter in micrometres. Most nuclei are about 5–7 µm across. "
             "Used as Cellpose's size hint when pixel size is known, and to suggest a debris floor in µm²."
         )
+        guide.add_range_tip(self.nucleus_diameter_um, "µm")
         self.size_hint = QLabel("")
         self.size_hint.setWordWrap(True)
         self.nucleus_diameter_um.valueChanged.connect(lambda _value: self._update_size_hint())
@@ -2071,6 +2073,7 @@ class ObjectsPanel(QWidget):
         self.z_slice.setRange(0, 1000)
         self.z_slice.setSpecialValueText("middle")
         self.z_slice.setToolTip("Which slice to analyze (1 = first). 'middle' uses the middle slice of each image.")
+        guide.add_range_tip(self.z_slice)
         self.z_slice.setEnabled(False)
         z_row = QHBoxLayout()
         z_row.addWidget(self.z_stack, 1)
@@ -2087,6 +2090,7 @@ class ObjectsPanel(QWidget):
             "(intersection over union). Lower: fewer nuclei split across slices, but stacked nuclei may join. "
             "Higher: the reverse. 0.25 is Cellpose's usual value."
         )
+        guide.add_range_tip(self.z_link)
         self.z_scale = QComboBox()
         self.z_scale.addItem("Whole stack (recommended)", "stack")
         self.z_scale.addItem("Each slice separately", "slice")
@@ -2097,6 +2101,7 @@ class ObjectsPanel(QWidget):
         self.z_min_slices = QSpinBox()
         self.z_min_slices.setRange(1, 100)
         self.z_min_slices.setToolTip("Remove objects found in fewer slices than this. 1 keeps everything; one-slice objects are flagged either way.")
+        guide.add_range_tip(self.z_min_slices, "slices")
         self.z3d_box = QWidget()
         z3d = QFormLayout(self.z3d_box)
         z3d.setContentsMargins(0, 0, 0, 0)
@@ -2197,6 +2202,7 @@ class ObjectsPanel(QWidget):
         self.crop_margin.setRange(0, 1000)
         self.crop_margin.setValue(50.0)
         self.crop_margin.setSuffix(" µm")
+        guide.add_range_tip(self.crop_margin)
         self.crop_warning = QLabel("")
         self.crop_warning.setWordWrap(True)
         self.crop_warning.setStyleSheet("QLabel { color: #b9770e; }")
@@ -2234,10 +2240,12 @@ class ObjectsPanel(QWidget):
             "Optional Cellpose diameter in pixels. Leave at 0 to convert Nucleus diameter (µm) "
             "with each image's own pixel size, or to let Cellpose decide when pixel size is unknown."
         )
+        guide.add_range_tip(self.diameter, "px")
         self.flow = QDoubleSpinBox()
         self.flow.setValue(0.4)
         self.cellprob = QDoubleSpinBox()
         self.cellprob.setRange(-6, 6)
+        guide.add_range_tip(self.cellprob)
         self.watershed.toggled.connect(lambda _checked: self._method_changed())
         self.object_name.setToolTip("The name of the objects in the results, for example Nuclei.")
         advanced.addRow("Object set name", self.object_name)
@@ -2746,6 +2754,7 @@ class MeasurementsPanel(QWidget):
         self.region.currentIndexChanged.connect(lambda _index: self._statistic_changed())
         self.distance = QDoubleSpinBox()
         self.distance.setMaximum(10000)
+        guide.add_range_tip(self.distance, "px")
         self.inner = QDoubleSpinBox()
         self.outer = QDoubleSpinBox()
         self.outer.setValue(2)
@@ -3245,6 +3254,7 @@ class ReviewPanel(QWidget):
         self.min_percent.setSuffix(" %")
         self.min_percent.setKeyboardTracking(False)
         self.min_percent.setToolTip("A cell is positive when at least this percent of its pixels pass the pixel level.")
+        guide.add_range_tip(self.min_percent)
         self.min_percent.valueChanged.connect(self._min_percent_changed)
         self.pixel_level = QDoubleSpinBox()
         self.pixel_level.setRange(-1e12, 1e12)
