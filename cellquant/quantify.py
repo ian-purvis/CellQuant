@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from skimage.measure import regionprops
 
+from cellquant.count_area import outside
 from cellquant.errors import RecipeValidationError
 from cellquant.recipe import ClassificationSpec, MeasurementSpec, ReportSpec
 from cellquant.regions import create_measurement_region, ring_from_background
@@ -177,13 +178,14 @@ def classify_objects(
 
 
 def count_unmeasured(table: pd.DataFrame) -> int:
-    """Objects that could not be measured. Objects the user deleted are not counted."""
+    """Objects that could not be measured. Deleted objects and objects outside the count area are not counted."""
 
     if table.empty or "unmeasured" not in table.columns:
         return 0
     flagged = table["unmeasured"].fillna(False).astype(bool).to_numpy()
     if "excluded" in table.columns:
         flagged = flagged & ~table["excluded"].fillna(False).astype(bool).to_numpy()
+    flagged = flagged & ~outside(table)
     return int(flagged.sum())
 
 
@@ -314,12 +316,17 @@ def image_summary_row(
     reports: pd.DataFrame,
     metadata: dict | None = None,
     n_unmeasured: int = 0,
+    count_area: float | None = None,
 ) -> pd.DataFrame:
     row: dict[str, object] = {
         "sample_name": sample_name,
         "filename": filename,
         "image_id": image_id,
         "total_objects": n_objects,
+    }
+    if count_area is not None:
+        row["count_area"] = count_area  # in the object table's area unit (µm² or px²)
+    row |= {
         "n_unmeasured": n_unmeasured,
         "qc_status": qc_status,
     }
@@ -341,7 +348,7 @@ def _counted_objects(
 ) -> tuple[pd.DataFrame, int]:
     """Objects that count, and how many were left out for lack of a measurement.
 
-    Deleted objects are dropped without being counted as unmeasured.
+    Deleted objects and objects outside the count area are dropped without being counted as unmeasured.
     """
 
     if table.empty:
@@ -349,6 +356,7 @@ def _counted_objects(
     keep = np.ones(len(table), dtype=bool)
     if "excluded" in table.columns:
         keep &= ~table["excluded"].fillna(False).astype(bool).to_numpy()
+    keep &= ~outside(table)
     columns = [spec.id for spec in classifications if spec.id in table.columns]
     unmeasured = _unmeasured_mask(table, columns) if columns else np.zeros(len(table), dtype=bool)
     n_unmeasured = int((keep & unmeasured).sum())
