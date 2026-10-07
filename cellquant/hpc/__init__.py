@@ -12,20 +12,5 @@ run the generated commands. See docs/HPC_PREP_AND_SUBMISSION.md.
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 SCHEMA_VERSION = 1
 BUNDLE_KIND = "cellquant_v2_hpc"
-
-
-def feature_enabled() -> bool:
-    """HPC prep is shown in the window only when switched on.
-
-    Set the environment variable ``CELLQUANT_ENABLE_HPC=1``, or create an empty
-    file ``.cellquant/enable_hpc`` in your home folder.
-    """
-
-    if os.environ.get("CELLQUANT_ENABLE_HPC", "").strip().lower() in {"1", "true", "yes", "on"}:
-        return True
-    return (Path.home() / ".cellquant" / "enable_hpc").is_file()
