@@ -128,7 +128,7 @@ STEPS = (
         "<span style='color:#d43fd4'><b>magenta</b></span> when negative (change the colors under the slider). "
         "Drag the <b>Cutoff</b> slider, or type a number beside it, to move the cutoff (one cutoff for "
         "every image). For the percent-of-cell rule the slider is the minimum percent; change the "
-        "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> when it looks right, then <b>Next image ▶</b> at the bottom. "
+        "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> when it looks right; it then opens the next image to check (key <b>A</b>). "
         "Hover over a button to see what it does.",
         "The green objects are the ones you would call positive by eye.",
         "Drag <b>Cutoff</b> until green = positive, then <b>Approve</b>.",
@@ -187,12 +187,11 @@ HELP = {
 BUTTON_HELP = {
     "Preview": "Try the settings on the area you are looking at. Nothing is saved.",
     "Run": "Find objects in this image and measure them.",
-    "Delete object": "Click an object in the image first. This removes it from the counts (for debris or a bad outline). Restore object brings it back.",
+    "Delete object": "Click an object in the image first. This removes it from the counts (for debris or a bad outline). Restore object brings it back. (Del)",
     "Restore object": "Bring back a deleted object.",
-    "Undo": "Undo the last edit.",
+    "Undo": "Undo the last edit. (Ctrl+Z)",
     "Record drawn edits": "Save outlines you painted by hand in the Objects layer.",
-    "Approve": "Mark this image as checked and correct. Editing it later clears the approval.",
-    "Exclude image": "Leave this image out of the results.",
+    "Approve": "Mark this image as checked and correct. Editing it later clears the approval. Opens the next unchecked image. (A)",
 }
 
 
