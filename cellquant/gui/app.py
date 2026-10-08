@@ -34,12 +34,14 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
     QTabWidget,
+    QToolButton,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -571,7 +573,8 @@ class CellQuantWindow:
         ]
         self._tabs.addTab(self._start_page, "Start")
         for page, step in zip(self._step_pages, guide.STEPS):
-            self._tabs.addTab(page, step.tab)
+            index = self._tabs.addTab(page, str(step.number))
+            self._tabs.setTabToolTip(index, step.name)
         self._tabs.setMinimumWidth(460)
         self._analysis_bar = AnalysisBar(self)
         self._dock = QWidget()
@@ -660,7 +663,7 @@ class CellQuantWindow:
         for page, state, step in zip(self._step_pages, states, guide.STEPS):
             page.update_state(state)
             index = self._tabs.indexOf(page)
-            self._tabs.setTabText(index, f"{step.tab} ✓" if state.done else step.tab)
+            self._tabs.setTabText(index, f"{step.number} ✓" if state.done else str(step.number))
 
     def message(self, text: str) -> None:
         self._footer.message(text)
@@ -3859,27 +3862,31 @@ class AnalysisBar(QWidget):
         )
         self.choice.currentIndexChanged.connect(self._chosen)
         top.addWidget(self.choice, 1)
-        plan = QPushButton("Plan…")
-        plan.setToolTip(
-            "Open the Plan: choose which images each analysis runs and which channel it finds objects in, "
-            "for all images, a channel layout, a folder, or single images."
-        )
-        plan.clicked.connect(shell.show_plan)
-        top.addWidget(plan)
-        layout.addLayout(top)
-        buttons = QHBoxLayout()
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         for text, slot, tip in (
+            (
+                "Plan…",
+                shell.show_plan,
+                "Open the Plan: choose which images each analysis runs and which channel it finds objects in, "
+                "for all images, a channel layout, a folder, or single images.",
+            ),
             ("New analysis…", self._new, "A new analysis that starts with a copy of the current settings."),
             ("One per channel…", self._per_channel, "One analysis per channel: the current settings, finding objects in each channel."),
             ("Rename…", self._rename, "Rename the analysis shown."),
             ("Remove", self._remove, "Take the analysis shown off the list. Its saved results stay in the experiment folder."),
         ):
-            button = QPushButton(text)
-            button.setToolTip(tip)
-            button.clicked.connect(slot)
-            buttons.addWidget(button)
-        layout.addLayout(buttons)
-        self.remove_button = buttons.itemAt(3).widget()
+            action = menu.addAction(text)
+            action.setToolTip(tip)
+            action.triggered.connect(lambda _checked=False, slot=slot: slot())
+            self.remove_button = action
+        menu_button = QToolButton()
+        menu_button.setText("Analyses ▾")
+        menu_button.setToolTip("Plan, add, rename or remove analyses.")
+        menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_button.setMenu(menu)
+        top.addWidget(menu_button)
+        layout.addLayout(top)
         self.refresh()
 
     def refresh(self) -> None:
