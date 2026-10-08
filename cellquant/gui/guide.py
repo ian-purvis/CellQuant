@@ -56,6 +56,11 @@ class Step:
     success: str
     short: str = ""  # the one line shown; todo and success are its hover text
 
+    @property
+    def name(self) -> str:
+        """The tab name without its number, e.g. "Find objects"."""
+        return self.tab.split(" ", 1)[1]
+
 
 STEPS = (
     Step(
@@ -320,7 +325,7 @@ class StepPage(QWidget):
         self.panel_scroll.setSizePolicy(ignored, expanding)
         panel.setSizePolicy(ignored, expanding)
         if advanced:
-            self.advanced_toggle = QCheckBox("Show all settings")
+            self.advanced_toggle = QCheckBox("Advanced")
             self.advanced_toggle.toggled.connect(self.panel_scroll.setVisible)
             self.panel_scroll.setVisible(False)
             layout.addWidget(self.advanced_toggle)
@@ -339,7 +344,7 @@ class StepPage(QWidget):
         self.blocker = QLabel("")
         self.blocker.setWordWrap(True)
         self.blocker.setStyleSheet("QLabel { background: rgba(224, 138, 0, 0.18); border-radius: 4px; padding: 4px; font-weight: bold; }")
-        self.next = QPushButton(f"Next: {STEPS[index + 1].title} →" if index + 1 < len(STEPS) else "Back to Start")
+        self.next = QPushButton(f"Next: {STEPS[index + 1].name} →" if index + 1 < len(STEPS) else "Back to Start")
         self.next.clicked.connect(lambda: window.go_to_step(index + 1) if index + 1 < len(STEPS) else window.go_to_start())
         bar.addWidget(self.back)
         bar.addWidget(self.blocker, 1)
