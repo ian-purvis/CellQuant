@@ -56,6 +56,11 @@ class Step:
     success: str
     short: str = ""  # the one line shown; todo and success are its hover text
 
+    @property
+    def name(self) -> str:
+        """The tab name without its number, e.g. "Find objects"."""
+        return self.tab.split(" ", 1)[1]
+
 
 STEPS = (
     Step(
@@ -91,10 +96,10 @@ STEPS = (
         "<b>Min size</b> in µm² drops debris.<br>"
         "The box at the top says whether an NVIDIA GPU was found and whether Cellpose will use it.<br>"
         "Click <b>Preview</b> to try the settings on the area you are looking at, then "
-        "<b>Run this image</b> at the bottom.",
+        "<b>Run this image</b> in the Run window.",
         "Outlines sit on the nuclei, with few missed, merged, or split. If not, change the settings "
         "and run again. Zoom in to check. In 3D, move the slice slider under the image to check every slice.",
-        "Pick the nuclear channel, <b>Preview</b>, then <b>Run this image</b>.",
+        "Pick the nuclear channel, <b>Preview</b>, then <b>Run this image</b> (Run window).",
     ),
     Step(
         3,
@@ -128,7 +133,7 @@ STEPS = (
         "<span style='color:#d43fd4'><b>magenta</b></span> when negative (change the colors under the slider). "
         "Drag the <b>Cutoff</b> slider, or type a number beside it, to move the cutoff (one cutoff for "
         "every image). For the percent-of-cell rule the slider is the minimum percent; change the "
-        "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> when it looks right, then <b>Next image ▶</b> at the bottom. "
+        "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> when it looks right; it then opens the next image to check (key <b>A</b>). "
         "Hover over a button to see what it does.",
         "The green objects are the ones you would call positive by eye.",
         "Drag <b>Cutoff</b> until green = positive, then <b>Approve</b>.",
@@ -187,12 +192,11 @@ HELP = {
 BUTTON_HELP = {
     "Preview": "Try the settings on the area you are looking at. Nothing is saved.",
     "Run": "Find objects in this image and measure them.",
-    "Delete object": "Click an object in the image first. This removes it from the counts (for debris or a bad outline). Restore object brings it back.",
+    "Delete object": "Click an object in the image first. This removes it from the counts (for debris or a bad outline). Restore object brings it back. (Del)",
     "Restore object": "Bring back a deleted object.",
-    "Undo": "Undo the last edit.",
+    "Undo": "Undo the last edit. (Ctrl+Z)",
     "Record drawn edits": "Save outlines you painted by hand in the Objects layer.",
-    "Approve": "Mark this image as checked and correct. Editing it later clears the approval.",
-    "Exclude image": "Leave this image out of the results.",
+    "Approve": "Mark this image as checked and correct. Editing it later clears the approval. Opens the next unchecked image. (A)",
 }
 
 
@@ -290,6 +294,9 @@ def _card(text: str, color: str) -> QLabel:
     return label
 
 
+_BLOCKER_STYLE = "QLabel { background: rgba(224, 138, 0, 0.18); border-radius: 4px; padding: 4px; font-weight: bold; }"
+
+
 class StepPage(QWidget):
     """One numbered step: instructions, optional quick actions, the panel, and Back / Next."""
 
@@ -320,7 +327,7 @@ class StepPage(QWidget):
         self.panel_scroll.setSizePolicy(ignored, expanding)
         panel.setSizePolicy(ignored, expanding)
         if advanced:
-            self.advanced_toggle = QCheckBox("Show all settings")
+            self.advanced_toggle = QCheckBox("Advanced")
             self.advanced_toggle.toggled.connect(self.panel_scroll.setVisible)
             self.panel_scroll.setVisible(False)
             layout.addWidget(self.advanced_toggle)
@@ -338,8 +345,8 @@ class StepPage(QWidget):
         self.back.clicked.connect(lambda: window.go_to_step(index - 1))
         self.blocker = QLabel("")
         self.blocker.setWordWrap(True)
-        self.blocker.setStyleSheet("QLabel { background: rgba(224, 138, 0, 0.18); border-radius: 4px; padding: 4px; font-weight: bold; }")
-        self.next = QPushButton(f"Next: {STEPS[index + 1].title} →" if index + 1 < len(STEPS) else "Back to Start")
+        self.blocker.setStyleSheet(_BLOCKER_STYLE)
+        self.next = QPushButton(f"Next: {STEPS[index + 1].name} →" if index + 1 < len(STEPS) else "Back to Start")
         self.next.clicked.connect(lambda: window.go_to_step(index + 1) if index + 1 < len(STEPS) else window.go_to_start())
         bar.addWidget(self.back)
         bar.addWidget(self.blocker, 1)
@@ -349,7 +356,10 @@ class StepPage(QWidget):
     def update_state(self, state: StepState) -> None:
         self.next.setEnabled(not state.blocker)
         self.blocker.setText(state.blocker)
+        # Empty notes show no colored bar.
+        self.blocker.setStyleSheet(_BLOCKER_STYLE if state.blocker else "")
         self.hint.setText(state.hint)
+        self.hint.setVisible(bool(state.hint))
 
 
 class StartPage(QWidget):

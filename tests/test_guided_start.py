@@ -115,7 +115,7 @@ def test_guide_describes_the_buttons_that_exist():
         "Try practice images", "New experiment", "Open experiment", "Add images", "Add folder",
         "Set sizes (µm)", "Use recommended", "Include shown", "Leave out shown", "Include only selected", "Show ND2 only", "Preview", "Run this image", "Set up markers", "Display objects by",
         "Delete object", "Restore object", "Undo", "Approve", "Next image ▶", "Run all images", "Export results",
-        "Show all settings",
+        "Advanced",
     ]:
         assert f"**{name}" in guide, name
         assert name in code, name

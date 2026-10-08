@@ -76,7 +76,7 @@ Modeled on CellQuant v1's START_HERE guide, hover help, and "Continue" buttons.
 - The panels are now numbered steps: **1 Images → 2 Find objects → 3 Markers → 4 Check → 5 Results**. Each has "What to do", "Success check", and Back / Next. Next is disabled until the step is done, with the reason beside it. Finished steps get a ✓.
 - **Practice images** (`cellquant/practice.py`): 3 images, 40 nuclei each, two markers, known answers written to README.txt.
 - **Quick marker setup** in step 3 (`cellquant/quicksetup.py`): one mean-intensity measurement, positive/negative call and result row per ticked channel, plus double positives. It measures the image and proposes starting cutoffs (Otsu's criterion evaluated exactly on the object values, cutoff halfway across the gap). The histogram form of Otsu put the cutoff just below the brightest dim object on the practice data.
-- **Results in words** in step 5 ("Marker A+ among all objects: 10 of 40 (25.0%)"), with **Run all images** and **Export results…** as the main actions. The manual settings for steps 3 and 5 are under **Show all settings (advanced)**.
+- **Results in words** in step 5 ("Marker A+ among all objects: 10 of 40 (25.0%)"), with **Run all images** and **Export results…** as the main actions. The manual settings for steps 3 and 5 are under **Advanced**.
 - Hover help on the main controls (`HELP` in `cellquant/gui/guide.py`); plain button names ("Run this image", "Next image ▶"); channel order shown as "Channel 1 = …" from each file; statuses in words; area shown in µm².
 - `README.md` and `docs/START_HERE.md` (also opened from the Start tab; `cellquant/gui/START_HERE.md` is a copy, kept identical by a test).
 
