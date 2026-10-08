@@ -96,10 +96,10 @@ STEPS = (
         "<b>Min size</b> in µm² drops debris.<br>"
         "The box at the top says whether an NVIDIA GPU was found and whether Cellpose will use it.<br>"
         "Click <b>Preview</b> to try the settings on the area you are looking at, then "
-        "<b>Run this image</b> in the Run window.",
+        "<b>Run this image</b>.",
         "Outlines sit on the nuclei, with few missed, merged, or split. If not, change the settings "
         "and run again. Zoom in to check. In 3D, move the slice slider under the image to check every slice.",
-        "Pick the nuclear channel, <b>Preview</b>, then <b>Run this image</b> (Run window).",
+        "Pick the nuclear channel, <b>Preview</b>, then <b>Run this image</b>.",
     ),
     Step(
         3,
@@ -142,9 +142,9 @@ STEPS = (
         6,
         "6 Results",
         "Run everything and save the results",
-        "Click <b>Run all images</b> in the Run window at the bottom to apply the same settings to every image. "
+        "Click <b>Run all images</b> to apply the same settings to every image. "
         "Then click <b>Export results</b> and choose a folder. With several analyses in the list at the top, "
-        "<b>Run all analyses</b> (bottom) and <b>Export all analyses</b> do the same for each of them.",
+        "<b>Run all analyses</b> and <b>Export all analyses</b> do the same for each of them.",
         "The export folder has <i>objects.csv</i> (one row per object) and <i>image_summary.csv</i> "
         "(one row per image, with the percentages). Both open in Excel, Prism, or R.",
         "<b>Run all images</b>, then <b>Export results</b>.",
@@ -561,7 +561,21 @@ class ResultsSummary(QGroupBox):
         self.summary.setWordWrap(True)
         self.summary.setTextFormat(Qt.RichText)
         layout.addWidget(self.summary)
-        # Running is in the Run window at the bottom (Run all images, Run all analyses).
+        self.run_all = QPushButton("Run all images")
+        self.run_all.setMinimumHeight(32)
+        self.run_all.setToolTip("Run every included image with the current settings.")
+        self.run_all.clicked.connect(lambda: window._results_panel._run_all())
+        layout.addWidget(self.run_all)
+        # Shown when the experiment has more than one analysis (the list at the top of the panel).
+        self.run_analyses = QPushButton("Run all analyses")
+        self.run_analyses.setMinimumHeight(32)
+        self.run_analyses.setToolTip(
+            "Run each analysis on the images ticked for it in the Plan (every included image unless you "
+            "changed the Plan), one analysis after another."
+        )
+        self.run_analyses.clicked.connect(window.run_all_analyses)
+        self.run_analyses.setVisible(False)
+        layout.addWidget(self.run_analyses)
         export = QPushButton("Export results…")
         export.setMinimumHeight(32)
         export.setToolTip("Save objects.csv, image_summary.csv and the settings to a folder you choose.")
@@ -618,6 +632,8 @@ class ResultsSummary(QGroupBox):
 
     def show_analysis_actions(self, several: bool) -> None:
         self.export_analyses.setVisible(several)
+        self.run_analyses.setVisible(several)
+        self.run_all.setText("Run all images (this analysis)" if several else "Run all images")
 
     def show_analyses(self, reports) -> None:
         lines = []
