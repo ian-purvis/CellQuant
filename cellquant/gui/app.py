@@ -3485,6 +3485,7 @@ class ReviewPanel(QWidget):
         if index >= 0:
             self.display.setCurrentIndex(index)
         self.display.blockSignals(False)
+        self.counts.setText("")  # filled in below when a marker is shown; clears "Not run yet."
         self._show_cutoff(result)
         area = "—" if result.qc.median_area is None else f"{result.qc.median_area:.2f}"
         border = result.qc.fraction_touching_border
