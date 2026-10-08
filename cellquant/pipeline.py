@@ -80,11 +80,14 @@ def process_image(
     automated_labels: np.ndarray | None = None,
     segmentation_details: dict | None = None,
     count_area: list | None = None,
+    previous: ImageResult | None = None,
 ) -> ImageResult:
     """Run segmentation, measurement, classification, and summaries for one image.
 
     Pass ``automated_labels`` to reuse a segmentation. Pass a cached measurement
     table to ``assemble_result`` when only classification or summaries change.
+    Pass ``previous`` (the result of the same image and segmentation before new
+    edits) to measure again only the objects the edits can change.
     """
 
     parsed = load_recipe(recipe)
@@ -107,23 +110,27 @@ def process_image(
         automated = np.asarray(automated_labels, dtype=np.int32)
     final_labels = apply_edits(automated, edits)
     progress.update("Measuring markers in each object")
-    measured, measure_warnings = measure_objects(
-        loaded.data,
-        final_labels,
-        parsed.measurements,
-        pixel_size=pixel_size,
-        pixel_size_z=loaded.pixel_size_z,
-    )
-    measured, measure_warnings = _append_excluded_objects(
-        measured,
-        measure_warnings,
-        loaded.data,
-        automated,
-        edits,
-        parsed.measurements,
-        pixel_size,
-        loaded.pixel_size_z,
-    )
+    changed = _measure_changed(loaded, parsed, automated, final_labels, edits, previous, pixel_size)
+    if changed is not None:
+        measured, measure_warnings = changed
+    else:
+        measured, measure_warnings = measure_objects(
+            loaded.data,
+            final_labels,
+            parsed.measurements,
+            pixel_size=pixel_size,
+            pixel_size_z=loaded.pixel_size_z,
+        )
+        measured, measure_warnings = _append_excluded_objects(
+            measured,
+            measure_warnings,
+            loaded.data,
+            automated,
+            edits,
+            parsed.measurements,
+            pixel_size,
+            loaded.pixel_size_z,
+        )
     return assemble_result(
         loaded=loaded,
         recipe=parsed,
@@ -759,6 +766,138 @@ def _append_excluded_objects(
     combined = pd.concat([measured, extra], ignore_index=True)
     combined = combined.sort_values("object_id").reset_index(drop=True)
     return combined, warnings + extra_warnings
+
+
+def _measure_changed(
+    loaded: LoadedImage,
+    recipe: Recipe,
+    automated: np.ndarray,
+    final_labels: np.ndarray,
+    edits: list[EditOperation],
+    previous: ImageResult | None,
+    pixel_size: float | None,
+) -> tuple[pd.DataFrame, list[str]] | None:
+    """Measure again only the objects near pixels that changed since ``previous``; keep the other rows.
+
+    Objects are measured in a window around them that is wide enough for their regions and
+    local rings, so their values match a full measurement. None (measure everything) when
+    there is no usable previous result, or a global background makes every object depend on
+    every other one.
+    """
+
+    if previous is None or previous.labels.shape != final_labels.shape or previous.automated_labels.shape != automated.shape:
+        return None
+    if not np.array_equal(previous.automated_labels, automated):
+        return None
+    definitions = [item.model_dump(mode="json") for item in recipe.measurements]
+    if previous.provenance.get("measurement_definitions") != definitions:
+        return None
+    if (previous.provenance.get("pixel_size_x_um"), previous.provenance.get("pixel_size_y_um"), previous.provenance.get("pixel_size_z_um")) != (
+        loaded.pixel_size_x,
+        loaded.pixel_size_y,
+        loaded.pixel_size_z,
+    ):
+        return None
+    if any(spec.background.type == "global" and spec.background.value is None for spec in recipe.measurements):
+        return None
+    try:
+        reach = _measurement_reach(recipe, pixel_size)
+    except Exception:  # noqa: BLE001 - a distance that cannot be converted: the full measurement reports it
+        return None
+    kept = measurement_values(previous, recipe)
+    if not len(kept) and int(np.max(previous.labels, initial=0)) > 0:
+        return None
+    changed = np.asarray(previous.labels) != np.asarray(final_labels)
+    if not np.any(changed):
+        return kept, []
+    # Objects whose pixels, regions or rings can reach a changed pixel.
+    rows, cols = np.nonzero(np.any(changed, axis=0) if changed.ndim == 3 else changed)
+    search = 2 * reach + 1
+    near = _window(final_labels.shape, rows.min(), rows.max(), cols.min(), cols.max(), search)
+    affected = set(np.unique(np.asarray(final_labels)[near]).tolist()) | set(np.unique(np.asarray(previous.labels)[near]).tolist())
+    affected.discard(0)
+    removed = set(excluded_object_ids(automated, edits))
+    present = affected - removed
+    measured_parts: list[pd.DataFrame] = []
+    warnings: list[str] = []
+    margin = 2 * reach + 2
+    if present:
+        part, part_warnings = _measure_in_window(loaded, recipe, final_labels, present, margin, pixel_size)
+        measured_parts.append(part)
+        warnings += part_warnings
+    gone = affected & removed
+    if gone:
+        deleted_labels = np.where(np.isin(automated, sorted(removed)), automated, 0).astype(np.int32)
+        part, part_warnings = _measure_in_window(loaded, recipe, deleted_labels, gone, margin, pixel_size)
+        measured_parts.append(part)
+        warnings += part_warnings
+    rest = kept.loc[~kept["object_id"].astype(int).isin(affected)] if len(kept) else kept
+    combined = pd.concat([rest, *measured_parts], ignore_index=True) if measured_parts else rest
+    if len(combined):
+        combined = combined.sort_values("object_id").reset_index(drop=True)
+    return combined, warnings
+
+
+def _measurement_reach(recipe: Recipe, pixel_size: float | None) -> int:
+    """How far (pixels) any measurement region or local ring reaches outside its object."""
+
+    from cellquant.regions import length_to_px
+
+    reach = 0.0
+    for spec in recipe.measurements:
+        region = spec.region
+        if region.type == "expanded_object":
+            reach = max(reach, length_to_px(region.distance_um, region.distance_px, pixel_size, "Expanded-object distance"))
+        elif region.type == "ring":
+            reach = max(reach, length_to_px(region.outer_um, region.outer_px, pixel_size, "Ring outer distance"))
+        if spec.background.type == "local_ring":
+            background = spec.background
+            reach = max(reach, length_to_px(background.outer_um, background.outer_px, pixel_size, "Local-ring outer distance"))
+    return int(np.ceil(reach))
+
+
+def _window(shape, row0: int, row1: int, col0: int, col1: int, margin: int) -> tuple[slice, ...]:
+    """Rows and columns row0..row1, col0..col1 widened by ``margin``, within the image (every plane)."""
+
+    height, width = shape[-2:]
+    window = (slice(max(0, int(row0) - margin), min(height, int(row1) + margin + 1)), slice(max(0, int(col0) - margin), min(width, int(col1) + margin + 1)))
+    return (slice(None), *window) if len(shape) == 3 else window
+
+
+def _measure_in_window(
+    loaded: LoadedImage,
+    recipe: Recipe,
+    labels: np.ndarray,
+    object_ids: set[int],
+    margin: int,
+    pixel_size: float | None,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Measure ``object_ids`` of ``labels`` in a window around them; positions are for the whole image."""
+
+    labels = np.asarray(labels)
+    inside = np.isin(labels, sorted(object_ids))
+    rows, cols = np.nonzero(np.any(inside, axis=0) if labels.ndim == 3 else inside)
+    if not len(rows):
+        return pd.DataFrame(columns=["object_id"]), []
+    window = _window(labels.shape, rows.min(), rows.max(), cols.min(), cols.max(), margin)
+    measured, warnings = measure_objects(
+        loaded.data[(slice(None), *window)],
+        labels[window],
+        recipe.measurements,
+        pixel_size=pixel_size,
+        pixel_size_z=loaded.pixel_size_z,
+    )
+    measured = measured.loc[measured["object_id"].astype(int).isin(object_ids)].copy()
+    linear = 1.0 if pixel_size is None else float(pixel_size)
+    row_offset, col_offset = window[-2].start * linear, window[-1].start * linear
+    measured["centroid_x"] = measured["centroid_x"] + col_offset
+    measured["centroid_y"] = measured["centroid_y"] + row_offset
+    for spec in recipe.measurements:
+        if spec.statistic == "centroid_x":
+            measured[spec.id] = measured[spec.id] + col_offset
+        elif spec.statistic == "centroid_y":
+            measured[spec.id] = measured[spec.id] + row_offset
+    return measured, warnings
 
 
 def measurement_values(result: ImageResult, recipe: Recipe) -> pd.DataFrame:
