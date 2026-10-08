@@ -881,6 +881,7 @@ class CellQuantWindow:
         record = controller.experiment.image(image_id)
         result = controller.recall(image_id) if controller else None
         self._footer.set_position(self._nav_index, len(self._nav_ids), record.relative_path or record.filename, self._nav_filter)
+        self._review_panel.update_status_line()
         self._experiment_panel.set_pixel_size(record.pixel_size_x, record.pixel_size_y, record.pixel_size_z)
         self._experiment_panel.show_channel_order(record)
         # Reading the file (an ND2 stack can take a second) happens off the interface thread,
@@ -1058,9 +1059,6 @@ class CellQuantWindow:
             self._objects_panel.advanced_toggle,
             self._review_panel.advanced_toggle,
             self._review_panel.display,
-            self._review_panel.show_boundaries,
-            self._review_panel.show_fills,
-            self._review_panel.show_ids,
         }
         inputs: list[QWidget] = [self._review_panel.threshold_slider]
         panels = (self._experiment_panel, self._objects_panel, self._measurements_panel, self._review_panel, self._marker_setup)
@@ -3107,6 +3105,10 @@ class EditPanel(QWidget):
             button = QPushButton(text)
             button.clicked.connect(slot)
             buttons.addWidget(button)
+            if text == "Delete object":
+                self.delete_button = button
+            elif text == "Undo":
+                self.undo_button = button
         layout.addLayout(buttons)
         layout.addStretch(1)
 
@@ -3209,16 +3211,6 @@ class ReviewPanel(QWidget):
         self._labels = None
         self._fills = None
         layout = QVBoxLayout(self)
-        self.show_boundaries = QCheckBox("Show object boundaries")
-        self.show_fills = QCheckBox("Show object fills")
-        self.show_ids = QCheckBox("Show object IDs")
-        self.show_boundaries.setChecked(True)
-        self.show_boundaries.toggled.connect(self._toggle_layers)
-        self.show_fills.toggled.connect(self._toggle_layers)
-        self.show_ids.toggled.connect(self._toggle_layers)
-        layout.addWidget(self.show_boundaries)
-        layout.addWidget(self.show_fills)
-        layout.addWidget(self.show_ids)
         self.display = QComboBox()
         self.display.currentIndexChanged.connect(lambda _index: self._recolor())
         layout.addWidget(QLabel("Display objects by"))
@@ -3243,12 +3235,11 @@ class ReviewPanel(QWidget):
         self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
         layout.addWidget(self.counts)
         layout.addWidget(self._count_area_box())
-        status_buttons = QHBoxLayout()
-        for text, status in (("Approve", "approved"), ("Exclude image", "excluded")):
-            button = QPushButton(text)
-            button.clicked.connect(lambda _checked=False, value=status: self._set_status(value))
-            status_buttons.addWidget(button)
-        layout.addLayout(status_buttons)
+        self.status_line = QLabel("")
+        layout.addWidget(self.status_line)
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.clicked.connect(lambda _checked=False: self._set_status("approved"))
+        layout.addWidget(self.approve_button)
         # Previous / Next image go through only these images until "Check all included images".
         queue_buttons = QHBoxLayout()
         queue_buttons.addWidget(QLabel("Check"))
@@ -3457,6 +3448,7 @@ class ReviewPanel(QWidget):
         return
 
     def show_result(self, result) -> None:
+        self.update_status_line()
         self.display.blockSignals(True)
         current = self.display.currentData()
         self.display.clear()
@@ -3485,7 +3477,11 @@ class ReviewPanel(QWidget):
     def bind_labels(self, boundaries, fills) -> None:
         self._labels = boundaries
         self._fills = fills
-        self._toggle_layers()
+        viewer = self.shell.viewer
+        # Boundaries start shown, fills and IDs hidden; after that the layer eye icons decide.
+        for name, visible in (("Objects", True), ("Object fills", False), ("Object IDs", False)):
+            if name in viewer.layers:
+                viewer.layers[name].visible = visible
 
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
@@ -3594,14 +3590,16 @@ class ReviewPanel(QWidget):
         if result is not None:
             self.shell.show_classification(result)
 
-    def _toggle_layers(self) -> None:
-        viewer = self.shell.viewer
-        if "Objects" in viewer.layers:
-            viewer.layers["Objects"].visible = self.show_boundaries.isChecked()
-        if "Object fills" in viewer.layers:
-            viewer.layers["Object fills"].visible = self.show_fills.isChecked()
-        if "Object IDs" in viewer.layers:
-            viewer.layers["Object IDs"].visible = self.show_ids.isChecked()
+    def update_status_line(self) -> None:
+        controller = self.shell.controller
+        if controller is None or not self.shell._nav_ids:
+            self.status_line.setText("")
+            return
+        included = [record for record in controller.experiment.images if record.include]
+        done = sum(record.processing_status in ("approved", "reviewed") for record in included)
+        current = controller.experiment.image(self.shell._nav_ids[self.shell._nav_index])
+        state = "Approved" if current.processing_status in ("approved", "reviewed") else "Not checked"
+        self.status_line.setText(f"{state} · {done} of {len(included)} approved")
 
     def _set_status(self, status: str) -> None:
         controller = self.shell.require_controller()
@@ -3609,17 +3607,28 @@ class ReviewPanel(QWidget):
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
         controller.set_status(image_id, status)
-        if status == "excluded":
-            controller.set_included(image_id, False)
         self.shell._autosave()
         self.shell._experiment_panel.refresh_table()
         self.shell._refresh_plan()
-        words = {
-            "approved": "Approved. Use Next image ▶ at the bottom to check the next image, or go on to step 6.",
-            "excluded": "This image is now left out of the results.",
-        }
-        self.shell.message(words.get(status, ""))
+        self.update_status_line()
         self.shell.refresh_guidance()
+        if self._open_next_unchecked():
+            self.shell.message("Approved. Showing the next image to check.")
+        else:
+            self.shell.message("All images checked.")
+
+    def _open_next_unchecked(self) -> bool:
+        """Show the next image (after this one, wrapping round) that is not approved yet."""
+
+        controller = self.shell.controller
+        ids = self.shell._nav_ids
+        for step in range(1, len(ids)):
+            index = (self.shell._nav_index + step) % len(ids)
+            if controller.experiment.image(ids[index]).processing_status not in ("approved", "reviewed"):
+                self.shell._nav_index = index
+                self.shell.show_current()
+                return True
+        return False
 
 
 class ResultsPanel(QWidget):
@@ -4064,6 +4073,16 @@ class Footer(QWidget):
         for key, button in ((QKeySequence("PgUp"), previous), (QKeySequence("PgDown"), next_image)):
             shortcut = QShortcut(key, window)
             shortcut.activated.connect(lambda button=button: button.click() if button.isEnabled() else None)
+        # A, Delete and Ctrl+Z work while the CellQuant panel has focus, but not in a text or number box.
+        dock = shell._dock
+        for key, button in (
+            ("A", shell._review_panel.approve_button),
+            ("Del", shell._edit_panel.delete_button),
+            ("Ctrl+Z", shell._edit_panel.undo_button),
+        ):
+            shortcut = QShortcut(QKeySequence(key), dock)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(lambda button=button: self._panel_key(button))
         self.failed_files: list[str] = []
         self.pause.setEnabled(False)
         self.resume.setEnabled(False)
@@ -4222,6 +4241,14 @@ class Footer(QWidget):
             self.message(f"Image {index} of {total} ({filename}): {JOB_WORDS.get(status, status)}")
         else:
             self.status.setText(f"Image {index} of {total} ({filename}): starting")
+
+    def _panel_key(self, button: QPushButton) -> None:
+        from qtpy.QtWidgets import QAbstractSpinBox, QApplication, QLineEdit, QTextEdit
+
+        if isinstance(QApplication.focusWidget(), (QLineEdit, QAbstractSpinBox, QTextEdit)):
+            return
+        if button.isEnabled() and button.isVisibleTo(self.shell._dock):
+            button.click()
 
     def _step(self, delta: int) -> None:
         if not self.shell._nav_ids:
