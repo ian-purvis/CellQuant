@@ -3612,7 +3612,9 @@ class ReviewPanel(QWidget):
         self.shell._refresh_plan()
         self.update_status_line()
         self.shell.refresh_guidance()
-        if self._open_next_unchecked():
+        if not self.shell._footer._navigation[1].isEnabled():
+            self.shell.message("Approved.")  # image navigation is locked while all analyses run
+        elif self._open_next_unchecked():
             self.shell.message("Approved. Showing the next image to check.")
         else:
             self.shell.message("All images checked.")
