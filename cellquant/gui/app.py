@@ -3129,10 +3129,19 @@ class EditPanel(QWidget):
             elif text == "Undo":
                 self.undo_button = button
         layout.addLayout(buttons)
+        # Why Record drawn edits did nothing, or that it worked; blank otherwise.
+        self.record_status = QLabel("")
+        self.record_status.setWordWrap(True)
+        self.record_status.hide()
+        layout.addWidget(self.record_status)
         layout.addStretch(1)
 
     def refresh(self) -> None:
         return
+
+    def _say(self, text: str) -> None:
+        self.record_status.setText(text)
+        self.record_status.setVisible(bool(text))
 
     def bind_labels(self, boundaries) -> None:
         self._labels = boundaries
@@ -3146,6 +3155,7 @@ class EditPanel(QWidget):
     def clear_selection(self) -> None:
         self._picked = None
         self.selected.setText("Selected object: none")
+        self._say("")
 
     def _on_click(self, viewer, event):
         start = tuple(event.position)
@@ -3212,14 +3222,34 @@ class EditPanel(QWidget):
 
     def _commit(self) -> None:
         controller = self.shell.require_controller()
-        if controller is None or "Objects" not in self.shell.viewer.layers or not self.shell._nav_ids:
+        if controller is None or not self.shell._nav_ids:
             return
-        drawn = np.asarray(self.shell.viewer.layers["Objects"].data)
         image_id = self.shell._nav_ids[self.shell._nav_index]
-        self.shell._start_job(
-            lambda: controller.commit_drawn_labels(image_id, drawn),
-            self.shell.show_result,
-        )
+        if self.shell.is_busy():
+            self._say("Not recorded: wait for the current analysis to finish.")
+            return
+        if self.shell.image_loading() or self.shell._shown_image_id != image_id:
+            self._say("Not recorded: wait for the image to finish loading.")
+            return
+        current = controller.recall(image_id)
+        if "Objects" not in self.shell.viewer.layers or current is None:
+            self._say("Not recorded: run step 2 on this image first.")
+            return
+        # A copy: painting can go on while the edits are saved.
+        drawn = np.array(self.shell.viewer.layers["Objects"].data, copy=True)
+        if drawn.shape != current.labels.shape:
+            self._say("Not recorded: the objects on screen are not this image's. Show the image again, then draw.")
+            return
+        if np.array_equal(drawn, current.labels):
+            self._say("Nothing to record: paint or erase in the Objects layer first.")
+            return
+
+        def finish(result) -> None:
+            self.shell.show_result(result)
+            self._say("Recorded.")
+
+        self._say("")
+        self.shell._start_job(lambda: controller.commit_drawn_labels(image_id, drawn), finish)
 
 
 
