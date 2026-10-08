@@ -193,6 +193,12 @@ def format_channel_labels(names, n_channels: int) -> list[str]:
     return labels
 
 
+def channel_label(index: int, name) -> str:
+    """'Channel 2 = AF647' for the channel at index 1."""
+
+    return format_channel_labels([None] * index + [name], index + 1)[-1]
+
+
 def format_channel_order_text(names, n_channels: int) -> str:
     return " · ".join(format_channel_labels(names, n_channels))
 
@@ -611,6 +617,7 @@ class CellQuantWindow:
         self._tabs.currentChanged.connect(
             lambda _index: self._footer.highlight("all" if self._tabs.currentWidget() is self._step_pages[-1] else "current")
         )
+        self._tabs.currentChanged.connect(lambda _index: self._markers_page_shown())
         main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
 
@@ -636,6 +643,14 @@ class CellQuantWindow:
         self.refresh_guidance()
 
     # -- guidance ------------------------------------------------------------
+
+    def _markers_page_shown(self) -> None:
+        """Step 4 lists every channel but the one objects are found in, so read that from step 2 first."""
+
+        if self._tabs.currentWidget() is not self._step_pages[3] or self.controller is None or self.is_busy():
+            return
+        self._panels_to_recipe()
+        self._marker_setup.refresh()
 
     def go_to_step(self, index: int) -> None:
         if index < 0:
@@ -2327,8 +2342,7 @@ class ObjectsPanel(QWidget):
         if controller is None:
             return
         for channel in controller.experiment.channels:
-            labels = format_channel_labels([channel.channel_name], 1)
-            self.channel.addItem(labels[0], channel.channel_index)
+            self.channel.addItem(channel_label(channel.channel_index, channel.channel_name), channel.channel_index)
         recipe = controller.recipe
         self.object_name.setText(recipe.object_set.name)
         _choose(self.method, recipe.object_set.algorithm)
@@ -2881,7 +2895,7 @@ class MeasurementsPanel(QWidget):
             self.class_measurement.blockSignals(False)
             return
         for channel in controller.experiment.channels:
-            self.meas_channel.addItem(format_channel_labels([channel.channel_name], 1)[0], channel.channel_index)
+            self.meas_channel.addItem(channel_label(channel.channel_index, channel.channel_name), channel.channel_index)
         self.table.setRowCount(len(controller.recipe.measurements))
         for row, measurement in enumerate(controller.recipe.measurements):
             self.table.setItem(row, 0, QTableWidgetItem(measurement.id))
