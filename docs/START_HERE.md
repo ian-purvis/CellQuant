@@ -22,7 +22,7 @@ If the install fails, it opens `install_last.log` in Notepad. See [When somethin
 
 ## What to click (the short version)
 
-The CellQuant panel has a **Start** tab and six numbered tabs. Work from left to right. Every tab has a one-line "what to do" at the top (hover it for details and how to tell it worked) and a **Next →** button. If Next is greyed out, the line beside it says why.
+The CellQuant panel has a **Start** tab and six numbered tabs (hover a tab for its name). Work from left to right. Every tab has a one-line "what to do" at the top (hover it for details and how to tell it worked) and a **Next →** button. If Next is greyed out, the line beside it says why.
 
 1. **Start → Try practice images** (first time) or **New experiment…**
 2. **1 Images**: add images and name the channels.
@@ -31,7 +31,7 @@ The CellQuant panel has a **Start** tab and six numbered tabs. Work from left to
 5. **4 Check**: drag the **Cutoff** slider until the green (positive) objects look right, then **Approve**.
 6. **5 Results**: **Run all images**, then **Export results…**
 
-A ✓ appears on each tab as you finish it. The **Start** tab shows your progress and a **Continue** button that takes you to the next unfinished step.
+A ✓ appears next to the number on each tab as you finish it. The **Start** tab shows your progress and a **Continue** button that takes you to the next unfinished step.
 
 The bar at the bottom of the window is shared by all steps. It shows which image is on screen (**◀ Previous image**, **Next image ▶**), the units, progress, and messages. Hover over any control to see what it does.
 
@@ -124,7 +124,7 @@ CellQuant measures each marker inside every object and calls each object positiv
 
 **Success check:** step 5 opens with objects colored green (positive) and magenta (negative).
 
-*Advanced:* **Show all settings** lets you measure other statistics (median, total, percent of pixels at or above a level), choose whether a value equal to the cutoff is positive (**at least**) or negative (**above**), measure a ring around each object, subtract background, or set cutoffs by hand. **Remove marker** removes the marker selected in the Markers table, and the result rows that use it.
+*Advanced:* **Advanced** lets you measure other statistics (median, total, percent of pixels at or above a level), choose whether a value equal to the cutoff is positive (**at least**) or negative (**above**), measure a ring around each object, subtract background, or set cutoffs by hand. **Remove marker** removes the marker selected in the Markers table, and the result rows that use it.
 
 ## Step 5: Check
 
@@ -154,28 +154,28 @@ The **Results** box shows the numbers for the image on screen, for example *Mark
 | `objects.csv` | One row per object: its position, size, each marker's brightness, and positive/negative calls. In 3D it also has `centroid_z` and `volume` (µm³), the slices each object spans (`z_slices`, `z_first`, `z_last`), and `z_flag` (*one_slice* or *possibly_merged*, for checking). `area` is the largest cross-section. |
 | `image_summary.csv` | One row per image: object count and each percentage. |
 | `settings_index.csv` | Which settings produced each image's results. |
-| `recipe.yaml` | The settings. **Load settings…** (step 6, *Show all settings*) uses it to analyze new images the same way. |
+| `recipe.yaml` | The settings. **Load settings…** (step 6, *Advanced*) uses it to analyze new images the same way. |
 
 If `mixed_settings.txt` is also there, some images were analyzed with different settings (for example you changed a cutoff after running them). Run all images again before you report numbers.
 
-*Advanced:* **Show all settings** lets you add result rows (choose what to **Count** and **among** which objects, for example *Marker B+ among Marker A+*), and **Load settings…**. Settings are saved automatically as you change them.
+*Advanced:* **Advanced** lets you add result rows (choose what to **Count** and **among** which objects, for example *Marker B+ among Marker A+*), and **Load settings…**. Settings are saved automatically as you change them.
 
 ## Several analyses of the same images
 
-The **Analysis** list at the top of the CellQuant panel lets one experiment hold several analyses of the same images, for example finding objects in each channel in turn, or trying two segmentation methods. Each analysis has its own settings, its own results, its own deleted objects and approvals.
+The **Analysis** list at the top of the CellQuant panel, with its **Analyses ▾** menu, lets one experiment hold several analyses of the same images, for example finding objects in each channel in turn, or trying two segmentation methods. Each analysis has its own settings, its own results, its own deleted objects and approvals.
 
-- **One per channel…**: tick the channels; each gets an analysis that finds objects in that channel with the current settings otherwise (method, Z-stack mode, markers).
-- **New analysis…**: a copy of the current settings under a new name. Change what you need in steps 2-5, for example the channel in step 2.
+- **Analyses ▾ → One per channel…**: tick the channels; each gets an analysis that finds objects in that channel with the current settings otherwise (method, Z-stack mode, markers).
+- **Analyses ▾ → New analysis…**: a copy of the current settings under a new name. Change what you need in steps 2-5, for example the channel in step 2.
 - Choose an analysis in the list to see, change, check or run it. Steps 2-5 always show the analysis chosen.
 - **Run all analyses** (bottom bar, and step 6) runs every included image with each analysis, one after another. Pause and Cancel work as for one analysis; Cancel keeps what is finished and skips the analyses not started.
 - **Export all analyses…** (step 6) saves each analysis in its own folder, plus `all_analyses_image_summary.csv`: every analysis's per-image numbers in one table, with `analysis` and `segmentation_channel` columns.
-- **Rename…** and **Remove** change the list. Removing only takes an analysis off the list; its settings and results stay in the experiment folder.
+- **Analyses ▾ → Rename…** and **Remove** change the list. Removing only takes an analysis off the list; its settings and results stay in the experiment folder.
 
 **Success check:** after **Run all analyses**, choosing each analysis in the list shows outlines found in its channel.
 
 ### The Plan: which images each analysis runs, and in which channel
 
-Click **Plan…** (next to the Analysis list) to open the Plan beside the image. It lists every image, grouped by **Channel layout** (images whose files list the same channels in the same order), by **Folder**, or by **Channel layout, then folder**. Choose a view:
+Choose **Analyses ▾ → Plan…** (next to the Analysis list) to open the Plan beside the image. It lists every image, grouped by **Channel layout** (images whose files list the same channels in the same order), by **Folder**, or by **Channel layout, then folder**. Choose a view:
 
 - **Grid: images × analyses**: one column per analysis. A tick means that analysis runs that image; the cell shows its status (green when analyzed, amber when it needs a look, red when it failed) and the channel objects are found in. Ticking a group's box ticks every image in it.
 - **Tree: image ▸ analyses**: under each image, one row per analysis, each with a tick and a **Find objects in** menu.
