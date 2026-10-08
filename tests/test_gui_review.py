@@ -24,6 +24,11 @@ def test_approve_opens_next_unchecked_image(tmp_path):
         controller = shell.controller
         ids = list(shell._nav_ids)
         assert len(ids) == 3
+        shell._nav_index = 0
+        panel._set_status("approved")
+        assert controller.experiment.image(ids[0]).processing_status != "approved", "an image not run yet cannot be approved"
+        for image_id in ids:
+            controller.experiment.image(image_id).processing_status = "analyzed"
         assert not hasattr(panel, "show_boundaries") and not hasattr(panel, "show_fills")
         shell._nav_index = 0
         panel._set_status("approved")
