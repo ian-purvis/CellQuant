@@ -651,15 +651,14 @@ def test_a_popped_out_panel_has_minimize_maximize_and_reset(window):
     assert dock.titleBarWidget() is not header
 
 
-def test_find_objects_has_a_run_button(window, monkeypatch):
+def test_find_objects_has_preview_but_run_lives_in_the_run_window(window):
     from qtpy.QtWidgets import QPushButton
 
-    ran = []
-    monkeypatch.setattr(window, "_start_job", lambda fn, done: ran.append(fn))
-    buttons = {button.text(): button for button in window._objects_panel.findChildren(QPushButton)}
-    assert "Preview" in buttons
-    buttons["Run this image"].click()
-    assert ran
+    names = [button.text() for button in window._objects_panel.findChildren(QPushButton)]
+    assert "Preview" in names
+    assert "Run this image" not in names
+    footer_names = [button.text() for button in window._footer.findChildren(QPushButton)]
+    assert footer_names.count("Run this image") == 1
 
 
 def test_remove_marker_also_removes_its_result_rows_and_settings_save_themselves(window, monkeypatch):
