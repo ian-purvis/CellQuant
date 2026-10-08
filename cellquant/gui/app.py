@@ -926,6 +926,8 @@ class CellQuantWindow:
                 self._review_panel.show_result(result)
                 self._results_panel.show_result(result)
                 self._results_summary.show_result(result, controller.recipe)
+            else:
+                self._review_panel.show_no_result()
             unit = (
                 f"µm ({record.pixel_size_x:.3f} µm/pixel)"
                 if record.pixel_size_x and record.pixel_size_y
@@ -3464,6 +3466,13 @@ class ReviewPanel(QWidget):
     def refresh(self) -> None:
         return
 
+    def show_no_result(self) -> None:
+        """An image not run yet: no numbers left over from the previous image."""
+
+        self.update_status_line()
+        self.counts.setText("Not run yet.")
+        self.qc.setText("")
+
     def show_result(self, result) -> None:
         self.update_status_line()
         self.display.blockSignals(True)
@@ -3623,6 +3632,9 @@ class ReviewPanel(QWidget):
         if controller is None or not self.shell._nav_ids:
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
+        if controller.experiment.image(image_id).processing_status not in ("analyzed", "needs_attention", "reviewed", "approved"):
+            self.shell.message("Run this image first.")
+            return
         controller.set_status(image_id, status)
         self.shell._autosave()
         self.shell._experiment_panel.refresh_table()
