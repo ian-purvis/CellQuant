@@ -180,7 +180,7 @@ Choose **Analyses ▾ → Plan…** (next to the Analysis list) to open the Plan
 - **Grid: images × analyses**: one column per analysis. A tick means that analysis runs that image; the cell shows its status (green when analyzed, amber when it needs a look, red when it failed) and the channel objects are found in. Ticking a group's box ticks every image in it.
 - **Tree: image ▸ analyses**: under each image, one row per analysis, each with a tick and a **Find objects in** menu.
 
-The bar at the bottom applies a choice to the **selected images** or **all images**, in **all analyses** or one: **Tick**, **Untick**, or **Set channel** (find objects in that channel for those images only; ★ marks such a choice). Right-click a cell for the same choice for one image. Double-click a cell to open that image with that analysis in step 5. **Run all analyses** (here or in step 6) runs each analysis on its ticked images.
+The bar at the bottom applies a choice to the **selected images** or **all images**, in **all analyses** or one: **Tick**, **Untick**, or **Set channel** (find objects in that channel for those images only; ★ marks such a choice). Right-click a cell for the same choice for one image. Double-click a cell to open that image with that analysis in step 5. **Run all analyses** in step 6 runs each analysis on its ticked images.
 
 Images with another channel layout are analyzed with the channels of the same names: if an analysis finds objects in *Far Red*, a file that stores Far Red first is segmented in its first channel, and each marker is read from the channel with its name. ⚠ marks an image that has no channel of that name, so the position is used; check it, or set its channel.
 
