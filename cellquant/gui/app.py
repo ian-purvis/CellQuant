@@ -549,6 +549,7 @@ class CellQuantWindow:
         # True while work runs that switches between analyses (Run all analyses, Export all analyses):
         # the settings pages and image navigation are locked, since they would show another analysis.
         self._exclusive = False
+        self._show_note: str | None = None  # said before "Showing <image>" once the next image is shown, e.g. "Approved."
         self._nav_filter: str | None = None  # e.g. "failed images" while Previous / Next go through only those
         self._tabs = QTabWidget()
         self._experiment_panel = ExperimentPanel(self)
@@ -916,10 +917,12 @@ class CellQuantWindow:
                 else "pixels — no pixel size in this image"
             )
             self._footer.set_units(f"{unit}   ·   Analyzed: {loaded.z_description}")
-            self._footer.message(f"Showing {record.relative_path or record.filename}")
+            note, self._show_note = self._show_note, None
+            self._footer.message(f"{note} Showing {record.relative_path or record.filename}" if note else f"Showing {record.relative_path or record.filename}")
 
         def failed(message: str) -> None:
             self._loader = None
+            self._show_note = None
             if self.controller is not controller:
                 return
             self.show_error(f"{record.relative_path or record.filename} could not be shown. {message}")
@@ -3614,10 +3617,11 @@ class ReviewPanel(QWidget):
         self.shell.refresh_guidance()
         if not self.shell._footer._navigation[1].isEnabled():
             self.shell.message("Approved.")  # image navigation is locked while all analyses run
-        elif self._open_next_unchecked():
-            self.shell.message("Approved. Showing the next image to check.")
-        else:
-            self.shell.message("All images checked.")
+            return
+        self.shell._show_note = "Approved."
+        if not self._open_next_unchecked():
+            self.shell._show_note = None
+            self.shell.message("Approved. All images checked.")
 
     def _open_next_unchecked(self) -> bool:
         """Show the next image (after this one, wrapping round) that is not approved yet."""
@@ -4112,7 +4116,7 @@ class Footer(QWidget):
         self.log_toggle = QPushButton("Log")
         self.log_toggle.setCheckable(True)
         self.log_toggle.setToolTip("Show or hide the full list of messages. The latest one is always shown beside the bar.")
-        self.log_toggle.toggled.connect(self.log.setVisible)
+        self.log_toggle.toggled.connect(self._show_log)
         where = QHBoxLayout()
         where.addWidget(self.position)
         where.addWidget(self.units)
@@ -4243,6 +4247,22 @@ class Footer(QWidget):
             self.message(f"Image {index} of {total} ({filename}): {JOB_WORDS.get(status, status)}")
         else:
             self.status.setText(f"Image {index} of {total} ({filename}): starting")
+
+    def _show_log(self, shown: bool) -> None:
+        self.log.setVisible(shown)
+        if shown:
+            return
+        # Give the image its height back: Qt keeps a docked window at its larger size otherwise.
+        from qtpy.QtWidgets import QDockWidget, QMainWindow
+
+        dock = self.parentWidget()
+        while dock is not None and not isinstance(dock, QDockWidget):
+            dock = dock.parentWidget()
+        main = dock.parentWidget() if dock is not None else None
+        if isinstance(main, QMainWindow) and not dock.isFloating():
+            height = self.sizeHint().height() + dock.height() - self.height()  # plus the dock's own title bar
+            dock.setMinimumHeight(0)  # napari fixed it at the height with the log open
+            QTimer.singleShot(0, lambda: main.resizeDocks([dock], [height], Qt.Vertical))
 
     def _panel_key(self, button: QPushButton) -> None:
         from qtpy.QtWidgets import QAbstractSpinBox, QApplication, QLineEdit, QTextEdit
