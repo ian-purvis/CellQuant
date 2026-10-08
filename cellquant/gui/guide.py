@@ -91,10 +91,10 @@ STEPS = (
         "<b>Min size</b> in µm² drops debris.<br>"
         "The box at the top says whether an NVIDIA GPU was found and whether Cellpose will use it.<br>"
         "Click <b>Preview</b> to try the settings on the area you are looking at, then "
-        "<b>Run this image</b> at the bottom.",
+        "<b>Run this image</b> in the Run window.",
         "Outlines sit on the nuclei, with few missed, merged, or split. If not, change the settings "
         "and run again. Zoom in to check. In 3D, move the slice slider under the image to check every slice.",
-        "Pick the nuclear channel, <b>Preview</b>, then <b>Run this image</b>.",
+        "Pick the nuclear channel, <b>Preview</b>, then <b>Run this image</b> (Run window).",
     ),
     Step(
         3,
