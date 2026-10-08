@@ -34,12 +34,14 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
     QSizePolicy,
     QSpinBox,
     QTabWidget,
+    QToolButton,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -189,6 +191,12 @@ def format_channel_labels(names, n_channels: int) -> list[str]:
         else:
             labels.append(f"Channel {index + 1}")
     return labels
+
+
+def channel_label(index: int, name) -> str:
+    """'Channel 2 = AF647' for the channel at index 1."""
+
+    return format_channel_labels([None] * index + [name], index + 1)[-1]
 
 
 def format_channel_order_text(names, n_channels: int) -> str:
@@ -547,6 +555,7 @@ class CellQuantWindow:
         # True while work runs that switches between analyses (Run all analyses, Export all analyses):
         # the settings pages and image navigation are locked, since they would show another analysis.
         self._exclusive = False
+        self._show_note: str | None = None  # said before "Showing <image>" once the next image is shown, e.g. "Approved."
         self._nav_filter: str | None = None  # e.g. "failed images" while Previous / Next go through only those
         self._tabs = QTabWidget()
         self._experiment_panel = ExperimentPanel(self)
@@ -571,7 +580,8 @@ class CellQuantWindow:
         ]
         self._tabs.addTab(self._start_page, "Start")
         for page, step in zip(self._step_pages, guide.STEPS):
-            self._tabs.addTab(page, step.tab)
+            index = self._tabs.addTab(page, str(step.number))
+            self._tabs.setTabToolTip(index, step.name)
         self._tabs.setMinimumWidth(460)
         self._analysis_bar = AnalysisBar(self)
         self._dock = QWidget()
@@ -607,6 +617,7 @@ class CellQuantWindow:
         self._tabs.currentChanged.connect(
             lambda _index: self._footer.highlight("all" if self._tabs.currentWidget() is self._step_pages[-1] else "current")
         )
+        self._tabs.currentChanged.connect(lambda _index: self._markers_page_shown())
         main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
 
@@ -632,6 +643,14 @@ class CellQuantWindow:
         self.refresh_guidance()
 
     # -- guidance ------------------------------------------------------------
+
+    def _markers_page_shown(self) -> None:
+        """Step 4 lists every channel but the one objects are found in, so read that from step 2 first."""
+
+        if self._tabs.currentWidget() is not self._step_pages[3] or self.controller is None or self.is_busy():
+            return
+        self._panels_to_recipe()
+        self._marker_setup.refresh()
 
     def go_to_step(self, index: int) -> None:
         if index < 0:
@@ -660,7 +679,7 @@ class CellQuantWindow:
         for page, state, step in zip(self._step_pages, states, guide.STEPS):
             page.update_state(state)
             index = self._tabs.indexOf(page)
-            self._tabs.setTabText(index, f"{step.tab} ✓" if state.done else step.tab)
+            self._tabs.setTabText(index, f"{step.number} ✓" if state.done else str(step.number))
 
     def message(self, text: str) -> None:
         self._footer.message(text)
@@ -878,6 +897,7 @@ class CellQuantWindow:
         record = controller.experiment.image(image_id)
         result = controller.recall(image_id) if controller else None
         self._footer.set_position(self._nav_index, len(self._nav_ids), record.relative_path or record.filename, self._nav_filter)
+        self._review_panel.update_status_line()
         self._experiment_panel.set_pixel_size(record.pixel_size_x, record.pixel_size_y, record.pixel_size_z)
         self._experiment_panel.show_channel_order(record)
         # Reading the file (an ND2 stack can take a second) happens off the interface thread,
@@ -906,16 +926,20 @@ class CellQuantWindow:
                 self._review_panel.show_result(result)
                 self._results_panel.show_result(result)
                 self._results_summary.show_result(result, controller.recipe)
+            else:
+                self._review_panel.show_no_result()
             unit = (
                 f"µm ({record.pixel_size_x:.3f} µm/pixel)"
                 if record.pixel_size_x and record.pixel_size_y
                 else "pixels — no pixel size in this image"
             )
             self._footer.set_units(f"{unit}   ·   Analyzed: {loaded.z_description}")
-            self._footer.message(f"Showing {record.relative_path or record.filename}")
+            note, self._show_note = self._show_note, None
+            self._footer.message(f"{note} Showing {record.relative_path or record.filename}" if note else f"Showing {record.relative_path or record.filename}")
 
         def failed(message: str) -> None:
             self._loader = None
+            self._show_note = None
             if self.controller is not controller:
                 return
             self.show_error(f"{record.relative_path or record.filename} could not be shown. {message}")
@@ -1055,9 +1079,6 @@ class CellQuantWindow:
             self._objects_panel.advanced_toggle,
             self._review_panel.advanced_toggle,
             self._review_panel.display,
-            self._review_panel.show_boundaries,
-            self._review_panel.show_fills,
-            self._review_panel.show_ids,
         }
         inputs: list[QWidget] = [self._review_panel.threshold_slider]
         panels = (self._experiment_panel, self._objects_panel, self._measurements_panel, self._review_panel, self._marker_setup)
@@ -2160,7 +2181,7 @@ class ObjectsPanel(QWidget):
         self.z_recommend.setTextFormat(Qt.RichText)
         self.z_recommend.setStyleSheet("QLabel { background: rgba(60, 130, 220, 0.14); border-radius: 6px; padding: 6px; }")
         self.z_use = QPushButton("Use recommended")
-        self.z_use.setToolTip("Choose the Z option (and GPU setting) suggested for this computer.")
+        self.z_use.setToolTip("Choose the Z option suggested for this computer.")
         self.z_use.clicked.connect(self.use_recommendation)
         self.z_recommend.setSizePolicy(_size_flag("Preferred"), _size_flag("MinimumExpanding"))
         self.z_recommend_box = QWidget()
@@ -2311,11 +2332,7 @@ class ObjectsPanel(QWidget):
         preview = QPushButton("Preview")
         preview.clicked.connect(shell.preview_current)
         preview.setToolTip("Find objects in the part of the image on screen, to check the settings quickly.")
-        run = QPushButton("Run this image")
-        run.clicked.connect(shell.run_current)
-        run.setToolTip("Find objects and measure markers in the whole image on screen.")
         actions.addWidget(preview)
-        actions.addWidget(run)
         layout.addLayout(actions)
         layout.addStretch(1)
         self._update_size_hint()
@@ -2327,8 +2344,7 @@ class ObjectsPanel(QWidget):
         if controller is None:
             return
         for channel in controller.experiment.channels:
-            labels = format_channel_labels([channel.channel_name], 1)
-            self.channel.addItem(labels[0], channel.channel_index)
+            self.channel.addItem(channel_label(channel.channel_index, channel.channel_name), channel.channel_index)
         recipe = controller.recipe
         self.object_name.setText(recipe.object_set.name)
         _choose(self.method, recipe.object_set.algorithm)
@@ -2881,7 +2897,7 @@ class MeasurementsPanel(QWidget):
             self.class_measurement.blockSignals(False)
             return
         for channel in controller.experiment.channels:
-            self.meas_channel.addItem(format_channel_labels([channel.channel_name], 1)[0], channel.channel_index)
+            self.meas_channel.addItem(channel_label(channel.channel_index, channel.channel_name), channel.channel_index)
         self.table.setRowCount(len(controller.recipe.measurements))
         for row, measurement in enumerate(controller.recipe.measurements):
             self.table.setItem(row, 0, QTableWidgetItem(measurement.id))
@@ -3108,6 +3124,10 @@ class EditPanel(QWidget):
             button = QPushButton(text)
             button.clicked.connect(slot)
             buttons.addWidget(button)
+            if text == "Delete object":
+                self.delete_button = button
+            elif text == "Undo":
+                self.undo_button = button
         layout.addLayout(buttons)
         layout.addStretch(1)
 
@@ -3210,16 +3230,6 @@ class ReviewPanel(QWidget):
         self._labels = None
         self._fills = None
         layout = QVBoxLayout(self)
-        self.show_boundaries = QCheckBox("Show object boundaries")
-        self.show_fills = QCheckBox("Show object fills")
-        self.show_ids = QCheckBox("Show object IDs")
-        self.show_boundaries.setChecked(True)
-        self.show_boundaries.toggled.connect(self._toggle_layers)
-        self.show_fills.toggled.connect(self._toggle_layers)
-        self.show_ids.toggled.connect(self._toggle_layers)
-        layout.addWidget(self.show_boundaries)
-        layout.addWidget(self.show_fills)
-        layout.addWidget(self.show_ids)
         self.display = QComboBox()
         self.display.currentIndexChanged.connect(lambda _index: self._recolor())
         layout.addWidget(QLabel("Display objects by"))
@@ -3244,12 +3254,11 @@ class ReviewPanel(QWidget):
         self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
         layout.addWidget(self.counts)
         layout.addWidget(self._count_area_box())
-        status_buttons = QHBoxLayout()
-        for text, status in (("Approve", "approved"), ("Exclude image", "excluded")):
-            button = QPushButton(text)
-            button.clicked.connect(lambda _checked=False, value=status: self._set_status(value))
-            status_buttons.addWidget(button)
-        layout.addLayout(status_buttons)
+        self.status_line = QLabel("")
+        layout.addWidget(self.status_line)
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.clicked.connect(lambda _checked=False: self._set_status("approved"))
+        layout.addWidget(self.approve_button)
         # Previous / Next image go through only these images until "Check all included images".
         queue_buttons = QHBoxLayout()
         queue_buttons.addWidget(QLabel("Check"))
@@ -3457,7 +3466,15 @@ class ReviewPanel(QWidget):
     def refresh(self) -> None:
         return
 
+    def show_no_result(self) -> None:
+        """An image not run yet: no numbers left over from the previous image."""
+
+        self.update_status_line()
+        self.counts.setText("Not run yet.")
+        self.qc.setText("")
+
     def show_result(self, result) -> None:
+        self.update_status_line()
         self.display.blockSignals(True)
         current = self.display.currentData()
         self.display.clear()
@@ -3468,6 +3485,7 @@ class ReviewPanel(QWidget):
         if index >= 0:
             self.display.setCurrentIndex(index)
         self.display.blockSignals(False)
+        self.counts.setText("")  # filled in below when a marker is shown; clears "Not run yet."
         self._show_cutoff(result)
         area = "—" if result.qc.median_area is None else f"{result.qc.median_area:.2f}"
         border = result.qc.fraction_touching_border
@@ -3486,7 +3504,11 @@ class ReviewPanel(QWidget):
     def bind_labels(self, boundaries, fills) -> None:
         self._labels = boundaries
         self._fills = fills
-        self._toggle_layers()
+        viewer = self.shell.viewer
+        # Boundaries start shown, fills and IDs hidden; after that the layer eye icons decide.
+        for name, visible in (("Objects", True), ("Object fills", False), ("Object IDs", False)):
+            if name in viewer.layers:
+                viewer.layers[name].visible = visible
 
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
@@ -3595,32 +3617,51 @@ class ReviewPanel(QWidget):
         if result is not None:
             self.shell.show_classification(result)
 
-    def _toggle_layers(self) -> None:
-        viewer = self.shell.viewer
-        if "Objects" in viewer.layers:
-            viewer.layers["Objects"].visible = self.show_boundaries.isChecked()
-        if "Object fills" in viewer.layers:
-            viewer.layers["Object fills"].visible = self.show_fills.isChecked()
-        if "Object IDs" in viewer.layers:
-            viewer.layers["Object IDs"].visible = self.show_ids.isChecked()
+    def update_status_line(self) -> None:
+        controller = self.shell.controller
+        if controller is None or not self.shell._nav_ids:
+            self.status_line.setText("")
+            return
+        included = [record for record in controller.experiment.images if record.include]
+        done = sum(record.processing_status in ("approved", "reviewed") for record in included)
+        current = controller.experiment.image(self.shell._nav_ids[self.shell._nav_index])
+        state = "Approved" if current.processing_status in ("approved", "reviewed") else "Not checked"
+        self.status_line.setText(f"{state} · {done} of {len(included)} approved")
 
     def _set_status(self, status: str) -> None:
         controller = self.shell.require_controller()
         if controller is None or not self.shell._nav_ids:
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
+        if controller.experiment.image(image_id).processing_status not in ("analyzed", "needs_attention", "reviewed", "approved"):
+            self.shell.message("Run this image first.")
+            return
         controller.set_status(image_id, status)
-        if status == "excluded":
-            controller.set_included(image_id, False)
         self.shell._autosave()
         self.shell._experiment_panel.refresh_table()
         self.shell._refresh_plan()
-        words = {
-            "approved": "Approved. Use Next image ▶ at the bottom to check the next image, or go on to step 6.",
-            "excluded": "This image is now left out of the results.",
-        }
-        self.shell.message(words.get(status, ""))
+        self.update_status_line()
         self.shell.refresh_guidance()
+        if not self.shell._footer._navigation[1].isEnabled():
+            self.shell.message("Approved.")  # image navigation is locked while all analyses run
+            return
+        self.shell._show_note = "Approved."
+        if not self._open_next_unchecked():
+            self.shell._show_note = None
+            self.shell.message("Approved. All images checked.")
+
+    def _open_next_unchecked(self) -> bool:
+        """Show the next image (after this one, wrapping round) that is not approved yet."""
+
+        controller = self.shell.controller
+        ids = self.shell._nav_ids
+        for step in range(1, len(ids)):
+            index = (self.shell._nav_index + step) % len(ids)
+            if controller.experiment.image(ids[index]).processing_status not in ("approved", "reviewed"):
+                self.shell._nav_index = index
+                self.shell.show_current()
+                return True
+        return False
 
 
 class ResultsPanel(QWidget):
@@ -3863,27 +3904,31 @@ class AnalysisBar(QWidget):
         )
         self.choice.currentIndexChanged.connect(self._chosen)
         top.addWidget(self.choice, 1)
-        plan = QPushButton("Plan…")
-        plan.setToolTip(
-            "Open the Plan: choose which images each analysis runs and which channel it finds objects in, "
-            "for all images, a channel layout, a folder, or single images."
-        )
-        plan.clicked.connect(shell.show_plan)
-        top.addWidget(plan)
-        layout.addLayout(top)
-        buttons = QHBoxLayout()
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
         for text, slot, tip in (
+            (
+                "Plan…",
+                shell.show_plan,
+                "Open the Plan: choose which images each analysis runs and which channel it finds objects in, "
+                "for all images, a channel layout, a folder, or single images.",
+            ),
             ("New analysis…", self._new, "A new analysis that starts with a copy of the current settings."),
             ("One per channel…", self._per_channel, "One analysis per channel: the current settings, finding objects in each channel."),
             ("Rename…", self._rename, "Rename the analysis shown."),
             ("Remove", self._remove, "Take the analysis shown off the list. Its saved results stay in the experiment folder."),
         ):
-            button = QPushButton(text)
-            button.setToolTip(tip)
-            button.clicked.connect(slot)
-            buttons.addWidget(button)
-        layout.addLayout(buttons)
-        self.remove_button = buttons.itemAt(3).widget()
+            action = menu.addAction(text)
+            action.setToolTip(tip)
+            action.triggered.connect(lambda _checked=False, slot=slot: slot())
+            self.remove_button = action
+        menu_button = QToolButton()
+        menu_button.setText("Analyses ▾")
+        menu_button.setToolTip("Plan, add, rename or remove analyses.")
+        menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_button.setMenu(menu)
+        top.addWidget(menu_button)
+        layout.addLayout(top)
         self.refresh()
 
     def refresh(self) -> None:
@@ -4061,6 +4106,16 @@ class Footer(QWidget):
         for key, button in ((QKeySequence("PgUp"), previous), (QKeySequence("PgDown"), next_image)):
             shortcut = QShortcut(key, window)
             shortcut.activated.connect(lambda button=button: button.click() if button.isEnabled() else None)
+        # A, Delete and Ctrl+Z work while the CellQuant panel has focus, but not in a text or number box.
+        dock = shell._dock
+        for key, button in (
+            ("A", shell._review_panel.approve_button),
+            ("Del", shell._edit_panel.delete_button),
+            ("Ctrl+Z", shell._edit_panel.undo_button),
+        ):
+            shortcut = QShortcut(QKeySequence(key), dock)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(lambda button=button: self._panel_key(button))
         self.failed_files: list[str] = []
         self.pause.setEnabled(False)
         self.resume.setEnabled(False)
@@ -4084,13 +4139,22 @@ class Footer(QWidget):
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(60)
         self.log.setMaximumHeight(160)
-        layout.addWidget(self.position)
-        layout.addWidget(self.units)
+        self.log.setVisible(False)
+        self.log_toggle = QPushButton("Log")
+        self.log_toggle.setCheckable(True)
+        self.log_toggle.setToolTip("Show or hide the full list of messages. The latest one is always shown beside the bar.")
+        self.log_toggle.toggled.connect(self._show_log)
+        where = QHBoxLayout()
+        where.addWidget(self.position)
+        where.addWidget(self.units)
+        where.addStretch(1)
+        layout.addLayout(where)
         bar = QHBoxLayout()
         bar.addWidget(self.progress, 1)
         bar.addWidget(self.time_left)
+        bar.addWidget(self.status, 2)
+        bar.addWidget(self.log_toggle)
         layout.addLayout(bar)
-        layout.addWidget(self.status)
         layout.addWidget(self.log)
 
     def set_navigation_enabled(self, enabled: bool) -> None:
@@ -4210,6 +4274,30 @@ class Footer(QWidget):
             self.message(f"Image {index} of {total} ({filename}): {JOB_WORDS.get(status, status)}")
         else:
             self.status.setText(f"Image {index} of {total} ({filename}): starting")
+
+    def _show_log(self, shown: bool) -> None:
+        self.log.setVisible(shown)
+        if shown:
+            return
+        # Give the image its height back: Qt keeps a docked window at its larger size otherwise.
+        from qtpy.QtWidgets import QDockWidget, QMainWindow
+
+        dock = self.parentWidget()
+        while dock is not None and not isinstance(dock, QDockWidget):
+            dock = dock.parentWidget()
+        main = dock.parentWidget() if dock is not None else None
+        if isinstance(main, QMainWindow) and not dock.isFloating():
+            height = self.sizeHint().height() + dock.height() - self.height()  # plus the dock's own title bar
+            dock.setMinimumHeight(0)  # napari fixed it at the height with the log open
+            QTimer.singleShot(0, lambda: main.resizeDocks([dock], [height], Qt.Vertical))
+
+    def _panel_key(self, button: QPushButton) -> None:
+        from qtpy.QtWidgets import QAbstractSpinBox, QApplication, QLineEdit, QTextEdit
+
+        if isinstance(QApplication.focusWidget(), (QLineEdit, QAbstractSpinBox, QTextEdit)):
+            return
+        if button.isEnabled() and button.isVisibleTo(self.shell._dock):
+            button.click()
 
     def _step(self, delta: int) -> None:
         if not self.shell._nav_ids:
