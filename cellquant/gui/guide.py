@@ -294,6 +294,9 @@ def _card(text: str, color: str) -> QLabel:
     return label
 
 
+_BLOCKER_STYLE = "QLabel { background: rgba(224, 138, 0, 0.18); border-radius: 4px; padding: 4px; font-weight: bold; }"
+
+
 class StepPage(QWidget):
     """One numbered step: instructions, optional quick actions, the panel, and Back / Next."""
 
@@ -342,7 +345,7 @@ class StepPage(QWidget):
         self.back.clicked.connect(lambda: window.go_to_step(index - 1))
         self.blocker = QLabel("")
         self.blocker.setWordWrap(True)
-        self.blocker.setStyleSheet("QLabel { background: rgba(224, 138, 0, 0.18); border-radius: 4px; padding: 4px; font-weight: bold; }")
+        self.blocker.setStyleSheet(_BLOCKER_STYLE)
         self.next = QPushButton(f"Next: {STEPS[index + 1].name} →" if index + 1 < len(STEPS) else "Back to Start")
         self.next.clicked.connect(lambda: window.go_to_step(index + 1) if index + 1 < len(STEPS) else window.go_to_start())
         bar.addWidget(self.back)
@@ -353,7 +356,10 @@ class StepPage(QWidget):
     def update_state(self, state: StepState) -> None:
         self.next.setEnabled(not state.blocker)
         self.blocker.setText(state.blocker)
+        # Empty notes show no colored bar.
+        self.blocker.setStyleSheet(_BLOCKER_STYLE if state.blocker else "")
         self.hint.setText(state.hint)
+        self.hint.setVisible(bool(state.hint))
 
 
 class StartPage(QWidget):
