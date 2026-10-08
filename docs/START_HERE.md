@@ -105,7 +105,7 @@ If it is not right:
 
 Fix the objects before markers are measured. Skip this step if step 2 looked right.
 
-1. To remove something that is not a real object: click it in the image (the line *Selected object* shows its number), then click **Delete object**. **Restore object** and **Undo** reverse it. Nothing is deleted until you have clicked an object.
+1. To remove something that is not a real object: click it in the image (the line *Selected object* shows its number), then click **Delete object** (key **Del**). **Restore object** and **Undo** (**Ctrl+Z**) reverse it. Nothing is deleted until you have clicked an object.
 2. To redraw outlines: select the *Objects* layer, paint or erase with napari's tools, then click **Record drawn edits** to keep them.
 
 The objects found in step 2 are kept; edits are saved as a list applied on top. Running step 2 again with new settings gives new objects, and these edits no longer apply to them.
@@ -132,7 +132,7 @@ CellQuant measures each marker inside every object and calls each object positiv
 2. Drag the **Cutoff** slider, or type a number beside it. The slider runs from the dimmest to the brightest object for this marker; the objects recolor and the counts below change as you drag. The same cutoff is used for every image, so choose one that works across your images, not just this one.
    With the percent rule, the slider is the minimum percent of each cell's pixels that must pass (0-100%). To change the pixel level, type it under **Percent-of-cell rule** and click **Apply pixel level**: this image is measured again (objects and your edits are kept). Tick **at most** to ignore pixels brighter than a second level, such as saturated spots. The line above the counts says the rule in words, for example *at least 30% of pixels ≥ 1200*.
 3. Optional: to count only part of the tissue, click **Draw** under **Count area**, outline it in the image (double-click to finish), then **Use for this image** or **Use for all images**. Only objects whose center is inside are counted; **Clear** counts the whole image again.
-4. When the image looks right, click **Approve**. Use **Next image ▶** at the bottom to check other images. After a run, **Check: Needs a look** or **Failed** makes Previous / Next go through only those (the bottom bar says so); **All included** goes back.
+4. When the image looks right, click **Approve** (key **A**); the next image that is not yet approved opens. Use the eye icons in napari's layer list to show or hide boundaries, fills and IDs. After a run, **Check: Needs a look** or **Failed** makes Previous / Next go through only those (the bottom bar says so); **All included** goes back.
 
 **Success check:** the green objects are the ones you would call positive by eye.
 
