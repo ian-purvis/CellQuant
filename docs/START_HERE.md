@@ -26,7 +26,7 @@ The CellQuant panel has a **Start** tab and six numbered tabs. Work from left to
 
 1. **Start → Try practice images** (first time) or **New experiment…**
 2. **1 Images**: add images and name the channels.
-3. **2 Find objects**: pick the nuclear channel, **Preview**, then **Run this image**.
+3. **2 Find objects**: pick the nuclear channel, **Preview**, then **Run this image** (in the Run window).
 4. **3 Markers**: tick the marker channels, **Set up markers**.
 5. **4 Check**: drag the **Cutoff** slider until the green (positive) objects look right, then **Approve**.
 6. **5 Results**: **Run all images**, then **Export results…**
@@ -90,7 +90,7 @@ Channels are shown in the colors saved in the file by the microscope software (f
    For stitching / true 3D, **Link overlap** sets how much an outline must overlap the next slice's to be the same nucleus (0.25 is Cellpose's usual value; lower if nuclei split across slices, higher if stacked nuclei join). **Brightness: Whole stack** scales every slice the same way, so a dim top or bottom slice still links correctly. **Minimum slices** removes objects found in fewer slices (1 keeps all).
 4. Set **Nucleus diameter (µm)** (default **6**; most nuclei are about 5–7 µm). When pixel size is known, Cellpose uses the matching pixel diameter, and **Min size** defaults to **5 µm²** to drop debris. A 6 µm nucleus is about 28 µm².
 5. Click **Preview** to try the settings on the area you are looking at. Nothing is saved.
-6. Click **Run this image** at the bottom. The bar at the bottom shows each step, for example *Finding objects: slice 4 of 7*. Run buttons are greyed out until it finishes. **Cancel** stops after the current step; nothing from the unfinished image is saved. (Cellpose's whole-volume 3D step cannot be stopped part-way; Cancel takes effect when it ends.)
+6. Click **Run this image** at the bottom. The bar at the bottom shows each step, for example *Finding objects: slice 4 of 7*; **Log** shows every message. Run buttons are greyed out until it finishes. **Cancel** stops after the current step; nothing from the unfinished image is saved. (Cellpose's whole-volume 3D step cannot be stopped part-way; Cancel takes effect when it ends.)
    To try other settings, change them and click **Run this image** again. There is no need to restart CellQuant or go back.
 7. Zoom in and check several areas. In 3D, drag the slice slider under the image to check every slice.
 
