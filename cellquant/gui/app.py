@@ -567,7 +567,6 @@ class CellQuantWindow:
         self._review_panel = ReviewPanel(self)
         self._results_panel = ResultsPanel(self)
         self._exported_to: Path | None = None
-        self._hpc_panel = None  # created when HPC prep is first opened
         # Guidance for first-time users: a Start tab, then one numbered page per step.
         self._start_page = guide.StartPage(self)
         self._marker_setup = guide.MarkerSetup(self)
@@ -691,20 +690,6 @@ class CellQuantWindow:
 
     def open_guide(self) -> None:
         guide.GuideDialog(self._tabs, guide.guide_text()).exec()
-
-    def open_hpc_prep(self) -> None:
-        """Show the HPC prep tab. Local analysis settings and results are left as they are."""
-
-        if self.require_controller() is None:
-            return
-        from cellquant.gui.hpc_panel import HpcPanel
-
-        if self._hpc_panel is None:
-            self._hpc_panel = HpcPanel(self)
-        if self._tabs.indexOf(self._hpc_panel) < 0:
-            self._tabs.addTab(self._hpc_panel, "HPC prep")
-        self._hpc_panel.refresh()
-        self._tabs.setCurrentWidget(self._hpc_panel)
 
     def open_experiment_dialog(self) -> None:
         directory = QFileDialog.getExistingDirectory(self._tabs, "Open an experiment folder")
@@ -1015,7 +1000,6 @@ class CellQuantWindow:
             "Export results…", "Add images", "Add folder", "New experiment", "New experiment…", "Open",
             "Open experiment…", "Try practice images", "Include shown", "Leave out shown",
             "Include only selected", "Delete object", "Restore object", "Undo", "Record drawn edits", "Approve", "Use recommended",
-            "HPC prep…",  # the HPC prep page manages its own buttons: a second job is refused while one runs
             "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
             # Buttons that change the settings: never while images are being analyzed with them.
             "Load settings…", "Add measurement", "Remove measurement",
@@ -1415,8 +1399,6 @@ class CellQuantWindow:
         self._marker_setup.refresh()
         notices = self.controller.channel_notices()
         self._experiment_panel.set_notices(notices)
-        if self._hpc_panel is not None:
-            self._hpc_panel.refresh()
         self.show_current()
         self._release_window_later()
 

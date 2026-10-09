@@ -148,17 +148,6 @@ Not done: loading runs on the interface thread when moving between images (about
 - Tests: `tests/test_sweep.py` (design, counting rules including unmeasured objects, resume, merge, collate equals the pipeline, report, hand-over folder and README, scoring against hand counts) and `tests/test_network_reuse.py`. 169 passed with the window.
 - Findings so far (no hand counts yet): nuclei per image differ up to about 8x between methods on the same image (far red: 214 for classical one slice to 737 for Cellpose 3 linked slices); Cellpose-SAM finds a median of 2.7x as many nuclei as Cellpose 3 in the same 2D mode; percent positive for the other markers is steadier across methods than the counts; cell probability -2 loses up to about 47% of nuclei (merging) and +2 loses 17 to 30%.
 
-## HPC prep: cluster packages, the Slurm worker, and import (2026-09-29)
-
-Built from `docs/HPC_PREP_SPEC.md` (slices 1-6; slice 7, a real Alpine run, needs a cluster account). User and maintainer guide: `docs/HPC_PREP_AND_SUBMISSION.md`. Acceptance status per criterion: `docs/HPC_ACCEPTANCE.md`.
-
-- New package `cellquant/hpc/`: versioned records with published JSON schemas (`models.py`, `schemas/`), lossless preparation with READY binding (`prepare.py`, `validate.py`), profiles and runtime contracts (`profiles.py`, `runtime.py`), Slurm scripts (`templates.py`), preflight (`preflight.py`), the headless worker with per-image publication, lease and resume (`runner.py`, `publish.py`, `lease.py`), import (`import_results.py`), lineage keys (`lineage.py`), and the CLI `python -m cellquant.hpc`. Window: `cellquant/gui/hpc_panel.py`.
-- Shared code changed so the cluster and this computer read and save images the same way: `image.read_stack` / `reduce_stack` (load_image is now these two steps; behavior unchanged), `cellquant/inputs.py` (every record is loaded through `load_record_image`), and complete result persistence (QC, reports, marker combinations, column types and missing values now survive a reload; older saved results still open as before).
-- Fixes found on the way: a cancelled batch was recorded as "completed" (now "cancelled"); an experiment folder that was moved kept writing to its old location (`load_experiment` now uses the folder it is opened from); running one image hid other images' results saved in earlier runs (results are now looked up newest run first); with no Cellpose installed, step 2 erased the engine and model from the settings (now kept).
-- Imported cluster results are re-measured from their saved objects without the segmentation engine (`remeasure_persisted_result`), so they can be edited, re-thresholded and exported with no Cellpose and no original files; edits never re-segment.
-- Tests: `tests/test_hpc_*.py`, `tests/test_gui_hpc.py` (including a full run through the generated submit.sh and job.sbatch with Slurm and the GPU stubbed, ShellCheck clean). 265 passed with the window. Real Cellpose-SAM and Cellpose 3 weights (CPU): original and prepared input gave identical labels and measurements (`docs/HPC_ACCEPTANCE.md`).
-- Not done here: environments built on Alpine, GPU preflight on a real node, and the smoke test; profiles stay experimental until then.
-
 ## Positive by percent of the cell (2026-09-29)
 
 CellQuant v1's `positive_fraction` rule is back: a cell is positive when at least a minimum percent of its
@@ -199,7 +188,7 @@ pixels are at or above a pixel level (optionally at most an upper level).
   (one folder per analysis plus `all_analyses_image_summary.csv`).
 - Window: Analysis list and buttons above the steps; Run all analyses (bottom bar and step 5) and Export all
   analyses (step 5) appear when there are several; switching is refused while anything runs; settings on
-  screen are saved to the analysis being left. HPC prep packages the analysis shown.
+  screen are saved to the analysis being left.
 - Tests: `tests/test_analyses.py` (10), `tests/test_gui_analyses.py`. Suite: 300 passed. An independent review
   found four problems (a removed analysis's runs read by the original one; edits shared by analyses with the same segmentation; a re-included image left "excluded"; settings
   pages usable during Run all analyses), all fixed with tests.
