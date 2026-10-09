@@ -4,7 +4,8 @@
 param(
     [ValidateSet('ask', 'default', 'cellpose4', 'cellpose3')]
     [string]$Engine = 'ask',
-    [string]$Experiment = ''
+    [string]$Experiment = '',
+    [switch]$SoftwareGraphics
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,6 +70,12 @@ if (-not $Installed.Contains($Engine)) {
 }
 
 $Prefix = $Installed[$Engine]
+# Draw the viewer with software OpenGL (Mesa). Works around NVIDIA driver crashes in the viewer
+# ("access violation" in glDrawArrays); Cellpose still uses the GPU.
+if ($SoftwareGraphics) {
+    $env:QT_OPENGL = 'software'
+    Write-Host '  Software graphics: on'
+}
 Write-Host ''
 Write-Host "Starting CellQuant with $(Get-CellQuantEngineLabel -Engine $Engine)..."
 Write-Host "  Environment: $Prefix"
