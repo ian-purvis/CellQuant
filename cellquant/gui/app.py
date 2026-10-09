@@ -4256,8 +4256,8 @@ class Footer(QWidget):
             row.addWidget(button)
         self.keep_awake = QCheckBox("Keep computer awake (recommended) ⓘ")
         self.keep_awake.setToolTip(
-            "While a run is going, stop this computer from going to sleep. Sleep pauses the run "
-            "until someone wakes the computer. The screen can still turn off."
+            "While a run is going, keep this computer and its screen on. Sleep pauses the run "
+            "until someone wakes the computer, and on many laptops the screen turning off means sleep."
         )
         self.keep_awake.setChecked(keep_awake_preferred())
         self.keep_awake.setVisible(keep_awake.supported())
