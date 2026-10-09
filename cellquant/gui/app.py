@@ -52,7 +52,7 @@ from qtpy.QtWidgets import (
 )
 
 from cellquant import keep_awake
-from cellquant.controller import AnalysisController
+from cellquant.controller import AnalysisController, display_z
 from cellquant.count_area import outside
 from cellquant.errors import CellQuantError, RecipeValidationError
 from cellquant.gui import guide
@@ -551,8 +551,7 @@ class CellQuantWindow:
         self._batch: BatchWorker | None = None
         self._job: CallWorker | None = None
         self._shown_image_id: str | None = None
-        # The image whose objects the Objects layer shows (None: a preview, or nothing).
-        self._labels_image_id: str | None = None
+        self._shown_z: tuple[str | None, int | None] = (None, None)
         self._wanted_image_id: str | None = None
         self._loader: CallWorker | None = None
         self._building = False
@@ -569,7 +568,6 @@ class CellQuantWindow:
         self._review_panel = ReviewPanel(self)
         self._results_panel = ResultsPanel(self)
         self._exported_to: Path | None = None
-        self._hpc_panel = None  # created when HPC prep is first opened
         # Guidance for first-time users: a Start tab, then one numbered page per step.
         self._start_page = guide.StartPage(self)
         self._marker_setup = guide.MarkerSetup(self)
@@ -693,20 +691,6 @@ class CellQuantWindow:
 
     def open_guide(self) -> None:
         guide.GuideDialog(self._tabs, guide.guide_text()).exec()
-
-    def open_hpc_prep(self) -> None:
-        """Show the HPC prep tab. Local analysis settings and results are left as they are."""
-
-        if self.require_controller() is None:
-            return
-        from cellquant.gui.hpc_panel import HpcPanel
-
-        if self._hpc_panel is None:
-            self._hpc_panel = HpcPanel(self)
-        if self._tabs.indexOf(self._hpc_panel) < 0:
-            self._tabs.addTab(self._hpc_panel, "HPC prep")
-        self._hpc_panel.refresh()
-        self._tabs.setCurrentWidget(self._hpc_panel)
 
     def open_experiment_dialog(self) -> None:
         directory = QFileDialog.getExistingDirectory(self._tabs, "Open an experiment folder")
@@ -909,7 +893,7 @@ class CellQuantWindow:
 
     def _load_in_background(self, record, result) -> None:
         controller = self.controller
-        worker = CallWorker(lambda: controller._load_display(record))
+        worker = CallWorker(lambda: controller._load_display(record, result=result))
         self._loader = worker
 
         def shown(loaded) -> None:
@@ -956,7 +940,7 @@ class CellQuantWindow:
         if result is None or self.controller is None:
             return
         image_id = result.provenance.get("image_id")
-        if image_id == self._shown_image_id and self._has_image_layers():
+        if image_id == self._shown_image_id and self._has_image_layers() and self._shown_z == display_z(result):
             # Same image: keep the channel layers, and update the object layers in place.
             self._set_labels(result.labels, result)
         else:
@@ -1016,8 +1000,7 @@ class CellQuantWindow:
             "Preview", "Run this image", "Run selected images", "Run all images", "Set up markers",
             "Export results…", "Add images", "Add folder", "New experiment", "New experiment…", "Open",
             "Open experiment…", "Try practice images", "Include shown", "Leave out shown",
-            "Include only selected", "Delete object", "Restore object", "Undo", "Record drawn edits", "Record all images", "Approve", "Use recommended",
-            "HPC prep…",  # the HPC prep page manages its own buttons: a second job is refused while one runs
+            "Include only selected", "Delete object", "Restore object", "Undo", "Record drawn edits", "Approve", "Use recommended",
             "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
             # Buttons that change the settings: never while images are being analyzed with them.
             "Load settings…", "Add measurement", "Remove measurement",
@@ -1417,8 +1400,6 @@ class CellQuantWindow:
         self._marker_setup.refresh()
         notices = self.controller.channel_notices()
         self._experiment_panel.set_notices(notices)
-        if self._hpc_panel is not None:
-            self._hpc_panel.refresh()
         self.show_current()
         self._release_window_later()
 
@@ -1451,6 +1432,7 @@ class CellQuantWindow:
         self._labels_image_id = None
         self._clear_managed()
         self._shown_image_id = record.image_id
+        self._shown_z = display_z(result)
         self._edit_panel.clear_selection()
         file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
         names = format_channel_labels(file_names, loaded.n_channels)
@@ -4366,8 +4348,8 @@ class Footer(QWidget):
             row.addWidget(button)
         self.keep_awake = QCheckBox("Keep computer awake (recommended) ⓘ")
         self.keep_awake.setToolTip(
-            "While a run is going, stop this computer from going to sleep. Sleep pauses the run "
-            "until someone wakes the computer. The screen can still turn off."
+            "While a run is going, keep this computer and its screen on. Sleep pauses the run "
+            "until someone wakes the computer, and on many laptops the screen turning off means sleep."
         )
         self.keep_awake.setChecked(keep_awake_preferred())
         self.keep_awake.setVisible(keep_awake.supported())
@@ -4513,6 +4495,10 @@ class Footer(QWidget):
         self._clock_timer.stop()
         self._clock = None
         self._show_time_left()
+        # A step line left over from the finished work would read as still running.
+        if self.status.text() and self.status.text() == getattr(self, "_step_text", None):
+            self.status.setText("")
+        self._step_text = None
 
     def show_step(self, text: str, fraction: float) -> None:
         """One step of the running analysis, e.g. 'Finding objects: slice 3 of 7'."""
@@ -4525,14 +4511,16 @@ class Footer(QWidget):
             done = (self._batch_index - 1 + max(fraction, 0.0)) / total
             self.progress.setRange(0, 1000)
             self.progress.setValue(int(round(1000 * done)))
-            self.status.setText(f"Image {self._batch_index} of {total} ({self._batch_name}): {text}")
+            self._step_text = f"Image {self._batch_index} of {total} ({self._batch_name}): {text}"
+            self.status.setText(self._step_text)
             return
         if fraction < 0:
             self.progress.setRange(0, 0)  # busy: this step's length is unknown
         else:
             self.progress.setRange(0, 1000)
             self.progress.setValue(int(round(1000 * fraction)))
-        self.status.setText(text + "...")
+        self._step_text = text + "..."
+        self.status.setText(self._step_text)
 
     def update_progress(self, index: int, total: int, filename: str, status: str) -> None:
         self._batch_index, self._batch_total, self._batch_name = index, total, filename
