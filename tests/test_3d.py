@@ -12,6 +12,7 @@ from cellquant import engines
 from cellquant.controller import AnalysisController
 from cellquant.edits import apply_edits, operations_from_diff
 from cellquant.image import load_image
+from cellquant.inputs import load_record_image
 from cellquant.recipe import load_recipe
 from cellquant.regions import expand_labels, ring_labels
 from cellquant.volume import scale_brightness, segment_volume, stitch_slices
@@ -393,6 +394,27 @@ def test_the_viewer_gets_every_slice_whatever_the_z_handling(tmp_path: Path, mod
     shown = controller._load_display(record)
     assert shown.data.shape == (2, 9, 64, 64)
     assert shown.z_description == controller._load_record(record).z_description
+
+
+@pytest.mark.parametrize(
+    ("mode", "index", "shape"),
+    [("max_projection", None, (2, 64, 64)), ("single_plane", 2, (2, 64, 64)), ("stitch_slices", None, (2, 9, 64, 64))],
+)
+def test_a_segmented_image_is_shown_as_it_was_segmented(tmp_path: Path, mode: str, index, shape):
+    from types import SimpleNamespace
+
+    path = tmp_path / "stack.tif"
+    _stack(path)
+    controller = AnalysisController.create(tmp_path / "results", "Viewer")
+    controller.add_image_paths([path])
+    controller.set_recipe(_recipe("full_3d"))  # the current setting differs from how the result was made
+    record = controller.experiment.images[0]
+    result = SimpleNamespace(provenance={"z_handling": mode, "z_index": index})
+    shown = controller._load_display(record, result=result)
+    assert shown.data.shape == shape
+    expected = load_record_image(record, z_mode=mode, z_index=index, experiment_dir=controller.directory)
+    assert np.array_equal(shown.data, expected.data)
+    assert shown.z_description == expected.z_description
 
 
 def test_a_single_plane_file_has_no_slices_to_scroll(tmp_path: Path):
