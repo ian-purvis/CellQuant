@@ -31,7 +31,7 @@ from cellquant.experiment import (
     save_experiment,
     set_channel_name,
 )
-from cellquant.image import LoadedImage
+from cellquant.image import Z_MODES, LoadedImage
 from cellquant.inputs import load_record_display, load_record_image, resolve_source_path
 from cellquant.hpc.lineage import segmentation_settings
 from cellquant import progress
@@ -1025,9 +1025,17 @@ class AnalysisController:
             experiment_dir=self.directory,
         )
 
-    def _load_display(self, record) -> LoadedImage:
-        """The image as the viewer shows it: every Z slice, whatever the analysis Z handling."""
+    def _load_display(self, record, result: ImageResult | None = None) -> LoadedImage:
+        """The image as the viewer shows it.
 
+        With a result: the way that result was segmented (a max projection, the
+        one slice, or the stack), so its objects lie on what was processed.
+        Without one: every Z slice, so the stack can be scrolled.
+        """
+
+        mode, index = display_z(result)
+        if mode is not None:
+            return load_record_display(record, z_mode=mode, z_index=index, experiment_dir=self.directory, as_analyzed=True)
         return load_record_display(
             record,
             z_mode=self.recipe.z_stack,
@@ -1703,3 +1711,16 @@ def _details_to_keep(result: ImageResult) -> dict:
     """Segmentation details that later measurements of the same labels still report."""
 
     return segmentation_details_of(result)
+
+
+def display_z(result: ImageResult | None) -> tuple[str | None, int | None]:
+    """The Z handling a result was segmented with, as (mode, slice); (None, None) when unknown or flat."""
+
+    if result is None:
+        return None, None
+    provenance = result.provenance or {}
+    mode = provenance.get("z_handling")
+    if mode not in Z_MODES:
+        return None, None
+    index = provenance.get("z_index")
+    return mode, int(index) if mode == "single_plane" and index is not None else None

@@ -52,7 +52,7 @@ from qtpy.QtWidgets import (
 )
 
 from cellquant import keep_awake
-from cellquant.controller import AnalysisController
+from cellquant.controller import AnalysisController, display_z
 from cellquant.count_area import outside
 from cellquant.errors import CellQuantError, RecipeValidationError
 from cellquant.gui import guide
@@ -551,6 +551,7 @@ class CellQuantWindow:
         self._batch: BatchWorker | None = None
         self._job: CallWorker | None = None
         self._shown_image_id: str | None = None
+        self._shown_z: tuple[str | None, int | None] = (None, None)
         self._wanted_image_id: str | None = None
         self._loader: CallWorker | None = None
         self._building = False
@@ -907,7 +908,7 @@ class CellQuantWindow:
 
     def _load_in_background(self, record, result) -> None:
         controller = self.controller
-        worker = CallWorker(lambda: controller._load_display(record))
+        worker = CallWorker(lambda: controller._load_display(record, result=result))
         self._loader = worker
 
         def shown(loaded) -> None:
@@ -954,7 +955,7 @@ class CellQuantWindow:
         if result is None or self.controller is None:
             return
         image_id = result.provenance.get("image_id")
-        if image_id == self._shown_image_id and self._has_image_layers():
+        if image_id == self._shown_image_id and self._has_image_layers() and self._shown_z == display_z(result):
             # Same image: keep the channel layers, and update the object layers in place.
             self._set_labels(result.labels, result)
         else:
@@ -1447,6 +1448,7 @@ class CellQuantWindow:
     def _show_loaded(self, loaded, record, result) -> None:
         self._clear_managed()
         self._shown_image_id = record.image_id
+        self._shown_z = display_z(result)
         self._edit_panel.clear_selection()
         file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
         names = format_channel_labels(file_names, loaded.n_channels)
