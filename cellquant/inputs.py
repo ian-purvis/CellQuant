@@ -64,12 +64,17 @@ def load_record_display(
     z_mode: str,
     z_index: int | None,
     experiment_dir: str | Path | None = None,
+    as_analyzed: bool = False,
 ) -> LoadedImage:
-    """Load a record's image for the viewer: every Z slice, so the stack can be scrolled.
+    """Load a record's image for the viewer.
 
-    Pixel sizes, channel names and the Z description follow the analysis Z
-    handling, as in ``load_record_image``; only the pixels keep all slices,
-    as ``(channels, z, y, x)``. A single-plane file stays ``(channels, y, x)``.
+    By default every Z slice, so the stack can be scrolled: pixel sizes,
+    channel names and the Z description follow the analysis Z handling, as in
+    ``load_record_image``; only the pixels keep all slices, as
+    ``(channels, z, y, x)``. ``as_analyzed`` keeps the pixels the analysis
+    segmented instead (the projection, the one slice, or the stack), so
+    objects are shown on what was processed. A single-plane file stays
+    ``(channels, y, x)``.
     """
 
     path = resolve_source_path(record, experiment_dir)
@@ -84,6 +89,6 @@ def load_record_display(
         pixel_size_y=record.pixel_size_y,
         pixel_size_z=record.pixel_size_z,
     )
-    if stack.zcyx.shape[0] > 1 and not loaded.is_3d:
+    if stack.zcyx.shape[0] > 1 and not loaded.is_3d and not as_analyzed:
         loaded = replace(loaded, data=np.ascontiguousarray(stack.czyx))
     return loaded
