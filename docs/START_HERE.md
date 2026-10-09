@@ -75,7 +75,7 @@ Channels are shown in the colors saved in the file by the microscope software (f
 
 ## Step 2: Find objects
 
-1. Set **Source channel** to the nuclear channel (shown as *Channel N = …* from the file). Without a nuclear stain, use the channel that marks the cells you want to count.
+1. Set **Default channel** to the nuclear channel (shown as *Channel N = …* from the file). Without a nuclear stain, use the channel that marks the cells you want to count. If some images need another channel (for example mCherry in some, GFP in others), select them under **Channel per image** (click, Ctrl-click, Shift-click, or a folder for all its images) and pick their channel in **Set channel…**. Images left on *Default* use the Default channel; one run does them all.
 2. Choose a **Method**:
    - **Classical (fast, no GPU)**: good for well separated, evenly bright nuclei. **Threshold** is *Automatic (Otsu)* or *Manual threshold* (a pixel brightness; the marker *cutoff* is set later, in step 5).
    - **Cellpose (AI model)**: a trained model. Better for crowded or uneven nuclei. The Cellpose engine menu shows which engine is running; the box at the top says whether an NVIDIA GPU was found; Cellpose uses it automatically when it can.
@@ -205,7 +205,7 @@ Open CellQuant, click **Open experiment…**, and choose the results folder. You
 | Units say pixels | Enter the pixel size in step 1. |
 | Next is greyed out | Read the text beside it: it says what is missing. |
 | A red box says the run stopped | Read the message; the full details are in `cellquant_developer.log` in `%LOCALAPPDATA%\CellQuant` (Windows) or `~/.cellquant` (Mac, Linux). |
-| Nothing is found, or everything is one blob | Check that **Source channel** is the nuclear stain, and try Preview with different settings. |
+| Nothing is found, or everything is one blob | Check that **Default channel** (or the image's own channel) is the nuclear stain, and try Preview with different settings. |
 | Cellpose is slow | Without an NVIDIA GPU, Cellpose runs on the CPU. Use Classic Cellpose, or the classical method. |
 | "These settings were made for Cellpose-SAM" (or classic) | Close CellQuant and open it again with the engine the settings were made with, or choose a model for the engine you have. |
 | "The GPU was requested but Cellpose ran on the CPU" | The NVIDIA driver may need updating. Run the installer again after updating it. |

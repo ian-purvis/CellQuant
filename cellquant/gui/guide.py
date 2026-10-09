@@ -86,7 +86,8 @@ STEPS = (
         2,
         "2 Find objects",
         "Find the nuclei (or cells)",
-        "Set <b>Source channel</b> to the nuclear channel (for example Channel 1 = Far Red).<br>"
+        "Set <b>Default channel</b> to the nuclear channel (for example Channel 1 = Far Red). "
+        "Images that need another channel: select them under <b>Channel per image</b> and pick it in <b>Set channel…</b>.<br>"
         "<b>Method</b>: <i>Classical (fast, no GPU)</i>, or <i>Cellpose (AI model)</i>, which handles crowded "
         "or uneven nuclei better (pick the Cellpose engine when that method is selected).<br>"
         "If the images are Z-stacks, choose <b>Z-stack mode</b>: "

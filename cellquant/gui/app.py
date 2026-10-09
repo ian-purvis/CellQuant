@@ -47,6 +47,8 @@ from qtpy.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -1173,7 +1175,7 @@ class CellQuantWindow:
         def redraw() -> None:
             self._plan_dock.refresh()
             self._experiment_panel.refresh_table()
-            self._objects_panel.refresh_groups()
+            self._objects_panel.refresh_image_channels()
             self.update_navigation()
             self.refresh_guidance()
 
@@ -2225,11 +2227,12 @@ class ObjectsPanel(QWidget):
         self.method.currentIndexChanged.connect(lambda _index: self._method_changed())
         self.threshold_method.currentIndexChanged.connect(lambda _index: self._method_changed())
         # Root decisions first: what to segment, how, then how to treat Z, then size.
-        form.addRow("Source channel", self.channel)
-        self._group_by: str | None = None  # "layout" or "folder", remembered for the session
-        self.group_box = None
-        self._build_group_box()
-        form.addRow(self.group_box)
+        default_label = QLabel("Default channel")
+        default_label.setToolTip("Used for every image left on Default below.")
+        form.addRow(default_label, self.channel)
+        self.image_tree = None
+        self._build_image_channels()
+        form.addRow(self.image_channels_box)
         form.addRow("Method", self.method)
         form.addRow(self.engine_choice_label, self.engine_choice)
         form.addRow("Z-stack mode", self.z_box)
@@ -2402,116 +2405,182 @@ class ObjectsPanel(QWidget):
             self.max_area.setValue(0)
         self._update_size_hint()
         self.update_recommendation()
-        self.refresh_groups()
+        self.refresh_image_channels()
 
-    # -- a source channel per group of images (step 2) ------------------------------------------
+    # -- a channel per image: pick images (or folders), give them a channel (step 2) ---------------
 
-    def _build_group_box(self) -> None:
+    def _build_image_channels(self) -> None:
         box = QWidget()
         column = QVBoxLayout(box)
         column.setContentsMargins(0, 0, 0, 0)
-        header = QHBoxLayout()
-        label = QLabel("By image group ⓘ")
-        label.setToolTip(
-            "Pick a source channel for a group of images. 'Source channel' follows the menu above. "
-            "Grouped by the channels named in each file, or by folder."
+        header = QLabel("Channel per image ⓘ")
+        header.setToolTip(
+            "Select images (click, Ctrl-click, Shift-click; a folder selects every image in it), "
+            "then pick their channel below. Images left on Default use the Default channel. One run does them all."
         )
-        self.group_by_box = QComboBox()
-        self.group_by_box.addItem("Channels", "layout")
-        self.group_by_box.addItem("Folder", "folder")
-        self.group_by_box.setToolTip("How to group the images.")
-        self.group_by_box.currentIndexChanged.connect(self._group_by_changed)
-        header.addWidget(label)
-        header.addStretch(1)
-        header.addWidget(QLabel("Group by"))
-        header.addWidget(self.group_by_box)
-        column.addLayout(header)
-        self.group_rows = QVBoxLayout()
-        self.group_rows.setContentsMargins(0, 0, 0, 0)
-        column.addLayout(self.group_rows)
-        box.setVisible(False)
-        self.group_box = box
+        tree = QTreeWidget()
+        tree.setColumnCount(2)
+        tree.setHeaderLabels(["Image", "Channel"])
+        tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        tree.setMinimumHeight(240)
+        tree.header().setStretchLastSection(False)
+        tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        tree.itemSelectionChanged.connect(self._image_selection_changed)
+        self.image_tree = tree
+        pick_row = QHBoxLayout()
+        self.image_channel_label = QLabel("Selected: none")
+        self.image_channel_pick = QComboBox()
+        self.image_channel_pick.setToolTip("The channel to find objects in for the selected images.")
+        self.image_channel_pick.activated.connect(lambda _i: self._image_channel_chosen())
+        pick_row.addWidget(self.image_channel_label, 1)
+        pick_row.addWidget(self.image_channel_pick)
+        self.image_channel_counts = QLabel("")
+        self.image_channel_counts.setStyleSheet("QLabel { color: gray; }")
+        self.image_channel_counts.setWordWrap(True)
+        column.addWidget(header)
+        column.addWidget(tree)
+        column.addLayout(pick_row)
+        column.addWidget(self.image_channel_counts)
+        self.image_channels_box = box
 
-    def _group_by_changed(self, _index: int) -> None:
-        if getattr(self, "_filling_groups", False):
-            return
-        self._group_by = self.group_by_box.currentData()
-        self.refresh_groups()
+    def _selected_image_ids(self) -> list[str]:
+        ids: list[str] = []
 
-    def refresh_groups(self) -> None:
-        if self.group_box is None:
-            return
-        while self.group_rows.count():
-            item = self.group_rows.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        def add(item) -> None:
+            image_id = item.data(0, Qt.ItemDataRole.UserRole)
+            if image_id:
+                if image_id not in ids:
+                    ids.append(str(image_id))
+                return
+            for index in range(item.childCount()):
+                add(item.child(index))
+
+        for item in self.image_tree.selectedItems():
+            add(item)
+        return ids
+
+    def _image_channel_text(self, controller, ids: list[str]) -> str:
+        chosen = controller.group_plan_channel(ids)
+        if chosen is None:
+            return "Default"
+        return "Mixed" if chosen == "mixed" else str(chosen)
+
+    def refresh_image_channels(self) -> None:
+        tree = self.image_tree
         controller = self.shell.controller
+        selected = set(self._selected_image_ids()) if tree.topLevelItemCount() else set()
+        expanded = set()
+
+        def walk(item) -> None:
+            parts = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            if parts and item.isExpanded():
+                expanded.add(tuple(parts))
+            for index in range(item.childCount()):
+                walk(item.child(index))
+
+        for index in range(tree.topLevelItemCount()):
+            walk(tree.topLevelItem(index))
+        first_fill = tree.topLevelItemCount() == 0
+        tree.blockSignals(True)
+        tree.clear()
         if controller is None:
-            self.group_box.setVisible(False)
+            tree.blockSignals(False)
+            self._image_selection_changed()
             return
-        from cellquant.plan import folder_of, group_images, layout_key
+        from cellquant.plan import folder_of
 
         records = [record for record in controller.experiment.images if record.include]
-        layouts = {layout_key(record) for record in records}
-        folders = {folder_of(record) for record in records}
-        if len(layouts) <= 1 and len(folders) <= 1:
-            self.group_box.setVisible(False)
-            return
-        by = self._group_by or ("layout" if len(layouts) > 1 else "folder")
-        self._filling_groups = True
-        try:
-            self.group_by_box.setCurrentIndex(max(0, self.group_by_box.findData(by)))
-        finally:
-            self._filling_groups = False
-        reference = [channel.channel_name for channel in sorted(controller.experiment.channels, key=lambda item: item.channel_index)]
-        for group in group_images(records, by):
-            ids = group.all_image_ids()
+        folders: dict[tuple[str, ...], QTreeWidgetItem] = {}
+        folder_ids: dict[tuple[str, ...], list[str]] = {}
+
+        def folder_item(parts: tuple[str, ...]):
+            if not parts:
+                return None
+            if parts not in folders:
+                parent = folder_item(parts[:-1])
+                item = QTreeWidgetItem([parts[-1], ""])
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, list(parts))
+                if parent is None:
+                    tree.addTopLevelItem(item)
+                else:
+                    parent.addChild(item)
+                folders[parts] = item
+                folder_ids[parts] = []
+            return folders[parts]
+
+        for record in records:
+            parts = tuple(part for part in folder_of(record).split("/") if part)
+            parent = folder_item(parts)
+            for depth in range(1, len(parts) + 1):
+                folder_ids[parts[:depth]].append(record.image_id)
+            leaf = QTreeWidgetItem([record.filename, self._image_channel_text(controller, [record.image_id])])
+            leaf.setData(0, Qt.ItemDataRole.UserRole, record.image_id)
+            leaf.setToolTip(0, record.relative_path or record.filename)
+            if parent is None:
+                tree.addTopLevelItem(leaf)
+            else:
+                parent.addChild(leaf)
+            if record.image_id in selected:
+                leaf.setSelected(True)
+        for parts, item in folders.items():
+            ids = folder_ids[parts]
+            item.setText(0, f"{parts[-1]} ({len(ids)})")
+            item.setText(1, self._image_channel_text(controller, ids))
+            item.setExpanded(first_fill or parts in expanded)
+        tree.blockSignals(False)
+        self._image_selection_changed()
+        counts: dict[str, int] = {}
+        for record in records:
+            text = self._image_channel_text(controller, [record.image_id])
+            counts[text] = counts.get(text, 0) + 1
+        default = channel_label(controller.recipe.object_set.segmentation_channel, controller._channel_name(controller.recipe.object_set.segmentation_channel))
+        self.image_channel_counts.setText(
+            " · ".join(f"{name}: {count}" for name, count in counts.items()).replace("Default:", f"Default ({default.split(' = ')[-1]}):")
+        )
+
+    def _image_selection_changed(self) -> None:
+        controller = self.shell.controller
+        ids = self._selected_image_ids() if self.image_tree is not None else []
+        combo = self.image_channel_pick
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Set channel…", "__none__")
+        combo.model().item(0).setEnabled(False)
+        if controller is not None and ids:
+            combo.addItem("Default", "__default__")
             names: list[str] = []
             for image_id in ids:
                 for name in controller.image_channel_names(image_id):
                     if name not in names:
                         names.append(name)
-            if by == "folder":
-                names.sort(key=lambda name: reference.index(name) if name in reference else len(reference))
-                title = group.label
-            else:
-                title = " · ".join(names)
-            row = QWidget()
-            line = QHBoxLayout(row)
-            line.setContentsMargins(0, 0, 0, 0)
-            label = QLabel(f"{title} ({len(ids)})")
-            files = [controller.experiment.image(image_id) for image_id in ids]
-            shown = [record.relative_path or record.filename for record in files[:10]]
-            label.setToolTip("\n".join(shown) + (f"\n... and {len(files) - 10} more" if len(files) > 10 else ""))
-            combo = QComboBox()
-            current = controller.group_plan_channel(ids)
-            if current == "mixed":
-                combo.addItem("Mixed", "__mixed__")
-                combo.model().item(0).setEnabled(False)
-            combo.addItem("Source channel", None)
             for name in names:
                 combo.addItem(name, name)
-            combo.setCurrentIndex(max(0, combo.findData("__mixed__" if current == "mixed" else current)))
-            combo.setToolTip("The channel to find objects in for these images.")
-            combo.activated.connect(lambda _i, c=combo, i=list(ids): self._group_channel_chosen(i, c.currentData()))
-            line.addWidget(label, 1)
-            line.addWidget(combo)
-            self.group_rows.addWidget(row)
-        self.group_box.setVisible(True)
+        combo.setCurrentIndex(0)
+        combo.setEnabled(bool(ids))
+        combo.blockSignals(False)
+        self.image_channel_label.setText(f"Selected: {len(ids)} image{'' if len(ids) == 1 else 's'}" if ids else "Selected: none")
 
-    def _group_channel_chosen(self, ids: list[str], name) -> None:
+    def _image_channel_chosen(self) -> None:
         controller = self.shell.controller
-        if controller is None or name == "__mixed__":
+        name = self.image_channel_pick.currentData()
+        ids = self._selected_image_ids()
+        if controller is None or not ids or name == "__none__":
+            return
+        if self.shell.is_busy():
+            self.shell.message("Wait for the run to finish before changing channels.")
+            self._image_selection_changed()
             return
         try:
-            missing = controller.set_plan_channel_by_name(ids, name)
+            missing = controller.set_plan_channel_by_name(ids, None if name == "__default__" else name)
         except CellQuantError as exc:
             self.shell.message(str(exc))
             return
         if missing:
-            self.shell.message(f"{len(missing)} image(s) in this group have no {name} channel; left on Source channel.")
+            self.shell.message(f"{len(missing)} selected image(s) have no {name} channel; left as they were.")
+        else:
+            label = "Default" if name == "__default__" else name
+            self.shell.message(f"{len(ids)} image{'' if len(ids) == 1 else 's'} set to {label}.")
         self.shell.plan_changed()
 
     def _pixel_size_um(self) -> float | None:
