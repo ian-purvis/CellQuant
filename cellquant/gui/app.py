@@ -552,6 +552,7 @@ class CellQuantWindow:
         self._job: CallWorker | None = None
         self._shown_image_id: str | None = None
         self._shown_z: tuple[str | None, int | None] = (None, None)
+        self._labels_image_id: str | None = None  # image the Objects layer holds
         self._wanted_image_id: str | None = None
         self._loader: CallWorker | None = None
         self._building = False
