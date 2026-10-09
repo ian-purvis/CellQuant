@@ -33,7 +33,6 @@ from cellquant.experiment import (
 )
 from cellquant.image import LoadedImage
 from cellquant.inputs import load_record_display, load_record_image, resolve_source_path
-from cellquant.hpc.lineage import segmentation_settings
 from cellquant import progress
 from cellquant.progress import AnalysisCancelled
 from cellquant.pipeline import (
@@ -1667,6 +1666,19 @@ def process_experiment(
     if recipe is not None:
         controller.set_recipe(recipe)
     return controller.run_images(image_ids, on_progress=on_progress)
+
+
+_SEGMENTATION_SETTINGS = ("z_stack", "z_index", "z_stitch_threshold", "z_scale_brightness", "z_min_slices", "object_set")
+
+
+def segmentation_settings(recipe, effective_z_index: int | None = None) -> dict:
+    """The part of the settings that decides the objects (not measurements or thresholds)."""
+
+    scientific = recipe.scientific_dict()
+    settings = {key: scientific[key] for key in _SEGMENTATION_SETTINGS if key in scientific}
+    if recipe.z_stack == "single_plane":
+        settings["z_index"] = effective_z_index
+    return settings
 
 
 def _canonical(value) -> str:
