@@ -551,6 +551,8 @@ class CellQuantWindow:
         self._batch: BatchWorker | None = None
         self._job: CallWorker | None = None
         self._shown_image_id: str | None = None
+        # The image whose objects the Objects layer shows (None: a preview, or nothing).
+        self._labels_image_id: str | None = None
         self._wanted_image_id: str | None = None
         self._loader: CallWorker | None = None
         self._building = False
@@ -1014,7 +1016,7 @@ class CellQuantWindow:
             "Preview", "Run this image", "Run selected images", "Run all images", "Set up markers",
             "Export results…", "Add images", "Add folder", "New experiment", "New experiment…", "Open",
             "Open experiment…", "Try practice images", "Include shown", "Leave out shown",
-            "Include only selected", "Delete object", "Restore object", "Undo", "Record drawn edits", "Approve", "Use recommended",
+            "Include only selected", "Delete object", "Restore object", "Undo", "Record drawn edits", "Record all images", "Approve", "Use recommended",
             "HPC prep…",  # the HPC prep page manages its own buttons: a second job is refused while one runs
             "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
             # Buttons that change the settings: never while images are being analyzed with them.
@@ -1445,6 +1447,8 @@ class CellQuantWindow:
         return any(name in self.viewer.layers for name in self._managed if name not in _OBJECT_LAYERS)
 
     def _show_loaded(self, loaded, record, result) -> None:
+        self._edit_panel.keep_drawing()
+        self._labels_image_id = None
         self._clear_managed()
         self._shown_image_id = record.image_id
         self._edit_panel.clear_selection()
@@ -1495,6 +1499,8 @@ class CellQuantWindow:
     def _set_labels(self, labels, result) -> None:
         # Adding or removing a napari layer takes on the order of a second, so
         # layers that already exist with the right shape get new data instead.
+        self._edit_panel.keep_drawing()
+        self._labels_image_id = None
         if labels is None:
             for name in _OBJECT_LAYERS:
                 self._drop(name)
@@ -1521,6 +1527,8 @@ class CellQuantWindow:
             self._set_classification_overlay(result)
             self._set_ids(result)
             self._set_crop_regions(result, labels.shape)
+            self._labels_image_id = result.provenance.get("image_id")
+            self._edit_panel.bring_back_drawing(self._labels_image_id, boundaries)
 
     def _set_crop_regions(self, result, shape) -> None:
         """Outline the rectangles this image was segmented in (when the analysis crops)."""
@@ -3231,20 +3239,30 @@ class EditPanel(QWidget):
         self.selected.setToolTip("Click an object in the image to select it.")
         layout.addWidget(self.selected)
         buttons = QHBoxLayout()
-        for text, slot in (
-            ("Delete object", self._delete),
-            ("Restore object", self._restore),
-            ("Undo", self._undo),
-            ("Record drawn edits", self._commit),
+        record_buttons = QHBoxLayout()  # a row of their own, so no label is cut off
+        for text, slot, row in (
+            ("Delete object", self._delete, buttons),
+            ("Restore object", self._restore, buttons),
+            ("Undo", self._undo, buttons),
+            ("Record drawn edits", self._commit, record_buttons),
+            ("Record all images", self._commit_all, record_buttons),
         ):
             button = QPushButton(text)
             button.clicked.connect(slot)
-            buttons.addWidget(button)
+            row.addWidget(button)
             if text == "Delete object":
                 self.delete_button = button
             elif text == "Undo":
                 self.undo_button = button
         layout.addLayout(buttons)
+        layout.addLayout(record_buttons)
+        # Drawing not recorded yet, per (analysis, image): (objects it was drawn on, drawn objects).
+        # Kept when you move to another image, so Record all images can save every image at once.
+        self._pending: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+        self.pending_note = QLabel("")
+        self.pending_note.setToolTip("Drawing on these images is kept until you record it or close CellQuant.")
+        self.pending_note.hide()
+        layout.addWidget(self.pending_note)
         # Why Record drawn edits did nothing, or that it worked; blank otherwise.
         self.record_status = QLabel("")
         self.record_status.setWordWrap(True)
@@ -3258,6 +3276,50 @@ class EditPanel(QWidget):
     def _say(self, text: str) -> None:
         self.record_status.setText(text)
         self.record_status.setVisible(bool(text))
+
+    def _key(self, image_id: str) -> tuple[str, str]:
+        controller = self.shell.controller
+        return (controller.recipe.recipe_id or "" if controller is not None else "", image_id)
+
+    def _show_pending(self) -> None:
+        count = sum(1 for analysis, _image in self._pending if analysis == self._key("")[0])
+        self.pending_note.setText(f"Not recorded yet: {count} image{'s' if count != 1 else ''}." if count else "")
+        self.pending_note.setVisible(bool(count))
+
+    def keep_drawing(self) -> None:
+        """Before the Objects layer changes: keep what was drawn on the image it shows."""
+
+        controller = self.shell.controller
+        image_id = self.shell._labels_image_id
+        if controller is None or image_id is None or self._labels is None or self._labels not in self.shell.viewer.layers:
+            return
+        current = controller.last_results.get(image_id)
+        drawn = np.asarray(self._labels.data)
+        if current is None or drawn.shape != current.labels.shape:
+            return
+        if np.array_equal(drawn, current.labels):
+            self._pending.pop(self._key(image_id), None)
+        else:
+            self._pending[self._key(image_id)] = (np.array(current.labels, copy=True), np.array(drawn, copy=True))
+        self._show_pending()
+
+    def bring_back_drawing(self, image_id: str | None, layer) -> None:
+        """After an image's objects are shown: put back drawing not recorded yet (if made on these objects)."""
+
+        controller = self.shell.controller
+        if image_id is None or controller is None:
+            return
+        key = self._key(image_id)
+        kept = self._pending.get(key)
+        current = controller.last_results.get(image_id)
+        if kept is None or current is None:
+            return
+        base, drawn = kept
+        if base.shape == current.labels.shape and np.array_equal(base, current.labels):
+            layer.data = np.array(drawn, copy=True)
+        else:
+            self._pending.pop(key, None)  # the objects changed (run again, deleted, ...): the drawing no longer applies
+        self._show_pending()
 
     def bind_labels(self, boundaries) -> None:
         self._labels = boundaries
@@ -3361,11 +3423,59 @@ class EditPanel(QWidget):
             return
 
         def finish(result) -> None:
+            self._pending.pop(self._key(image_id), None)
             self.shell.show_result(result)
+            self._show_pending()
             self._say("Recorded.")
 
         self._say("")
         self.shell._start_job(lambda: controller.commit_drawn_labels(image_id, drawn), finish)
+
+    def _commit_all(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None:
+            return
+        if self.shell.is_busy():
+            self._say("Not recorded: wait for the current analysis to finish.")
+            return
+        if self.shell.image_loading():
+            self._say("Not recorded: wait for the image to finish loading.")
+            return
+        self.keep_drawing()
+        analysis = self._key("")[0]
+        todo = {image_id: kept for (owner, image_id), kept in self._pending.items() if owner == analysis}
+        if not todo:
+            self._say("Nothing to record: paint or erase in the Objects layer first.")
+            return
+        shown = self.shell._labels_image_id
+
+        def record_all():
+            recorded, skipped, on_screen = [], [], None
+            for image_id, (base, drawn) in todo.items():
+                current = controller.recall(image_id)
+                if current is None or current.labels.shape != base.shape or not np.array_equal(current.labels, base):
+                    skipped.append(image_id)
+                    continue
+                result = controller.commit_drawn_labels(image_id, drawn)
+                recorded.append(image_id)
+                if image_id == shown:
+                    on_screen = result
+            return recorded, skipped, on_screen
+
+        def finish(outcome) -> None:
+            recorded, skipped, on_screen = outcome
+            for image_id in recorded + skipped:
+                self._pending.pop((analysis, image_id), None)
+            if on_screen is not None:
+                self.shell.show_result(on_screen)
+            self._show_pending()
+            text = f"Recorded {len(recorded)} image{'s' if len(recorded) != 1 else ''}."
+            if skipped:
+                text += f" {len(skipped)} skipped: their objects changed after you drew."
+            self._say(text)
+
+        self._say("")
+        self.shell._start_job(record_all, finish)
 
 
 
