@@ -22,8 +22,6 @@ CellQuant finds nuclei (or cells) in fluorescence microscope images and counts h
 - [docs/START_HERE.md](docs/START_HERE.md) — installation, practice run, end-to-end workflow
 - [docs/STATUS.md](docs/STATUS.md) — built/tested features and known limitations
 - [docs/SWEEP.md](docs/SWEEP.md) — comparing segmentation methods and thresholds
-- [docs/HPC_PREP_AND_SUBMISSION.md](docs/HPC_PREP_AND_SUBMISSION.md) — HPC submission workflow
-- [docs/HPC_ACCEPTANCE.md](docs/HPC_ACCEPTANCE.md) — acceptance checklist for cluster runs
 
 ### For developers
 - [docs/DEVELOPERS.md](docs/DEVELOPERS.md) — repository map, entry points, testing commands
@@ -40,7 +38,6 @@ CellQuant finds nuclei (or cells) in fluorescence microscope images and counts h
 | `docs/START_HERE.md` | The step-by-step guide for users. The same guide opens from the Start tab. |
 | `docs/STATUS.md` | What has been built and tested, and what has not. |
 | `docs/DEVELOPERS.md` | Repository map and developer workflow for contributors. |
-| `docs/HPC_PREP_AND_SUBMISSION.md` | Running the analysis on a cluster GPU (Alpine), for large experiments. |
 | `docs/SWEEP.md` | Comparing segmentation methods and thresholds on a set of images. |
 | `CellQuant_v2_manifest_rev2.md`, `CellQuant_v2_architecture_and_manifest.md` | The design and build plan, for developers. |
 | `cellquant/` | The program. |
