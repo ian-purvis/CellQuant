@@ -64,12 +64,12 @@ def test_analyses_in_the_window(tmp_path: Path, monkeypatch):
         bar = shell._analysis_bar
         controller = shell.controller
         assert [bar.choice.itemText(i) for i in range(bar.choice.count())] == ["Analysis 1"]
-        assert not bar.remove_button.isEnabled() and not shell._footer.run_analyses.isVisibleTo(shell._footer)
+        assert not bar.remove_button.isEnabled() and not shell._results_summary.run_analyses.isVisibleTo(shell._results_summary)
 
         # One per channel: the dialog's choice, done directly.
         bar.make_per_channel([0, 1, 2])
         assert bar.choice.count() == 3 and bar.choice.currentText() == "Analysis 1"
-        assert shell._footer.run_analyses.isVisibleTo(shell._footer)
+        assert shell._results_summary.run_analyses.isVisibleTo(shell._results_summary)
         assert shell._results_summary.export_analyses.isVisibleTo(shell._results_summary)
 
         shell.run_all_analyses()
