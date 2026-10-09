@@ -528,7 +528,8 @@ class AnalysisController:
             operation.analysis = self.recipe.recipe_id or ""
         self.edits.setdefault(image_id, []).extend(operations)
         save_edits(self.directory, image_id, self.edits[image_id])
-        self._remeasure_cached(image_id)
+        # Only the drawn objects and their neighbours are measured again.
+        self._remeasure_cached(image_id, only_changed=True)
         return self.last_results[image_id]
 
     def _current_segmentation(self, image_id: str) -> str:
@@ -566,13 +567,16 @@ class AnalysisController:
             record.last_message = "Approval was cleared because an object was edited."
         self._remeasure_cached(image_id)
 
-    def _remeasure_cached(self, image_id: str) -> ImageResult:
-        """Re-measure from the image already in memory. Does not hash the file."""
+    def _remeasure_cached(self, image_id: str, *, only_changed: bool = False) -> ImageResult:
+        """Re-measure from the image already in memory. Does not hash the file.
+
+        ``only_changed`` measures again only the objects whose pixels (or neighbours) changed.
+        """
 
         with self._image_settings(self.experiment.image(image_id)):
-            return self._remeasure_cached_here(image_id)
+            return self._remeasure_cached_here(image_id, only_changed=only_changed)
 
-    def _remeasure_cached_here(self, image_id: str) -> ImageResult:
+    def _remeasure_cached_here(self, image_id: str, *, only_changed: bool = False) -> ImageResult:
         record = self.experiment.image(image_id)
         prior = self.last_results.get(image_id)
         loaded = self._session_images.get(image_id)
@@ -600,6 +604,7 @@ class AnalysisController:
             automated_labels=prior.automated_labels,
             segmentation_details=_details_to_keep(prior),
             count_area=record.count_area,
+            previous=prior if only_changed else None,
         )
         carry_segmentation_provenance(prior, result)
         self.last_results[image_id] = result
