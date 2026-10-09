@@ -3328,6 +3328,8 @@ class EditPanel(QWidget):
         # Drawing not recorded yet, per (analysis, image): (objects it was drawn on, drawn objects).
         # Kept when you move to another image, so Record all images can save every image at once.
         self._pending: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+        # (image, objects) the Objects layer was last given, before any drawing.
+        self._shown: tuple[str, np.ndarray] | None = None
         self.pending_note = QLabel("")
         self.pending_note.setToolTip("Drawing on these images is kept until you record it or close CellQuant.")
         self.pending_note.hide()
@@ -3362,20 +3364,23 @@ class EditPanel(QWidget):
         image_id = self.shell._labels_image_id
         if controller is None or image_id is None or self._labels is None or self._labels not in self.shell.viewer.layers:
             return
-        current = controller.last_results.get(image_id)
+        # Compared with the objects the layer was given, not the newest result: after Delete object
+        # the result has already changed, and the old outline is not a drawing.
+        shown_id, base = self._shown if self._shown is not None else (None, None)
         drawn = np.asarray(self._labels.data)
-        if current is None or drawn.shape != current.labels.shape:
+        if shown_id != image_id or drawn.shape != base.shape:
             return
-        if np.array_equal(drawn, current.labels):
+        if np.array_equal(drawn, base):
             self._pending.pop(self._key(image_id), None)
         else:
-            self._pending[self._key(image_id)] = (np.array(current.labels, copy=True), np.array(drawn, copy=True))
+            self._pending[self._key(image_id)] = (np.array(base, copy=True), np.array(drawn, copy=True))
         self._show_pending()
 
     def bring_back_drawing(self, image_id: str | None, layer) -> None:
         """After an image's objects are shown: put back drawing not recorded yet (if made on these objects)."""
 
         controller = self.shell.controller
+        self._shown = (image_id, np.array(layer.data, copy=True)) if image_id is not None else None
         if image_id is None or controller is None:
             return
         key = self._key(image_id)
