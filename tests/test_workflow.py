@@ -165,3 +165,44 @@ def test_process_experiment_command_path(tmp_path: Path):
     objects = pd.read_csv(measurement)
     assert len(objects) == 2
     assert report.failed == 0
+
+
+def test_delete_objects_in_area_is_one_undo(tmp_path: Path):
+    image = tmp_path / "squares.tif"
+    _write_squares(image)
+    controller = AnalysisController.create(tmp_path / "experiment", "Demo")
+    controller.add_image_paths([image])
+    controller.set_recipe(_recipe())
+    controller.run_images()
+    image_id = controller.experiment.images[0].image_id
+    before = controller.recall(image_id)
+    assert int((~before.objects["excluded"].astype(bool)).sum()) == 2
+
+    # Holds the whole top-left square and the left half of the other one.
+    result, count = controller.delete_objects_in_area(image_id, [[[0, 0], [0, 45], [30, 45], [30, 0]]])
+    assert count == 1
+    assert int(result.objects["excluded"].sum()) == 1
+    assert int(result.labels[15, 15]) == 0 and int(result.labels[45, 45]) != 0
+
+    # Only part of an object inside: nothing deleted.
+    _result, none = controller.delete_objects_in_area(image_id, [[[30, 30], [30, 45], [60, 45], [60, 30]]])
+    assert none == 0
+
+    both, count = controller.delete_objects_in_area(image_id, [[[0, 0], [0, 79], [79, 79], [79, 0]]])
+    assert count == 1  # the one already deleted is not counted again
+    assert int(both.objects["excluded"].sum()) == 2
+    undone = controller.undo(image_id)
+    assert int(undone.objects["excluded"].sum()) == 1  # one Undo takes back the whole second area
+    undone = controller.undo(image_id)
+    assert int(undone.objects["excluded"].sum()) == 0
+
+
+def test_objects_inside_3d():
+    from cellquant.edits import objects_inside
+
+    labels = np.zeros((3, 20, 20), dtype=np.int32)
+    labels[0:2, 2:6, 2:6] = 1
+    labels[1:3, 8:18, 8:18] = 2  # crosses the area's edge
+    labels[2, 3:5, 3:5] = 3  # inside, on another slice
+    assert objects_inside(labels, [[[0, 0], [0, 10], [10, 10], [10, 0]]]) == [1, 3]
+    assert objects_inside(labels, []) == []

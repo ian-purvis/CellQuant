@@ -196,6 +196,8 @@ BUTTON_HELP = {
     "Delete object": "Click an object in the image first. This removes it from the counts (for debris or a bad outline). Restore object brings it back. (Del)",
     "Restore object": "Bring back a deleted object.",
     "Undo": "Undo the last edit. (Ctrl+Z)",
+    "Draw area": "Outline objects to delete in the Delete area layer: click the corners, double-click to finish. Several areas are fine.",
+    "Delete in area": "Delete every object lying entirely inside the drawn area; objects crossing its edge stay. Undo brings them all back.",
     "Record drawn edits": "Save outlines you painted by hand in the Objects layer.",
     "Record all images": "Save what you painted on every image, including images you moved away from.",
     "Approve": "Mark this image as checked and correct. Editing it later clears the approval. Opens the next unchecked image. (A)",

@@ -164,3 +164,26 @@ def _coordinate_parameters(*axes: np.ndarray) -> dict[str, list[int]]:
         return {"planes": planes.astype(int).tolist(), "rows": rows.astype(int).tolist(), "cols": cols.astype(int).tolist()}
     rows, cols = axes
     return {"rows": rows.astype(int).tolist(), "cols": cols.astype(int).tolist()}
+
+
+
+def objects_inside(labels: np.ndarray, polygons) -> list[int]:
+    """Objects lying entirely inside the (row, column) polygons; an object crossing an edge stays.
+
+    A polygon applies through every slice of a 3D image.
+    """
+
+    from cellquant.count_area import clean
+    from skimage.draw import polygon2mask
+
+    polygons = clean(polygons)
+    labels = np.asarray(labels)
+    if not polygons or labels.size == 0:
+        return []
+    area = np.zeros(labels.shape[-2:], dtype=bool)
+    for polygon in polygons:
+        area |= polygon2mask(area.shape, np.asarray(polygon, dtype=float))
+    area = np.broadcast_to(area, labels.shape)
+    present = np.unique(labels[area])
+    crossing = np.unique(labels[~area])
+    return [int(object_id) for object_id in np.setdiff1d(present, crossing) if object_id != 0]
