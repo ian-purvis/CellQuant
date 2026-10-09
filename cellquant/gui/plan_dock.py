@@ -117,10 +117,7 @@ class PlanDock(QWidget):
         self.summary = QLabel("")
         self.summary.setWordWrap(True)
         bottom.addWidget(self.summary, 1)
-        self.run = QPushButton("Run all analyses")
-        self.run.setToolTip("Run every ticked image with its analysis, one analysis after another.")
-        self.run.clicked.connect(lambda: self.shell.run_plan())
-        bottom.addWidget(self.run)
+        # Running the plan is step 6's Run all analyses.
         layout.addLayout(bottom)
         self.grouping.currentIndexChanged.connect(lambda _index: self.refresh())
         self.view_mode.currentIndexChanged.connect(lambda _index: self.refresh())

@@ -247,8 +247,8 @@ def test_a_run_shows_its_progress_and_can_be_cancelled_part_way(tmp_path: Path, 
     viewer, shell = _stack_window(tmp_path)
     try:
         footer = shell._footer
-        run_buttons = [button for button in shell._footer.findChildren(QPushButton) if button.text() == "Run this image"]
-        assert run_buttons, "footer Run this image button missing"
+        run_buttons = [button for button in shell._objects_panel.findChildren(QPushButton) if button.text() == "Run this image"]
+        assert run_buttons, "step 2 Run this image button missing"
         assert footer.cancel.isEnabled() is False
         shell.run_current()
         end = time.time() + 20
@@ -427,11 +427,7 @@ def test_plain_menus_hidden_fields_errors_and_run_bar(window):
     assert not shell._error_box.isVisibleTo(shell._dock)
     _wait(shell)
 
-    # The run button the step expects stands out; Page Down moves to the next image.
-    shell.go_to_step(0)
-    assert shell._footer._run_buttons["current"].styleSheet() and not shell._footer._run_buttons["all"].styleSheet()
-    shell.go_to_step(5)
-    assert shell._footer._run_buttons["all"].styleSheet() and not shell._footer._run_buttons["current"].styleSheet()
+    # Page Down moves to the next image.
     # Time left shows beside the progress bar while a run goes, with how it is worked out in the tooltip.
     footer = shell._footer
     footer.start_busy(batch=True)
@@ -636,6 +632,11 @@ def test_a_popped_out_panel_has_minimize_maximize_and_reset(window):
         QApplication.processEvents()
         time.sleep(0.02)
     assert dock.titleBarWidget() is header
+    # The header runs across the top, controls on the right (napari turns a popped-out panel's header sideways).
+    from qtpy.QtWidgets import QDockWidget
+
+    vertical = QDockWidget.DockWidgetFeature.DockWidgetVerticalTitleBar
+    assert not dock.features() & vertical
     assert [button.toolTip() for button in header.buttons.values()] == ["Minimize", "Maximize", "Restore size", "Reset", "Close"]
     assert not header.buttons["restore"].isEnabled()
     header.buttons["minimize"].click()
@@ -649,16 +650,20 @@ def test_a_popped_out_panel_has_minimize_maximize_and_reset(window):
     QApplication.processEvents()
     assert not dock.isFloating()
     assert dock.titleBarWidget() is not header
+    assert not dock.features() & vertical  # docked on the right: napari's header across the top again
 
 
-def test_find_objects_has_preview_but_run_lives_in_the_run_window(window):
-    from qtpy.QtWidgets import QPushButton
+def test_run_buttons_live_in_the_steps_not_the_bottom_bar(window):
+    from qtpy.QtWidgets import QPushButton, QScrollArea
 
     names = [button.text() for button in window._objects_panel.findChildren(QPushButton)]
-    assert "Preview" in names
-    assert "Run this image" not in names
+    assert "Preview" in names and names.count("Run this image") == 1
+    summary = [button.text() for button in window._results_summary.findChildren(QPushButton)]
+    assert "Run all images" in summary and "Run all analyses" in summary
     footer_names = [button.text() for button in window._footer.findChildren(QPushButton)]
-    assert footer_names.count("Run this image") == 1
+    assert not [name for name in footer_names if name.startswith("Run")]
+    # A narrow window scrolls the bottom bar sideways instead of cutting it off.
+    assert isinstance(window._footer.parentWidget().parentWidget(), QScrollArea)
 
 
 def test_remove_marker_also_removes_its_result_rows_and_settings_save_themselves(window, monkeypatch):
