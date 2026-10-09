@@ -26,14 +26,14 @@ The CellQuant panel has a **Start** tab and six numbered tabs (hover a tab for i
 
 1. **Start → Try practice images** (first time) or **New experiment…**
 2. **1 Images**: add images and name the channels.
-3. **2 Find objects**: pick the nuclear channel, **Preview**, then **Run this image** (in the Run window).
+3. **2 Find objects**: pick the nuclear channel, **Preview**, then **Run this image**.
 4. **3 Markers**: tick the marker channels, **Set up markers**.
 5. **4 Check**: drag the **Cutoff** slider until the green (positive) objects look right, then **Approve**.
 6. **5 Results**: **Run all images**, then **Export results…**
 
 A ✓ appears next to the number on each tab as you finish it. The **Start** tab shows your progress and a **Continue** button that takes you to the next unfinished step.
 
-The bar at the bottom of the window is shared by all steps. It shows which image is on screen (**◀ Previous image**, **Next image ▶**), the units, progress, and messages. Hover over any control to see what it does.
+The bar at the bottom of the window is shared by all steps. It shows which image is on screen (**◀ Previous image**, **Next image ▶**), the units, progress, and messages; **Pause**, **Resume** and **Cancel** sit beside the progress bar. Run buttons are in the steps. If the window is narrow, scroll the bar sideways. Hover over any control to see what it does.
 
 ---
 
@@ -90,7 +90,7 @@ Channels are shown in the colors saved in the file by the microscope software (f
    For stitching / true 3D, **Link overlap** sets how much an outline must overlap the next slice's to be the same nucleus (0.25 is Cellpose's usual value; lower if nuclei split across slices, higher if stacked nuclei join). **Brightness: Whole stack** scales every slice the same way, so a dim top or bottom slice still links correctly. **Minimum slices** removes objects found in fewer slices (1 keeps all).
 4. Set **Nucleus diameter (µm)** (default **6**; most nuclei are about 5–7 µm). When pixel size is known, Cellpose uses the matching pixel diameter, and **Min size** defaults to **5 µm²** to drop debris. A 6 µm nucleus is about 28 µm².
 5. Click **Preview** to try the settings on the area you are looking at. Nothing is saved.
-6. Click **Run this image** at the bottom. The bar at the bottom shows each step, for example *Finding objects: slice 4 of 7*; **Log** shows every message. Run buttons are greyed out until it finishes. **Cancel** stops after the current step; nothing from the unfinished image is saved. (Cellpose's whole-volume 3D step cannot be stopped part-way; Cancel takes effect when it ends.)
+6. Click **Run this image** (next to **Preview**). The bar at the bottom shows each step, for example *Finding objects: slice 4 of 7*; **Log** shows every message. Run buttons are greyed out until it finishes. **Cancel** stops after the current step; nothing from the unfinished image is saved. (Cellpose's whole-volume 3D step cannot be stopped part-way; Cancel takes effect when it ends.)
    To try other settings, change them and click **Run this image** again. There is no need to restart CellQuant or go back.
 7. Zoom in and check several areas. In 3D, drag the slice slider under the image to check every slice.
 
@@ -167,7 +167,7 @@ The **Analysis** list at the top of the CellQuant panel, with its **Analyses ▾
 - **Analyses ▾ → One per channel…**: tick the channels; each gets an analysis that finds objects in that channel with the current settings otherwise (method, Z-stack mode, markers).
 - **Analyses ▾ → New analysis…**: a copy of the current settings under a new name. Change what you need in steps 2-5, for example the channel in step 2.
 - Choose an analysis in the list to see, change, check or run it. Steps 2-5 always show the analysis chosen.
-- **Run all analyses** (bottom bar, and step 6) runs every included image with each analysis, one after another. Pause and Cancel work as for one analysis; Cancel keeps what is finished and skips the analyses not started.
+- **Run all analyses** (step 6) runs every included image with each analysis, one after another. Pause and Cancel work as for one analysis; Cancel keeps what is finished and skips the analyses not started.
 - **Export all analyses…** (step 6) saves each analysis in its own folder, plus `all_analyses_image_summary.csv`: every analysis's per-image numbers in one table, with `analysis` and `segmentation_channel` columns.
 - **Analyses ▾ → Rename…** and **Remove** change the list. Removing only takes an analysis off the list; its settings and results stay in the experiment folder.
 
@@ -180,7 +180,7 @@ Choose **Analyses ▾ → Plan…** (next to the Analysis list) to open the Plan
 - **Grid: images × analyses**: one column per analysis. A tick means that analysis runs that image; the cell shows its status (green when analyzed, amber when it needs a look, red when it failed) and the channel objects are found in. Ticking a group's box ticks every image in it.
 - **Tree: image ▸ analyses**: under each image, one row per analysis, each with a tick and a **Find objects in** menu.
 
-The bar at the bottom applies a choice to the **selected images** or **all images**, in **all analyses** or one: **Tick**, **Untick**, or **Set channel** (find objects in that channel for those images only; ★ marks such a choice). Right-click a cell for the same choice for one image. Double-click a cell to open that image with that analysis in step 5. **Run all analyses** (here or at the bottom) runs each analysis on its ticked images.
+The bar at the bottom applies a choice to the **selected images** or **all images**, in **all analyses** or one: **Tick**, **Untick**, or **Set channel** (find objects in that channel for those images only; ★ marks such a choice). Right-click a cell for the same choice for one image. Double-click a cell to open that image with that analysis in step 5. **Run all analyses** in step 6 runs each analysis on its ticked images.
 
 Images with another channel layout are analyzed with the channels of the same names: if an analysis finds objects in *Far Red*, a file that stores Far Red first is segmented in its first channel, and each marker is read from the channel with its name. ⚠ marks an image that has no channel of that name, so the position is used; check it, or set its channel.
 

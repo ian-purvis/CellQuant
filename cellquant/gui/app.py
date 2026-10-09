@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from qtpy.QtCore import QObject, Qt, QSize, QThread, QTimer, Signal
+from qtpy.QtCore import QEvent, QObject, Qt, QSize, QThread, QTimer, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -38,6 +39,7 @@ from qtpy.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QTabWidget,
@@ -614,9 +616,6 @@ class CellQuantWindow:
         dock_layout.addWidget(self._tabs, 1)
         self._keep_awake = keep_awake.KeepAwake()
         self._footer = Footer(self)
-        self._tabs.currentChanged.connect(
-            lambda _index: self._footer.highlight("all" if self._tabs.currentWidget() is self._step_pages[-1] else "current")
-        )
         self._tabs.currentChanged.connect(lambda _index: self._markers_page_shown())
         main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
@@ -624,7 +623,7 @@ class CellQuantWindow:
         self._plan_dock = PlanDock(self)
         self._plan_dock_widget = self.viewer.window.add_dock_widget(self._plan_dock, name="Plan", area="left")
         self._plan_dock_widget.hide()
-        run_dock = self.viewer.window.add_dock_widget(self._footer, name="Run", area="bottom")
+        run_dock = self.viewer.window.add_dock_widget(FooterScroll(self._footer), name="Run", area="bottom")
         self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, run_dock)]
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
@@ -665,9 +664,6 @@ class CellQuantWindow:
         self.refresh_guidance()
 
     def refresh_guidance(self) -> None:
-        # The step that runs everything is step 6; before it, try one image at a time.
-        last_step = self._tabs.currentWidget() is self._step_pages[-1]
-        self._footer.highlight("all" if last_step else "current")
         if self._run_lock_note.isVisibleTo(self._dock):
             # Settings rebuilt during a run (for example a refreshed list) start enabled; lock them too.
             for widget in self._settings_inputs():
@@ -2332,7 +2328,11 @@ class ObjectsPanel(QWidget):
         preview = QPushButton("Preview")
         preview.clicked.connect(shell.preview_current)
         preview.setToolTip("Find objects in the part of the image on screen, to check the settings quickly.")
+        run = QPushButton("Run this image")
+        run.clicked.connect(shell.run_current)
+        run.setToolTip("Find objects and measure markers in the whole image on screen.")
         actions.addWidget(preview)
+        actions.addWidget(run)
         layout.addLayout(actions)
         layout.addStretch(1)
         self._update_size_hint()
@@ -3942,10 +3942,6 @@ class AnalysisBar(QWidget):
         self.choice.blockSignals(False)
         several = controller is not None and len(controller.analyses()) > 1
         self.remove_button.setEnabled(several)
-        footer = getattr(self.shell, "_footer", None)
-        if footer is not None:
-            footer.run_analyses.setVisible(several)
-            footer.run_all.setText("Run all images (this analysis)" if several else "Run all images")
         summary = getattr(self.shell, "_results_summary", None)
         if summary is not None:
             summary.show_analysis_actions(several)
@@ -3981,7 +3977,7 @@ class AnalysisBar(QWidget):
         note.setToolTip(
             "Each ticked channel gets an analysis that finds objects in that channel, with the current "
             "settings otherwise (method, Z-stack mode, markers). A channel that already has one is not added again. "
-            "Then click Run all analyses at the bottom."
+            "Then click Run all analyses in step 6."
         )
         layout.addWidget(note)
         boxes = []
@@ -4043,6 +4039,53 @@ class AnalysisBar(QWidget):
         self.shell.refresh_guidance()
 
 
+class FooterScroll(QScrollArea):
+    """The bottom bar scrolls sideways in a narrow window instead of cutting off buttons and text."""
+
+    def __init__(self, footer: QWidget):
+        super().__init__()
+        self.setWidget(footer)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QScrollArea.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        footer.installEventFilter(self)  # wrapped text or the log changes the height the bar needs
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.widget() and event.type() == QEvent.Type.LayoutRequest:
+            QTimer.singleShot(0, self.fit_height)
+        return False
+
+    def _height(self) -> int:
+        footer = self.widget()
+        width = max(self.viewport().width(), footer.minimumSizeHint().width())
+        layout = footer.layout()
+        height = layout.heightForWidth(width) if layout.hasHeightForWidth() else footer.sizeHint().height()
+        height = max(height, footer.minimumSizeHint().height())
+        if footer.minimumSizeHint().width() > self.viewport().width():
+            height += self.horizontalScrollBar().sizeHint().height()
+        return height
+
+    def fit_height(self) -> None:
+        """Grow or shrink to the bar's height, plus the scroll bar when it shows."""
+
+        height = self._height()
+        if self.minimumHeight() != height:
+            self.setMinimumHeight(height)
+            self.updateGeometry()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if self.minimumHeight() != self._height():
+            QTimer.singleShot(0, self.fit_height)
+
+    def sizeHint(self):
+        return QSize(self.widget().sizeHint().width(), self._height())
+
+    def minimumSizeHint(self):
+        return QSize(100, self._height())
+
+
 class Footer(QWidget):
     def __init__(self, shell: CellQuantWindow):
         super().__init__()
@@ -4051,37 +4094,20 @@ class Footer(QWidget):
         row = QHBoxLayout()
         previous = QPushButton("◀ Previous image")
         next_image = QPushButton("Next image ▶")
-        run_current = QPushButton("Run this image")
-        run_all = QPushButton("Run all images")
-        self.run_analyses = QPushButton("Run all analyses")
-        self.run_analyses.setToolTip("Run each analysis on the images ticked for it in the Plan (every included image unless you changed the Plan), one analysis after another.")
-        self.run_analyses.clicked.connect(shell.run_all_analyses)
-        self.run_analyses.setVisible(False)
         previous.setToolTip("Show the previous image in the experiment.")
         next_image.setToolTip("Show the next image in the experiment.")
-        run_current.setToolTip("Find objects and measure markers in the image on screen.")
-        run_all.setToolTip("Run every included image with the current settings.")
         previous.clicked.connect(lambda: self._step(-1))
         next_image.clicked.connect(lambda: self._step(1))
         self._navigation = (previous, next_image)
-        run_current.clicked.connect(shell.run_current)
-        run_all.clicked.connect(shell._results_panel._run_all)
         self.pause = QPushButton("Pause")
         self.resume = QPushButton("Resume")
         self.cancel = QPushButton("Cancel")
         self.pause.clicked.connect(self._pause)
         self.resume.clicked.connect(self._resume)
         self.cancel.clicked.connect(self._cancel)
-        # Grouped: moving between images, running, and controlling a run.
+        # Running starts in the step windows; this bar moves between images and follows a run.
         for button in (previous, next_image):
             row.addWidget(button)
-        row.addSpacing(16)
-        for button in (run_current, run_all, self.run_analyses):
-            row.addWidget(button)
-        row.addSpacing(16)
-        for button in (self.pause, self.resume, self.cancel):
-            row.addWidget(button)
-        row.addSpacing(16)
         self.keep_awake = QCheckBox("Keep computer awake (recommended) ⓘ")
         self.keep_awake.setToolTip(
             "While a run is going, stop this computer from going to sleep. Sleep pauses the run "
@@ -4090,9 +4116,6 @@ class Footer(QWidget):
         self.keep_awake.setChecked(keep_awake_preferred())
         self.keep_awake.setVisible(keep_awake.supported())
         self.keep_awake.toggled.connect(shell._keep_awake_toggled)
-        row.addWidget(self.keep_awake)
-        self._run_buttons = {"current": run_current, "all": run_all}
-        self.run_all = run_all
         self.cancel.setStyleSheet("QPushButton:enabled { color: #e05050; font-weight: bold; }")
         previous.setToolTip("Show the previous image in the experiment (Page Up).")
         next_image.setToolTip("Show the next image in the experiment (Page Down).")
@@ -4123,10 +4146,10 @@ class Footer(QWidget):
         self.cancel.setToolTip("Stop the running analysis after the current step. Images already finished are kept.")
         self.pause.setToolTip("Pause a batch after the current step.")
         self.resume.setToolTip("Carry on with a paused batch.")
-        layout.addLayout(row)
         self.position = QLabel("No image open.")
         self.units = QLabel("Units: pixels")
         self.progress = QProgressBar()
+        self.progress.setMinimumWidth(80)
         self.time_left = QLabel("")
         self.time_left.setMinimumWidth(110)
         self.time_left.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -4144,16 +4167,19 @@ class Footer(QWidget):
         self.log_toggle.setCheckable(True)
         self.log_toggle.setToolTip("Show or hide the full list of messages. The latest one is always shown beside the bar.")
         self.log_toggle.toggled.connect(self._show_log)
-        where = QHBoxLayout()
-        where.addWidget(self.position)
-        where.addWidget(self.units)
-        where.addStretch(1)
-        layout.addLayout(where)
+        # Long text wraps onto more lines in a narrow window instead of being cut off.
+        for label in (self.position, self.units, self.status):
+            label.setWordWrap(True)
+        row.addWidget(self.position, 3)
+        row.addWidget(self.units, 2)
+        layout.addLayout(row)
         bar = QHBoxLayout()
-        bar.addWidget(self.progress, 1)
+        bar.addWidget(self.progress, 2)
         bar.addWidget(self.time_left)
-        bar.addWidget(self.status, 2)
-        bar.addWidget(self.log_toggle)
+        bar.addWidget(self.status, 3)
+        for button in (self.pause, self.resume, self.cancel, self.log_toggle):
+            bar.addWidget(button)
+        bar.addWidget(self.keep_awake)
         layout.addLayout(bar)
         layout.addWidget(self.log)
 
@@ -4167,6 +4193,7 @@ class Footer(QWidget):
             return
         scope = f" ({only} only)" if only else ""
         self.position.setText(f"Image {index + 1} of {total}{scope}: {filename}")
+        self.position.setToolTip(self.position.text())
 
     def set_units(self, unit: str, keep_detail: bool = False) -> None:
         """The units line; keep_detail keeps what follows it (for example 'Analyzed: …')."""
@@ -4177,21 +4204,12 @@ class Footer(QWidget):
             if separator in current and separator not in unit:
                 unit = unit + separator + current.split(separator, 1)[1]
         self.units.setText(f"Units: {unit}")
+        self.units.setToolTip(self.units.text())
 
     def message(self, text: str) -> None:
         self.status.setText(text)
+        self.status.setToolTip(text)
         self.log.append(text)
-
-    def highlight(self, primary: str) -> None:
-        """Make the run button this step expects stand out ('current' or 'all')."""
-
-        for key, button in self._run_buttons.items():
-            button.setStyleSheet(
-                "QPushButton { background: rgba(60, 130, 220, 0.85); color: white; font-weight: bold; }"
-                "QPushButton:disabled { background: rgba(60, 130, 220, 0.3); }"
-                if key == primary
-                else ""
-            )
 
     def _show_time_left(self) -> None:
         """Time left beside the progress bar, refreshed every second; how it is worked out is in its tooltip."""
@@ -4277,6 +4295,9 @@ class Footer(QWidget):
 
     def _show_log(self, shown: bool) -> None:
         self.log.setVisible(shown)
+        scroll = self.parentWidget().parentWidget() if self.parentWidget() is not None else None
+        if isinstance(scroll, FooterScroll):
+            scroll.fit_height()
         if shown:
             return
         # Give the image its height back: Qt keeps a docked window at its larger size otherwise.
@@ -4460,6 +4481,10 @@ def floating_header(dock) -> FloatingHeader:
         # napari swaps its own header in when the panel is shown; keep it from undoing this one.
         dock.blockSignals(True)
         try:
+            # napari turns a popped-out panel's header sideways, down the left edge; keep it across the top.
+            vertical = QDockWidget.DockWidgetFeature.DockWidgetVerticalTitleBar
+            if dock.features() & vertical:
+                dock.setFeatures(dock.features() & ~vertical)
             dock.setTitleBarWidget(header)
             header.show()
             dock.show()
@@ -4468,6 +4493,11 @@ def floating_header(dock) -> FloatingHeader:
 
     def docked() -> None:
         header.forget_size()
+        # napari picks the header direction for where the panel docks (across the top on the left or right).
+        main = dock.parentWidget()
+        orient = getattr(dock, "_set_title_orientation", None)
+        if orient is not None and hasattr(main, "dockWidgetArea"):
+            orient(main.dockWidgetArea(dock))
         if dock.titleBarWidget() is header:
             dock.setTitleBarWidget(None)
             header.hide()
