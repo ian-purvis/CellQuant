@@ -1187,6 +1187,7 @@ class CellQuantWindow:
         def redraw() -> None:
             self._plan_dock.refresh()
             self._experiment_panel.refresh_table()
+            self._objects_panel.refresh_groups()
             self.update_navigation()
             self.refresh_guidance()
 
@@ -2234,6 +2235,10 @@ class ObjectsPanel(QWidget):
         self.threshold_method.currentIndexChanged.connect(lambda _index: self._method_changed())
         # Root decisions first: what to segment, how, then how to treat Z, then size.
         form.addRow("Source channel", self.channel)
+        self._group_by: str | None = None  # "layout" or "folder", remembered for the session
+        self.group_box = None
+        self._build_group_box()
+        form.addRow(self.group_box)
         form.addRow("Method", self.method)
         form.addRow(self.engine_choice_label, self.engine_choice)
         form.addRow("Z-stack mode", self.z_box)
@@ -2406,6 +2411,117 @@ class ObjectsPanel(QWidget):
             self.max_area.setValue(0)
         self._update_size_hint()
         self.update_recommendation()
+        self.refresh_groups()
+
+    # -- a source channel per group of images (step 2) ------------------------------------------
+
+    def _build_group_box(self) -> None:
+        box = QWidget()
+        column = QVBoxLayout(box)
+        column.setContentsMargins(0, 0, 0, 0)
+        header = QHBoxLayout()
+        label = QLabel("By image group ⓘ")
+        label.setToolTip(
+            "Pick a source channel for a group of images. 'Source channel' follows the menu above. "
+            "Grouped by the channels named in each file, or by folder."
+        )
+        self.group_by_box = QComboBox()
+        self.group_by_box.addItem("Channels", "layout")
+        self.group_by_box.addItem("Folder", "folder")
+        self.group_by_box.setToolTip("How to group the images.")
+        self.group_by_box.currentIndexChanged.connect(self._group_by_changed)
+        header.addWidget(label)
+        header.addStretch(1)
+        header.addWidget(QLabel("Group by"))
+        header.addWidget(self.group_by_box)
+        column.addLayout(header)
+        self.group_rows = QVBoxLayout()
+        self.group_rows.setContentsMargins(0, 0, 0, 0)
+        column.addLayout(self.group_rows)
+        box.setVisible(False)
+        self.group_box = box
+
+    def _group_by_changed(self, _index: int) -> None:
+        if getattr(self, "_filling_groups", False):
+            return
+        self._group_by = self.group_by_box.currentData()
+        self.refresh_groups()
+
+    def refresh_groups(self) -> None:
+        if self.group_box is None:
+            return
+        while self.group_rows.count():
+            item = self.group_rows.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        controller = self.shell.controller
+        if controller is None:
+            self.group_box.setVisible(False)
+            return
+        from cellquant.plan import folder_of, group_images, layout_key
+
+        records = [record for record in controller.experiment.images if record.include]
+        layouts = {layout_key(record) for record in records}
+        folders = {folder_of(record) for record in records}
+        if len(layouts) <= 1 and len(folders) <= 1:
+            self.group_box.setVisible(False)
+            return
+        by = self._group_by or ("layout" if len(layouts) > 1 else "folder")
+        self._filling_groups = True
+        try:
+            self.group_by_box.setCurrentIndex(max(0, self.group_by_box.findData(by)))
+        finally:
+            self._filling_groups = False
+        reference = [channel.channel_name for channel in sorted(controller.experiment.channels, key=lambda item: item.channel_index)]
+        for group in group_images(records, by):
+            ids = group.all_image_ids()
+            names: list[str] = []
+            for image_id in ids:
+                for name in controller.image_channel_names(image_id):
+                    if name not in names:
+                        names.append(name)
+            if by == "folder":
+                names.sort(key=lambda name: reference.index(name) if name in reference else len(reference))
+                title = group.label
+            else:
+                title = " · ".join(names)
+            row = QWidget()
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(f"{title} ({len(ids)})")
+            files = [controller.experiment.image(image_id) for image_id in ids]
+            shown = [record.relative_path or record.filename for record in files[:10]]
+            label.setToolTip("\n".join(shown) + (f"\n... and {len(files) - 10} more" if len(files) > 10 else ""))
+            combo = QComboBox()
+            current = controller.group_plan_channel(ids)
+            if current == "mixed":
+                combo.addItem("Mixed", "__mixed__")
+                combo.model().item(0).setEnabled(False)
+            combo.addItem("Source channel", None)
+            for name in names:
+                combo.addItem(name, name)
+            combo.setCurrentIndex(max(0, combo.findData("__mixed__" if current == "mixed" else current)))
+            combo.setToolTip("The channel to find objects in for these images.")
+            combo.activated.connect(lambda _i, c=combo, i=list(ids): self._group_channel_chosen(i, c.currentData()))
+            line.addWidget(label, 1)
+            line.addWidget(combo)
+            self.group_rows.addWidget(row)
+        self.group_box.setVisible(True)
+
+    def _group_channel_chosen(self, ids: list[str], name) -> None:
+        controller = self.shell.controller
+        if controller is None or name == "__mixed__":
+            return
+        try:
+            missing = controller.set_plan_channel_by_name(ids, name)
+        except CellQuantError as exc:
+            self.shell.message(str(exc))
+            return
+        if missing:
+            self.shell.message(f"{len(missing)} image(s) in this group have no {name} channel; left on Source channel.")
+        self.shell.plan_changed()
 
     def _pixel_size_um(self) -> float | None:
         controller = self.shell.controller
