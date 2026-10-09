@@ -196,6 +196,7 @@ BUTTON_HELP = {
     "Restore object": "Bring back a deleted object.",
     "Undo": "Undo the last edit. (Ctrl+Z)",
     "Record drawn edits": "Save outlines you painted by hand in the Objects layer.",
+    "Record all images": "Save what you painted on every image, including images you moved away from.",
     "Approve": "Mark this image as checked and correct. Editing it later clears the approval. Opens the next unchecked image. (A)",
 }
 
