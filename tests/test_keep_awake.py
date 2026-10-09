@@ -13,7 +13,7 @@ def test_hold_and_release_are_safe_to_repeat(monkeypatch):
     class Kernel:
         def SetThreadExecutionState(self, flags):
             calls.append(flags)
-            return 1
+            return 0  # the previous state: 0 on a thread that never asked before
 
     class Windll:
         kernel32 = Kernel()
@@ -25,10 +25,10 @@ def test_hold_and_release_are_safe_to_repeat(monkeypatch):
     guard = keep_awake.KeepAwake()
     guard.hold()
     guard.hold()
-    assert guard.held and calls == [0x80000001]
+    assert guard.held and calls == [0x80000003]
     guard.release()
     guard.release()
-    assert not guard.held and calls == [0x80000001, 0x80000000]
+    assert not guard.held and calls == [0x80000003, 0x80000000]
 
 
 def test_does_nothing_where_unsupported(monkeypatch):
