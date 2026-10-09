@@ -4403,6 +4403,10 @@ class Footer(QWidget):
         self._clock_timer.stop()
         self._clock = None
         self._show_time_left()
+        # A step line left over from the finished work would read as still running.
+        if self.status.text() and self.status.text() == getattr(self, "_step_text", None):
+            self.status.setText("")
+        self._step_text = None
 
     def show_step(self, text: str, fraction: float) -> None:
         """One step of the running analysis, e.g. 'Finding objects: slice 3 of 7'."""
@@ -4415,14 +4419,16 @@ class Footer(QWidget):
             done = (self._batch_index - 1 + max(fraction, 0.0)) / total
             self.progress.setRange(0, 1000)
             self.progress.setValue(int(round(1000 * done)))
-            self.status.setText(f"Image {self._batch_index} of {total} ({self._batch_name}): {text}")
+            self._step_text = f"Image {self._batch_index} of {total} ({self._batch_name}): {text}"
+            self.status.setText(self._step_text)
             return
         if fraction < 0:
             self.progress.setRange(0, 0)  # busy: this step's length is unknown
         else:
             self.progress.setRange(0, 1000)
             self.progress.setValue(int(round(1000 * fraction)))
-        self.status.setText(text + "...")
+        self._step_text = text + "..."
+        self.status.setText(self._step_text)
 
     def update_progress(self, index: int, total: int, filename: str, status: str) -> None:
         self._batch_index, self._batch_total, self._batch_name = index, total, filename
