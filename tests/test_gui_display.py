@@ -93,9 +93,9 @@ def test_switching_images_does_not_block_the_window(window, monkeypatch):
     _wait(shell)
     real = shell.controller._load_display
 
-    def slow(record):
+    def slow(record, **kwargs):
         time.sleep(1.0)
-        return real(record)
+        return real(record, **kwargs)
 
     monkeypatch.setattr(shell.controller, "_load_display", slow)
     started = time.time()
@@ -214,15 +214,18 @@ def _stack_window(tmp_path: Path, count: int = 1, mode: str = "stitch_slices"):
     return viewer, shell
 
 
-def test_a_z_stack_has_a_slice_slider_in_every_z_mode(tmp_path: Path):
+def test_a_z_stack_is_shown_as_it_was_segmented(tmp_path: Path):
     viewer, shell = _stack_window(tmp_path, mode="max_projection")
     try:
-        assert shell.viewer.dims.ndim == 3  # a slider for the 9 slices, though the analysis uses a projection
+        assert shell.viewer.dims.ndim == 3  # before a run: a slider for the 9 slices
         assert shell.viewer.dims.current_step[0] == 4  # middle slice
         shell.run_current()
         _wait(shell)
-        assert shell.viewer.layers["Objects"].data.shape == (64, 64)  # projection outlines over every slice
-        assert shell.viewer.dims.ndim == 3
+        # After the run: the projection that was segmented, with its outlines, and no slider.
+        assert shell.viewer.layers["Objects"].data.shape == (64, 64)
+        image = next(layer for layer in shell.viewer.layers if layer.name not in ("Objects", "Object fills", "Object IDs", "Classification"))
+        assert image.data.shape == (64, 64)
+        assert shell.viewer.dims.ndim == 2
         assert "Analyzed: max projection of 9 slices" in shell._footer.units.text()
     finally:
         viewer.close()

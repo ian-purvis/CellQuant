@@ -57,9 +57,6 @@ include = ["cellquant*"]
 # The in-app guide (a copy of docs/START_HERE.md; a test keeps them identical).
 [tool.setuptools.package-data]
 "cellquant.gui" = ["START_HERE.md"]
-# Cluster profile example and the published JSON schemas. The installed copy must hold the same files as
-# the source folder, because the application build digest covers every release file under cellquant/.
-"cellquant.hpc" = ["profiles/*.json", "profiles/*.md", "schemas/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
