@@ -138,6 +138,8 @@ def launch(experiment_dir: str | Path | None = None) -> None:
 _OBJECT_LAYERS = ("Object fills", "Objects", "Classification", "Object IDs")
 # Polygons drawn in step 5; only objects whose center is inside them are counted.
 COUNT_AREA_LAYER = "Count area"
+# Polygons drawn in step 3; objects entirely inside them are deleted.
+DELETE_AREA_LAYER = "Delete area"
 
 # How a classification compares a value with its threshold (shown text, recipe value).
 COMPARISONS = (("above the cutoff (>)", "above"), ("at least the cutoff (≥)", "at_least"))
@@ -1550,6 +1552,17 @@ class CellQuantWindow:
             edge_color="cyan",
             face_color="transparent",
             edge_width=3,
+        )
+        self._managed.add(layer.name)
+        return layer
+
+    def delete_area_layer(self):
+        """The Delete area shapes layer, added when missing."""
+
+        if DELETE_AREA_LAYER in self.viewer.layers:
+            return self.viewer.layers[DELETE_AREA_LAYER]
+        layer = self.viewer.add_shapes(
+            None, ndim=2, shape_type="polygon", name=DELETE_AREA_LAYER, edge_color="red", face_color="transparent", edge_width=3
         )
         self._managed.add(layer.name)
         return layer
@@ -3291,11 +3304,14 @@ class EditPanel(QWidget):
         self.selected.setToolTip("Click an object in the image to select it.")
         layout.addWidget(self.selected)
         buttons = QHBoxLayout()
+        area_buttons = QHBoxLayout()
         record_buttons = QHBoxLayout()  # a row of their own, so no label is cut off
         for text, slot, row in (
             ("Delete object", self._delete, buttons),
             ("Restore object", self._restore, buttons),
             ("Undo", self._undo, buttons),
+            ("Draw area", self._draw_area, area_buttons),
+            ("Delete in area", self._delete_in_area, area_buttons),
             ("Record drawn edits", self._commit, record_buttons),
             ("Record all images", self._commit_all, record_buttons),
         ):
@@ -3307,10 +3323,13 @@ class EditPanel(QWidget):
             elif text == "Undo":
                 self.undo_button = button
         layout.addLayout(buttons)
+        layout.addLayout(area_buttons)
         layout.addLayout(record_buttons)
         # Drawing not recorded yet, per (analysis, image): (objects it was drawn on, drawn objects).
         # Kept when you move to another image, so Record all images can save every image at once.
         self._pending: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
+        # (image, objects) the Objects layer was last given, before any drawing.
+        self._shown: tuple[str, np.ndarray] | None = None
         self.pending_note = QLabel("")
         self.pending_note.setToolTip("Drawing on these images is kept until you record it or close CellQuant.")
         self.pending_note.hide()
@@ -3345,20 +3364,23 @@ class EditPanel(QWidget):
         image_id = self.shell._labels_image_id
         if controller is None or image_id is None or self._labels is None or self._labels not in self.shell.viewer.layers:
             return
-        current = controller.last_results.get(image_id)
+        # Compared with the objects the layer was given, not the newest result: after Delete object
+        # the result has already changed, and the old outline is not a drawing.
+        shown_id, base = self._shown if self._shown is not None else (None, None)
         drawn = np.asarray(self._labels.data)
-        if current is None or drawn.shape != current.labels.shape:
+        if shown_id != image_id or drawn.shape != base.shape:
             return
-        if np.array_equal(drawn, current.labels):
+        if np.array_equal(drawn, base):
             self._pending.pop(self._key(image_id), None)
         else:
-            self._pending[self._key(image_id)] = (np.array(current.labels, copy=True), np.array(drawn, copy=True))
+            self._pending[self._key(image_id)] = (np.array(base, copy=True), np.array(drawn, copy=True))
         self._show_pending()
 
     def bring_back_drawing(self, image_id: str | None, layer) -> None:
         """After an image's objects are shown: put back drawing not recorded yet (if made on these objects)."""
 
         controller = self.shell.controller
+        self._shown = (image_id, np.array(layer.data, copy=True)) if image_id is not None else None
         if image_id is None or controller is None:
             return
         key = self._key(image_id)
@@ -3442,6 +3464,35 @@ class EditPanel(QWidget):
             self.shell._start_job(lambda: controller.delete_object(image_id, object_id), finish)
         else:
             self.shell._start_job(lambda: controller.restore_object(image_id, object_id), finish)
+
+    def _draw_area(self) -> None:
+        if self.shell.require_controller() is None or not self.shell._nav_ids:
+            return
+        layer = self.shell.delete_area_layer()
+        self.shell.viewer.layers.selection.active = layer
+        layer.mode = "add_polygon"
+
+    def _delete_in_area(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or not self.shell._nav_ids:
+            return
+        layer = self.shell.viewer.layers[DELETE_AREA_LAYER] if DELETE_AREA_LAYER in self.shell.viewer.layers else None
+        polygons = drawn_polygons(layer) if layer is not None else []
+        if not polygons:
+            self.shell.message("Click Draw area and outline the objects to delete first.")
+            return
+        image_id = self.shell._nav_ids[self.shell._nav_index]
+
+        def finish(outcome) -> None:
+            result, count = outcome
+            self.shell._drop(DELETE_AREA_LAYER)
+            if result is None:
+                self.shell.message("Run step 2 on this image first.")
+                return
+            self.shell.show_result(result)
+            self.shell.message(f"Deleted {count} object{'s' if count != 1 else ''}." if count else "No object lies entirely inside the area.")
+
+        self.shell._start_job(lambda: controller.delete_objects_in_area(image_id, polygons), finish)
 
     def _undo(self) -> None:
         controller = self.shell.require_controller()
