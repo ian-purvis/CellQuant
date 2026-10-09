@@ -1,9 +1,10 @@
 """Keep the computer from sleeping while an analysis runs.
 
 Sleep pauses every program, so a long batch would stop until someone wakes the
-computer. While held, the system stays awake; the screen may still turn off.
-Windows uses SetThreadExecutionState, macOS runs ``caffeinate``; elsewhere this
-does nothing.
+computer. While held, the system and the screen stay on: on many Windows laptops
+(Modern Standby) the computer sleeps as soon as the screen turns off, so keeping
+only the system awake is not enough. Windows uses SetThreadExecutionState, macOS
+runs ``caffeinate``; elsewhere this does nothing.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import sys
 
 _ES_CONTINUOUS = 0x80000000
 _ES_SYSTEM_REQUIRED = 0x00000001
+_ES_DISPLAY_REQUIRED = 0x00000002
 
 
 def supported() -> bool:
@@ -42,11 +44,11 @@ class KeepAwake:
             if sys.platform == "win32":
                 import ctypes
 
-                if not ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED):
-                    return
+                # Returns the previous state, which is 0 the first time: not a failure.
+                ctypes.windll.kernel32.SetThreadExecutionState(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED | _ES_DISPLAY_REQUIRED)
             elif sys.platform == "darwin":
-                # -i: no idle sleep; -w: ends by itself if CellQuant closes.
-                self._process = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+                # -i: no idle sleep; -d: screen stays on; -w: ends by itself if CellQuant closes.
+                self._process = subprocess.Popen(["caffeinate", "-i", "-d", "-w", str(os.getpid())])
             else:
                 return
         except Exception:  # noqa: BLE001 - never let this stop a run
