@@ -1295,7 +1295,7 @@ class AnalysisController:
                     continue
                 folder = self.export(destination / slug, group_by=group_by, unit=unit)
                 table = pd.read_csv(folder / "image_summary.csv")
-                table.insert(0, "segmentation_channel", self._channel_name(self.recipe.object_set.segmentation_channel))
+                table.insert(0, "segmentation_channel", self._segmentation_channel_labels(table, item.recipe_id))
                 table.insert(0, "analysis", item.name)
                 summaries.append(table)
         finally:
@@ -1363,6 +1363,60 @@ class AnalysisController:
                 entry.channel = None if channel is None else int(channel)
                 self._store_entry(item, image_id, entry)
         self.save()
+
+    def image_channel_names(self, image_id: str) -> list[str]:
+        """The channel names of this image: from its file, else the experiment's channel list by position."""
+
+        record = self.experiment.image(image_id)
+        if record.channel_names:
+            return [str(name) for name in record.channel_names]
+        listed = [channel.channel_name for channel in sorted(self.experiment.channels, key=lambda item: item.channel_index)]
+        count = record.number_of_channels or len(listed)
+        return [str(listed[i]) if i < len(listed) and listed[i] else f"Channel {i + 1}" for i in range(count)]
+
+    def set_plan_channel_by_name(self, image_ids: list[str], name: str | None, recipe_ids: list[str] | None = None) -> list[str]:
+        """Find objects in the channel called ``name`` in each of these images (its own position for each).
+
+        ``None`` goes back to the analysis's channel. Returns the ids of images with no channel of
+        that name; those are left unchanged. Applies to the active analysis unless others are given.
+        """
+
+        targets = [self._analysis(recipe_id) for recipe_id in (recipe_ids or [self.recipe.recipe_id])]
+        found: dict[str, int | None] = {}
+        missing: list[str] = []
+        for image_id in image_ids:  # check every image before changing any
+            if name is None:
+                found[image_id] = None
+                continue
+            names = self.image_channel_names(image_id)
+            if name in names:
+                found[image_id] = names.index(name)
+            else:
+                missing.append(image_id)
+        for image_id, channel in found.items():
+            for item in targets:
+                entry = item.plan.get(image_id) or PlanEntry()
+                entry.channel = channel
+                self._store_entry(item, image_id, entry)
+        self.save()
+        return missing
+
+    def group_plan_channel(self, image_ids: list[str], recipe_id: str | None = None):
+        """The channel name all these images are set to find objects in, ``None`` when none is set,
+        ``"mixed"`` when they differ (or only some are set)."""
+
+        plan = self._analysis(recipe_id or self.recipe.recipe_id).plan
+        chosen = set()
+        for image_id in image_ids:
+            entry = plan.get(image_id)
+            if entry is None or entry.channel is None:
+                chosen.add(None)
+                continue
+            names = self.image_channel_names(image_id)
+            chosen.add(names[entry.channel] if entry.channel < len(names) else f"Channel {entry.channel + 1}")
+        if not chosen or chosen == {None}:
+            return None
+        return chosen.pop() if len(chosen) == 1 else "mixed"
 
     def segmentation_channel_for(self, image_id: str, recipe_id: str | None = None) -> tuple[int, str]:
         """The channel this analysis finds objects in for this image, and why.
@@ -1498,6 +1552,22 @@ class AnalysisController:
         finally:
             self.recipe = saved
             self._unswapped_recipe = None
+
+    def _segmentation_channel_labels(self, table, recipe_id: str) -> list[str]:
+        """The name of the channel objects were found in, per row: this image's own channel name."""
+
+        labels = []
+        for image_id in table["image_id"] if "image_id" in table.columns else [None] * len(table):
+            try:
+                index, reason = self.segmentation_channel_for(str(image_id), recipe_id)
+                names = self.image_channel_names(str(image_id))
+                if reason == "chosen for this image" and index < len(names):
+                    labels.append(names[index])
+                else:
+                    labels.append(self._channel_name(self._recipe_of(recipe_id).object_set.segmentation_channel))
+            except Exception:  # noqa: BLE001 - unknown image: fall back to the analysis's channel
+                labels.append(self._channel_name(self._recipe_of(recipe_id).object_set.segmentation_channel))
+        return labels
 
     def _channel_name(self, index: int) -> str:
         for channel in self.experiment.channels:
