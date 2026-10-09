@@ -1460,7 +1460,7 @@ class CellQuantWindow:
             if limits:
                 layer.contrast_limits = tuple(limits)
             layer.events.contrast_limits.connect(
-                lambda event, index=channel.channel_index: self._store_contrast(index, event)
+                lambda event, index=channel.channel_index, layer=layer: self._store_contrast(index, layer)
             )
         if loaded.data.ndim == 4:
             # Every slice is loaded, so the slider under the image scrolls the stack. Start on the
@@ -1473,13 +1473,13 @@ class CellQuantWindow:
         self._release_window_later()
         self._experiment_panel.show_channel_order(record)
 
-    def _store_contrast(self, index: int, event) -> None:
+    def _store_contrast(self, index: int, layer) -> None:
         if self.controller is None:
             return
         for channel in self.controller.experiment.channels:
             if channel.channel_index == index:
-                value = event.value if hasattr(event, "value") else event
-                channel.display_settings["contrast_limits"] = [float(value[0]), float(value[1])]
+                low, high = layer.contrast_limits
+                channel.display_settings["contrast_limits"] = [float(low), float(high)]
 
     def _set_labels(self, labels, result) -> None:
         # Adding or removing a napari layer takes on the order of a second, so
