@@ -6,6 +6,7 @@ summary each cache on their own inputs, and manual edits stay out of the recipe.
 
 from __future__ import annotations
 
+import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -16,7 +17,7 @@ import pandas as pd
 
 from cellquant.__version__ import __version__
 from cellquant.cache import StageCache, stage_key
-from cellquant.edits import EditOperation, apply_edits, operations_from_diff
+from cellquant.edits import EditOperation, apply_edits, objects_inside, operations_from_diff
 from cellquant.errors import CellQuantError, ImageLoadError
 from cellquant.experiment import (
     IMAGE_STATE_FIELDS,
@@ -501,17 +502,33 @@ class AnalysisController:
         self._edit_and_remeasure(image_id, EditOperation.create(image_id, int(object_id), "restore"))
         return self.last_results[image_id]
 
+    def delete_objects_in_area(self, image_id: str, polygons) -> tuple[ImageResult | None, int]:
+        """Delete every object lying entirely inside the polygons. Returns the result and how many."""
+
+        current = self.recall(image_id)
+        if current is None:
+            return None, 0
+        object_ids = objects_inside(current.labels, polygons)
+        if not object_ids:
+            return current, 0
+        # One area, one Undo: the deletions share an id.
+        area = uuid.uuid4().hex[:12]
+        operations = [EditOperation.create(image_id, object_id, "delete", {"area": area}) for object_id in object_ids]
+        self._edit_and_remeasure(image_id, *operations)
+        return self.last_results[image_id], len(object_ids)
+
     def undo(self, image_id: str) -> ImageResult | None:
         edits = self.edits.get(image_id, [])
         active = self._active_edits(image_id)
         if not active:
             return self.last_results.get(image_id)
         last = active[-1]
-        # Remove that exact edit; edits made on other segmentations stay.
+        area = last.parameters.get("area")
+        undone = [item for item in active if area and item.parameters.get("area") == area] or [last]
+        # Remove those exact edits; edits made on other segmentations stay.
         for index in range(len(edits) - 1, -1, -1):
-            if edits[index] is last:
+            if any(edits[index] is item for item in undone):
                 del edits[index]
-                break
         save_edits(self.directory, image_id, edits)
         self._remeasure_cached(image_id)
         return self.last_results.get(image_id)
@@ -555,10 +572,11 @@ class AnalysisController:
             return edits
         return [item for item in edits if item.segmentation in (current, "")]
 
-    def _edit_and_remeasure(self, image_id: str, operation: EditOperation) -> None:
-        operation.segmentation = self._current_segmentation(image_id)
-        operation.analysis = self.recipe.recipe_id or ""
-        self.edits.setdefault(image_id, []).append(operation)
+    def _edit_and_remeasure(self, image_id: str, *operations: EditOperation) -> None:
+        for operation in operations:
+            operation.segmentation = self._current_segmentation(image_id)
+            operation.analysis = self.recipe.recipe_id or ""
+        self.edits.setdefault(image_id, []).extend(operations)
         save_edits(self.directory, image_id, self.edits[image_id])
         record = self.experiment.image(image_id)
         if record.processing_status == "approved":

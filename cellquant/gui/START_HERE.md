@@ -106,7 +106,8 @@ If it is not right:
 Fix the objects before markers are measured. Skip this step if step 2 looked right.
 
 1. To remove something that is not a real object: click it in the image (the line *Selected object* shows its number), then click **Delete object** (key **Del**). **Restore object** and **Undo** (**Ctrl+Z**) reverse it. Nothing is deleted until you have clicked an object.
-2. To redraw outlines: select the *Objects* layer, paint or erase with napari's tools, then click **Record drawn edits** to keep them. Drawing stays when you move to another image; **Record all images** saves every image's drawing at once.
+2. To remove many objects at once: click **Draw area**, outline them (click the corners, double-click to finish), then click **Delete in area**. Every object lying entirely inside is deleted (objects crossing the edge stay); **Undo** brings them all back.
+3. To redraw outlines: select the *Objects* layer, paint or erase with napari's tools, then click **Record drawn edits** to keep them. Drawing stays when you move to another image; **Record all images** saves every image's drawing at once.
 
 The objects found in step 2 are kept; edits are saved as a list applied on top. Running step 2 again with new settings gives new objects, and these edits no longer apply to them.
 
