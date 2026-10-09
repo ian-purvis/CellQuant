@@ -3298,6 +3298,7 @@ class EditPanel(QWidget):
         # The object the user clicked. napari's own selected_label starts at 1, so it is not used
         # until the user changes it; otherwise Delete object would remove object 1 unasked.
         self._picked: int | None = None
+        self._last_label = 1  # napari's selected_label when last seen
         self._click_bound = False
         layout = QVBoxLayout(self)
         self.selected = QLabel("Selected object: none")
@@ -3397,6 +3398,7 @@ class EditPanel(QWidget):
 
     def bind_labels(self, boundaries) -> None:
         self._labels = boundaries
+        self._last_label = int(boundaries.selected_label)
         boundaries.events.selected_label.connect(self._on_selected)
         self.clear_selection()
         if not self._click_bound:
@@ -3435,7 +3437,11 @@ class EditPanel(QWidget):
 
     def _on_selected(self, event) -> None:
         # Changed by napari's picker tool on the Objects layer: the same as clicking the object.
-        value = int(event.value) if hasattr(event, "value") else int(self._labels.selected_label)
+        # napari sends this event without a value, and also when only the layer's colors change.
+        value = int(self._labels.selected_label)
+        if value == self._last_label:
+            return
+        self._last_label = value
         self.pick(value)
 
     def _selected_id(self) -> int | None:
@@ -3456,6 +3462,11 @@ class EditPanel(QWidget):
             self.shell.message("Click an object in the image first, then Delete object or Restore object.")
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
+        if self.shell._labels_image_id != image_id:
+            # The picked number belongs to the objects on screen, not to an image still loading.
+            self.shell.message("Wait for the image to finish loading, then click the object again.")
+            self.clear_selection()
+            return
 
         def finish(result) -> None:
             self.shell.show_result(result)
@@ -3962,6 +3973,8 @@ class ReviewPanel(QWidget):
         classification_id = self.classification_id()
         if controller is None or not classification_id or not self.shell._nav_ids:
             return
+        if self._current_classification() is None:
+            return  # the marker shown was removed in step 4
         image_id = self.shell._nav_ids[self.shell._nav_index]
         result = controller.update_thresholds(image_id, {classification_id: value})
         if result is not None:
