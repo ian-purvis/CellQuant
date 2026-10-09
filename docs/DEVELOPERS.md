@@ -11,9 +11,8 @@
 | `cellquant/image.py`, `inputs.py` | Reading ND2 and TIFF files. |
 | `cellquant/gui/app.py` | The napari window: panels for steps 1-5, the Run bar, background workers. |
 | `cellquant/gui/guide.py` | The Start tab, step pages, hover help (`HELP`, `BUTTON_HELP`) and quick marker setup. |
-| `cellquant/gui/plan_dock.py`, `hpc_panel.py` | The Plan dock and the HPC prep tab. |
+| `cellquant/gui/plan_dock.py` | The Plan dock. |
 | `cellquant/gui/START_HERE.md` | The in-app guide: a copy of `docs/START_HERE.md` (a test keeps them identical). |
-| `cellquant/hpc/` | Cluster packages: `python -m cellquant.hpc --help` lists `prepare`, `validate`, `run`, `import` and the rest. |
 | `cellquant/sweep.py`, `sweep_report.py` | Comparing segmentation methods (see `docs/SWEEP.md`). |
 | `packaging/` | The Windows installer and launcher (`Install CellQuant.bat`, `Open CellQuant.bat` call these). |
 | `tests/` | Automated tests; see [tests/README.md](../tests/README.md). |

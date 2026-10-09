@@ -53,8 +53,6 @@ not open in version 2.
   level (the `positive_fraction` rule of version 1); reports such as (Fluor+ OTX2+) / Fluor+.
 - Review: delete, restore and draw objects, undo, approve; results are re-measured without segmenting again.
 - Experiments: relocatable folders, saved runs, settings fingerprints, exports for Excel, Prism or R.
-- HPC prep: packages for a Slurm GPU cluster (CU Boulder Alpine), a worker with checksums and resume, and import
-  of the results as a new experiment.
 - Sweeps: compare segmentation methods, Z modes and thresholds across images, scored against hand counts.
 - Windows installer with one environment per Cellpose engine.
 - MIT license, citation file.
