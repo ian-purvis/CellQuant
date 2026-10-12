@@ -111,6 +111,21 @@ function Save-CellQuantDownload {
     }
 }
 
+function Get-CellQuantFileSha256 {
+    # .NET rather than Get-FileHash, which a clean Windows PowerShell 5.1 did not find
+    # inside the installer.
+    param([Parameter(Mandatory)][string]$Path)
+
+    $Sha = [System.Security.Cryptography.SHA256]::Create()
+    $Stream = [System.IO.File]::OpenRead($Path)
+    try {
+        return ([System.BitConverter]::ToString($Sha.ComputeHash($Stream)) -replace '-', '').ToLowerInvariant()
+    } finally {
+        $Stream.Dispose()
+        $Sha.Dispose()
+    }
+}
+
 function Install-CellQuantMiniforge {
     param([Parameter(Mandatory)][string]$Target)
 
@@ -126,7 +141,7 @@ function Install-CellQuantMiniforge {
     try {
         Write-Host "  Downloading Miniforge $Version (about 150 MB)..."
         Save-CellQuantDownload -Url $Url -OutFile $Installer
-        $Hash = (Get-FileHash -LiteralPath $Installer -Algorithm SHA256).Hash
+        $Hash = Get-CellQuantFileSha256 -Path $Installer
         if ($Hash -ne $script:CellQuantMiniforgeSha256) {
             throw "The Miniforge download did not match its expected checksum (got $Hash). Try again; if it keeps failing, install Miniforge yourself."
         }
