@@ -1,0 +1,68 @@
+name: graphics-check (temporary)
+on:
+  push:
+    branches: [claude/single-launcher-ci-check]
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CellQuant (classic engine)
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\install_windows.ps1 -NonInteractive -Engines cellpose3
+          if ($LASTEXITCODE -ne 0) { Get-Content install_last.log -Tail 60; exit 1 }
+      - name: What the viewer does with no OpenGL driver
+        shell: powershell
+        continue-on-error: true
+        run: |
+          . packaging\windows\resolve_conda.ps1; . packaging\windows\cellquant_env.ps1
+          $Conda = Resolve-CondaExecutable
+          $Prefix = (Get-InstalledCellQuantEngines -Record (Read-CellQuantEnvRecord -ProjectRoot $PWD))['cellpose3']
+          "PREFIX=$Prefix" | Out-File -Append $env:GITHUB_ENV
+          "CONDA=$Conda" | Out-File -Append $env:GITHUB_ENV
+          Get-ChildItem "$Prefix\Lib\site-packages\PyQt6\Qt6\bin\opengl32sw.dll"
+          & $Conda run --no-capture-output --prefix $Prefix python .github\draw_check.py
+          "exit code $LASTEXITCODE"
+      - name: Software graphics draws
+        shell: powershell
+        run: |
+          $env:QT_OPENGL = 'software'
+          $env:VISPY_GL_LIB = "$env:PREFIX\Lib\site-packages\PyQt6\Qt6\bin\opengl32sw.dll"
+          & $env:CONDA run --no-capture-output --prefix $env:PREFIX python .github\draw_check.py
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: QT_OPENGL=software alone (old launcher)
+        shell: powershell
+        continue-on-error: true
+        run: |
+          $env:QT_OPENGL = 'software'
+          & $env:CONDA run --no-capture-output --prefix $env:PREFIX python .github\draw_check.py
+          "exit code $LASTEXITCODE"
+      - name: Open CellQuant.bat reopens with software graphics
+        shell: powershell
+        run: |
+          $Graphics = Join-Path $env:LOCALAPPDATA 'CellQuant\graphics.txt'
+          Remove-Item $Graphics -ErrorAction SilentlyContinue
+          $p = Start-Process cmd.exe -ArgumentList '/c', '"Open CellQuant.bat" < NUL > launch.log 2>&1' -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 180
+          Get-Content launch.log
+          "graphics.txt: $(Get-Content $Graphics -ErrorAction SilentlyContinue)"
+          "still running: $(-not $p.HasExited)"
+          $python = Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" | Select-Object ProcessId, CommandLine
+          $python | Format-List
+          $ok = (Select-String -Path launch.log -Pattern 'Reopening CellQuant with software graphics' -Quiet) -and (Test-Path $Graphics) -and (-not $p.HasExited)
+          Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          if (-not $ok) { exit 1 }
+      - name: Second start goes straight to software graphics; installer clears it
+        shell: powershell
+        run: |
+          $p = Start-Process cmd.exe -ArgumentList '/c', '"Open CellQuant.bat" < NUL > launch2.log 2>&1' -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 120
+          Get-Content launch2.log
+          $ok = (Select-String -Path launch2.log -Pattern 'Software graphics: on' -Quiet) -and -not (Select-String -Path launch2.log -Pattern 'Reopening' -Quiet) -and (-not $p.HasExited)
+          Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          powershell -NoProfile -ExecutionPolicy Bypass -File packaging\windows\install_windows.ps1 -NonInteractive -Engines cellpose3 | Select-Object -Last 5
+          $cleared = -not (Test-Path (Join-Path $env:LOCALAPPDATA 'CellQuant\graphics.txt'))
+          "cleared by installer: $cleared"
+          if (-not ($ok -and $cleared)) { exit 1 }
