@@ -4,8 +4,7 @@
 param(
     [ValidateSet('ask', 'default', 'cellpose4', 'cellpose3')]
     [string]$Engine = 'ask',
-    [string]$Experiment = '',
-    [switch]$SoftwareGraphics
+    [string]$Experiment = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,12 +69,6 @@ if (-not $Installed.Contains($Engine)) {
 }
 
 $Prefix = $Installed[$Engine]
-# Draw the viewer with software OpenGL (Mesa). Works around NVIDIA driver crashes in the viewer
-# ("access violation" in glDrawArrays); Cellpose still uses the GPU.
-if ($SoftwareGraphics) {
-    $env:QT_OPENGL = 'software'
-    Write-Host '  Software graphics: on'
-}
 Write-Host ''
 Write-Host "Starting CellQuant with $(Get-CellQuantEngineLabel -Engine $Engine)..."
 Write-Host "  Environment: $Prefix"
@@ -85,7 +78,34 @@ $Arguments = @('run', '--no-capture-output', '--prefix', $Prefix, 'python', '-m'
 if ($Experiment) {
     $Arguments += $Experiment
 }
-# Start through "python -m" rather than an .exe shim: conda run can report a
-# false error after a GUI window opens from a shim (seen in CellQuant v1).
-& $CondaExe @Arguments
-exit $LASTEXITCODE
+# CellQuant writes "software" here after a graphics driver error (cellquant/gui/graphics.py).
+$env:CELLQUANT_GRAPHICS_FILE = Get-CellQuantGraphicsPath -ProjectRoot $ProjectRoot
+# Exit codes that mean the viewer could not draw: CellQuant's own code for an OpenGL
+# error at startup, and a Windows access violation (0xC0000005).
+$GraphicsExitCodes = @(75, -1073741819, 3221225477)
+$Software = Test-CellQuantSoftwareGraphics -ProjectRoot $ProjectRoot
+while ($true) {
+    if ($Software) {
+        # Draw the viewer with the software OpenGL (Mesa) that ships with Qt. vispy must load
+        # the same library as Qt, or it draws with the system driver anyway. Cellpose keeps the GPU.
+        $env:QT_OPENGL = 'software'
+        $env:CELLQUANT_SOFTWARE_GRAPHICS = '1'
+        $SoftwareGl = Join-Path $Prefix 'Lib\site-packages\PyQt6\Qt6\bin\opengl32sw.dll'
+        if (Test-Path -LiteralPath $SoftwareGl -PathType Leaf) {
+            $env:VISPY_GL_LIB = $SoftwareGl
+        }
+        Write-Host '  Software graphics: on, after a graphics error on this computer.'
+        Write-Host '  To switch back after updating the graphics driver, run Install CellQuant.bat and choose [U] Update.'
+    }
+    # Start through "python -m" rather than an .exe shim: conda run can report a
+    # false error after a GUI window opens from a shim (seen in CellQuant v1).
+    & $CondaExe @Arguments
+    $Code = $LASTEXITCODE
+    if ($Software -or -not ($GraphicsExitCodes -contains $Code)) {
+        exit $Code
+    }
+    Set-CellQuantSoftwareGraphics -ProjectRoot $ProjectRoot
+    $Software = $true
+    Write-Host ''
+    Write-Host 'The viewer hit a graphics error. Reopening CellQuant with software graphics...' -ForegroundColor Yellow
+}
