@@ -312,19 +312,54 @@ Write-Host ''
 Write-Host 'CellQuant installer'
 Write-Host '-------------------'
 
+$script:CondaExe = $null
 try {
     $script:CondaExe = Resolve-CondaExecutable
 } catch {
-    Show-CellQuantInstallMessage -Kind Error -Message ((@(
-        'Conda was not found on this computer.',
-        '',
-        'Install Miniforge (recommended) or Miniconda, then run Install CellQuant.bat again.',
-        'Miniforge: https://conda-forge.org/download/',
-        '',
-        "Details: $($_.Exception.Message)"
-    )) -join [Environment]::NewLine)
-    try { Stop-Transcript | Out-Null } catch { }
-    exit 1
+    $CondaSearch = $_.Exception.Message
+}
+if (-not $script:CondaExe) {
+    # No conda: offer to download and install Miniforge, then carry on.
+    $InstallMiniforge = $true
+    $Problem = ''
+    try {
+        $MiniforgeTarget = Get-CellQuantMiniforgeTarget
+    } catch {
+        $InstallMiniforge = $false
+        $Problem = $_.Exception.Message
+    }
+    if ($InstallMiniforge -and -not $NonInteractive) {
+        Write-Host ''
+        Write-Host 'Conda was not found on this computer. CellQuant needs it to install Python and Cellpose.'
+        Write-Host "The installer can download Miniforge (free, from conda-forge, about 150 MB) and install it to $MiniforgeTarget."
+        Write-Host 'It is installed for this user only and does not change other software.'
+        $Choice = Read-CellQuantChoice -Prompt 'Install Miniforge now? [Y/N] (Enter = Y)' -Allowed @('Y', 'N') -Default 'Y'
+        if ($Choice -eq 'N') {
+            $InstallMiniforge = $false
+            $Problem = 'You chose not to install Miniforge.'
+        }
+    }
+    if ($InstallMiniforge) {
+        Write-CellQuantStep 'Installing Miniforge...'
+        try {
+            $script:CondaExe = Install-CellQuantMiniforge -Target $MiniforgeTarget
+        } catch {
+            $Problem = "Miniforge could not be installed: $($_.Exception.Message)"
+        }
+    }
+    if (-not $script:CondaExe) {
+        Show-CellQuantInstallMessage -Kind Error -Message ((@(
+            'Conda was not found on this computer.',
+            $Problem,
+            '',
+            'Install Miniforge (recommended) or Miniconda yourself, then run Install CellQuant.bat again.',
+            'Miniforge: https://conda-forge.org/download/',
+            '',
+            "Details: $CondaSearch"
+        )) -join [Environment]::NewLine)
+        try { Stop-Transcript | Out-Null } catch { }
+        exit 1
+    }
 }
 Write-Host "Using conda: $script:CondaExe"
 
