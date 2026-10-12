@@ -26,9 +26,10 @@ The CellQuant panel has a **Start** tab and six numbered tabs (hover a tab for i
 1. **Start → Try practice images** (first time) or **New experiment…**
 2. **1 Images**: add images and name the channels.
 3. **2 Find objects**: pick the nuclear channel, **Preview**, then **Run this image**.
-4. **3 Markers**: tick the marker channels, **Set up markers**.
-5. **4 Check**: drag the **Cutoff** slider until the green (positive) objects look right, then **Approve**.
-6. **5 Results**: **Run all images**, then **Export results…**
+4. **3 Edit objects** (optional): delete debris or fix outlines.
+5. **4 Markers**: tick the marker channels, **Set up markers**.
+6. **5 Check**: drag the **Cutoff** slider until the green (positive) objects look right, then **Approve**.
+7. **6 Results**: **Run all images**, then **Export results…**
 
 A ✓ appears next to the number on each tab as you finish it. The **Start** tab shows your progress and a **Continue** button that takes you to the next unfinished step.
 
