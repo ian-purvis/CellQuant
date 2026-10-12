@@ -210,3 +210,36 @@ function Get-CellQuantInstallPrefixProblem {
     }
     return $null
 }
+
+# After a graphics driver error, CellQuant writes "software" to this file and the
+# launcher draws the viewer with software OpenGL from then on. The installer clears it.
+function Get-CellQuantGraphicsPath {
+    param([Parameter(Mandatory)][string]$ProjectRoot)
+
+    return (Join-Path (Split-Path -Parent (Get-CellQuantRecordPath -ProjectRoot $ProjectRoot)) 'graphics.txt')
+}
+
+function Test-CellQuantSoftwareGraphics {
+    param([Parameter(Mandatory)][string]$ProjectRoot)
+
+    $Path = Get-CellQuantGraphicsPath -ProjectRoot $ProjectRoot
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $false
+    }
+    return ((Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue) -match 'software')
+}
+
+function Set-CellQuantSoftwareGraphics {
+    param([Parameter(Mandatory)][string]$ProjectRoot)
+
+    Set-Content -LiteralPath (Get-CellQuantGraphicsPath -ProjectRoot $ProjectRoot) -Value 'software' -Encoding ASCII
+}
+
+function Clear-CellQuantSoftwareGraphics {
+    param([Parameter(Mandatory)][string]$ProjectRoot)
+
+    $Path = Get-CellQuantGraphicsPath -ProjectRoot $ProjectRoot
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    }
+}
