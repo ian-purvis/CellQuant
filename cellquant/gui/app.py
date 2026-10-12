@@ -11,6 +11,7 @@ import json
 import math
 import re
 import sys
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -130,9 +131,23 @@ def folder_image_counts(folder: str | Path) -> list[tuple[str, int]]:
 def launch(experiment_dir: str | Path | None = None) -> None:
     import napari
 
-    viewer = napari.Viewer(title="CellQuant")
+    from cellquant.gui import graphics
+
+    try:
+        viewer = napari.Viewer(title="CellQuant")
+    except Exception as exc:
+        # No usable OpenGL: the launcher reopens CellQuant with software graphics.
+        if graphics.is_graphics_error(exc) and graphics.remember_software_graphics():
+            traceback.print_exc()
+            raise SystemExit(graphics.GRAPHICS_EXIT_CODE) from exc
+        raise
+    from qtpy.QtWidgets import QApplication
+
+    graphics.watch_viewer_errors(QApplication.instance())
     CellQuantWindow(viewer, experiment_dir)
     napari.run()
+    if graphics.restart_requested:
+        raise SystemExit(graphics.GRAPHICS_EXIT_CODE)
 
 
 _OBJECT_LAYERS = ("Object fills", "Objects", "Classification", "Object IDs")
