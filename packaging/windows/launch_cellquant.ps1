@@ -21,7 +21,7 @@ try {
 } catch {
     Write-Host ''
     Write-Host 'Conda was not found.' -ForegroundColor Red
-    Write-Host 'Install Miniforge or Miniconda, then run Install CellQuant.bat.'
+    Write-Host 'Double-click Install CellQuant.bat first. It installs Miniforge if this computer has no conda.'
     Write-Host "Details: $($_.Exception.Message)"
     exit 1
 }
