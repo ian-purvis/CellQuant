@@ -8,13 +8,12 @@ This guide is for Windows. If you have never used CellQuant, do the practice run
 
 ## Install and open
 
-1. Install **Miniforge** (recommended) or Miniconda if the computer does not have conda. Ask your computer administrator if you cannot install software. You do not need to write code.
-2. In the CellQuant folder, double-click **`Install CellQuant.bat`**. It checks the computer and recommends a Cellpose engine:
+1. In the CellQuant folder, double-click **`Install CellQuant.bat`**. If the computer has no conda, it offers to download and install **Miniforge** (free, about 150 MB, for your user only); press Enter to accept. It then checks the computer and recommends a Cellpose engine:
    - **Cellpose-SAM (Cellpose 4)**: most accurate. Best with an NVIDIA GPU.
    - **Classic Cellpose (Cellpose 3)**: lighter. Faster on computers without a GPU.
 
    Press Enter to accept each suggested answer. Installing both engines (the default) lets you choose later. Leave the window open until it says **Install finished**. It can take 10 to 30 minutes.
-3. Double-click **`Open CellQuant.bat`**. If both engines are installed, it asks which one; press Enter for the recommended one. The napari window can take a minute to appear. Keep the black window open while you work.
+2. Double-click **`Open CellQuant.bat`**. If both engines are installed, it asks which one; press Enter for the recommended one. The napari window can take a minute to appear. Keep the black window open while you work.
 
 **Success check:** a napari window opens with a **CellQuant** panel on the right. The panel's first tab is **Start**.
 
@@ -195,7 +194,7 @@ Open CellQuant, click **Open experiment…**, and choose the results folder. You
 
 | Symptom | First check |
 |---|---|
-| Installer says conda was not found | Install Miniforge, then run `Install CellQuant.bat` again. |
+| Installer says conda was not found | Miniforge could not be installed automatically (no internet, or blocked by your organisation). Install Miniforge from https://conda-forge.org/download/, then run `Install CellQuant.bat` again. |
 | Install failed | Read the end of `install_last.log`. Check the internet connection and run the installer again, pressing Enter for the default folder. |
 | Open CellQuant says it is not installed | Run `Install CellQuant.bat` on this computer. Each computer needs its own install. |
 | An image will not open | Use ND2 or TIFF files. Make sure OneDrive files are downloaded (right-click, **Always keep on this device**). Time series are not supported yet. |
