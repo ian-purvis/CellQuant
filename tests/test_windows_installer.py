@@ -129,3 +129,15 @@ def test_smoke_test_reports_missing_cellpose_and_fails():
     last = result.stdout.strip().splitlines()[-1]
     assert last.startswith("CELLQUANT_SMOKE ")
     assert result.returncode == 1
+
+
+def test_installer_offers_miniforge_when_conda_is_missing():
+    resolve = (WINDOWS / "resolve_conda.ps1").read_text(encoding="ascii")
+    version = re.search(r"\$script:CellQuantMiniforgeVersion = '([^']+)'", resolve).group(1)
+    assert re.fullmatch(r"\d+\.\d+\.\d+-\d+", version)
+    assert re.search(r"\$script:CellQuantMiniforgeSha256 = '[0-9a-f]{64}'", resolve)
+    assert "Get-FileHash" in resolve and "'/AddToPath=0'" in resolve
+    # The installer's fallback folder is one Resolve-CondaExecutable searches.
+    assert "(Join-Path (Get-CellQuantSystemDrive) 'miniforge3\\Scripts\\conda.exe')" in resolve
+    install = (WINDOWS / "install_windows.ps1").read_text(encoding="ascii")
+    assert install.index("Install-CellQuantMiniforge -Target") < install.index("Write-Host \"Using conda: $script:CondaExe\"")
