@@ -579,6 +579,8 @@ if ($Failures.Count -gt 0) {
     exit 1
 }
 
+# A fresh install (for example after a graphics driver update) tries normal graphics again.
+Clear-CellQuantSoftwareGraphics -ProjectRoot $ProjectRoot
 Write-Host 'Double-click Open CellQuant.bat to start.' -ForegroundColor Green
 try { Stop-Transcript | Out-Null } catch { }
 exit 0
