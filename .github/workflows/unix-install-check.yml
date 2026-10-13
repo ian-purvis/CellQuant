@@ -1,0 +1,62 @@
+name: unix-install-check (temporary, never merge)
+on:
+  push:
+    branches: [claude/unix-installer-ci-check]
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show that conda is not reachable
+        run: |
+          echo "CONDA=${CONDA:-}"; type -P conda || echo "no conda on PATH"
+          ls -d ~/miniforge3 ~/miniconda3 ~/anaconda3 2>/dev/null || echo "no conda in home"
+      - name: Install (no conda; installs Miniforge, both engines)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then F="Install CellQuant.command"; else F="Install CellQuant.sh"; fi
+          env -u CONDA -u CONDA_EXE bash "$F" --non-interactive < /dev/null
+          test -x ~/miniforge3/bin/conda
+          cat ~/Library/Application\ Support/CellQuant/cellquant_env.json 2>/dev/null || cat ~/.local/share/CellQuant/cellquant_env.json
+      - name: Install again (conda found; update)
+        shell: bash
+        run: env -u CONDA -u CONDA_EXE bash packaging/unix/install_unix.sh --non-interactive --engines cellpose3 < /dev/null
+      - name: Open CellQuant (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb x11-utils imagemagick libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libegl1 libgl1 >/dev/null
+          xvfb-run -a -s "-screen 0 1600x1000x24" bash -c '
+            bash "Open CellQuant.sh" --engine cellpose4 > launch.log 2>&1 < /dev/null &
+            sleep 120
+            xwininfo -root -tree | grep -i -E "napari|cellquant" | tee windows.txt
+            import -window root screen-linux.png
+            pkill -f "python -m cellquant" || true'
+          cat launch.log
+          test -s windows.txt
+      - name: Open CellQuant (Mac)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          bash "Open CellQuant.command" --engine cellpose4 > launch.log 2>&1 < /dev/null &
+          sleep 120
+          osascript -e 'tell application "System Events" to get name of every process whose background only is false' | tee windows.txt
+          screencapture -x screen-mac.png || true
+          pkill -f "python -m cellquant" || true
+          cat launch.log
+          grep -i python windows.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.os }}
+          path: |
+            install_last.log
+            launch.log
+            windows.txt
+            screen-*.png
