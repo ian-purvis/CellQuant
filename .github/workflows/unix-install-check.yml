@@ -12,6 +12,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - name: Hide the runner's own conda
+        if: runner.os == 'Linux'
+        run: sudo mv /usr/share/miniconda /usr/share/miniconda-hidden
       - name: Show that conda is not reachable
         run: |
           echo "CONDA=${CONDA:-}"; type -P conda || echo "no conda on PATH"
