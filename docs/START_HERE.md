@@ -4,7 +4,7 @@ CellQuant finds nuclei (or cells) in fluorescence microscope images and counts h
 
 **CellQuant does not decide whether a result is biologically right.** Check the outlines and the positive calls against your experiment, and keep your original images untouched.
 
-This guide is for Windows. If you have never used CellQuant, do the practice run first (about 15 minutes). It has a known answer, so you can tell your settings work.
+This guide shows the Windows steps; [Mac and Linux](#mac-and-linux) differ only in how you install and open CellQuant. If you have never used CellQuant, do the practice run first (about 15 minutes). It has a known answer, so you can tell your settings work.
 
 ## Install and open
 
@@ -18,6 +18,15 @@ This guide is for Windows. If you have never used CellQuant, do the practice run
 **Success check:** a napari window opens with a **CellQuant** panel on the right. The panel's first tab is **Start**.
 
 If the install fails, it opens `install_last.log` in Notepad. See [When something looks wrong](#when-something-looks-wrong).
+
+### Mac and Linux
+
+The installer asks the same questions as on Windows and also installs Miniforge if needed.
+
+- **Mac:** double-click **`Install CellQuant.command`**, then **`Open CellQuant.command`**. If macOS says the file cannot be opened because it is from an unidentified developer, open **System Settings → Privacy & Security** and click **Open Anyway**, or open **Terminal**, type `bash ` (with a space), drag the file into the Terminal window and press Return. Cellpose runs on the CPU on a Mac, so the installer recommends Classic Cellpose.
+- **Linux:** open a terminal in the CellQuant folder and run `bash "Install CellQuant.sh"`, then `bash "Open CellQuant.sh"`. Computers with an NVIDIA GPU get GPU support automatically.
+
+The log is `install_last.log` in the CellQuant folder.
 
 ## What to click (the short version)
 
