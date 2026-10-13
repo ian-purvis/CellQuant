@@ -6,3 +6,4 @@
 *.tiff binary
 *.nd2 binary
 *.png binary
+*.command text eol=lf
