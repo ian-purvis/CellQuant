@@ -15,6 +15,12 @@ CellQuant finds nuclei (or cells) in fluorescence microscope images and counts h
 2. Double-click **`Open CellQuant.bat`**.
 3. In the CellQuant panel, click **Start → Try practice images**, then follow the numbered tabs (hover one for its name): **1 Images → 2 Find objects → 3 Edit objects → 4 Markers → 5 Check → 6 Results**.
 
+## Quick start (Mac and Linux)
+
+1. **Mac:** double-click **`Install CellQuant.command`**. **Linux:** in a terminal, run `bash "Install CellQuant.sh"` in the CellQuant folder. Press Enter to accept each suggested answer. If this computer has no conda, it downloads and installs Miniforge first.
+2. **Mac:** double-click **`Open CellQuant.command`**. **Linux:** run `bash "Open CellQuant.sh"`.
+3. Continue as in step 3 above. If macOS blocks the file, see [Start here](docs/START_HERE.md#mac-and-linux).
+
 ## Documentation map
 
 ### For users
