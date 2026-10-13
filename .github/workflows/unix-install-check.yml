@@ -40,7 +40,7 @@ jobs:
             sleep 120
             xwininfo -root -tree | grep -i -E "napari|cellquant" | tee windows.txt
             import -window root screen-linux.png
-            pkill -f "python -m cellquant" || true'
+            pkill -f "[p]ython -m cellquant" || true'
           cat launch.log
           test -s windows.txt
       - name: Open CellQuant (Mac)
@@ -51,7 +51,7 @@ jobs:
           sleep 120
           osascript -e 'tell application "System Events" to get name of every process whose background only is false' | tee windows.txt
           screencapture -x screen-mac.png || true
-          pkill -f "python -m cellquant" || true
+          pkill -f "[p]ython -m cellquant" || true
           cat launch.log
           grep -i python windows.txt
       - uses: actions/upload-artifact@v4
