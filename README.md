@@ -33,8 +33,7 @@ CellQuant finds nuclei (or cells) in fluorescence microscope images and counts h
 | Item | What it is |
 |---|---|
 | `Install CellQuant.bat` | Installs CellQuant on this computer. Run it again to update. |
-| `Open CellQuant.bat` | Starts CellQuant. |
-| `Open CellQuant (software graphics).bat` | Starts CellQuant with software graphics. Use it if the napari window crashes with an NVIDIA "access violation" error. Cellpose still uses the GPU. |
+| `Open CellQuant.bat` | Starts CellQuant. After a graphics driver error it switches to software graphics by itself. |
 | `docs/START_HERE.md` | The step-by-step guide for users. The same guide opens from the Start tab. |
 | `docs/STATUS.md` | What has been built and tested, and what has not. |
 | `docs/DEVELOPERS.md` | Repository map and developer workflow for contributors. |
