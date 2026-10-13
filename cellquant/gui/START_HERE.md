@@ -210,6 +210,7 @@ Open CellQuant, click **Open experiment…**, and choose the results folder. You
 | Cellpose is slow | Without an NVIDIA GPU, Cellpose runs on the CPU. Use Classic Cellpose, or the classical method. |
 | "These settings were made for Cellpose-SAM" (or classic) | Close CellQuant and open it again with the engine the settings were made with, or choose a model for the engine you have. |
 | "The GPU was requested but Cellpose ran on the CPU" | The NVIDIA driver may need updating. Run the installer again after updating it. |
+| "Graphics driver error", or the viewer window closes on its own | CellQuant reopens with software graphics and keeps using them on this computer. Drawing is a little slower; Cellpose still uses the GPU. After updating the graphics driver, run the installer again and choose **[U] Update** to switch back. |
 | 3D: one nucleus appears as two (split across slices) | Lower **Link overlap**, and keep **Brightness** on *Whole stack*. The results flag these as *one_slice*. |
 | 3D: two stacked nuclei counted as one | Raise **Link overlap**. The results flag these as *possibly_merged*. |
 | 3D option is very slow | The estimate beside each option shows why. Check the GPU box (step 2, top): a usable NVIDIA GPU is used automatically. Or use Classic Cellpose, or a max projection. |
