@@ -4866,7 +4866,7 @@ def floating_header(dock) -> FloatingHeader:
 
     def apply() -> None:
         try:
-            if not dock.isFloating() or dock.titleBarWidget() is header:
+            if not dock.isFloating():
                 return
         except RuntimeError:
             return  # the panel was closed meanwhile
@@ -4874,6 +4874,9 @@ def floating_header(dock) -> FloatingHeader:
 
         if QApplication.mouseButtons() != Qt.MouseButton.NoButton:
             QTimer.singleShot(200, apply)  # still being dragged; changing the header now would drop it
+            return
+        if dock.titleBarWidget() is header:
+            own_window(dock)  # Qt may have made it a napari tool window again (after a move, for one)
             return
         # napari swaps its own header in when the panel is shown; keep it from undoing this one.
         dock.blockSignals(True)
@@ -4884,6 +4887,7 @@ def floating_header(dock) -> FloatingHeader:
                 dock.setFeatures(dock.features() & ~vertical)
             dock.setTitleBarWidget(header)
             header.show()
+            own_window(dock)
             dock.show()
         finally:
             dock.blockSignals(False)
@@ -4905,7 +4909,43 @@ def floating_header(dock) -> FloatingHeader:
 
     dock.topLevelChanged.connect(lambda floating: QTimer.singleShot(0, apply) if floating else docked())
     dock.visibilityChanged.connect(lambda visible: QTimer.singleShot(0, apply) if visible else None)
+    header._window_watcher = WindowWatcher(lambda: QTimer.singleShot(0, apply), dock)
+    dock.installEventFilter(header._window_watcher)
     return header
+
+
+def own_window(dock) -> None:
+    """Make a popped-out panel a window of its own, so it stays up when the napari window is minimized.
+
+    Qt makes a popped-out panel a tool window owned by the napari window, and Windows hides owned windows
+    whenever their owner is minimized. As its own window the panel also gets its own taskbar button.
+    """
+
+    kind = Qt.WindowType.WindowType_Mask
+    flags = dock.windowFlags()
+    if flags & kind != Qt.WindowType.Window:
+        geometry = dock.geometry()
+        dock.setWindowFlags((flags & ~kind) | Qt.WindowType.Window)  # this hides it and makes a new native window
+        dock.setGeometry(geometry)
+        dock.show()
+    handle = dock.windowHandle()
+    if handle is not None and handle.transientParent() is not None:
+        handle.setTransientParent(None)
+
+
+class WindowWatcher(QObject):
+    """Call a function when the widget it watches gets a new native window or is shown."""
+
+    def __init__(self, on_change, parent=None):
+        super().__init__(parent)
+        self._on_change = on_change
+
+    def eventFilter(self, watched, event) -> bool:
+        from qtpy.QtCore import QEvent
+
+        if event.type() in (QEvent.Type.WinIdChange, QEvent.Type.Show):
+            self._on_change()
+        return False
 
 
 class CloseWatcher(QObject):
