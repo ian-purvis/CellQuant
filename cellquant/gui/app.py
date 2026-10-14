@@ -4923,14 +4923,22 @@ def own_window(dock) -> None:
 
     kind = Qt.WindowType.WindowType_Mask
     flags = dock.windowFlags()
+    geometry = None
     if flags & kind != Qt.WindowType.Window:
         geometry = dock.geometry()
         dock.setWindowFlags((flags & ~kind) | Qt.WindowType.Window)  # this hides it and makes a new native window
-        dock.setGeometry(geometry)
-        dock.show()
+    dock.winId()  # make sure the native window exists
     handle = dock.windowHandle()
     if handle is not None and handle.transientParent() is not None:
         handle.setTransientParent(None)
+        if sys.platform == "win32" and dock.isVisible():
+            # Qt passes a new owner to Windows only when it next shows the window; drop it now.
+            import ctypes
+
+            ctypes.windll.user32.SetWindowLongPtrW(ctypes.c_void_p(int(dock.winId())), -8, None)  # GWLP_HWNDPARENT
+    if geometry is not None:
+        dock.setGeometry(geometry)
+        dock.show()
 
 
 class WindowWatcher(QObject):
