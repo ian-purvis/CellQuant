@@ -1,0 +1,17 @@
+name: windows-floated-panel-check
+on: push
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: pyvista/setup-headless-display-action@v4
+      - run: python -m pip install -e ".[gui,dev]"
+      - name: Control (old behaviour hides the panel)
+        run: python .github/check_minimize.py --control
+      - name: Fix (panel stays up)
+        run: python .github/check_minimize.py
