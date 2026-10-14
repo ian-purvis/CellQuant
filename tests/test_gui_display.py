@@ -640,6 +640,11 @@ def test_a_popped_out_panel_has_minimize_maximize_and_reset(window):
 
     vertical = QDockWidget.DockWidgetFeature.DockWidgetVerticalTitleBar
     assert not dock.features() & vertical
+    # Its own window, not a tool window owned by napari's: it stays up when the napari window is minimized.
+    from qtpy.QtCore import Qt
+
+    assert dock.windowFlags() & Qt.WindowType.WindowType_Mask == Qt.WindowType.Window
+    assert dock.windowHandle().transientParent() is None
     assert [button.toolTip() for button in header.buttons.values()] == ["Minimize", "Maximize", "Restore size", "Reset", "Close"]
     assert not header.buttons["restore"].isEnabled()
     header.buttons["minimize"].click()
