@@ -703,3 +703,49 @@ def test_remove_marker_also_removes_its_result_rows_and_settings_save_themselves
     saved = AnalysisController.open(shell.controller.directory)
     assert saved.recipe.object_set.parameters["sigma"] == 2.5
 
+
+
+def _practice_shell(tmp_path: Path):
+    from cellquant.gui.app import CellQuantWindow
+    from cellquant.practice import create_practice_experiment
+
+    create_practice_experiment(tmp_path / "practice")
+    try:
+        viewer = napari.Viewer(show=False)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"napari viewer could not start: {exc}")
+    shell = CellQuantWindow(viewer, tmp_path / "practice" / "experiment")
+    _wait(shell)
+    return viewer, shell
+
+
+def _channel_layers(viewer):
+    return [layer for layer in viewer.layers if layer.name.startswith("Channel ")]
+
+
+def test_a_segmented_image_opens_with_only_the_segmented_channel_and_objects_visible(tmp_path: Path):
+    viewer, shell = _practice_shell(tmp_path)
+    try:
+        assert len(_channel_layers(viewer)) > 1
+        assert all(layer.visible for layer in _channel_layers(viewer))  # before a run: everything shows
+        shell.run_current()
+        _wait(shell)
+        segmented = shell.controller.segmentation_channel_for(shell._shown_image_id)[0]
+        channels = _channel_layers(viewer)
+        assert [layer.visible for layer in channels] == [i == segmented for i in range(len(channels))]
+        assert viewer.layers["Objects"].visible
+    finally:
+        viewer.close()
+
+
+def test_show_all_channels_setting_keeps_every_channel_visible(tmp_path: Path, monkeypatch):
+    from cellquant.gui import app
+
+    viewer, shell = _practice_shell(tmp_path)
+    try:
+        monkeypatch.setattr(app, "show_all_channels_preferred", lambda: True)
+        shell.run_current()
+        _wait(shell)
+        assert all(layer.visible for layer in _channel_layers(viewer))
+    finally:
+        viewer.close()
