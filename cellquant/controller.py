@@ -6,6 +6,7 @@ summary each cache on their own inputs, and manual edits stay out of the recipe.
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -104,6 +105,10 @@ class BatchReport:
 SESSION_IMAGE_LIMIT = 2
 
 
+_DISPLAY_CACHE_IMAGES = 4
+_DISPLAY_CACHE_BYTES = 2 * 1024**3
+
+
 class AnalysisController:
     def __init__(self, experiment: Experiment):
         self.experiment = experiment
@@ -120,6 +125,8 @@ class AnalysisController:
         self.last_results: dict[str, ImageResult] = {}
         self._session_images: OrderedDict[str, LoadedImage] = OrderedDict()
         self._segmentation_ids: dict[str, str] = {}
+        self._display_cache: OrderedDict[tuple, LoadedImage] = OrderedDict()
+        self._display_lock = threading.Lock()
         self._ensure_analyses()
 
     @classmethod
@@ -1048,17 +1055,46 @@ class AnalysisController:
         With a result: the way that result was segmented (a max projection, the
         one slice, or the stack), so its objects lie on what was processed.
         Without one: every Z slice, so the stack can be scrolled.
+
+        The last few images are kept in memory, so going back to one (or to one
+        read ahead by ``preload_display``) is instant.
         """
 
         mode, index = display_z(result)
         if mode is not None:
-            return load_record_display(record, z_mode=mode, z_index=index, experiment_dir=self.directory, as_analyzed=True)
-        return load_record_display(
-            record,
-            z_mode=self.recipe.z_stack,
-            z_index=self.recipe.z_index,
-            experiment_dir=self.directory,
-        )
+            kwargs = {"z_mode": mode, "z_index": index, "as_analyzed": True}
+        else:
+            kwargs = {"z_mode": self.recipe.z_stack, "z_index": self.recipe.z_index}
+        try:
+            stat = self.source_path(record).stat()
+            key = (record.image_id, record.position, record.pixel_size_x, record.pixel_size_y, record.pixel_size_z,
+                   stat.st_mtime_ns, stat.st_size, tuple(sorted(kwargs.items())))
+        except OSError:
+            key = None  # unreadable: let the loader report it
+        if key is not None:
+            with self._display_lock:
+                hit = self._display_cache.get(key)
+                if hit is not None:
+                    self._display_cache.move_to_end(key)
+                    return hit
+        loaded = load_record_display(record, experiment_dir=self.directory, **kwargs)
+        if key is not None:
+            with self._display_lock:
+                self._display_cache[key] = loaded
+                self._display_cache.move_to_end(key)
+                while len(self._display_cache) > _DISPLAY_CACHE_IMAGES or (
+                    len(self._display_cache) > 1 and sum(v.data.nbytes for v in self._display_cache.values()) > _DISPLAY_CACHE_BYTES
+                ):
+                    self._display_cache.popitem(last=False)
+        return loaded
+
+    def preload_display(self, record, result: ImageResult | None = None) -> None:
+        """Read an image ahead of time (call off the interface thread); errors are ignored."""
+
+        try:
+            self._load_display(record, result=result)
+        except Exception:  # noqa: BLE001 - only a head start; the real load reports any problem
+            pass
 
     def source_path(self, record) -> Path:
         """The image file this record reads (its own copy inside the experiment, when it has one)."""
