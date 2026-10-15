@@ -578,6 +578,7 @@ class CellQuantWindow:
         self._labels_image_id: str | None = None  # image the Objects layer holds
         self._wanted_image_id: str | None = None
         self._loader: CallWorker | None = None
+        self._preloader: CallWorker | None = None
         self._building = False
         # True while work runs that switches between analyses (Run all analyses, Export all analyses):
         # the settings pages and image navigation are locked, since they would show another analysis.
@@ -942,6 +943,7 @@ class CellQuantWindow:
             self._footer.set_units(f"{unit}   ·   Analyzed: {loaded.z_description}")
             note, self._show_note = self._show_note, None
             self._footer.message(f"{note} Showing {record.relative_path or record.filename}" if note else f"Showing {record.relative_path or record.filename}")
+            self._preload_next()
 
         def failed(message: str) -> None:
             self._loader = None
@@ -955,6 +957,27 @@ class CellQuantWindow:
 
         worker.succeeded.connect(shown)
         worker.failed.connect(failed)
+        worker.start()
+
+    def _preload_next(self) -> None:
+        """Read the next image in the background so pressing Next shows it at once."""
+
+        controller = self.controller
+        if controller is None or self._preloader is not None or self._nav_index + 1 >= len(self._nav_ids):
+            return
+        try:
+            record = controller.experiment.image(self._nav_ids[self._nav_index + 1])
+            result = controller.recall(record.image_id)
+        except Exception:  # noqa: BLE001 - only a head start
+            return
+        worker = CallWorker(lambda: controller.preload_display(record, result))
+        self._preloader = worker
+
+        def done(_value=None) -> None:
+            self._preloader = None
+
+        worker.succeeded.connect(done)
+        worker.failed.connect(done)
         worker.start()
 
     def image_loading(self) -> bool:
