@@ -330,6 +330,19 @@ def keep_awake_preferred() -> bool:
         return True
 
 
+def show_all_channels_preferred() -> bool:
+    """Whether a segmented image opens with every channel visible (default: only the segmented one)."""
+
+    try:
+        return str(_settings().value("view/show_all_channels", "false")).lower() == "true"
+    except Exception:  # noqa: BLE001 - settings unreadable: use the default
+        return False
+
+
+def save_show_all_channels(on: bool) -> None:
+    _settings().setValue("view/show_all_channels", "true" if on else "false")
+
+
 def save_keep_awake(on: bool) -> None:
     _settings().setValue("run/keep_awake", "true" if on else "false")
 
@@ -989,7 +1002,12 @@ class CellQuantWindow:
         image_id = result.provenance.get("image_id")
         if image_id == self._shown_image_id and self._has_image_layers() and self._shown_z == display_z(result):
             # Same image: keep the channel layers, and update the object layers in place.
+            first_result = "Objects" not in self.viewer.layers
             self._set_labels(result.labels, result)
+            if first_result:
+                self._show_segmented_channel_only(
+                    image_id, [layer for layer in self.viewer.layers if layer.name in self._managed and layer.name not in _OBJECT_LAYERS]
+                )
         else:
             record = self.controller.experiment.image(image_id)
             self._wanted_image_id = image_id
@@ -1506,6 +1524,8 @@ class CellQuantWindow:
             layer.events.contrast_limits.connect(
                 lambda event, index=channel.channel_index, layer=layer: self._store_contrast(index, layer)
             )
+        if result is not None:
+            self._show_segmented_channel_only(record.image_id, layers)
         if loaded.data.ndim == 4:
             # Every slice is loaded, so the slider under the image scrolls the stack. Start on the
             # slice a one-slice analysis used, else the middle one.
@@ -1516,6 +1536,16 @@ class CellQuantWindow:
         self.show_count_area(record)
         self._release_window_later()
         self._experiment_panel.show_channel_order(record)
+
+    def _show_segmented_channel_only(self, image_id: str, layers) -> None:
+        """Review starts on the channel that was segmented; the others stay in the layer list, hidden."""
+
+        if len(layers) < 2 or show_all_channels_preferred():
+            return
+        segmented = self.controller.segmentation_channel_for(image_id)[0]
+        if 0 <= segmented < len(layers):
+            for position, layer in enumerate(layers):
+                layer.visible = position == segmented
 
     def _store_contrast(self, index: int, layer) -> None:
         if self.controller is None:
@@ -4530,6 +4560,14 @@ class Footer(QWidget):
         self.keep_awake.setChecked(keep_awake_preferred())
         self.keep_awake.setVisible(keep_awake.supported())
         self.keep_awake.toggled.connect(shell._keep_awake_toggled)
+        self.all_channels = QCheckBox("Show all channels ⓘ")
+        self.all_channels.setToolTip(
+            "When a segmented image opens, show every channel. Off: only the segmented channel and "
+            "the objects show; the other channels stay in the layer list, hidden. Applies the next "
+            "time an image is shown."
+        )
+        self.all_channels.setChecked(show_all_channels_preferred())
+        self.all_channels.toggled.connect(save_show_all_channels)
         self.cancel.setStyleSheet("QPushButton:enabled { color: #e05050; font-weight: bold; }")
         previous.setToolTip("Show the previous image in the experiment (Page Up).")
         next_image.setToolTip("Show the next image in the experiment (Page Down).")
@@ -4593,6 +4631,7 @@ class Footer(QWidget):
         bar.addWidget(self.status, 3)
         for button in (self.pause, self.resume, self.cancel, self.log_toggle):
             bar.addWidget(button)
+        bar.addWidget(self.all_channels)
         bar.addWidget(self.keep_awake)
         layout.addLayout(bar)
         layout.addWidget(self.log)
