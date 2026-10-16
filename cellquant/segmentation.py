@@ -259,13 +259,15 @@ class CellposeBackend:
                 labels = np.stack(planes)
             else:
                 progress.update("Finding objects with Cellpose in the whole volume (this step cannot be stopped part-way)")
+                settings = full_3d_settings(diameter, anisotropy, parameters)
+                details["full_3d"] = settings
                 output = model.eval(
                     scaled,
                     diameter=diameter,
                     do_3D=True,
                     z_axis=0,
                     anisotropy=float(anisotropy),
-                    **options,
+                    **{**options, **settings},
                 )
                 labels = np.asarray(output[0] if isinstance(output, (tuple, list)) else output)
         except (SegmentationError, progress.AnalysisCancelled):
@@ -341,6 +343,32 @@ class CellposeBackend:
                 "Check that an NVIDIA GPU is present and that Install CellQuant.bat installed GPU support."
             )
         return np.asarray(masks, dtype=np.int32), details
+
+
+# Full 3D settings from the Cellpose-SAM paper (Pachitariu, Rariden & Stringer 2025, bioRxiv
+# 10.1101/2025.04.28.651001, Methods "Fine-tuning and evaluation"): 1,000 dynamics iterations,
+# 3D flow smoothing of 2, and objects under 1,000 voxels dropped. The paper's cells were about
+# 30 px across in isotropic volumes, so the voxel cutoff is scaled to each image: the same share
+# of a typical object (about 7 %), in this image's voxels.
+FULL_3D_NITER = 1000
+FULL_3D_FLOW_SMOOTH = 2.0
+FULL_3D_MIN_VOXELS = 1000
+_PAPER_DIAMETER_PX = 30.0
+
+
+def full_3d_settings(diameter_px: float | None, anisotropy: float, parameters: dict[str, Any]) -> dict[str, Any]:
+    """``niter``, ``flow3D_smooth`` and ``min_size`` (voxels) for Cellpose's full 3D mode.
+
+    ``min_size`` in the parameters wins over the scaled cutoff.
+    """
+
+    if "min_size" in parameters:
+        min_size = int(parameters["min_size"])
+    else:
+        diameter = float(diameter_px) if diameter_px else _PAPER_DIAMETER_PX
+        ratio = float(anisotropy) if anisotropy and anisotropy > 0 else 1.0
+        min_size = max(1, round(FULL_3D_MIN_VOXELS * (diameter / _PAPER_DIAMETER_PX) ** 3 / ratio))
+    return {"niter": FULL_3D_NITER, "flow3D_smooth": FULL_3D_FLOW_SMOOTH, "min_size": min_size}
 
 
 # --- reusing Cellpose models and network output -----------------------------------------------------
