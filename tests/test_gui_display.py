@@ -794,3 +794,31 @@ def test_max_projection_toggle_is_view_only_and_reversible(tmp_path: Path):
         assert not box.max_projection.isChecked()  # a new display starts as the normal view
     finally:
         viewer.close()
+
+
+def test_full_3d_cellpose_settings_show_only_for_full_3d(tmp_path: Path):
+    from cellquant.engines import CellposeEngine
+
+    viewer, shell = _stack_window(tmp_path)
+    try:
+        panel = shell._objects_panel
+        panel.engine = CellposeEngine(True, "4.2.0", "cellpose4", ("cpsam",), "cpsam")
+        panel.advanced_toggle.setChecked(True)
+        panel.method.setCurrentIndex(panel.method.findData("cellpose"))
+        rows = (panel.niter_3d, panel.flow3d_smooth, panel.min_voxels_3d)
+        panel.z_stack.setCurrentIndex(panel.z_stack.findData("stitch_slices"))
+        assert not any(row.isVisibleTo(panel) for row in rows)
+        panel.write_recipe()
+        assert "niter_3d" not in shell.controller.recipe.object_set.parameters
+        panel.z_stack.setCurrentIndex(panel.z_stack.findData("full_3d"))
+        assert all(row.isVisibleTo(panel) for row in rows)
+        assert (panel.niter_3d.value(), panel.flow3d_smooth.value(), panel.min_voxels_3d.value()) == (1000, 2.0, 0)
+        panel.niter_3d.setValue(500)
+        panel.min_voxels_3d.setValue(40)
+        panel.write_recipe()
+        parameters = shell.controller.recipe.object_set.parameters
+        assert (parameters["niter_3d"], parameters["flow3D_smooth"], parameters["min_voxels_3d"]) == (500, 2.0, 40)
+        panel.method.setCurrentIndex(panel.method.findData("classical"))
+        assert not any(row.isVisibleTo(panel) for row in rows)
+    finally:
+        viewer.close()

@@ -356,6 +356,9 @@ def test_full_3d_cutoff_follows_the_calibration():
     assert full_3d_settings(None, 1.0, {})["min_size"] == 1000  # the paper's own case
     assert full_3d_settings(7.0, 1.5 / 0.86, {})["min_size"] == 7
     assert full_3d_settings(21.4, 1.5 / 0.28, {"min_size": 50})["min_size"] == 50
+    chosen = full_3d_settings(21.4, 1.5 / 0.28, {"niter_3d": 400, "flow3D_smooth": 0.0, "min_voxels_3d": 120})
+    assert chosen == {"niter": 400, "flow3D_smooth": 0.0, "min_size": 120}
+    assert full_3d_settings(21.4, 1.5 / 0.28, {"min_voxels_3d": 0})["min_size"] == 68  # 0 = auto
 
 
 # --- same rule as Cellpose -----------------------------------------------------------------
