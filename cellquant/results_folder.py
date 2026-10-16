@@ -221,3 +221,113 @@ def read_mask(path: Path) -> np.ndarray:
     if data.size and data.min() < 0:
         raise ValueError("it holds negative numbers")
     return data.astype(np.int32)
+
+
+def mask_shape(path: Path) -> tuple[int, ...]:
+    """A mask's shape without reading its pixels, (Y, X) or (Z, Y, X)."""
+
+    import tifffile
+
+    with tifffile.TiffFile(path) as handle:
+        shape = tuple(int(value) for value in handle.series[0].shape if int(value) != 1)
+    if len(shape) not in (2, 3):
+        raise ValueError(f"it has {len(shape)} dimensions; a mask is 2D (Y, X) or 3D (Z, Y, X)")
+    return shape
+
+
+# Z handling named by a cluster package (prep.json / settings.json), as CellQuant names it.
+_PACKAGE_Z = {"max": "max_projection", "single": "single_plane", "stitch": "stitch_slices", "3d": "full_3d"}
+
+
+def _beside(root: Path, name: str) -> list[Path]:
+    places = [root / name]
+    if root.name.lower() == "results":
+        places.append(root.parent / name)
+    return [place for place in places if place.is_file()]
+
+
+def package_settings(folder: str | Path) -> dict:
+    """What a cluster package says about how its masks were made: ``channel`` (a name),
+    ``z_stack`` (a CellQuant Z mode) and ``image_folder``. Empty for other folders."""
+
+    root = Path(folder)
+    settings: dict = {}
+    for name in ("settings.json", "prep.json"):  # prep.json wins
+        for place in _beside(root, name):
+            try:
+                data = json.loads(place.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            mode = str(data.get("z_mode") or "").lower()
+            mode = _PACKAGE_Z.get(mode, mode)
+            if mode in _PACKAGE_Z.values():
+                settings["z_stack"] = mode
+            if data.get("channel"):
+                settings["channel"] = str(data["channel"])
+            if data.get("image_folder"):
+                settings["image_folder"] = str(data["image_folder"])
+    return settings
+
+
+def listed_originals(folder: str | Path) -> list[str]:
+    """Image files the folder names: images.csv's source_file, or the source of each image CellQuant saved."""
+
+    root = Path(folder)
+    listed = [source for source, _position in _manifest(root).values()]
+    for directory, folders, files in os.walk(root):
+        folders[:] = [item for item in folders if not item.startswith(".")]
+        if Path(directory).name != "provenance" or not (Path(directory).parent / "labels").is_dir():
+            continue
+        for file in files:
+            if not file.endswith(".json"):
+                continue
+            try:
+                data = json.loads((Path(directory) / file).read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("source_path"):
+                listed.append(str(data["source_path"]))
+    return list(dict.fromkeys(listed))
+
+
+def mask_keys(folder: str | Path) -> set[str]:
+    """The image names the masks in a folder use (see ``name_key``), with and without a ``_p<N>`` position."""
+
+    keys = set()
+    for directory, folders, files in os.walk(Path(folder)):
+        folders[:] = [item for item in folders if not item.startswith(".")]
+        for file in files:
+            if file.lower().endswith(_EXTENSIONS):
+                key = name_key(mask_name(Path(directory) / file)[0])
+                keys.update({key, re.sub(r"_p\d+$", "", key)})
+    return keys
+
+
+def find_image_files(
+    search: str | Path, *, names: set[str] = frozenset(), keys: set[str] = frozenset(), exclude: str | Path | None = None
+) -> dict[str, Path]:
+    """Image files (ND2, TIFF) under ``search`` whose file name is in ``names`` (lower case),
+    or whose name or path in ``search`` matches a mask name in ``keys``. Returns {name or key: file}."""
+
+    root = Path(search)
+    skip = Path(exclude).resolve() if exclude is not None else None
+    found: dict[str, Path] = {}
+    for directory, folders, files in os.walk(root):
+        folders[:] = [item for item in folders if not item.startswith(".")]
+        if skip is not None and (Path(directory).resolve() == skip or skip in Path(directory).resolve().parents):
+            continue  # the results folder itself: masks, not images
+        for file in files:
+            if not file.lower().endswith((".nd2", *_EXTENSIONS)):
+                continue
+            path = Path(directory) / file
+            if file.lower() in names:
+                found.setdefault(file.lower(), path)
+                continue
+            relative = path.relative_to(root).with_suffix("").as_posix()
+            for key in (name_key(path.stem), name_key(relative)):
+                if key in keys:
+                    found.setdefault(key, path)
+                    break
+    return found
