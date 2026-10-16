@@ -359,16 +359,22 @@ _PAPER_DIAMETER_PX = 30.0
 def full_3d_settings(diameter_px: float | None, anisotropy: float, parameters: dict[str, Any]) -> dict[str, Any]:
     """``niter``, ``flow3D_smooth`` and ``min_size`` (voxels) for Cellpose's full 3D mode.
 
-    ``min_size`` in the parameters wins over the scaled cutoff.
+    ``niter_3d``, ``flow3D_smooth`` and ``min_voxels_3d`` (step 2, Advanced) replace the
+    defaults; ``min_voxels_3d`` of 0 or missing keeps the scaled cutoff. ``min_size`` in the
+    parameters also replaces it.
     """
 
-    if "min_size" in parameters:
+    niter = int(parameters.get("niter_3d") or FULL_3D_NITER)
+    smooth = float(parameters.get("flow3D_smooth", FULL_3D_FLOW_SMOOTH))
+    if parameters.get("min_voxels_3d"):
+        min_size = int(parameters["min_voxels_3d"])
+    elif "min_size" in parameters:
         min_size = int(parameters["min_size"])
     else:
         diameter = float(diameter_px) if diameter_px else _PAPER_DIAMETER_PX
         ratio = float(anisotropy) if anisotropy and anisotropy > 0 else 1.0
         min_size = max(1, round(FULL_3D_MIN_VOXELS * (diameter / _PAPER_DIAMETER_PX) ** 3 / ratio))
-    return {"niter": FULL_3D_NITER, "flow3D_smooth": FULL_3D_FLOW_SMOOTH, "min_size": min_size}
+    return {"niter": niter, "flow3D_smooth": smooth, "min_size": min_size}
 
 
 # --- reusing Cellpose models and network output -----------------------------------------------------
