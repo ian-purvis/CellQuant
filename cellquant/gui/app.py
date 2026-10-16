@@ -672,6 +672,16 @@ class CellQuantWindow:
         self._view_box = ViewBox(self)
         view_dock = self.viewer.window.add_dock_widget(self._view_box, name="View", area="left")
         self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, self._measure_dock_widget, run_dock, view_dock)]
+        # napari's own layer controls and layer list: popped out they get the same header, minus Close, and they
+        # cannot be hidden by accident. Any panel can be docked side by side with another, not just tabbed.
+        qt_viewer = self.viewer.window._qt_viewer
+        for dock in (qt_viewer.dockLayerControls, qt_viewer.dockLayerList):
+            self._floating_headers.append(floating_header(dock, closable=False))
+            keep_open(dock)
+        from qtpy.QtWidgets import QMainWindow
+
+        main_window = self.viewer.window._qt_window
+        main_window.setDockOptions(main_window.dockOptions() | QMainWindow.DockOption.AllowNestedDocks)
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
         self._start_gpu_check()
