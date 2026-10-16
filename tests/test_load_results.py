@@ -77,7 +77,8 @@ def test_masks_named_after_images_load_without_segmenting(tmp_path: Path, no_seg
     assert report.loaded == [record.image_id]
     assert report.unmatched == 1 and not report.problems and not report.missing
     assert record.processing_status == "analyzed"
-    result = controller.last_results[record.image_id]
+    assert controller.is_pending(record.image_id) and record.image_id not in controller.last_results  # not measured yet
+    result = controller.recall(record.image_id)
     assert result.qc.n_objects == 3
     assert np.array_equal(result.labels, _mask())
     assert result.provenance["segmentation_origin"] == "loaded"
@@ -121,7 +122,7 @@ def test_another_cellquant_experiment_loads_its_edited_objects(tmp_path: Path):
 
     report = second.load_results(first.directory)
 
-    loaded = second.last_results[second.experiment.images[0].image_id]
+    loaded = second.recall(second.experiment.images[0].image_id)
     assert len(report.loaded) == 1 and report.duplicates == 0
     assert loaded.qc.n_objects == 1
 
@@ -137,3 +138,78 @@ def test_mask_of_wrong_z_or_size_is_reported_not_used(tmp_path: Path):
     assert not report.loaded
     assert "40 x 40" in report.problems[0]
     assert controller.experiment.images[0].processing_status == "not_analyzed"
+
+
+def _package(tmp_path: Path, source: str) -> Path:
+    package = tmp_path / "cq_hpc_1"
+    (package / "results" / "masks").mkdir(parents=True)
+    tifffile.imwrite(package / "results" / "masks" / "Retina_1__sample_A_masks.tif", _mask())
+    with (package / "images.csv").open("w", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["name", "source_file", "position"])
+        writer.writerow(["Retina_1__sample_A", source, 1])
+    (package / "prep.json").write_text('{"channel": "Channel 2", "z_mode": "max"}', encoding="utf-8")
+    return package / "results"
+
+
+def test_empty_experiment_gets_the_package_images_and_objects(tmp_path: Path, no_segmentation):
+    images = tmp_path / "images" / "Retina 1"
+    images.mkdir(parents=True)
+    _write_image(images / "sample A.tif")
+    results = _package(tmp_path, str(images / "sample A.tif"))
+    controller = AnalysisController.create(tmp_path / "exp", "exp")
+
+    originals = controller.find_originals(results)
+    assert not originals.needs_folder and len(originals.found) == 1
+    report = controller.load_results(results, images=originals.found)
+
+    assert len(controller.experiment.images) == 1 and len(report.loaded) == 1
+    assert controller.recall(report.loaded[0]).qc.n_objects == 3
+
+
+def test_moved_originals_are_found_where_the_user_says(tmp_path: Path, no_segmentation):
+    moved = tmp_path / "moved" / "deeper"
+    moved.mkdir(parents=True)
+    _write_image(moved / "sample A.tif")
+    results = _package(tmp_path, "C:/gone/Retina 1/sample A.tif")
+    controller = AnalysisController.create(tmp_path / "exp", "exp")
+
+    first = controller.find_originals(results)
+    assert first.needs_folder and first.missing == ["sample A.tif"]
+    again = controller.find_originals(results, tmp_path / "moved")
+    assert not again.needs_folder and again.found == [str(moved / "sample A.tif")]
+    assert len(controller.load_results(results, images=again.found).loaded) == 1
+
+
+def test_masks_without_a_list_find_images_by_name(tmp_path: Path, no_segmentation):
+    images = tmp_path / "images"
+    images.mkdir()
+    _write_image(images / "sample A.tif")
+    _write_image(images / "other.tif")
+    masks = tmp_path / "masks"
+    masks.mkdir()
+    tifffile.imwrite(masks / "sample A_cp_masks.tif", _mask())
+    controller = AnalysisController.create(tmp_path / "exp", "exp")
+
+    assert controller.find_originals(masks).needs_folder
+    originals = controller.find_originals(masks, images)
+    assert originals.found == [str(images / "sample A.tif")]
+
+
+def test_flat_masks_set_max_projection(tmp_path: Path, no_segmentation):
+    stack = np.zeros((3, 2, 80, 80), dtype=np.uint16)
+    stack[:, 0, 10:20, 10:20] = 1000
+    tifffile.imwrite(tmp_path / "stack.tif", stack, imagej=True, metadata={"axes": "ZCYX"})
+    controller = AnalysisController.create(tmp_path / "exp", "exp")
+    controller.add_image_paths([tmp_path / "stack.tif"])
+    recipe = _recipe()
+    recipe["z_stack"] = "stitch_slices"
+    controller.set_recipe(recipe)
+    masks = tmp_path / "masks"
+    masks.mkdir()
+    tifffile.imwrite(masks / "stack_masks.tif", _mask())
+
+    report = controller.load_results(masks)
+
+    assert controller.recipe.z_stack == "max_projection" and report.settings
+    assert controller.recall(report.loaded[0]).qc.n_objects == 3
