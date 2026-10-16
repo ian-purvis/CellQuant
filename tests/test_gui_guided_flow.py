@@ -43,17 +43,24 @@ def test_practice_run_through_all_steps(tmp_path: Path, monkeypatch):
         pages = shell._step_pages
         assert not shell._start_page.continue_button.isEnabled()
         assert not pages[0].next.isEnabled() and "Try practice images" in pages[0].blocker.text()
+        tabs = shell._tabs
+        assert tabs.isTabEnabled(tabs.indexOf(pages[0])) and not tabs.isTabEnabled(tabs.indexOf(pages[1]))
+        assert "Step 1 first" in tabs.tabToolTip(tabs.indexOf(pages[5]))
 
         shell.start_practice()
         _wait(shell)
         assert pages[0].next.isEnabled()
         assert not pages[1].next.isEnabled() and "Run" in pages[1].blocker.text()
+        assert tabs.isTabEnabled(tabs.indexOf(pages[1])) and not tabs.isTabEnabled(tabs.indexOf(pages[2]))
+        assert tabs.tabText(tabs.indexOf(pages[1])) == "2 →"
+        assert tabs.tabToolTip(tabs.indexOf(pages[3])) == "Markers: locked. Step 2 first: Run this image first."
 
         shell.run_current()
         _wait(shell)
         assert pages[1].next.isEnabled()
         assert pages[2].next.isEnabled()  # editing objects is optional
         assert not pages[3].next.isEnabled()
+        assert tabs.isTabEnabled(tabs.indexOf(pages[3])) and not tabs.isTabEnabled(tabs.indexOf(pages[4]))
 
         shell._marker_setup.button.click()
         _wait(shell)
