@@ -1213,6 +1213,11 @@ class AnalysisController:
             "pixel_size_x": loaded.pixel_size_x,
             "pixel_size_y": loaded.pixel_size_y,
         }
+        if self.recipe.z_stack == "full_3d" and loaded.is_3d:
+            # Only here, so keys of the other Z modes do not change.
+            from cellquant.segmentation import FULL_3D_FLOW_SMOOTH, FULL_3D_MIN_VOXELS, FULL_3D_NITER
+
+            segmentation_payload["full_3d"] = [FULL_3D_NITER, FULL_3D_FLOW_SMOOTH, FULL_3D_MIN_VOXELS]
         cropping = self.recipe.crop is not None and self.recipe.crop.enabled
         crop_info: dict = {}
         rectangles = self._crop_rectangles(record, loaded, crop_info) if cropping else None
