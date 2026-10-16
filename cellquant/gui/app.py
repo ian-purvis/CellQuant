@@ -5060,7 +5060,7 @@ class FloatingHeader(QWidget):
     Drag it to move the panel; drop it on the napari window, double-click it or click Reset to dock it back.
     """
 
-    def __init__(self, dock):
+    def __init__(self, dock, closable: bool = True):
         super().__init__(dock)
         self.dock = dock
         self._before_maximize = None
@@ -5079,6 +5079,8 @@ class FloatingHeader(QWidget):
             ("reset", "⟲", "Reset", self.reset),
             ("close", "✕", "Close", dock.close),
         ):
+            if key == "close" and not closable:
+                continue
             button = QPushButton(text)
             button.setToolTip(tip)
             button.setFixedSize(26, 22)
@@ -5155,10 +5157,10 @@ class FloatingHeader(QWidget):
         self._update_buttons()
 
 
-def floating_header(dock) -> FloatingHeader:
+def floating_header(dock, closable: bool = True) -> FloatingHeader:
     """When a napari panel is popped out, give it a FloatingHeader in place of the plain system title bar."""
 
-    header = FloatingHeader(dock)
+    header = FloatingHeader(dock, closable)
     header.hide()
 
     def apply() -> None:
@@ -5209,6 +5211,47 @@ def floating_header(dock) -> FloatingHeader:
     header._window_watcher = WindowWatcher(lambda: QTimer.singleShot(0, apply), dock)
     dock.installEventFilter(header._window_watcher)
     return header
+
+
+def keep_open(dock) -> None:
+    """Keep a napari panel from being hidden by a stray click: no hide button, and closing a popped-out window docks it back.
+
+    napari's Window menu can still hide and show it.
+    """
+
+    def hide_button() -> None:
+        try:
+            button = getattr(dock.titleBarWidget(), "hide_button", None)
+        except RuntimeError:
+            return  # the panel was deleted meanwhile
+        if button is not None and not button.isHidden():
+            button.hide()
+
+    dock._keep_open = PanelGuard(dock, lambda: QTimer.singleShot(0, hide_button))
+    dock.installEventFilter(dock._keep_open)
+    hide_button()
+
+
+class PanelGuard(QObject):
+    """Turn a system close of the panel it watches into docking it back, and report when napari swaps the panel's header."""
+
+    def __init__(self, dock, on_header):
+        super().__init__(dock)
+        self._dock = dock
+        self._on_header = on_header
+
+    def eventFilter(self, watched, event) -> bool:
+        from qtpy.QtCore import QEvent
+
+        # Only a close from the system (Alt+F4, the taskbar); napari's Window menu still hides it.
+        if event.type() == QEvent.Close and event.spontaneous():
+            event.ignore()
+            if self._dock.isFloating():
+                QTimer.singleShot(0, lambda: self._dock.setFloating(False))
+            return True
+        if event.type() in (QEvent.ChildAdded, QEvent.ChildPolished, QEvent.Show):
+            self._on_header()
+        return False
 
 
 def own_window(dock) -> None:
