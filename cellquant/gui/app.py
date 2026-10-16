@@ -699,8 +699,8 @@ class CellQuantWindow:
             self.go_to_start()
             return
         index = min(index, len(self._step_pages) - 1)
+        self.refresh_guidance()  # unlocks the tab first
         self._tabs.setCurrentWidget(self._step_pages[index])
-        self.refresh_guidance()
 
     def go_to_start(self) -> None:
         self._tabs.setCurrentWidget(self._start_page)
@@ -710,15 +710,31 @@ class CellQuantWindow:
         if self._run_lock_note.isVisibleTo(self._dock):
             # Settings rebuilt during a run (for example a refreshed list) start enabled; lock them too.
             for widget in self._settings_inputs():
-                if widget.isEnabled():
+                if not widget.testAttribute(Qt.WA_ForceDisabled):
                     self._settings_restore.setdefault(widget, True)
                     widget.setEnabled(False)
         states = guide.step_states(self)
         self._start_page.update_state(states)
-        for page, state, step in zip(self._step_pages, states, guide.STEPS):
+        # A step's tab opens once every earlier step's Next is allowed; going back is always allowed.
+        locked_by = None
+        next_index = next((i for i, state in enumerate(states) if not state.done), None)
+        for i, (page, state, step) in enumerate(zip(self._step_pages, states, guide.STEPS)):
             page.update_state(state)
             index = self._tabs.indexOf(page)
-            self._tabs.setTabText(index, f"{step.number} ✓" if state.done else str(step.number))
+            self._tabs.setTabEnabled(index, locked_by is None)
+            if locked_by is not None:
+                blocker_step, blocker = locked_by
+                self._tabs.setTabText(index, str(step.number))
+                self._tabs.setTabToolTip(index, f"{step.name}: locked. Step {blocker_step.number} first: {blocker}")
+            else:
+                mark = " ✓" if state.done else (" →" if i == next_index else "")
+                self._tabs.setTabText(index, f"{step.number}{mark}")
+                self._tabs.setTabToolTip(index, step.name)
+            if locked_by is None and state.blocker:
+                locked_by = (step, state.blocker)
+        if not self._tabs.isTabEnabled(self._tabs.currentIndex()):
+            open_pages = [page for page in self._step_pages if self._tabs.isTabEnabled(self._tabs.indexOf(page))]
+            self._tabs.setCurrentWidget(open_pages[-1] if open_pages else self._start_page)
 
     def message(self, text: str) -> None:
         self._footer.message(text)
@@ -1130,7 +1146,7 @@ class CellQuantWindow:
                 if button.text() in self._BUSY_BUTTONS
             ]
             buttons.append(self._analysis_bar.choice)
-            self._busy_restore = {button: button.isEnabled() for button in buttons}
+            self._busy_restore = {button: not button.testAttribute(Qt.WA_ForceDisabled) for button in buttons}
             for button in buttons:
                 button.setEnabled(False)
             if self._exclusive:
@@ -1186,7 +1202,8 @@ class CellQuantWindow:
 
         if locked:
             widgets = self._settings_inputs()
-            self._settings_restore = {widget: widget.isEnabled() for widget in widgets}
+            # The widget's own setting: a locked step tab greys its page without changing it.
+            self._settings_restore = {widget: not widget.testAttribute(Qt.WA_ForceDisabled) for widget in widgets}
             for widget in widgets:
                 widget.setEnabled(False)
         else:
