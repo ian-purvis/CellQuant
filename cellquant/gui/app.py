@@ -936,7 +936,8 @@ class CellQuantWindow:
         image_id = self._nav_ids[self._nav_index]
         controller.current_image_id = image_id
         record = controller.experiment.image(image_id)
-        result = controller.recall(image_id) if controller else None
+        result = controller.recall(image_id, measure=False) if controller else None
+        measuring = result is None and controller.is_pending(image_id) and not self.is_busy()
         self._footer.set_position(self._nav_index, len(self._nav_ids), record.relative_path or record.filename, self._nav_filter)
         self._review_panel.update_status_line()
         self._experiment_panel.set_pixel_size(record.pixel_size_x, record.pixel_size_y, record.pixel_size_z)
@@ -945,6 +946,10 @@ class CellQuantWindow:
         # so the window stays responsive. If the user keeps clicking Next, only the last
         # image asked for is shown.
         self._wanted_image_id = image_id
+        if measuring:
+            # Loaded objects: measure them first, then show the image once, as it was segmented.
+            self._measure_loaded(image_id)
+            return
         if self._loader is not None:
             return
         self._footer.message(f"Loading {record.relative_path or record.filename}...")
@@ -1001,7 +1006,7 @@ class CellQuantWindow:
             return
         try:
             record = controller.experiment.image(self._nav_ids[self._nav_index + 1])
-            result = controller.recall(record.image_id)
+            result = controller.recall(record.image_id, measure=False)
         except Exception:  # noqa: BLE001 - only a head start
             return
         worker = CallWorker(lambda: controller.preload_display(record, result))
@@ -1057,23 +1062,87 @@ class CellQuantWindow:
         controller = self.require_controller()
         if controller is None:
             return
-        if not controller.experiment.images:
-            self.message("Add images in step 1 first, then load their results.")
-            return
-        directory = QFileDialog.getExistingDirectory(self._tabs, "Choose a folder of results (masks)", str(controller.directory))
-        if not directory or self.is_busy():
+        start = controller.experiment.input_directory or str(controller.directory)
+        folder = QFileDialog.getExistingDirectory(self._tabs, "Choose a folder of results (masks)", start)
+        if not folder or self.is_busy():
             return
         self._panels_to_recipe()
-        self._start_job(lambda: controller.load_results(directory), self._results_loaded)
+
+        def found(originals) -> None:
+            if not originals.needs_folder:
+                self._after_job(lambda: self._load_results(folder, originals.found))
+                return
+            listed = f" ({len(originals.missing)} listed images are not where they were)" if originals.missing else ""
+            where = choose_existing_directory(
+                self._tabs, f"Where are the original images?{listed} Subfolders are included.", start
+            )
+            if not where:
+                self._after_job(lambda: self._load_results(folder, originals.found))
+                return
+            self._after_job(lambda: self._start_job(
+                lambda: controller.find_originals(folder, where),
+                lambda again: self._after_job(lambda: self._load_results(folder, again.found)),
+            ))
+
+        self._footer.message("Looking for the original images...")
+        self._start_job(lambda: controller.find_originals(folder), found)
+
+    def _after_job(self, fn) -> None:
+        """Run ``fn`` once the current job has finished (a job's result handler runs before it ends)."""
+
+        from qtpy.QtCore import QTimer
+
+        if self._job is not None or self._batch is not None:
+            QTimer.singleShot(20, lambda: self._after_job(fn))
+            return
+        fn()
+
+    def _load_results(self, folder: str, images: list[str]) -> None:
+        controller = self.controller
+        if controller is None:
+            return
+        self._start_job(lambda: controller.load_results(folder, images=images), self._results_loaded)
+
+    def _measure_loaded(self, image_id: str) -> None:
+        """Measure the markers of loaded objects off the interface thread, then show them."""
+
+        controller = self.controller
+
+        def measured(result) -> None:
+            self._experiment_panel.refresh_table()
+            self.refresh_guidance()
+            if self._nav_ids and self._nav_ids[self._nav_index] == image_id:
+                self.show_result(result)
+            else:
+                self._after_job(self.show_current)  # the user moved on meanwhile
+
+        def failed(message: str) -> None:
+            self.show_error(message)
+            self._experiment_panel.refresh_table()
+            self._after_job(self.show_current)
+
+        if self._batch is not None or self._job is not None:
+            return
+        worker = CallWorker(lambda: controller.measure_loaded(image_id), report=True)
+        self._job = worker
+        worker.succeeded.connect(measured)
+        worker.failed.connect(failed)
+        worker.step.connect(self._footer.show_step)
+        worker.finished.connect(self._clear_job)
+        self.set_busy(True)
+        self._footer.message("Measuring markers in the loaded objects...")
+        worker.start()
 
     def _results_loaded(self, report) -> None:
         controller = self.controller
         if controller is None:
             return
-        self._refresh_plan()
-        self._experiment_panel.refresh_table()
-        self.refresh_guidance()
+        self._refresh_all(keep_image=True)
+        if report.notices:
+            self._experiment_panel.set_notices(report.notices)
         lines = [f"Loaded objects for {len(report.loaded)} of {len(controller.experiment.images)} images."]
+        if report.settings:
+            lines.append("Step 2 now uses the masks' " + " and ".join(report.settings) + ".")
         if report.problems:
             lines.append(f"{len(report.problems)} masks did not fit: " + " | ".join(report.problems[:5]))
             if len(report.problems) > 5:
@@ -1092,7 +1161,7 @@ class CellQuantWindow:
             self._footer.message(" ".join(lines))
         shown = self._nav_ids[self._nav_index] if self._nav_ids else None
         if shown in report.loaded:
-            self.show_result(controller.last_results[shown])
+            self._after_job(lambda: self._measure_loaded(shown))
 
     def _run_finished(self, result) -> None:
         self.show_result(result)
@@ -1864,6 +1933,20 @@ class ExperimentPanel(QWidget):
             button.clicked.connect(slot)
             buttons.addWidget(button)
         layout.addLayout(buttons)
+        load = QPushButton("Load results…")
+        load.clicked.connect(shell.load_results_dialog)
+        load.setToolTip(
+            "Open objects found elsewhere (a cluster run, Cellpose, another CellQuant experiment) "
+            "over their original images.\n"
+            "Pick the results folder: its original images are added (you are asked where they are "
+            "if they moved), and each mask, a TIFF of object numbers named after its image, "
+            "becomes that image's objects. Nothing is segmented.\n"
+            "Markers are measured when an image is opened."
+        )
+        loading = QHBoxLayout()
+        loading.addWidget(load)
+        loading.addStretch(1)
+        layout.addLayout(loading)
         self.notices = QLabel("")
         self.notices.setWordWrap(True)
         self.notices.setTextFormat(Qt.RichText)
@@ -2539,20 +2622,8 @@ class ObjectsPanel(QWidget):
         run = QPushButton("Run this image")
         run.clicked.connect(shell.run_current)
         run.setToolTip("Find objects and measure markers in the whole image on screen.")
-        load = QPushButton("Load results…")
-        load.clicked.connect(shell.load_results_dialog)
-        load.setToolTip(
-            "Use objects found elsewhere instead of finding them here: pick a folder of masks "
-            "(from a cluster, Cellpose or another CellQuant experiment).\n"
-            "Each mask is a TIFF of object numbers named after its image, for example "
-            "image001_masks.tif; subfolders are searched too.\n"
-            "Masks must match the Z-stack mode above: flat for a max projection or one slice, "
-            "one plane per slice for stitching or 3D.\n"
-            "Markers are measured here with the current settings. Nothing is segmented."
-        )
         actions.addWidget(preview)
         actions.addWidget(run)
-        actions.addWidget(load)
         layout.addLayout(actions)
         layout.addStretch(1)
         self._update_size_hint()
