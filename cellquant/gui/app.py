@@ -661,11 +661,16 @@ class CellQuantWindow:
         self._plan_dock = PlanDock(self)
         self._plan_dock_widget = self.viewer.window.add_dock_widget(self._plan_dock, name="Plan", area="left")
         self._plan_dock_widget.hide()
+        from cellquant.gui.measure_dock import MeasureDock
+
+        self._measure_dock = MeasureDock(self)
+        self._measure_dock_widget = self.viewer.window.add_dock_widget(self._measure_dock, name="Measure", area="right")
+        self._measure_dock_widget.hide()
         run_dock = self.viewer.window.add_dock_widget(FooterScroll(self._footer), name="Run", area="bottom")
         # Under napari's layer controls: a view control that stays put whichever layer is selected.
         self._view_box = ViewBox(self)
         view_dock = self.viewer.window.add_dock_widget(self._view_box, name="View", area="left")
-        self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, run_dock, view_dock)]
+        self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, self._measure_dock_widget, run_dock, view_dock)]
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
         self._start_gpu_check()
@@ -767,6 +772,7 @@ class CellQuantWindow:
         def ready(controller) -> None:
             self.controller = controller
             self._exported_to = None
+            self._measure_dock.forget()
             self._refresh_all()
             self.go_to_step(0)
             self.message(
@@ -883,6 +889,7 @@ class CellQuantWindow:
             self.show_error(f"{directory} could not be opened as an experiment. {_error_text(exc)}")
             return
         self._exported_to = None
+        self._measure_dock.forget()
         self._refresh_all()
         self.go_to_start()
 
@@ -904,6 +911,7 @@ class CellQuantWindow:
         controller.experiment.import_file_types = list(file_types)
         self.controller = controller
         self._exported_to = None
+        self._measure_dock.forget()
         self._refresh_all()
         self.go_to_step(0)
         if not images:
@@ -1286,6 +1294,20 @@ class CellQuantWindow:
         self._plan_dock_widget.raise_()
         self._plan_dock.refresh()
 
+    def show_measure(self) -> None:
+        """Open the Measure window, popped out, and get the image ready to draw on."""
+
+        if self.require_controller() is None:
+            return
+        first = not self._measure_dock_widget.isVisible()
+        self._measure_dock_widget.show()
+        if first:
+            self._measure_dock_widget.setFloating(True)
+        self._measure_dock_widget.raise_()
+        if self._shown_image_id is not None:
+            self._measure_dock.ensure_layer()
+        self._measure_dock.refresh()
+
     def _refresh_plan(self) -> None:
         if self._plan_dock_widget.isVisible() or self._plan_dock.tree.topLevelItemCount():
             self._plan_dock.refresh()
@@ -1598,6 +1620,7 @@ class CellQuantWindow:
         labels = result.labels if result is not None else None
         self._set_labels(labels, result)
         self.show_count_area(record)
+        self._measure_dock.bring_back(record.image_id)
         self._release_window_later()
         self._experiment_panel.show_channel_order(record)
 
@@ -1784,6 +1807,7 @@ class CellQuantWindow:
         self._managed.discard(name)
 
     def _clear_managed(self) -> None:
+        self._measure_dock.keep()  # what is drawn to measure stays with its image
         for name in list(self._managed):
             self._drop(name)
 
@@ -4508,6 +4532,10 @@ class AnalysisBar(QWidget):
         menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu_button.setMenu(menu)
         top.addWidget(menu_button)
+        measure = QPushButton("Measure")
+        measure.setToolTip("Open the Measure window: draw lines or shapes on the image to get length, area and volume, and export them to a CSV.")
+        measure.clicked.connect(lambda: shell.show_measure())
+        top.addWidget(measure)
         layout.addLayout(top)
         self.refresh()
 
