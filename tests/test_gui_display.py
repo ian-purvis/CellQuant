@@ -749,3 +749,45 @@ def test_show_all_channels_setting_keeps_every_channel_visible(tmp_path: Path, m
         assert all(layer.visible for layer in _channel_layers(viewer))
     finally:
         viewer.close()
+
+
+def test_max_projection_toggle_is_view_only_and_reversible(tmp_path: Path):
+    import tifffile
+
+    from cellquant.controller import AnalysisController
+    from cellquant.gui.app import CellQuantWindow
+
+    stack = np.zeros((3, 4, 60, 60), dtype=np.uint16)  # C, Z, Y, X
+    stack[0, 1, 10:20, 10:20] = 500
+    stack[0, 3, 30:40, 30:40] = 900
+    stack[1, 2, 5:15, 5:15] = 300
+    path = tmp_path / "stack.tif"
+    tifffile.imwrite(path, stack, metadata={"axes": "CZYX"})
+    controller = AnalysisController.create(tmp_path / "experiment", "GUI")
+    controller.add_image_paths([path])
+    controller.set_recipe(_recipe())
+    controller.save()
+    try:
+        viewer = napari.Viewer(show=False)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"napari viewer could not start: {exc}")
+    try:
+        shell = CellQuantWindow(viewer, tmp_path / "experiment")
+        _wait(shell)
+        box = shell._view_box
+        names = [layer.name for layer in viewer.layers]
+        assert box.max_projection.isEnabled()
+        assert all(viewer.layers[name].data.ndim == 3 for name in names)
+        viewer.dims.set_current_step(0, 2)
+        box.max_projection.setChecked(True)
+        assert all(viewer.layers[name].data.shape == (60, 60) for name in names)
+        assert viewer.layers[names[0]].data.max() == 900
+        box.max_projection.setChecked(False)
+        assert all(viewer.layers[name].data.ndim == 3 for name in names)
+        assert viewer.dims.current_step[0] == 2
+        box.max_projection.setChecked(True)
+        shell.run_current()
+        _wait(shell)
+        assert not box.max_projection.isChecked()  # a new display starts as the normal view
+    finally:
+        viewer.close()
