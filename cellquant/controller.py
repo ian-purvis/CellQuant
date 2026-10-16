@@ -109,6 +109,23 @@ _DISPLAY_CACHE_IMAGES = 4
 _DISPLAY_CACHE_BYTES = 2 * 1024**3
 
 
+@dataclass
+class LoadReport:
+    """What Load results did: images given objects, and what could not be used."""
+
+    folder: str
+    loaded: list[str] = field(default_factory=list)  # image ids
+    problems: list[str] = field(default_factory=list)  # "<file>: <why>" for masks that did not fit
+    missing: list[str] = field(default_factory=list)  # image files with no mask in the folder
+    unmatched: int = 0  # masks that fit no image
+    duplicates: int = 0  # images with more than one mask (the newest was used)
+    cancelled: bool = False
+
+
+# Where objects that were not segmented by this experiment came from: a results folder, or a cluster run.
+SEGMENTED_ELSEWHERE = ("loaded", "hpc")
+
+
 class AnalysisController:
     def __init__(self, experiment: Experiment):
         self.experiment = experiment
@@ -610,7 +627,7 @@ class AnalysisController:
             saved = prior or self.recall(image_id)
             # An edit never segments again when the objects came from elsewhere (a cluster run):
             # it re-measures the saved labels, or explains why it cannot.
-            from_elsewhere = saved is not None and saved.provenance.get("segmentation_origin") == "hpc"
+            from_elsewhere = saved is not None and saved.provenance.get("segmentation_origin") in SEGMENTED_ELSEWHERE
             result = self._analyze(record, allow_segmentation=not from_elsewhere)
             self.last_results[image_id] = result
             self._write_working(image_id, result)
@@ -829,11 +846,114 @@ class AnalysisController:
         self._write_working(image_id, result)
         return result
 
+    def load_results(self, folder: str | Path, *, on_progress=None, should_continue=None) -> LoadReport:
+        """Use the masks in a results folder as the objects of this analysis's images. Never segments.
+
+        ``cellquant.results_folder`` describes the folder. Each matched image is measured with
+        the current settings and saved as a run, as if it had been run here; its earlier edits
+        no longer apply. Masks that do not fit an image (other size or Z) are reported, not used.
+        """
+
+        from cellquant.results_folder import find_masks, read_mask
+
+        folder = Path(folder)
+        if not folder.is_dir():
+            raise CellQuantError(f"{folder} is not a folder.")
+        records = list(self.experiment.images)
+        skip = set()
+        for record in records:
+            try:
+                skip.add(str(self.source_path(record)))
+            except (OSError, ValueError, CellQuantError):
+                pass  # a missing image: reported when its mask is loaded
+        match = find_masks(folder, records, skip=skip)
+        report = LoadReport(folder=str(folder), unmatched=len(match.unmatched), duplicates=match.duplicates)
+        report.missing = [record.filename for record in records if record.image_id not in match.found]
+        if not match.found:
+            return report
+        chosen = [record for record in records if record.image_id in match.found]
+        self._ensure_run(chosen, fresh=True)
+        assert self.run_dir is not None and self.run_record is not None and self.run_log is not None
+        for index, record in enumerate(chosen, start=1):
+            if should_continue is not None and not should_continue():
+                report.cancelled = True
+                break
+            if on_progress is not None:
+                on_progress(index, len(chosen), record.filename, "running")
+            mask = match.found[record.image_id]
+            try:
+                result = self._load_mask(record, mask.path, read_mask)
+            except (CellQuantError, ValueError, OSError) as exc:
+                message = f"{mask.path.name}: {exc.args[0] if exc.args else exc}"
+                report.problems.append(f"{record.filename}: {message}")
+                self.run_log.write(record.filename, "load", message)
+                continue
+            if record.processing_status == "approved":
+                record.approved_settings_sha256 = ""
+            status, message = _job_status(result)
+            record.processing_status = "needs_attention" if status != "Success" else "analyzed"
+            record.last_result = status
+            record.last_message = message or f"Objects loaded from {mask.path.name}."
+            self.last_results[record.image_id] = result
+            persist_image_result(self.run_dir, result, [])
+            self._write_working(record.image_id, result)
+            self._record_recipe_use(record.image_id, result)
+            self.run_record.input_hashes[record.image_id] = record.content_hash
+            self.run_log.write(record.filename, "load", f"Objects loaded from {mask.path}.")
+            report.loaded.append(record.image_id)
+        self.experiment.latest_run_id = self.run_record.run_id
+        finish_run(self.run_dir, self.run_record, "cancelled" if report.cancelled else "completed")
+        self.save()
+        return report
+
+    def _load_mask(self, record, path: Path, read_mask) -> ImageResult:
+        with self._image_settings(record):
+            loaded = self._load_record(record)
+            signature, digest = self._fingerprint(record)
+            record.file_signature = signature
+            record.content_hash = digest
+            try:
+                labels = read_mask(path)
+            except ValueError as exc:
+                raise ValueError(f"not a mask: {exc}.") from None
+            wanted = tuple(loaded.spatial_shape)
+            if labels.shape != wanted:
+                raise CellQuantError(_shape_problem(labels.shape, wanted))
+            key = stage_key("loaded_segmentation", {"image_sha256": digest, "mask": file_fingerprint(path)[1]})
+            self._segmentation_ids[record.image_id] = key
+            result = process_image(
+                loaded,
+                self.recipe,
+                sample_name=record.sample_name,
+                image_id=record.image_id,
+                experiment_id=self.experiment.experiment_id,
+                run_id=self.run_record.run_id if self.run_record else None,
+                filename=record.filename,
+                user_metadata=record.user_metadata,
+                manual_edits=[],
+                automated_labels=labels,
+                segmentation_details={"engine": {"engine": "loaded", "source": str(path)}},
+                count_area=record.count_area,
+            )
+            result.provenance.update(
+                {
+                    "segmentation_key": key,
+                    "segmentation_origin": "loaded",
+                    "segmentation_source": str(path),
+                    "segmentation_settings": segmentation_settings(self.recipe, loaded.z_index),
+                    "segmentation_input_sha256": digest,
+                    "segmentation_calibration": [record.pixel_size_x, record.pixel_size_y, record.pixel_size_z],
+                }
+            )
+        self._remember_image(record.image_id, loaded)
+        return result
+
     def _persisted_segmentation(self, record, loaded: LoadedImage, digest: str) -> ImageResult | None:
-        """A saved segmentation made elsewhere (a cluster run) that still fits this image and these settings."""
+        """A saved segmentation made elsewhere (loaded from a results folder or a cluster run) that still
+        fits this image and these settings."""
 
         prior = self.last_results.get(record.image_id) or self.recall(record.image_id)
-        if prior is None or prior.provenance.get("segmentation_origin") != "hpc":
+        if prior is None or prior.provenance.get("segmentation_origin") not in SEGMENTED_ELSEWHERE:
             return None
         provenance = prior.provenance
         wanted = segmentation_settings(self.recipe, loaded.z_index)
@@ -865,7 +985,7 @@ class AnalysisController:
         record.content_hash = digest
         persisted = self._persisted_segmentation(record, loaded, digest)
         if persisted is not None:
-            # Objects from a cluster run: measured again here without the segmentation engine.
+            # Objects loaded from a results folder or a cluster run: measured again here without the segmentation engine.
             key = str(persisted.provenance.get("segmentation_key") or "")
             self._segmentation_ids[record.image_id] = key
             progress.update("Measuring markers in each object")
@@ -885,7 +1005,7 @@ class AnalysisController:
             return result, loaded
         if not allow_segmentation:
             raise CellQuantError(
-                "These objects came from the cluster run, but the image, its pixel sizes or the segmentation "
+                "These objects were loaded (from a results folder or a cluster run), but the image, its pixel sizes or the segmentation "
                 "settings have changed since, so the saved objects no longer apply. Editing never segments again: "
                 "restore the settings, or click Run to segment this image again on purpose."
             )
@@ -1758,6 +1878,24 @@ def _same_numbers(stored, current) -> bool:
         if first is not None and abs(float(first) - float(second)) > 1e-9 * max(abs(float(first)), 1.0):
             return False
     return True
+
+
+def _shape_problem(mask: tuple, wanted: tuple) -> str:
+    """Why a mask does not fit the image as step 2 reads it."""
+
+    if mask[-2:] != wanted[-2:]:
+        return f"the mask is {mask[-1]} x {mask[-2]} pixels but the image is {wanted[-1]} x {wanted[-2]}."
+    if len(mask) == 2:
+        return (
+            "the mask is flat (one plane) but step 2 reads this image as a stack. "
+            "Set Z-stack mode to 2D: max projection or 2D: one slice, then load again."
+        )
+    if len(wanted) == 2:
+        return (
+            f"the mask has {mask[0]} planes but step 2 reads this image as one plane. "
+            "Set Z-stack mode to 2D + stitching or True 3D, then load again."
+        )
+    return f"the mask has {mask[0]} planes but the image has {wanted[0]}."
 
 
 def _job_status(result: ImageResult) -> tuple[str, str]:
