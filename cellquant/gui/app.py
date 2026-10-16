@@ -662,7 +662,10 @@ class CellQuantWindow:
         self._plan_dock_widget = self.viewer.window.add_dock_widget(self._plan_dock, name="Plan", area="left")
         self._plan_dock_widget.hide()
         run_dock = self.viewer.window.add_dock_widget(FooterScroll(self._footer), name="Run", area="bottom")
-        self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, run_dock)]
+        # Under napari's layer controls: a view control that stays put whichever layer is selected.
+        self._view_box = ViewBox(self)
+        view_dock = self.viewer.window.add_dock_widget(self._view_box, name="View", area="left")
+        self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, run_dock, view_dock)]
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
         self._start_gpu_check()
@@ -673,6 +676,8 @@ class CellQuantWindow:
         QApplication.instance().installEventFilter(self._wheel_guard)
         self.viewer.layers.events.inserted.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.removed.connect(lambda _event: self._release_window_later())
+        self.viewer.layers.events.inserted.connect(lambda _event: self._view_box.refresh())
+        self.viewer.layers.events.removed.connect(lambda _event: self._view_box.refresh())
         self._release_window_later()
         self._watch_settings()
         if experiment_dir:
@@ -1524,6 +1529,7 @@ class CellQuantWindow:
             layer.events.contrast_limits.connect(
                 lambda event, index=channel.channel_index, layer=layer: self._store_contrast(index, layer)
             )
+        self._view_box.reset()
         if result is not None:
             self._show_segmented_channel_only(record.image_id, layers)
         if loaded.data.ndim == 4:
@@ -1722,6 +1728,66 @@ class CellQuantWindow:
     def _clear_managed(self) -> None:
         for name in list(self._managed):
             self._drop(name)
+
+
+class ViewBox(QWidget):
+    """View-only controls under napari's layer controls. Nothing here changes what is segmented or measured."""
+
+    def __init__(self, shell: CellQuantWindow):
+        super().__init__()
+        self.shell = shell
+        self._stacks: dict[str, tuple] = {}  # layer name -> (full stack, contrast limits)
+        self._step = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        self.max_projection = QCheckBox("Max projection ⓘ")
+        self.max_projection.setToolTip(
+            "Show the brightest value of every Z slice as one flat image. This changes only what you see: "
+            "what is segmented and measured is set by Z handling in step 2. Switch off to scroll the stack again."
+        )
+        self.max_projection.toggled.connect(self._toggled)
+        layout.addWidget(self.max_projection)
+        self.refresh()
+
+    def _image_layers(self):
+        names = self.shell._managed
+        return [
+            layer for layer in self.shell.viewer.layers
+            if layer.name in names and layer.name not in _OBJECT_LAYERS and hasattr(layer, "contrast_limits")
+        ]
+
+    def refresh(self) -> None:
+        try:
+            layers = self._image_layers()
+            self.max_projection.setEnabled(any(layer.name in self._stacks or layer.data.ndim == 3 for layer in layers))
+        except RuntimeError:
+            pass  # the window was closed meanwhile
+
+    def reset(self) -> None:
+        """A new image was shown: it starts as the normal view."""
+
+        self._stacks.clear()
+        self.max_projection.blockSignals(True)
+        self.max_projection.setChecked(False)
+        self.max_projection.blockSignals(False)
+        self.refresh()
+
+    def _toggled(self, on: bool) -> None:
+        viewer = self.shell.viewer
+        if on and viewer.dims.ndim > 2:
+            self._step = viewer.dims.current_step[0]
+        for layer in self._image_layers():
+            limits = tuple(layer.contrast_limits)
+            if on and layer.data.ndim == 3 and layer.name not in self._stacks:
+                self._stacks[layer.name] = (layer.data, limits)
+                layer.data = np.max(layer.data, axis=0)
+                layer.contrast_limits = limits
+            elif not on and layer.name in self._stacks:
+                layer.data = self._stacks.pop(layer.name)[0]
+                layer.contrast_limits = limits
+        if not on and self._step is not None and viewer.dims.ndim > 2:
+            viewer.dims.set_current_step(0, self._step)
+        self.refresh()
 
 
 class ExperimentPanel(QWidget):
