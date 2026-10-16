@@ -6,6 +6,7 @@ summary each cache on their own inputs, and manual edits stay out of the recipe.
 
 from __future__ import annotations
 
+import os
 import threading
 import uuid
 from collections import OrderedDict
@@ -110,16 +111,26 @@ _DISPLAY_CACHE_BYTES = 2 * 1024**3
 
 
 @dataclass
+class Originals:
+    """The original images of a results folder (see ``AnalysisController.find_originals``)."""
+
+    found: list[str] = field(default_factory=list)  # image files to add
+    missing: list[str] = field(default_factory=list)  # file names the folder lists that were not found
+    needs_folder: bool = False  # ask where the originals are
+
+
+@dataclass
 class LoadReport:
     """What Load results did: images given objects, and what could not be used."""
 
     folder: str
     loaded: list[str] = field(default_factory=list)  # image ids
+    notices: list[str] = field(default_factory=list)  # from adding the original images
+    settings: list[str] = field(default_factory=list)  # settings changed to fit the masks
     problems: list[str] = field(default_factory=list)  # "<file>: <why>" for masks that did not fit
     missing: list[str] = field(default_factory=list)  # image files with no mask in the folder
     unmatched: int = 0  # masks that fit no image
     duplicates: int = 0  # images with more than one mask (the newest was used)
-    cancelled: bool = False
 
 
 # Where objects that were not segmented by this experiment came from: a results folder, or a cluster run.
@@ -176,9 +187,19 @@ class AnalysisController:
             save_edits(self.directory, image_id, edits)
         self._persist_open_results()
 
-    def recall(self, image_id: str) -> ImageResult | None:
-        """Return the in-memory result or the last saved result for this image."""
+    def recall(self, image_id: str, *, measure: bool = True) -> ImageResult | None:
+        """Return the in-memory result or the last saved result for this image.
 
+        Objects loaded from a results folder are measured now, unless ``measure`` is False (then None).
+        """
+
+        if self.is_pending(image_id):
+            if not measure:
+                return None
+            try:
+                return self.measure_loaded(image_id)
+            except CellQuantError:
+                return None
         if image_id in self.last_results:
             return self.last_results[image_id]
         for folder in self._result_folders():
@@ -299,7 +320,7 @@ class AnalysisController:
             record.processing_status = "excluded"
         elif record.processing_status == "excluded":
             # Ticked again: back to what it was before it was left out.
-            record.processing_status = "analyzed" if self.recall(image_id) is not None else "not_analyzed"
+            record.processing_status = "analyzed" if self.has_result(image_id) else "not_analyzed"
 
     def add_metadata_column(self, name: str) -> None:
         add_metadata_column(self.experiment, name)
@@ -814,6 +835,7 @@ class AnalysisController:
         large experiment does not load every label image at once.
         """
 
+        self.measure_all_loaded([record.image_id for record in self.experiment.images if record.include])
         folders = self._result_folders()
         results: list[ImageResult] = []
         for record in self.experiment.images:
@@ -846,65 +868,228 @@ class AnalysisController:
         self._write_working(image_id, result)
         return result
 
-    def load_results(self, folder: str | Path, *, on_progress=None, should_continue=None) -> LoadReport:
-        """Use the masks in a results folder as the objects of this analysis's images. Never segments.
+    def find_originals(self, folder: str | Path, search: str | Path | None = None) -> Originals:
+        """The original images of a results folder, for ``load_results``.
 
-        ``cellquant.results_folder`` describes the folder. Each matched image is measured with
-        the current settings and saved as a run, as if it had been run here; its earlier edits
-        no longer apply. Masks that do not fit an image (other size or Z) are reported, not used.
+        The folder names them (a cluster package's images.csv, or the images CellQuant saved results
+        for). Files that are no longer there, or every image when the folder names none, are looked
+        for in ``search`` (or the package's image folder) by file name, or by the masks' names.
         """
 
-        from cellquant.results_folder import find_masks, read_mask
+        from cellquant.results_folder import find_image_files, listed_originals, mask_keys, package_settings
 
         folder = Path(folder)
         if not folder.is_dir():
             raise CellQuantError(f"{folder} is not a folder.")
+        listed = listed_originals(folder)
+        known = {os.path.normcase(record.source_path) for record in self.experiment.images}
+        found = [source for source in listed if Path(source).is_file()]
+        missing = [source for source in listed if not Path(source).is_file()]
+        if search is None:
+            image_folder = package_settings(folder).get("image_folder")
+            if image_folder and Path(image_folder).is_dir() and (missing or not listed):
+                search = image_folder
+        if search is not None and Path(search).is_dir():
+            if missing:
+                names = {Path(source.replace("\\", "/")).name.lower() for source in missing}
+                files = find_image_files(search, names=names, exclude=folder)
+                for source in list(missing):
+                    match = files.get(Path(source.replace("\\", "/")).name.lower())
+                    if match is not None:
+                        found.append(str(match))
+                        missing.remove(source)
+            if not listed:
+                found.extend(str(path) for path in find_image_files(search, keys=mask_keys(folder), exclude=folder).values())
+        found = [path for path in dict.fromkeys(found) if os.path.normcase(str(Path(path).resolve())) not in known]
+        needs_folder = bool(missing) or (not listed and not found and not self.experiment.images)
+        return Originals(found=found, missing=[Path(item.replace("\\", "/")).name for item in missing], needs_folder=needs_folder)
+
+    def load_results(self, folder: str | Path, *, images: list[str] | None = None) -> LoadReport:
+        """Use the masks in a results folder as the objects of this analysis's images. Never segments.
+
+        ``images`` (from ``find_originals``) are added first. A cluster package's channel and Z handling
+        become the settings; otherwise Z is set to fit the masks (flat masks: max projection; stacks:
+        stitching). ``cellquant.results_folder`` describes the folder. Masks are only checked and
+        attached here; markers are measured when an image is first opened or its results are needed.
+        Masks that do not fit an image are reported, not used; earlier edits of a loaded image no longer apply.
+        """
+
+        import shutil
+
+        from cellquant.results_folder import find_masks, mask_shape, package_settings
+
+        folder = Path(folder)
+        if not folder.is_dir():
+            raise CellQuantError(f"{folder} is not a folder.")
+        report = LoadReport(folder=str(folder))
+        if images:
+            progress.update("Adding the original images")
+            report.notices = self.add_image_paths(images)
         records = list(self.experiment.images)
         skip = set()
         for record in records:
             try:
                 skip.add(str(self.source_path(record)))
             except (OSError, ValueError, CellQuantError):
-                pass  # a missing image: reported when its mask is loaded
+                pass  # a missing image: reported when it is opened
+        progress.update("Finding the masks")
         match = find_masks(folder, records, skip=skip)
-        report = LoadReport(folder=str(folder), unmatched=len(match.unmatched), duplicates=match.duplicates)
+        report.unmatched, report.duplicates = len(match.unmatched), match.duplicates
         report.missing = [record.filename for record in records if record.image_id not in match.found]
         if not match.found:
             return report
-        chosen = [record for record in records if record.image_id in match.found]
-        self._ensure_run(chosen, fresh=True)
-        assert self.run_dir is not None and self.run_record is not None and self.run_log is not None
-        for index, record in enumerate(chosen, start=1):
-            if should_continue is not None and not should_continue():
-                report.cancelled = True
-                break
-            if on_progress is not None:
-                on_progress(index, len(chosen), record.filename, "running")
-            mask = match.found[record.image_id]
+        shapes: dict[str, tuple] = {}
+        for image_id, mask in match.found.items():
             try:
-                result = self._load_mask(record, mask.path, read_mask)
-            except (CellQuantError, ValueError, OSError) as exc:
-                message = f"{mask.path.name}: {exc.args[0] if exc.args else exc}"
-                report.problems.append(f"{record.filename}: {message}")
-                self.run_log.write(record.filename, "load", message)
+                shapes[image_id] = mask_shape(mask.path)
+            except Exception as exc:  # noqa: BLE001 - any unreadable file is reported
+                report.problems.append(f"{self.experiment.image(image_id).filename}: {mask.path.name}: not a mask: {exc}")
+        report.settings = self._settings_for_masks(package_settings(folder), list(shapes.values()))
+        pending = self._pending()
+        destination = self._working_dir() / "loaded"
+        destination.mkdir(parents=True, exist_ok=True)
+        for record in records:
+            if record.image_id not in shapes:
                 continue
+            mask = match.found[record.image_id]
+            wanted = self._expected_shape(record)
+            if wanted is not None and shapes[record.image_id] != wanted:
+                report.problems.append(f"{record.filename}: {mask.path.name}: {_shape_problem(shapes[record.image_id], wanted)}")
+                continue
+            copy = destination / f"{_safe_name(record.image_id)}.tif"
+            shutil.copyfile(mask.path, copy)
+            pending[record.image_id] = {"mask": copy.name, "source": str(mask.path)}
+            self.last_results.pop(record.image_id, None)
             if record.processing_status == "approved":
                 record.approved_settings_sha256 = ""
-            status, message = _job_status(result)
-            record.processing_status = "needs_attention" if status != "Success" else "analyzed"
-            record.last_result = status
-            record.last_message = message or f"Objects loaded from {mask.path.name}."
-            self.last_results[record.image_id] = result
-            persist_image_result(self.run_dir, result, [])
-            self._write_working(record.image_id, result)
-            self._record_recipe_use(record.image_id, result)
-            self.run_record.input_hashes[record.image_id] = record.content_hash
-            self.run_log.write(record.filename, "load", f"Objects loaded from {mask.path}.")
+            record.processing_status = "analyzed"
+            record.last_result = "Success"
+            record.last_message = f"Objects loaded from {mask.path.name}; markers are measured when the image is opened."
             report.loaded.append(record.image_id)
-        self.experiment.latest_run_id = self.run_record.run_id
-        finish_run(self.run_dir, self.run_record, "cancelled" if report.cancelled else "completed")
+        self._write_pending(pending)
         self.save()
         return report
+
+    def _settings_for_masks(self, package: dict, shapes: list[tuple]) -> list[str]:
+        """Set the channel and Z handling the masks were made with. Returns what changed, in plain words."""
+
+        from cellquant.hardware import Z_OPTION_LABELS
+        from cellquant.image import Z_MODES_3D
+
+        data = self.recipe.model_dump(mode="json")
+        changed = []
+        mode = package.get("z_stack")
+        if mode is None and shapes and any(record.z_planes > 1 for record in self.experiment.images):
+            flat = sum(len(shape) == 2 for shape in shapes) >= len(shapes) / 2
+            if flat and data["z_stack"] in Z_MODES_3D:
+                mode = "max_projection"
+            elif not flat and data["z_stack"] not in Z_MODES_3D:
+                mode = "stitch_slices"
+        if mode and mode != data["z_stack"]:
+            data["z_stack"] = mode
+            changed.append(f"Z-stack mode: {Z_OPTION_LABELS.get(mode, mode)}")
+        name = str(package.get("channel") or "").casefold()
+        if name:
+            for channel in self.experiment.channels:
+                if str(channel.channel_name).casefold() == name and channel.channel_index != data["object_set"]["segmentation_channel"]:
+                    data["object_set"]["segmentation_channel"] = channel.channel_index
+                    changed.append(f"channel: {channel.channel_name}")
+                    break
+        if changed:
+            self.set_recipe(data)
+        return changed
+
+    def _expected_shape(self, record) -> tuple | None:
+        """The label shape this image gets in step 2, from its file's description (None when unknown)."""
+
+        from cellquant.image import Z_MODES_3D
+
+        if len(record.dimensions) != 2:
+            return None
+        height, width = (int(value) for value in record.dimensions)
+        if self.recipe.z_stack in Z_MODES_3D and record.z_planes > 1:
+            return (int(record.z_planes), height, width)
+        return (height, width)
+
+    def _pending_path(self) -> Path:
+        return self._working_dir() / "loaded" / "pending.json"
+
+    def _pending(self) -> dict[str, dict]:
+        """Loaded masks not measured yet: image id -> {"mask": file in loaded/, "source": where it came from}."""
+
+        import json
+
+        try:
+            data = json.loads(self._pending_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_pending(self, pending: dict) -> None:
+        import json
+
+        path = self._pending_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(pending, indent=1), encoding="utf-8")
+
+    def is_pending(self, image_id: str) -> bool:
+        """Objects were loaded for this image and its markers are not measured yet."""
+
+        return image_id in self._pending()
+
+    def has_result(self, image_id: str) -> bool:
+        return self.is_pending(image_id) or self.recall(image_id, measure=False) is not None
+
+    def measure_loaded(self, image_id: str) -> ImageResult:
+        """Measure the markers in an image's loaded objects (once; later calls use the saved result)."""
+
+        from cellquant.results_folder import read_mask
+
+        pending = self._pending()
+        entry = pending.get(image_id)
+        if entry is None:
+            result = self.recall(image_id, measure=False)
+            if result is None:
+                raise CellQuantError("No loaded objects for this image.")
+            return result
+        record = self.experiment.image(image_id)
+        path = self._working_dir() / "loaded" / str(entry["mask"])
+        try:
+            result = self._load_mask(record, path, read_mask)
+        except (CellQuantError, ValueError, OSError) as exc:
+            record.processing_status = "needs_attention"
+            record.last_result = "Failure"
+            record.last_message = f"{Path(str(entry.get('source') or path)).name}: {exc.args[0] if exc.args else exc}"
+            save_experiment(self.experiment)
+            raise CellQuantError(record.last_message) from None
+        result.provenance["segmentation_source"] = str(entry.get("source") or path)
+        status, message = _job_status(result)
+        if status != "Success":
+            record.processing_status = "needs_attention"
+            record.last_result = status
+            record.last_message = message
+        self.last_results[image_id] = result
+        self._write_working(image_id, result)
+        pending = self._pending()
+        pending.pop(image_id, None)
+        self._write_pending(pending)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        save_experiment(self.experiment)
+        return result
+
+    def measure_all_loaded(self, image_ids: list[str] | None = None) -> None:
+        """Measure every loaded image not measured yet (those that fail keep their message)."""
+
+        pending = [image_id for image_id in self._pending() if image_ids is None or image_id in image_ids]
+        for index, image_id in enumerate(pending):
+            progress.update(f"Measuring markers in loaded objects: image {index + 1} of {len(pending)}", index, len(pending))
+            try:
+                self.measure_loaded(image_id)
+            except (CellQuantError, KeyError):
+                continue
 
     def _load_mask(self, record, path: Path, read_mask) -> ImageResult:
         with self._image_settings(record):
@@ -952,6 +1137,8 @@ class AnalysisController:
         """A saved segmentation made elsewhere (loaded from a results folder or a cluster run) that still
         fits this image and these settings."""
 
+        if self.is_pending(record.image_id):
+            return self.measure_loaded(record.image_id)  # raises when the loaded objects do not fit
         prior = self.last_results.get(record.image_id) or self.recall(record.image_id)
         if prior is None or prior.provenance.get("segmentation_origin") not in SEGMENTED_ELSEWHERE:
             return None
@@ -1358,7 +1545,7 @@ class AnalysisController:
         self.run_dir = None
         self.run_log = None
         for record in restored_excluded:
-            record.processing_status = "analyzed" if self.recall(record.image_id) is not None else "not_analyzed"
+            record.processing_status = "analyzed" if self.has_result(record.image_id) else "not_analyzed"
         self.save()
 
     def rename_analysis(self, recipe_id: str, name: str) -> None:
@@ -1878,6 +2065,10 @@ def _same_numbers(stored, current) -> bool:
         if first is not None and abs(float(first) - float(second)) > 1e-9 * max(abs(float(first)), 1.0):
             return False
     return True
+
+
+def _safe_name(value: str) -> str:
+    return "".join(character if character.isalnum() or character in "-_." else "_" for character in value)
 
 
 def _shape_problem(mask: tuple, wanted: tuple) -> str:
