@@ -287,7 +287,8 @@ def _recording(source: str) -> str:
         '''        CALLS.append(("CellposeModel.eval", dict(diameter=diameter, channels=channels)))
         masks = np.zeros(np.asarray(x).shape[-2:], dtype=np.int32)''',
         '''        CALLS.append(("CellposeModel.eval", dict(diameter=diameter, channels=channels, normalize=normalize,
-                      do_3D=do_3D, z_axis=z_axis, anisotropy=anisotropy, max=float(np.asarray(x).max()))))
+                      do_3D=do_3D, z_axis=z_axis, anisotropy=anisotropy, max=float(np.asarray(x).max()),
+                      niter=niter, flow3D_smooth=flow3D_smooth, min_size=min_size)))
         shape = np.asarray(x).shape if do_3D else np.asarray(x).shape[-2:]
         masks = np.zeros(shape, dtype=np.int32)''',
     ).replace(
@@ -331,6 +332,30 @@ def test_cellpose_full_3d_passes_the_slice_spacing(tmp_path, monkeypatch, versio
     assert call["do_3D"] is True and call["z_axis"] == 0 and call["anisotropy"] == pytest.approx(3.0)
     assert call["normalize"] is False
     assert labels.shape == (5, 20, 20)
+
+
+@pytest.mark.parametrize("version,source", [("3.1.1.3", _V3), ("4.2.1.1", _V4)])
+def test_cellpose_full_3d_uses_the_paper_settings(tmp_path, monkeypatch, version, source):
+    models = _install_fake(tmp_path, monkeypatch, version, _recording(source))
+    volume = np.random.default_rng(0).random((5, 20, 20)).astype(np.float32)
+    details: dict = {}
+    segment_volume(
+        volume, "cellpose", {"diameter_px": 21.4}, "full_3d",
+        pixel_size_x=0.28, pixel_size_y=0.28, pixel_size_z=1.5, details=details,
+    )
+    call = next(item[1] for item in models.CALLS if item[0] == "CellposeModel.eval")
+    assert call["niter"] == 1000 and call["flow3D_smooth"] == 2.0
+    # 1,000 voxels for a 30 px cell in an isotropic volume, scaled to a 21.4 px nucleus and 1.5 µm slices.
+    assert call["min_size"] == round(1000 * (21.4 / 30) ** 3 / (1.5 / 0.28))
+    assert details["engine"]["full_3d"]["min_size"] == call["min_size"]
+
+
+def test_full_3d_cutoff_follows_the_calibration():
+    from cellquant.segmentation import full_3d_settings
+
+    assert full_3d_settings(None, 1.0, {})["min_size"] == 1000  # the paper's own case
+    assert full_3d_settings(7.0, 1.5 / 0.86, {})["min_size"] == 7
+    assert full_3d_settings(21.4, 1.5 / 0.28, {"min_size": 50})["min_size"] == 50
 
 
 # --- same rule as Cellpose -----------------------------------------------------------------
