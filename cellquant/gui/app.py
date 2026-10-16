@@ -59,6 +59,7 @@ from cellquant.controller import AnalysisController, display_z
 from cellquant.count_area import outside
 from cellquant.errors import CellQuantError, RecipeValidationError
 from cellquant.gui import guide
+from cellquant.segmentation import FULL_3D_FLOW_SMOOTH, FULL_3D_NITER
 from napari.utils.colormaps import DirectLabelColormap
 
 
@@ -2517,6 +2518,22 @@ class ObjectsPanel(QWidget):
         self.cellprob = QDoubleSpinBox()
         self.cellprob.setRange(-6, 6)
         guide.add_range_tip(self.cellprob)
+        # Full 3D only (Cellpose-SAM paper defaults); 0 voxels = scaled to each image.
+        self.niter_3d = QSpinBox()
+        self.niter_3d.setRange(10, 10000)
+        self.niter_3d.setSingleStep(100)
+        self.niter_3d.setValue(FULL_3D_NITER)
+        guide.add_range_tip(self.niter_3d)
+        self.flow3d_smooth = QDoubleSpinBox()
+        self.flow3d_smooth.setRange(0, 10)
+        self.flow3d_smooth.setDecimals(1)
+        self.flow3d_smooth.setSingleStep(0.5)
+        self.flow3d_smooth.setValue(FULL_3D_FLOW_SMOOTH)
+        guide.add_range_tip(self.flow3d_smooth)
+        self.min_voxels_3d = QSpinBox()
+        self.min_voxels_3d.setRange(0, 1000000)
+        self.min_voxels_3d.setSpecialValueText("auto")
+        guide.add_range_tip(self.min_voxels_3d, "voxels")
         self.watershed.toggled.connect(lambda _checked: self._method_changed())
         self.object_name.setToolTip("The name of the objects in the results, for example Nuclei.")
         advanced.addRow("Object set name", self.object_name)
@@ -2530,6 +2547,9 @@ class ObjectsPanel(QWidget):
         advanced.addRow("Cellpose diameter (px)", self.diameter)
         advanced.addRow("Flow threshold", self.flow)
         advanced.addRow("Cell probability threshold", self.cellprob)
+        advanced.addRow("3D iterations", self.niter_3d)
+        advanced.addRow("3D flow smoothing", self.flow3d_smooth)
+        advanced.addRow("3D smallest object (voxels)", self.min_voxels_3d)
         layout.addWidget(self.advanced_toggle)
         layout.addWidget(self.advanced_box)
         actions = QHBoxLayout()
@@ -2604,6 +2624,9 @@ class ObjectsPanel(QWidget):
             self.diameter.setValue(0)
         self.flow.setValue(float(parameters.get("flow_threshold", 0.4)))
         self.cellprob.setValue(float(parameters.get("cellprob_threshold", 0)))
+        self.niter_3d.setValue(int(parameters.get("niter_3d") or FULL_3D_NITER))
+        self.flow3d_smooth.setValue(float(parameters.get("flow3D_smooth", FULL_3D_FLOW_SMOOTH)))
+        self.min_voxels_3d.setValue(int(parameters.get("min_voxels_3d") or 0))
         has_calibration = pixel is not None
         if parameters.get("min_area_um2") is not None:
             _choose(self.area_unit, "um2")
@@ -2851,7 +2874,15 @@ class ObjectsPanel(QWidget):
             _show_row(advanced, widget, not cellpose and self.watershed.isChecked())
         for widget in (self.cellpose_model, self.diameter, self.flow, self.cellprob):
             _show_row(advanced, widget, cellpose)
+        self._show_3d_rows()
         self._refresh_gpu_banner()
+
+    def _show_3d_rows(self) -> None:
+        if not hasattr(self, "min_voxels_3d"):  # the Z options are built before the Advanced box
+            return
+        shown = self.method.currentData() == "cellpose" and self.z_stack.currentData() == "full_3d"
+        for widget in (self.niter_3d, self.flow3d_smooth, self.min_voxels_3d):
+            _show_row(self._advanced_form, widget, shown)
 
     def _refresh_crop(self, controller) -> None:
         from cellquant.crop import crop_channels
@@ -2949,6 +2980,7 @@ class ObjectsPanel(QWidget):
         self.z_link.setEnabled(not busy and mode == "stitch_slices")
         self.z_scale.setEnabled(not busy and mode == "stitch_slices")  # whole-volume 3D always scales the whole stack
         self.z_min_slices.setEnabled(not busy and mode in ("stitch_slices", "full_3d"))
+        self._show_3d_rows()
         self._show_recommendation_state()
 
     def recommendation(self):
@@ -3134,6 +3166,12 @@ class ObjectsPanel(QWidget):
                 "gpu": self.use_gpu() if local else bool(previous.get("gpu", False)),
                 **size_filters,
             }
+            if self.z_stack.currentData() == "full_3d":
+                # Only for full 3D, so the settings (and saved results) of the other modes do not change.
+                parameters["niter_3d"] = self.niter_3d.value()
+                parameters["flow3D_smooth"] = self.flow3d_smooth.value()
+                if self.min_voxels_3d.value():
+                    parameters["min_voxels_3d"] = self.min_voxels_3d.value()
         data["z_stack"] = self.z_stack.currentData() or "max_projection"
         data["z_index"] = None if self.z_stack.currentData() != "single_plane" or self.z_slice.value() == 0 else self.z_slice.value() - 1
         data["z_stitch_threshold"] = round(self.z_link.value(), 3)
