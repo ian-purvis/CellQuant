@@ -373,7 +373,10 @@ def test_gpu_banner_engine_menu_and_settings_locked_while_running(window):
     assert shell._run_lock_note.isVisibleTo(shell._dock)
     assert not panel.method.isEnabled() and not panel.z_stack.isEnabled()
     assert not shell._measurements_panel.statistic.isEnabled()
-    assert shell._review_panel.display.isEnabled()  # display only, not a setting
+    from qtpy.QtCore import Qt
+
+    # Display only, not a setting (its step tab may still be locked, which greys the whole page).
+    assert not shell._review_panel.display.testAttribute(Qt.WA_ForceDisabled)
     _wait(shell)
     QApplication.processEvents()
     assert not shell._run_lock_note.isVisibleTo(shell._dock)
