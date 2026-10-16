@@ -822,3 +822,54 @@ def test_full_3d_cellpose_settings_show_only_for_full_3d(tmp_path: Path):
         assert not any(row.isVisibleTo(panel) for row in rows)
     finally:
         viewer.close()
+def test_napari_layer_panels_cannot_be_hidden_by_accident_and_pop_out_with_a_header(window):
+    from qtpy.QtCore import QEvent, Qt
+    from qtpy.QtWidgets import QApplication, QMainWindow, QPushButton
+
+    def settle(condition=lambda: True):
+        end = time.time() + 2
+        QApplication.processEvents()
+        while not condition() and time.time() < end:
+            QApplication.processEvents()
+            time.sleep(0.02)
+
+    qt_viewer = window.viewer.window._qt_viewer
+    main = window.viewer.window._qt_window
+    assert main.dockOptions() & QMainWindow.DockOption.AllowNestedDocks
+    for dock in (qt_viewer.dockLayerControls, qt_viewer.dockLayerList):
+        settle(lambda: dock.titleBarWidget().hide_button.isHidden())
+        # Docked: napari's hide button is gone.
+        assert dock.titleBarWidget().hide_button.isHidden()
+        header = next(h for h in window._floating_headers if h.dock is dock)
+        dock.setFloating(True)
+        settle(lambda: dock.titleBarWidget() is header)
+        assert dock.titleBarWidget() is header
+        assert dock.windowFlags() & Qt.WindowType.WindowType_Mask == Qt.WindowType.Window
+        assert [button.toolTip() for button in header.findChildren(QPushButton)] == ["Minimize", "Maximize", "Restore size", "Reset"]
+        # Closing the popped-out window (Alt+F4, the taskbar) docks it back instead of hiding it.
+        class SystemClose:  # Qt marks only the window system's own close (Alt+F4, the taskbar) spontaneous
+            accepted = True
+
+            def type(self):
+                return QEvent.Close
+
+            def spontaneous(self):
+                return True
+
+            def ignore(self):
+                self.accepted = False
+
+        close = SystemClose()
+        assert dock._keep_open.eventFilter(dock, close) and not close.accepted
+        settle(lambda: not dock.isFloating())
+        assert not dock.isFloating() and not dock.isHidden()
+        settle(lambda: dock.titleBarWidget().hide_button.isHidden())
+        assert dock.titleBarWidget().hide_button.isHidden()
+    # napari's Window menu can still hide and show them.
+    dock = qt_viewer.dockLayerList
+    action = dock.toggleViewAction()
+    action.setChecked(True)  # the hidden test viewer leaves it unticked
+    action.trigger()
+    assert dock.isHidden()
+    action.trigger()
+    assert not dock.isHidden()
