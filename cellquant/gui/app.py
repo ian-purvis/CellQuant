@@ -1037,6 +1037,47 @@ class CellQuantWindow:
         image_id = self._nav_ids[self._nav_index]
         self._start_job(lambda: controller.run_image(image_id, new_run=True), self._run_finished)
 
+    def load_results_dialog(self) -> None:
+        controller = self.require_controller()
+        if controller is None:
+            return
+        if not controller.experiment.images:
+            self.message("Add images in step 1 first, then load their results.")
+            return
+        directory = QFileDialog.getExistingDirectory(self._tabs, "Choose a folder of results (masks)", str(controller.directory))
+        if not directory or self.is_busy():
+            return
+        self._panels_to_recipe()
+        self._start_job(lambda: controller.load_results(directory), self._results_loaded)
+
+    def _results_loaded(self, report) -> None:
+        controller = self.controller
+        if controller is None:
+            return
+        self._refresh_plan()
+        self._experiment_panel.refresh_table()
+        self.refresh_guidance()
+        lines = [f"Loaded objects for {len(report.loaded)} of {len(controller.experiment.images)} images."]
+        if report.problems:
+            lines.append(f"{len(report.problems)} masks did not fit: " + " | ".join(report.problems[:5]))
+            if len(report.problems) > 5:
+                lines.append(f"… and {len(report.problems) - 5} more (see the Log).")
+        if report.missing and report.loaded:
+            lines.append(f"{len(report.missing)} images had no mask in the folder.")
+        if report.unmatched:
+            lines.append(f"{report.unmatched} files in the folder matched no image by name.")
+        if report.duplicates:
+            lines.append(f"{report.duplicates} images had more than one mask; the newest was used.")
+        if not report.loaded and not report.problems:
+            lines.append("No mask in the folder is named after an image of this experiment (for example image001_masks.tif).")
+        if report.problems or not report.loaded:
+            self.show_error(" ".join(lines))
+        else:
+            self._footer.message(" ".join(lines))
+        shown = self._nav_ids[self._nav_index] if self._nav_ids else None
+        if shown in report.loaded:
+            self.show_result(controller.last_results[shown])
+
     def _run_finished(self, result) -> None:
         self.show_result(result)
         self._refresh_plan()
@@ -1067,7 +1108,7 @@ class CellQuantWindow:
     # Buttons that start work, or change what is being analyzed, are unavailable while work runs.
     _BUSY_BUTTONS = frozenset(
         {
-            "Preview", "Run this image", "Run selected images", "Run all images", "Set up markers",
+            "Preview", "Run this image", "Load results…", "Run selected images", "Run all images", "Set up markers",
             "Export results…", "Add images", "Add folder", "New experiment", "New experiment…", "Open",
             "Open experiment…", "Try practice images", "Include shown", "Leave out shown",
             "Include only selected", "Delete object", "Restore object", "Undo", "Record drawn edits", "Approve", "Use recommended",
@@ -2481,8 +2522,20 @@ class ObjectsPanel(QWidget):
         run = QPushButton("Run this image")
         run.clicked.connect(shell.run_current)
         run.setToolTip("Find objects and measure markers in the whole image on screen.")
+        load = QPushButton("Load results…")
+        load.clicked.connect(shell.load_results_dialog)
+        load.setToolTip(
+            "Use objects found elsewhere instead of finding them here: pick a folder of masks "
+            "(from a cluster, Cellpose or another CellQuant experiment).\n"
+            "Each mask is a TIFF of object numbers named after its image, for example "
+            "image001_masks.tif; subfolders are searched too.\n"
+            "Masks must match the Z-stack mode above: flat for a max projection or one slice, "
+            "one plane per slice for stitching or 3D.\n"
+            "Markers are measured here with the current settings. Nothing is segmented."
+        )
         actions.addWidget(preview)
         actions.addWidget(run)
+        actions.addWidget(load)
         layout.addLayout(actions)
         layout.addStretch(1)
         self._update_size_hint()
