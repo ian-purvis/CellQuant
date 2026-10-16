@@ -662,11 +662,16 @@ class CellQuantWindow:
         self._plan_dock = PlanDock(self)
         self._plan_dock_widget = self.viewer.window.add_dock_widget(self._plan_dock, name="Plan", area="left")
         self._plan_dock_widget.hide()
+        from cellquant.gui.measure_dock import MeasureDock
+
+        self._measure_dock = MeasureDock(self)
+        self._measure_dock_widget = self.viewer.window.add_dock_widget(self._measure_dock, name="Measure", area="right")
+        self._measure_dock_widget.hide()
         run_dock = self.viewer.window.add_dock_widget(FooterScroll(self._footer), name="Run", area="bottom")
         # Under napari's layer controls: a view control that stays put whichever layer is selected.
         self._view_box = ViewBox(self)
         view_dock = self.viewer.window.add_dock_widget(self._view_box, name="View", area="left")
-        self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, run_dock, view_dock)]
+        self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, self._measure_dock_widget, run_dock, view_dock)]
         guide.apply_help(self)
         self._guide_timer = guide.start_refresh_timer(self)
         self._start_gpu_check()
@@ -768,6 +773,7 @@ class CellQuantWindow:
         def ready(controller) -> None:
             self.controller = controller
             self._exported_to = None
+            self._measure_dock.forget()
             self._refresh_all()
             self.go_to_step(0)
             self.message(
@@ -884,6 +890,7 @@ class CellQuantWindow:
             self.show_error(f"{directory} could not be opened as an experiment. {_error_text(exc)}")
             return
         self._exported_to = None
+        self._measure_dock.forget()
         self._refresh_all()
         self.go_to_start()
 
@@ -905,6 +912,7 @@ class CellQuantWindow:
         controller.experiment.import_file_types = list(file_types)
         self.controller = controller
         self._exported_to = None
+        self._measure_dock.forget()
         self._refresh_all()
         self.go_to_step(0)
         if not images:
@@ -937,7 +945,8 @@ class CellQuantWindow:
         image_id = self._nav_ids[self._nav_index]
         controller.current_image_id = image_id
         record = controller.experiment.image(image_id)
-        result = controller.recall(image_id) if controller else None
+        result = controller.recall(image_id, measure=False) if controller else None
+        measuring = result is None and controller.is_pending(image_id) and not self.is_busy()
         self._footer.set_position(self._nav_index, len(self._nav_ids), record.relative_path or record.filename, self._nav_filter)
         self._review_panel.update_status_line()
         self._experiment_panel.set_pixel_size(record.pixel_size_x, record.pixel_size_y, record.pixel_size_z)
@@ -946,6 +955,10 @@ class CellQuantWindow:
         # so the window stays responsive. If the user keeps clicking Next, only the last
         # image asked for is shown.
         self._wanted_image_id = image_id
+        if measuring:
+            # Loaded objects: measure them first, then show the image once, as it was segmented.
+            self._measure_loaded(image_id)
+            return
         if self._loader is not None:
             return
         self._footer.message(f"Loading {record.relative_path or record.filename}...")
@@ -1002,7 +1015,7 @@ class CellQuantWindow:
             return
         try:
             record = controller.experiment.image(self._nav_ids[self._nav_index + 1])
-            result = controller.recall(record.image_id)
+            result = controller.recall(record.image_id, measure=False)
         except Exception:  # noqa: BLE001 - only a head start
             return
         worker = CallWorker(lambda: controller.preload_display(record, result))
@@ -1058,23 +1071,87 @@ class CellQuantWindow:
         controller = self.require_controller()
         if controller is None:
             return
-        if not controller.experiment.images:
-            self.message("Add images in step 1 first, then load their results.")
-            return
-        directory = QFileDialog.getExistingDirectory(self._tabs, "Choose a folder of results (masks)", str(controller.directory))
-        if not directory or self.is_busy():
+        start = controller.experiment.input_directory or str(controller.directory)
+        folder = QFileDialog.getExistingDirectory(self._tabs, "Choose a folder of results (masks)", start)
+        if not folder or self.is_busy():
             return
         self._panels_to_recipe()
-        self._start_job(lambda: controller.load_results(directory), self._results_loaded)
+
+        def found(originals) -> None:
+            if not originals.needs_folder:
+                self._after_job(lambda: self._load_results(folder, originals.found))
+                return
+            listed = f" ({len(originals.missing)} listed images are not where they were)" if originals.missing else ""
+            where = choose_existing_directory(
+                self._tabs, f"Where are the original images?{listed} Subfolders are included.", start
+            )
+            if not where:
+                self._after_job(lambda: self._load_results(folder, originals.found))
+                return
+            self._after_job(lambda: self._start_job(
+                lambda: controller.find_originals(folder, where),
+                lambda again: self._after_job(lambda: self._load_results(folder, again.found)),
+            ))
+
+        self._footer.message("Looking for the original images...")
+        self._start_job(lambda: controller.find_originals(folder), found)
+
+    def _after_job(self, fn) -> None:
+        """Run ``fn`` once the current job has finished (a job's result handler runs before it ends)."""
+
+        from qtpy.QtCore import QTimer
+
+        if self._job is not None or self._batch is not None:
+            QTimer.singleShot(20, lambda: self._after_job(fn))
+            return
+        fn()
+
+    def _load_results(self, folder: str, images: list[str]) -> None:
+        controller = self.controller
+        if controller is None:
+            return
+        self._start_job(lambda: controller.load_results(folder, images=images), self._results_loaded)
+
+    def _measure_loaded(self, image_id: str) -> None:
+        """Measure the markers of loaded objects off the interface thread, then show them."""
+
+        controller = self.controller
+
+        def measured(result) -> None:
+            self._experiment_panel.refresh_table()
+            self.refresh_guidance()
+            if self._nav_ids and self._nav_ids[self._nav_index] == image_id:
+                self.show_result(result)
+            else:
+                self._after_job(self.show_current)  # the user moved on meanwhile
+
+        def failed(message: str) -> None:
+            self.show_error(message)
+            self._experiment_panel.refresh_table()
+            self._after_job(self.show_current)
+
+        if self._batch is not None or self._job is not None:
+            return
+        worker = CallWorker(lambda: controller.measure_loaded(image_id), report=True)
+        self._job = worker
+        worker.succeeded.connect(measured)
+        worker.failed.connect(failed)
+        worker.step.connect(self._footer.show_step)
+        worker.finished.connect(self._clear_job)
+        self.set_busy(True)
+        self._footer.message("Measuring markers in the loaded objects...")
+        worker.start()
 
     def _results_loaded(self, report) -> None:
         controller = self.controller
         if controller is None:
             return
-        self._refresh_plan()
-        self._experiment_panel.refresh_table()
-        self.refresh_guidance()
+        self._refresh_all(keep_image=True)
+        if report.notices:
+            self._experiment_panel.set_notices(report.notices)
         lines = [f"Loaded objects for {len(report.loaded)} of {len(controller.experiment.images)} images."]
+        if report.settings:
+            lines.append("Step 2 now uses the masks' " + " and ".join(report.settings) + ".")
         if report.problems:
             lines.append(f"{len(report.problems)} masks did not fit: " + " | ".join(report.problems[:5]))
             if len(report.problems) > 5:
@@ -1093,7 +1170,7 @@ class CellQuantWindow:
             self._footer.message(" ".join(lines))
         shown = self._nav_ids[self._nav_index] if self._nav_ids else None
         if shown in report.loaded:
-            self.show_result(controller.last_results[shown])
+            self._after_job(lambda: self._measure_loaded(shown))
 
     def _run_finished(self, result) -> None:
         self.show_result(result)
@@ -1286,6 +1363,20 @@ class CellQuantWindow:
         self._plan_dock_widget.show()
         self._plan_dock_widget.raise_()
         self._plan_dock.refresh()
+
+    def show_measure(self) -> None:
+        """Open the Measure window, popped out, and get the image ready to draw on."""
+
+        if self.require_controller() is None:
+            return
+        first = not self._measure_dock_widget.isVisible()
+        self._measure_dock_widget.show()
+        if first:
+            self._measure_dock_widget.setFloating(True)
+        self._measure_dock_widget.raise_()
+        if self._shown_image_id is not None:
+            self._measure_dock.ensure_layer()
+        self._measure_dock.refresh()
 
     def _refresh_plan(self) -> None:
         if self._plan_dock_widget.isVisible() or self._plan_dock.tree.topLevelItemCount():
@@ -1599,6 +1690,7 @@ class CellQuantWindow:
         labels = result.labels if result is not None else None
         self._set_labels(labels, result)
         self.show_count_area(record)
+        self._measure_dock.bring_back(record.image_id)
         self._release_window_later()
         self._experiment_panel.show_channel_order(record)
 
@@ -1785,6 +1877,7 @@ class CellQuantWindow:
         self._managed.discard(name)
 
     def _clear_managed(self) -> None:
+        self._measure_dock.keep()  # what is drawn to measure stays with its image
         for name in list(self._managed):
             self._drop(name)
 
@@ -1865,6 +1958,20 @@ class ExperimentPanel(QWidget):
             button.clicked.connect(slot)
             buttons.addWidget(button)
         layout.addLayout(buttons)
+        load = QPushButton("Load results…")
+        load.clicked.connect(shell.load_results_dialog)
+        load.setToolTip(
+            "Open objects found elsewhere (a cluster run, Cellpose, another CellQuant experiment) "
+            "over their original images.\n"
+            "Pick the results folder: its original images are added (you are asked where they are "
+            "if they moved), and each mask, a TIFF of object numbers named after its image, "
+            "becomes that image's objects. Nothing is segmented.\n"
+            "Markers are measured when an image is opened."
+        )
+        loading = QHBoxLayout()
+        loading.addWidget(load)
+        loading.addStretch(1)
+        layout.addLayout(loading)
         self.notices = QLabel("")
         self.notices.setWordWrap(True)
         self.notices.setTextFormat(Qt.RichText)
@@ -2559,20 +2666,8 @@ class ObjectsPanel(QWidget):
         run = QPushButton("Run this image")
         run.clicked.connect(shell.run_current)
         run.setToolTip("Find objects and measure markers in the whole image on screen.")
-        load = QPushButton("Load results…")
-        load.clicked.connect(shell.load_results_dialog)
-        load.setToolTip(
-            "Use objects found elsewhere instead of finding them here: pick a folder of masks "
-            "(from a cluster, Cellpose or another CellQuant experiment).\n"
-            "Each mask is a TIFF of object numbers named after its image, for example "
-            "image001_masks.tif; subfolders are searched too.\n"
-            "Masks must match the Z-stack mode above: flat for a max projection or one slice, "
-            "one plane per slice for stitching or 3D.\n"
-            "Markers are measured here with the current settings. Nothing is segmented."
-        )
         actions.addWidget(preview)
         actions.addWidget(run)
-        actions.addWidget(load)
         layout.addLayout(actions)
         layout.addStretch(1)
         self._update_size_hint()
@@ -4546,6 +4641,10 @@ class AnalysisBar(QWidget):
         menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu_button.setMenu(menu)
         top.addWidget(menu_button)
+        measure = QPushButton("Measure")
+        measure.setToolTip("Open the Measure window: draw lines or shapes on the image to get length, area and volume, and export them to a CSV.")
+        measure.clicked.connect(lambda: shell.show_measure())
+        top.addWidget(measure)
         layout.addLayout(top)
         self.refresh()
 
@@ -4999,7 +5098,7 @@ class FloatingHeader(QWidget):
     Drag it to move the panel; drop it on the napari window, double-click it or click Reset to dock it back.
     """
 
-    def __init__(self, dock):
+    def __init__(self, dock, closable: bool = True):
         super().__init__(dock)
         self.dock = dock
         self._before_maximize = None
@@ -5018,6 +5117,8 @@ class FloatingHeader(QWidget):
             ("reset", "⟲", "Reset", self.reset),
             ("close", "✕", "Close", dock.close),
         ):
+            if key == "close" and not closable:
+                continue
             button = QPushButton(text)
             button.setToolTip(tip)
             button.setFixedSize(26, 22)
@@ -5094,10 +5195,10 @@ class FloatingHeader(QWidget):
         self._update_buttons()
 
 
-def floating_header(dock) -> FloatingHeader:
+def floating_header(dock, closable: bool = True) -> FloatingHeader:
     """When a napari panel is popped out, give it a FloatingHeader in place of the plain system title bar."""
 
-    header = FloatingHeader(dock)
+    header = FloatingHeader(dock, closable)
     header.hide()
 
     def apply() -> None:
@@ -5148,6 +5249,47 @@ def floating_header(dock) -> FloatingHeader:
     header._window_watcher = WindowWatcher(lambda: QTimer.singleShot(0, apply), dock)
     dock.installEventFilter(header._window_watcher)
     return header
+
+
+def keep_open(dock) -> None:
+    """Keep a napari panel from being hidden by a stray click: no hide button, and closing a popped-out window docks it back.
+
+    napari's Window menu can still hide and show it.
+    """
+
+    def hide_button() -> None:
+        try:
+            button = getattr(dock.titleBarWidget(), "hide_button", None)
+        except RuntimeError:
+            return  # the panel was deleted meanwhile
+        if button is not None and not button.isHidden():
+            button.hide()
+
+    dock._keep_open = PanelGuard(dock, lambda: QTimer.singleShot(0, hide_button))
+    dock.installEventFilter(dock._keep_open)
+    hide_button()
+
+
+class PanelGuard(QObject):
+    """Turn a system close of the panel it watches into docking it back, and report when napari swaps the panel's header."""
+
+    def __init__(self, dock, on_header):
+        super().__init__(dock)
+        self._dock = dock
+        self._on_header = on_header
+
+    def eventFilter(self, watched, event) -> bool:
+        from qtpy.QtCore import QEvent
+
+        # Only a close from the system (Alt+F4, the taskbar); napari's Window menu still hides it.
+        if event.type() == QEvent.Close and event.spontaneous():
+            event.ignore()
+            if self._dock.isFloating():
+                QTimer.singleShot(0, lambda: self._dock.setFloating(False))
+            return True
+        if event.type() in (QEvent.ChildAdded, QEvent.ChildPolished, QEvent.Show):
+            self._on_header()
+        return False
 
 
 def own_window(dock) -> None:
