@@ -1078,13 +1078,18 @@ class CellQuantWindow:
         self._start_job(lambda: controller.run_image(image_id, new_run=True), self._run_finished)
 
     def load_results_dialog(self) -> None:
-        controller = self.require_controller()
-        if controller is None:
+        if self.is_busy():
             return
-        start = controller.experiment.input_directory or str(controller.directory)
+        controller = self.controller
+        start = (controller.experiment.input_directory or str(controller.directory)) if controller else str(Path.home())
         folder = QFileDialog.getExistingDirectory(self._tabs, "Choose a folder of results (masks)", start)
         if not folder or self.is_busy():
             return
+        if controller is None:
+            controller = self._experiment_for_results(Path(folder))
+            if controller is None:
+                return
+            start = folder
         self._panels_to_recipe()
 
         def found(originals) -> None:
@@ -1105,6 +1110,31 @@ class CellQuantWindow:
 
         self._footer.message("Looking for the original images...")
         self._start_job(lambda: controller.find_originals(folder), found)
+
+    def _experiment_for_results(self, folder: Path) -> AnalysisController | None:
+        """No experiment is open: make one for these results, in a folder the user picks."""
+
+        package = folder.parent if folder.name.lower() == "results" else folder
+        output = QFileDialog.getExistingDirectory(
+            self._tabs, f"No experiment is open. Choose an empty folder to save a new one for {package.name}", str(package.parent)
+        )
+        if not output:
+            return None
+        output = Path(output)
+        if (output / "experiment.json").is_file():
+            self.message("That folder already has an experiment. Open it with Open experiment…, or choose another folder.")
+            return None
+        try:
+            controller = AnalysisController.create(output, package.name)
+        except Exception as exc:  # noqa: BLE001 - e.g. a folder that cannot be written
+            self.show_error(f"The experiment could not be created in {output}. {_error_text(exc)}")
+            return None
+        self.controller = controller
+        self._exported_to = None
+        self._measure_dock.forget()
+        self._refresh_all()
+        self.go_to_step(0)
+        return controller
 
     def _after_job(self, fn) -> None:
         """Run ``fn`` once the current job has finished (a job's result handler runs before it ends)."""
@@ -1976,6 +2006,7 @@ class ExperimentPanel(QWidget):
             "Pick the results folder: its original images are added (you are asked where they are "
             "if they moved), and each mask, a TIFF of object numbers named after its image, "
             "becomes that image's objects. Nothing is segmented.\n"
+            "With no experiment open, you are asked where to save a new one.\n"
             "Markers are measured when an image is opened."
         )
         loading = QHBoxLayout()
