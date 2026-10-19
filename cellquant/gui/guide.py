@@ -112,7 +112,7 @@ STEPS = (
         "The objects found in step 2 are kept; edits are saved as a list applied on top. "
         "Running step 2 again with new settings gives new objects, and these edits no longer apply to them.",
         "Each object is one nucleus: no debris, merges, or splits left. Skip this step if step 2 looked right.",
-        "Click an object, then <b>Delete object</b>, or paint and <b>Record drawn edits</b>.",
+        "Pick a task: delete objects or add new ones.",
     ),
     Step(
         4,
@@ -199,6 +199,10 @@ BUTTON_HELP = {
     "Delete object": "Click an object in the image first. This removes it from the counts (for debris or a bad outline). Restore object brings it back. (Del)",
     "Restore object": "Bring back a deleted object.",
     "Undo": "Undo the last edit. (Ctrl+Z)",
+    "Delete objects": "Show the buttons for deleting objects.",
+    "Add new objects": "Show the buttons for drawing new objects.",
+    "Draw new object": "Select the Objects layer with an unused number and napari's brush. Paint the object, then Record drawn edits. Click again for the next one.",
+    "Back": "Return to the task choice.",
     "Draw area": "Outline objects to delete in the Delete area layer: click the corners, double-click to finish. Several areas are fine.",
     "Delete in area": "Delete every object lying entirely inside the drawn area; objects crossing its edge stay. Undo brings them all back.",
     "Record drawn edits": "Save outlines you painted by hand in the Objects layer.",
@@ -319,6 +323,7 @@ class StepPage(QWidget):
         # One line; the full instructions and the success check are its hover text.
         todo = _card(f"{step.short} ⓘ", "rgba(80, 120, 200, 0.18)")
         todo.setToolTip(f"<b>What to do</b><br>{step.todo}<br><br><b>Success check</b><br>{step.success}")
+        self.todo_card = todo
         layout.addWidget(todo)
         if extra is not None:
             layout.addWidget(extra)
