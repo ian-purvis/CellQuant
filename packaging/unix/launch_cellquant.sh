@@ -48,6 +48,11 @@ if [ -n "$SAVED_DEFAULT" ] && echo "$KEYS" | grep -qx "$SAVED_DEFAULT"; then
     DEFAULT_ENGINE="$SAVED_DEFAULT"
 fi
 
+if [ "$(uname -s)" = 'Darwin' ]; then
+    # The environment the default engine runs in, for the Intel-only check.
+    cq_mac_notice "$(echo "$INSTALLED" | awk -F '\t' -v e="$DEFAULT_ENGINE" '$1 == e {print $2}')"
+fi
+
 COUNT=$(echo "$KEYS" | grep -c .)
 if [ "$ENGINE" = 'ask' ] && [ "$COUNT" -gt 1 ] && [ -t 0 ]; then
     echo
@@ -58,6 +63,8 @@ if [ "$ENGINE" = 'ask' ] && [ "$COUNT" -gt 1 ] && [ -t 0 ]; then
         NUMBER=$((NUMBER + 1))
         NOTE=''
         [ "$KEY" = 'cellpose4' ] && NOTE=' - most accurate; best with an NVIDIA GPU'
+        [ "$KEY" = 'cellpose4' ] && cq_apple_silicon && NOTE=' - most accurate; uses the Apple GPU'
+        [ "$KEY" = 'cellpose4' ] && [ "$(uname -s)" = 'Darwin' ] && ! cq_apple_silicon && NOTE=' - most accurate; slow on this Mac'
         [ "$KEY" = 'cellpose3' ] && NOTE=' - lighter; faster without a GPU'
         [ "$KEY" = "$RECOMMENDED" ] && NOTE="$NOTE (recommended for this computer)"
         [ "$KEY" = "$DEFAULT_ENGINE" ] && DEFAULT_NUMBER=$NUMBER
