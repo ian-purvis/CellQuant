@@ -206,12 +206,36 @@ class CellposeBackend:
         device_type = str(getattr(device, "type", device or "cpu"))
         details["device"] = device_type
         details["random_seed"] = parameters.get("random_seed")
-        if parameters.get("gpu") and device_type != "cuda":
+        if parameters.get("gpu") and device_type not in ("cuda", "mps"):
             details["warning"] = (
                 "The GPU was requested but Cellpose ran on the CPU. "
                 "Check that an NVIDIA GPU is present and that Install CellQuant.bat installed GPU support."
             )
         return details
+
+    def _cpu_if_apple_gpu_fails(self, run, parameters: dict[str, Any]) -> tuple[np.ndarray, dict[str, Any]]:
+        """Run on the Apple GPU, and once more on the CPU if a step there fails (PyTorch's Apple
+        GPU support is newer and lacks some operations). Other GPUs and the CPU run once."""
+
+        global _APPLE_GPU_FAILED
+        from cellquant.engines import gpu_device
+
+        apple = bool(parameters.get("gpu")) and gpu_device(True) is not None
+        if apple and _APPLE_GPU_FAILED:
+            labels, details = run({**parameters, "gpu": False})
+            details["warning"] = f"The Apple GPU failed earlier in this session ({_APPLE_GPU_FAILED}), so Cellpose ran on the CPU."
+            return labels, details
+        try:
+            return run(parameters)
+        except progress.AnalysisCancelled:
+            raise
+        except Exception as exc:  # also loading the model onto the Apple GPU
+            if not apple:
+                raise
+            _APPLE_GPU_FAILED = str(exc)
+            labels, details = run({**parameters, "gpu": False})
+            details["warning"] = f"The Apple GPU could not run this image ({exc}), so Cellpose ran on the CPU instead."
+            return labels, details
 
     def segment_volume(
         self,
@@ -227,6 +251,20 @@ class CellposeBackend:
         Brightness is scaled here, for the whole stack or per slice, and
         Cellpose is told not to scale again.
         """
+
+        return self._cpu_if_apple_gpu_fails(
+            lambda chosen: self._segment_volume(volume, chosen, mode=mode, scale=scale, anisotropy=anisotropy), parameters
+        )
+
+    def _segment_volume(
+        self,
+        volume: np.ndarray,
+        parameters: dict[str, Any],
+        *,
+        mode: str,
+        scale: str,
+        anisotropy: float,
+    ) -> tuple[np.ndarray, dict[str, Any]]:
 
         from cellquant.engines import CELLPOSE_CLASSIC
         from cellquant.volume import scale_brightness
@@ -277,6 +315,13 @@ class CellposeBackend:
         return labels.astype(np.int32), self._finish(model, details, parameters)
 
     def segment_with_details(
+        self,
+        image: np.ndarray,
+        parameters: dict[str, Any],
+    ) -> tuple[np.ndarray, dict[str, Any]]:
+        return self._cpu_if_apple_gpu_fails(lambda chosen: self._segment_with_details(image, chosen), parameters)
+
+    def _segment_with_details(
         self,
         image: np.ndarray,
         parameters: dict[str, Any],
@@ -337,7 +382,7 @@ class CellposeBackend:
         device_type = str(getattr(device, "type", device or "cpu"))
         details["device"] = device_type
         details["random_seed"] = seed
-        if gpu and device_type != "cuda":
+        if gpu and device_type not in ("cuda", "mps"):
             details["warning"] = (
                 "The GPU was requested but Cellpose ran on the CPU. "
                 "Check that an NVIDIA GPU is present and that Install CellQuant.bat installed GPU support."
@@ -398,6 +443,10 @@ def stage_timer() -> Iterator[dict]:
         _STAGE_TIMES = previous
 
 
+# Why the Apple GPU failed, once it has: later runs in this session go straight to the CPU.
+_APPLE_GPU_FAILED: str | bool = False
+
+
 def _cached_model(models, classic: bool, name: str, gpu: bool, precision: str | None = None):
     """One Cellpose model per (class, name, GPU, precision) for the life of the program.
 
@@ -408,12 +457,17 @@ def _cached_model(models, classic: bool, name: str, gpu: bool, precision: str | 
     key = (cls, str(name), bool(gpu), precision)
     model = _MODELS.get(key)
     if model is None:
+        from cellquant.engines import gpu_device
+
+        # The Apple GPU is named explicitly; on other computers Cellpose picks CUDA itself.
+        device = gpu_device(gpu)
+        options = {} if device is None else {"device": device}
         if classic:
-            model = cls(gpu=gpu, model_type=name)
+            model = cls(gpu=gpu, model_type=name, **options)
         elif precision:
-            model = cls(gpu=gpu, pretrained_model=name, use_bfloat16=precision == "bfloat16")
+            model = cls(gpu=gpu, pretrained_model=name, use_bfloat16=precision == "bfloat16", **options)
         else:
-            model = cls(gpu=gpu, pretrained_model=name)
+            model = cls(gpu=gpu, pretrained_model=name, **options)
         _share_network_output(model)
         _MODELS[key] = model
     return model

@@ -134,7 +134,7 @@ def record_speed(method: str, engine: str | None, device: str, mode: str, second
 
     if seconds <= 0 or slice_megapixels <= 0:
         return
-    key = (*_speed_key(method, engine, device == "cuda"), mode)
+    key = (*_speed_key(method, engine, device in ("cuda", "mps")), mode)
     _MEASURED[key] = seconds / slice_megapixels
 
 
