@@ -11,8 +11,17 @@ from __future__ import annotations
 
 import functools
 import importlib.metadata
+import os
+import platform
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+
+if sys.platform == "darwin":
+    # On a Mac, the few PyTorch steps the Apple GPU cannot do run on the CPU instead of failing.
+    # Read when PyTorch is first imported, so it is set here, before that.
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 # Engine keys stored in recipes. They name the Cellpose major version.
 CELLPOSE_SAM = "cellpose4"
@@ -192,6 +201,43 @@ def _torch_gpu_status() -> dict[str, object]:
             return {"available": True, "name": torch.cuda.get_device_name(0), "memory_gb": memory, "reason": ""}
     except Exception as exc:  # noqa: BLE001
         return {"available": False, "name": "", "reason": str(exc)}
+    try:
+        if torch.backends.mps.is_available():
+            # Apple silicon: the GPU shares the Mac's memory, so no separate GPU memory is reported.
+            return {"available": True, "name": apple_chip_name(), "memory_gb": None, "reason": "", "kind": "mps"}
+    except Exception:  # noqa: BLE001 - an older PyTorch without MPS
+        pass
+    if sys.platform == "darwin":
+        reason = "This Mac has no Apple silicon GPU that PyTorch can use (an Intel Mac, or PyTorch for Intel)."
+        return {"available": False, "name": "", "reason": reason}
     build = getattr(torch.version, "cuda", None)
     reason = "This PyTorch build has no GPU support." if not build else "No usable NVIDIA GPU was found."
     return {"available": False, "name": "", "reason": reason}
+
+
+def apple_chip_name() -> str:
+    """The Mac's chip, for example "Apple M2 Pro", or "Apple silicon GPU" when it cannot be read."""
+
+    try:
+        name = subprocess.run(
+            ["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, timeout=5
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        name = ""
+    return f"{name} GPU" if name.startswith("Apple") else "Apple silicon GPU"
+
+
+def gpu_device(gpu: bool):
+    """The PyTorch device for Cellpose: None (Cellpose's own choice: CUDA, else the CPU),
+    or the Apple GPU when the GPU is on and only MPS is available."""
+
+    if not gpu:
+        return None
+    try:
+        import torch
+
+        if not torch.cuda.is_available() and torch.backends.mps.is_available():
+            return torch.device("mps")
+    except Exception:  # noqa: BLE001 - no PyTorch, or one without MPS
+        return None
+    return None
