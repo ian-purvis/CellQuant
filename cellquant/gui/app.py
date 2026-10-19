@@ -2559,7 +2559,7 @@ class ObjectsPanel(QWidget):
         gpu_row = QHBoxLayout(self.gpu_banner)
         gpu_row.setContentsMargins(0, 0, 0, 0)
         gpu_row.addWidget(self.gpu_label, 1)
-        self._show_gpu_banner("Checking for an NVIDIA GPU...", "neutral")
+        self._show_gpu_banner("Checking for a GPU...", "neutral")
         layout.addWidget(self.gpu_banner)
         # One engine is installed per environment; the other is listed so users know it exists.
         self.engine_choice = QComboBox()
@@ -3208,6 +3208,8 @@ class ObjectsPanel(QWidget):
             return "Cellpose is not installed, so no GPU is used; the classical method runs on the CPU."
         if status.get("available"):
             memory = f", {status['memory_gb']:.0f} GB" if status.get("memory_gb") else ""
+            if status.get("kind") == "mps":
+                return f"Apple GPU found: {status.get('name') or 'Apple silicon GPU'} (shares the Mac's memory)."
             return f"NVIDIA GPU found: {status.get('name') or 'NVIDIA GPU'}{memory}."
         if status.get("nvidia_gpu"):
             return (
@@ -3234,6 +3236,8 @@ class ObjectsPanel(QWidget):
         elif status.get("available"):
             memory = f" ({status['memory_gb']:.0f} GB)" if status.get("memory_gb") else ""
             found = f"<b>✔ NVIDIA GPU found:</b> {status.get('name') or 'NVIDIA GPU'}{memory}."
+            if status.get("kind") == "mps":
+                found = f"<b>✔ Apple GPU found:</b> {status.get('name') or 'Apple silicon GPU'}."
             if cellpose:
                 self._show_gpu_banner(f"{found} Cellpose will run on the GPU.", "good")
             else:
