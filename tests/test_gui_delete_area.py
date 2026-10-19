@@ -90,3 +90,46 @@ def test_deleted_object_leaves_the_outline_layer_and_drawing_is_kept(tmp_path: P
     assert _wait(shell)
     _events(0.3)
     assert int(np.asarray(shell.viewer.layers["Objects"].data)[62, 62]) == 7
+
+
+def test_step3_modes_and_draw_new_object(tmp_path: Path, open_window):  # noqa: F811
+    from cellquant.controller import AnalysisController
+
+    image = tmp_path / "a.tif"
+    _write_squares(image)
+    controller = AnalysisController.create(tmp_path / "experiment", "Modes")
+    controller.add_image_paths([image])
+    controller.set_recipe(_recipe())
+    controller.save()
+    shell = open_window(controller.directory)
+    shell.run_current()
+    assert _wait(shell, 120)
+    image_id = shell.controller.experiment.images[0].image_id
+    panel = shell._edit_panel
+
+    def shown():
+        return {name for name, button in panel._buttons.items() if not button.isHidden()}
+
+    assert shown() == {"Delete objects", "Add new objects", "Undo", "Record drawn edits"}
+    panel._buttons["Delete objects"].click()
+    assert shown() == {"Delete object", "Restore object", "Draw area", "Delete in area", "Undo", "Back"}
+    panel._buttons["Back"].click()
+    panel._buttons["Add new objects"].click()
+    assert shown() == {"Draw new object", "Record drawn edits", "Record all images", "Undo", "Back"}
+
+    top = int(shell.controller.last_results[image_id].automated_labels.max())
+    panel._buttons["Draw new object"].click()
+    layer = shell.viewer.layers["Objects"]
+    assert shell.viewer.layers.selection.active is layer and layer.mode == "paint"
+    assert layer.selected_label == top + 1
+    data = np.asarray(layer.data).copy()
+    free = np.argwhere(data == 0)
+    y, x = free[len(free) // 2]
+    data[y : y + 3, x : x + 3] = top + 1
+    layer.data = data
+    panel._buttons["Record drawn edits"].click()
+    assert _wait(shell)
+    assert (np.asarray(shell.controller.last_results[image_id].labels) == top + 1).sum() == 9
+
+    panel.show_all.setChecked(True)
+    assert "Back" not in shown() and len(shown()) == len(panel._buttons) - 1
