@@ -3686,28 +3686,41 @@ class EditPanel(QWidget):
         self.selected = QLabel("Selected object: none")
         self.selected.setToolTip("Click an object in the image to select it.")
         layout.addWidget(self.selected)
-        buttons = QHBoxLayout()
-        area_buttons = QHBoxLayout()
-        record_buttons = QHBoxLayout()  # a row of their own, so no label is cut off
-        for text, slot, row in (
-            ("Delete object", self._delete, buttons),
-            ("Restore object", self._restore, buttons),
-            ("Undo", self._undo, buttons),
-            ("Draw area", self._draw_area, area_buttons),
-            ("Delete in area", self._delete_in_area, area_buttons),
-            ("Record drawn edits", self._commit, record_buttons),
-            ("Record all images", self._commit_all, record_buttons),
-        ):
-            button = QPushButton(text)
-            button.clicked.connect(slot)
-            row.addWidget(button)
-            if text == "Delete object":
-                self.delete_button = button
-            elif text == "Undo":
-                self.undo_button = button
-        layout.addLayout(buttons)
-        layout.addLayout(area_buttons)
-        layout.addLayout(record_buttons)
+        # One button per function. Which ones show depends on the mode: Home, Delete or Add (or all).
+        self._mode = "home"
+        self._buttons: dict[str, QPushButton] = {}
+        rows = (
+            ("Delete objects", self._enter_delete, "Add new objects", self._enter_add),
+            ("Delete object", self._delete, "Restore object", self._restore),
+            ("Draw area", self._draw_area, "Delete in area", self._delete_in_area),
+            ("Draw new object", self._draw_new, None, None),
+            ("Record drawn edits", self._commit, "Record all images", self._commit_all),  # a row of their own: no label cut off
+            ("Undo", self._undo, "Back", self._go_home),
+        )
+        self._rows: list[tuple[QWidget, list[str]]] = []
+        for left, left_slot, right, right_slot in rows:
+            holder = QWidget()
+            line = QHBoxLayout(holder)
+            line.setContentsMargins(0, 0, 0, 0)
+            names = []
+            for text, slot in ((left, left_slot), (right, right_slot)):
+                if text is None:
+                    continue
+                button = QPushButton(text)
+                button.clicked.connect(slot)
+                line.addWidget(button)
+                self._buttons[text] = button
+                names.append(text)
+            layout.addWidget(holder)
+            self._rows.append((holder, names))
+        self.delete_button = self._buttons["Delete object"]
+        self.undo_button = self._buttons["Undo"]
+        for text, button in self._buttons.items():
+            if text in guide.BUTTON_HELP:
+                button.setToolTip(guide.BUTTON_HELP[text])
+        self.show_all = QCheckBox("Show all functions")
+        self.show_all.setToolTip("Show every function at once instead of one task at a time.")
+        self.show_all.toggled.connect(lambda _on: self._apply_mode())
         # Drawing not recorded yet, per (analysis, image): (objects it was drawn on, drawn objects).
         # Kept when you move to another image, so Record all images can save every image at once.
         self._pending: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
@@ -3723,9 +3736,66 @@ class EditPanel(QWidget):
         self.record_status.hide()
         layout.addWidget(self.record_status)
         layout.addStretch(1)
+        layout.addWidget(self.show_all)
+        self._apply_mode()
 
     def refresh(self) -> None:
         return
+
+    _MODE_BUTTONS = {
+        "home": ("Delete objects", "Add new objects", "Undo", "Record drawn edits"),
+        "delete": ("Delete object", "Restore object", "Draw area", "Delete in area", "Undo", "Back"),
+        "add": ("Draw new object", "Record drawn edits", "Record all images", "Undo", "Back"),
+    }
+    _MODE_HINT = {
+        "home": "Pick a task: delete objects or add new ones.",
+        "delete": "Click an object, then <b>Delete object</b>.",
+        "add": "<b>Draw new object</b>, paint it, then <b>Record drawn edits</b>.",
+    }
+
+    def _apply_mode(self) -> None:
+        everything = self.show_all.isChecked()
+        wanted = set(self._buttons) - {"Back"} if everything else set(self._MODE_BUTTONS[self._mode])
+        for holder, names in self._rows:
+            for name in names:
+                self._buttons[name].setVisible(name in wanted)
+            holder.setVisible(any(name in wanted for name in names))
+        hint = "Click an object, then <b>Delete object</b>, or paint and <b>Record drawn edits</b>." if everything else self._MODE_HINT[self._mode]
+        card = getattr(self.shell, "_step_pages", None)
+        card = getattr(card[2], "todo_card", None) if card else None
+        if card is not None:
+            card.setText(f"{hint} ⓘ")
+
+    def set_mode(self, mode: str) -> None:
+        self._mode = mode
+        self._apply_mode()
+
+    def _enter_delete(self) -> None:
+        self.set_mode("delete")
+
+    def _enter_add(self) -> None:
+        self.set_mode("add")
+
+    def _go_home(self) -> None:
+        self.set_mode("home")
+
+    def _draw_new(self) -> None:
+        """Select the Objects layer, give it an unused number, and switch on napari's brush."""
+
+        controller = self.shell.require_controller()
+        if controller is None or not self.shell._nav_ids:
+            return
+        if self._labels is None or self._labels not in self.shell.viewer.layers:
+            self.shell.message("Run step 2 on this image first.")
+            return
+        layer = self._labels
+        top = int(np.max(layer.data)) if layer.data.size else 0
+        current = controller.recall(self.shell._nav_ids[self.shell._nav_index])
+        if current is not None and current.automated_labels.size:
+            top = max(top, int(np.max(current.automated_labels)))  # numbers of deleted objects stay taken
+        self.shell.viewer.layers.selection.active = layer
+        layer.selected_label = top + 1
+        layer.mode = "paint"
 
     def _say(self, text: str) -> None:
         self.record_status.setText(text)
