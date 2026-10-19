@@ -196,7 +196,11 @@ if [ "$OS" = 'Darwin' ]; then
 else
     RAM_GB=$(awk '/MemTotal/ {printf "%d", $2 / 1048576 + 0.5}' /proc/meminfo 2>/dev/null)
 fi
-if [ -n "$GPU_NAME" ]; then
+if [ "$OS" = 'Darwin' ] && cq_apple_silicon; then
+    echo "  GPU: $(cq_mac_chip) (Apple silicon). Cellpose will use it."
+elif [ "$OS" = 'Darwin' ]; then
+    echo '  GPU: none that Cellpose can use (Intel Mac). Cellpose will run on the CPU.'
+elif [ -n "$GPU_NAME" ]; then
     echo "  NVIDIA GPU: $GPU_NAME, $GPU_GB GB"
 else
     echo '  NVIDIA GPU: none found. Cellpose will run on the CPU.'
@@ -209,7 +213,13 @@ if [ -n "$RAM_GB" ]; then
 fi
 # Same rule as Windows: Cellpose-SAM is slow without an NVIDIA GPU, and may run
 # out of memory on one with less than about 6 GB.
-if [ -n "$GPU_NAME" ] && [ "${GPU_GB:-0}" -ge 6 ]; then
+if [ "$OS" = 'Darwin' ] && cq_apple_silicon; then
+    RECOMMENDED='cellpose4'
+    REASON='this Mac has an Apple silicon GPU that Cellpose-SAM can use'
+elif [ "$OS" = 'Darwin' ]; then
+    RECOMMENDED='cellpose3'
+    REASON='this Intel Mac has no GPU that Cellpose can use, and Cellpose-SAM is slow without one'
+elif [ -n "$GPU_NAME" ] && [ "${GPU_GB:-0}" -ge 6 ]; then
     RECOMMENDED='cellpose4'
     REASON="this computer has an NVIDIA GPU ($GPU_NAME) that Cellpose-SAM can use"
 elif [ -n "$GPU_NAME" ]; then
@@ -367,7 +377,7 @@ install_engine() {
 
     # 2. PyTorch first. Linux without an NVIDIA GPU gets the CPU build, which
     #    skips about 3 GB of NVIDIA libraries. The Linux default build includes
-    #    GPU support; the Mac build is CPU only for Cellpose.
+    #    GPU support; the Mac build uses the Apple GPU (MPS) on Apple silicon.
     torch_args='torch'
     [ "$engine" = 'cellpose4' ] && torch_args='torch torchvision'
     if [ "$OS" = 'Linux' ] && [ -z "$GPU_NAME" ]; then
@@ -380,11 +390,17 @@ install_engine() {
     # 3. CellQuant, napari and this engine's Cellpose.
     step "  Installing CellQuant, napari and $label..."
     requirement="${PROJECT_ROOT}[gui,$extra]"
+    # Intel Macs: the last PyTorch for them was built for NumPy 1 and stops with
+    # "Numpy is not available" under NumPy 2.
+    pins=''
+    [ "$(cq_platform)" = 'MacOSX-x86_64' ] && pins='numpy<2'
     if [ "$DEV" = 1 ]; then
-        env_python "$prefix" -m pip install --disable-pip-version-check --upgrade --editable "$requirement" \
+        # shellcheck disable=SC2086
+        env_python "$prefix" -m pip install --disable-pip-version-check --upgrade --editable "$requirement" $pins \
             || { echo 'Could not install CellQuant'; return 1; }
     else
-        env_python "$prefix" -m pip install --disable-pip-version-check --upgrade "$requirement" \
+        # shellcheck disable=SC2086
+        env_python "$prefix" -m pip install --disable-pip-version-check --upgrade "$requirement" $pins \
             || { echo 'Could not install CellQuant'; return 1; }
         # Make sure the copy in the environment matches the project folder, even
         # when the version number did not change.

@@ -33,6 +33,9 @@ cq_platform() {
         Darwin) system='MacOSX' ;;
         Linux) system='Linux' ;;
     esac
+    # A Terminal running under Rosetta reports x86_64 on an Apple silicon Mac; use the native
+    # Miniforge anyway, so Cellpose can use the Apple GPU.
+    if [ "$system" = 'MacOSX' ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = '1' ]; then machine='arm64'; fi
     case "$machine" in
         aarch64|arm64)
             if [ "$system" = 'MacOSX' ]; then machine='arm64'; else machine='aarch64'; fi ;;
@@ -83,4 +86,50 @@ cq_conda_base_python() {
 
 cq_record() {
     "$CQ_RECORD_PYTHON" "$CQ_SCRIPT_DIR/env_record.py" "$@"
+}
+
+# --- Mac hardware ----------------------------------------------------------
+
+cq_apple_silicon() {
+    # True on an Apple silicon Mac, also from a Terminal running under Rosetta.
+    [ "$(uname -s)" = 'Darwin' ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = '1' ]
+}
+
+cq_mac_chip() {
+    # For example "Apple M2 Pro" or "Intel(R) Core(TM) i7-8850H CPU @ 2.60GHz".
+    sysctl -n machdep.cpu.brand_string 2>/dev/null || echo 'unknown chip'
+}
+
+cq_mac_memory_gb() {
+    sysctl -n hw.memsize 2>/dev/null | awk '{printf "%d", $1 / 1073741824 + 0.5}'
+}
+
+cq_intel_only_python() {
+    # True when the environment's Python is built for Intel only, so it cannot use the Apple GPU.
+    local python="$1/bin/python"
+    [ -e "$python" ] || return 1
+    file -L "$python" 2>/dev/null | grep -q 'x86_64' && ! file -L "$python" 2>/dev/null | grep -q 'arm64'
+}
+
+cq_mac_notice() {
+    # What this Mac means for Cellpose, and the options. $1: the environment that will run.
+    local memory
+    memory=$(cq_mac_memory_gb)
+    echo
+    echo "This Mac: $(cq_mac_chip)${memory:+, $memory GB memory}."
+    if cq_apple_silicon && [ -n "${1:-}" ] && cq_intel_only_python "$1"; then
+        echo '  CellQuant was installed for Intel Macs, so Cellpose cannot use the Apple GPU and runs on the CPU (slow).'
+        echo '  To fix it: open Terminal normally (not with Rosetta), run "Install CellQuant.command", and choose [R] Reinstall.'
+    elif cq_apple_silicon; then
+        echo '  Cellpose will use the Apple GPU. 2D (max projection, one slice) and linked slices run well;'
+        echo '  full 3D is slower than on an NVIDIA GPU, especially for large stacks.'
+        echo '  Options: Cellpose-SAM (most accurate) or Classic Cellpose (faster).'
+    else
+        echo '  This Mac has no GPU that Cellpose can use, so Cellpose runs on the CPU (slow).'
+        echo '  Options: Classic Cellpose (faster without a GPU); max projection rather than 3D;'
+        echo '  full 3D or large batches on a computer with an NVIDIA GPU, or on a cluster.'
+    fi
+    if [ -n "$memory" ] && [ "$memory" -lt 16 ]; then
+        echo "  With $memory GB of memory, large Z-stacks may not fit in full 3D. Use the 2D modes for them."
+    fi
 }
