@@ -1,0 +1,20 @@
+name: Feature request
+description: An idea for CellQuant
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What are you trying to do?
+      description: Describe the task or the problem, not only the fix.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and image kind
+      description: Only if it matters for the idea.
