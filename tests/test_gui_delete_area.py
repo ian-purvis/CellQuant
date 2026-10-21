@@ -110,7 +110,7 @@ def test_step3_modes_and_draw_new_object(tmp_path: Path, open_window):  # noqa: 
     def shown():
         return {name for name, button in panel._buttons.items() if not button.isHidden()}
 
-    assert shown() == {"Delete objects", "Add new objects", "Undo", "Record drawn edits"}
+    assert shown() == {"Delete objects", "Add new objects", "Undo", "Record drawn edits", "Reset image", "Reset all images"}
     panel._buttons["Delete objects"].click()
     assert shown() == {"Delete object", "Restore object", "Draw area", "Delete in area", "Undo", "Back"}
     panel._buttons["Back"].click()

@@ -578,6 +578,32 @@ class AnalysisController:
         self._remeasure_cached(image_id)
         return self.last_results.get(image_id)
 
+    def edit_count(self, image_id: str) -> int:
+        """Edits this analysis made on the image, on any segmentation."""
+
+        return len(self._active_edits(image_id, segmentation=""))
+
+    def reset_edits(self, image_id: str) -> ImageResult | None:
+        """Remove every edit this analysis made on the image: back to the objects step 2 found.
+
+        Edits of other analyses stay. The approval is cleared. Returns the re-measured result.
+        """
+
+        removed = self._active_edits(image_id, segmentation="")
+        if removed:
+            edits = self.edits.get(image_id, [])
+            self.edits[image_id] = [item for item in edits if not any(item is gone for gone in removed)]
+            save_edits(self.directory, image_id, self.edits[image_id])
+            record = self.experiment.image(image_id)
+            if record.processing_status == "approved":
+                record.processing_status = "analyzed"
+                record.last_message = "Approval was cleared because the edits were reset."
+        if self.recall(image_id, measure=False) is None:
+            return None  # nothing measured yet: nothing to measure again
+        if removed:
+            self._remeasure_cached(image_id)
+        return self.last_results.get(image_id)
+
     def commit_drawn_labels(self, image_id: str, drawn: np.ndarray) -> ImageResult:
         current = self.last_results.get(image_id)
         if current is None:
