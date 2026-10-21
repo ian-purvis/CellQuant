@@ -179,7 +179,7 @@ HELP = {
     ("_review_panel", "auto_method"): "How the automatic cutoff is found. Choosing one sets the cutoff now; Reset cutoff uses it again later. Hover each choice for what it does.",
     ("_review_panel", "auto_percent"): "Top N %: this percent of the brightest objects are called positive.",
     ("_review_panel", "apply_to"): "All images: one cutoff shared by every image without its own. This image only: a cutoff for this image alone; other images keep the shared one.",
-    ("_review_panel", "reset_cutoff"): "Back to the automatic cutoff (Auto method): from every included image for All images, or from this image's objects for This image only. Clears approvals of images whose cutoff changes.",
+    ("_review_panel", "reset_cutoff"): "Back to the automatic cutoff (Auto method): from every included image for All images, or from this image's objects for This image only. Clears the approval of images whose percent positive changes.",
     ("_review_panel", "min_percent"): "A cell is positive when at least this percent of its pixels are at or above the pixel level.",
     ("_review_panel", "pixel_level"): "A pixel passes when its value is at or above this level (same units as the image). Click Apply pixel level to measure again.",
     ("_review_panel", "counts"): "Counts for this image at the current cutoff. Unmeasured objects are left out of all counts.",
