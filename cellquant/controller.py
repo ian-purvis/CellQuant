@@ -201,14 +201,35 @@ class AnalysisController:
             except CellQuantError:
                 return None
         if image_id in self.last_results:
-            return self.last_results[image_id]
+            result = self._at_current_cutoffs(image_id, self.last_results[image_id])
+            self.last_results[image_id] = result
+            return result
         for folder in self._result_folders():
             result = read_persisted_result(folder, image_id)
             if result is not None:
-                result = self._with_count_area(image_id, result)
+                result = self._at_current_cutoffs(image_id, self._with_count_area(image_id, result))
                 self.last_results[image_id] = result
                 return result
         return None
+
+    def _at_current_cutoffs(self, image_id: str, result: ImageResult) -> ImageResult:
+        """The result classified at the cutoffs this image uses now (a cutoff set for all images
+        reaches each saved image here). Nothing is measured again."""
+
+        if getattr(self, "_unswapped_recipe", None) is not None:
+            return result  # in the middle of analyzing an image: it is classified there
+        try:
+            record = self.experiment.image(image_id)
+        except KeyError:
+            return result
+        with self._image_settings(record):
+            recipe = self.recipe
+        wanted = [item.model_dump(mode="json") for item in recipe.classifications]
+        if result.provenance.get("classification_definitions") == wanted:
+            return result
+        if any(item.measurement not in result.objects.columns for item in recipe.classifications):
+            return result  # measured with other settings: only a new measurement can fix it
+        return reclassify_result(result, recipe)
 
     def _with_count_area(self, image_id: str, result: ImageResult) -> ImageResult:
         """The result counted in this image's current count area (saved results may predate it)."""
@@ -522,22 +543,113 @@ class AnalysisController:
         full[..., y0:y1, x0:x1] = labels
         return full
 
-    def update_thresholds(self, image_id: str, thresholds: dict[str, float]) -> ImageResult | None:
-        """Reclassify the current measurements. Segmentation is not repeated."""
+    def update_thresholds(
+        self, image_id: str, thresholds: dict[str, float], *, this_image_only: bool = False
+    ) -> ImageResult | None:
+        """Reclassify the current measurements. Segmentation is not repeated.
+
+        A cutoff is shared by every image without a cutoff of its own; ``this_image_only`` gives
+        this image its own. Other images pick up a shared cutoff when they are next shown or exported.
+        """
 
         data = self.recipe.model_dump(mode="json")
         known = {item["id"]: item for item in data["classifications"]}
         for classification_id, threshold in thresholds.items():
             if classification_id not in known:
                 raise KeyError(classification_id)
-            known[classification_id]["threshold"] = float(threshold)
+            if this_image_only:
+                known[classification_id].setdefault("image_thresholds", {})[image_id] = float(threshold)
+            else:
+                known[classification_id]["threshold"] = float(threshold)
         self.set_recipe(data)
-        prior = self.recall(image_id)
-        if prior is None:
-            return None
-        result = reclassify_result(prior, self.recipe)
-        self.last_results[image_id] = result
-        return result
+        return self.recall(image_id)
+
+    def own_cutoff(self, image_id: str, classification_id: str) -> float | None:
+        """This image's own cutoff for the marker, or None when it uses the shared one."""
+
+        item = next((item for item in self.recipe.classifications if item.id == classification_id), None)
+        return None if item is None else item.image_thresholds.get(image_id)
+
+    def set_auto_method(self, classification_id: str, method: str, percent: float | None = None) -> None:
+        """Remember how this marker's automatic cutoff is found. No cutoff changes."""
+
+        data = self.recipe.model_dump(mode="json")
+        item = next(item for item in data["classifications"] if item["id"] == classification_id)
+        item["auto_method"] = method
+        if percent is not None:
+            item["auto_percent"] = float(percent)
+        self.set_recipe(data)
+
+    def marker_values(self, classification_id: str, image_ids: list[str]) -> np.ndarray:
+        """The marker's measurement for every counted object in these images (saved tables only)."""
+
+        item = next(item for item in self.recipe.classifications if item.id == classification_id)
+        values = []
+        for image_id in image_ids:
+            table = self._objects_table(image_id)
+            if table is None or item.measurement not in table.columns:
+                continue
+            if "excluded" in table.columns:
+                table = table.loc[~table["excluded"].astype(str).str.lower().isin(["true", "1"])]
+            table = table.loc[~outside(table)]
+            values.append(table[item.measurement].to_numpy(dtype=float))
+        return np.concatenate(values) if values else np.zeros(0)
+
+    def _objects_table(self, image_id: str) -> pd.DataFrame | None:
+        result = self.last_results.get(image_id)
+        if result is not None:
+            return result.objects
+        from cellquant.storage import _safe
+
+        for folder in self._result_folders():
+            path = folder / "measurements" / f"{_safe(image_id)}.csv"
+            if path.is_file():
+                return pd.read_csv(path)
+        return None
+
+    def reset_cutoff(self, classification_id: str, image_id: str, *, this_image_only: bool) -> tuple[float, float, list[str]]:
+        """Put the cutoff back to its automatic value, by the marker's own method.
+
+        This image only: its own cutoff becomes the automatic value for its own objects. All images:
+        the shared cutoff is found again from every included image, and no image keeps its own.
+        Returns (old, new, images whose cutoff changed); their approvals are cleared.
+        """
+
+        from cellquant.quicksetup import auto_threshold
+
+        item = next(item for item in self.recipe.classifications if item.id == classification_id)
+        old = item.threshold_for(image_id)
+        data = self.recipe.model_dump(mode="json")
+        stored = next(entry for entry in data["classifications"] if entry["id"] == classification_id)
+        if this_image_only:
+            new = auto_threshold(self.marker_values(classification_id, [image_id]), item.auto_method, item.auto_percent)
+            stored.setdefault("image_thresholds", {})[image_id] = new
+            changed = [image_id] if new != old else []
+        else:
+            included = [record.image_id for record in self.experiment.images if record.include and self.has_result(record.image_id)]
+            new = auto_threshold(self.marker_values(classification_id, included), item.auto_method, item.auto_percent)
+            stored["threshold"] = new
+            stored["image_thresholds"] = {}
+            changed = [other for other in included if item.threshold_for(other) != new]
+        self.set_recipe(data)
+        self._clear_approvals(changed, "Approval was cleared because the cutoff was reset.")
+        return old, new, changed
+
+    def use_shared_cutoff(self, classification_id: str, image_id: str) -> None:
+        """This image drops its own cutoff and uses the shared one again."""
+
+        data = self.recipe.model_dump(mode="json")
+        stored = next(entry for entry in data["classifications"] if entry["id"] == classification_id)
+        stored.get("image_thresholds", {}).pop(image_id, None)
+        self.set_recipe(data)
+
+    def _clear_approvals(self, image_ids: list[str], reason: str) -> None:
+        for image_id in image_ids:
+            record = self.experiment.image(image_id)
+            if record.processing_status == "approved":
+                record.processing_status = "analyzed"
+                record.approved_settings_sha256 = ""
+                record.last_message = reason
 
     def delete_object(self, image_id: str, object_id: int) -> ImageResult:
         self._edit_and_remeasure(image_id, EditOperation.create(image_id, int(object_id), "delete"))
@@ -818,6 +930,8 @@ class AnalysisController:
                         **recipe,
                         "object_set": {**recipe.get("object_set", {}), "segmentation_channel": 0},
                         "measurements": [{**item, "channel": 0} for item in recipe.get("measurements", [])],
+                        # Nor is a cutoff set for one image (results are classified at the current cutoffs).
+                        "classifications": [{**item, "threshold": 0.0} for item in recipe.get("classifications", [])],
                         # Crop channels mapped per image are not different settings either.
                         **({"crop": {**recipe["crop"], "channels": None}} if isinstance(recipe.get("crop"), dict) else {}),
                     }
@@ -847,7 +961,7 @@ class AnalysisController:
                     break
                 result = read_persisted_result(folder, record.image_id)
             if result is not None:
-                results.append(apply_count_area(result, record.count_area))
+                results.append(apply_count_area(self._at_current_cutoffs(record.image_id, result), record.count_area))
         return results
 
     def objects_for_export(self) -> pd.DataFrame:
@@ -1905,14 +2019,15 @@ class AnalysisController:
         crop_mapped, _missing = self._crop_mapping(record)
         channel, _reason = self.segmentation_channel_for(record.image_id)
         measured = {item.id: self._map_channel(record, int(item.channel))[0] for item in self.recipe.measurements}
+        own_cutoffs = self.recipe.for_image(record.image_id)  # each marker at this image's cutoff
         same = channel == self.recipe.object_set.segmentation_channel and all(
             measured[item.id] == item.channel for item in self.recipe.measurements
-        ) and (crop_mapped is None or crop_mapped == crop_channels(self.recipe))
+        ) and (crop_mapped is None or crop_mapped == crop_channels(self.recipe)) and own_cutoffs is self.recipe
         if same:
             yield
             return
         saved = self.recipe
-        changed = saved.model_copy(deep=True)
+        changed = own_cutoffs.model_copy(deep=True)
         changed.object_set.segmentation_channel = channel
         for item in changed.measurements:
             item.channel = measured[item.id]
