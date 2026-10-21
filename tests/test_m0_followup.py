@@ -298,6 +298,39 @@ def test_no_automatic_cutoff_without_measured_values(tmp_path: Path):
     assert controller.recipe.classifications[0].threshold == 200
 
 
+def test_no_automatic_cutoff_when_no_object_is_counted(tmp_path: Path):
+    from cellquant.errors import CellQuantError
+
+    controller, ids = _three_runs(tmp_path)
+    controller.set_count_area(ids, [[[0.0, 0.0], [0.0, 2.0], [2.0, 2.0], [2.0, 0.0]]])  # a corner without objects
+    controller.save()
+    for this_image in (False, True):
+        with pytest.raises(CellQuantError):
+            controller.reset_cutoff("class_a", ids[0], this_image_only=this_image)
+    assert controller.recipe.classifications[0].threshold == 200
+    assert controller.own_cutoff(ids[0], "class_a") is None
+
+
+def test_results_saved_without_marker_definitions_follow_a_cutoff_move(tmp_path: Path):
+    from cellquant.storage import _safe
+
+    controller, ids = _three_runs(tmp_path)
+    controller.save()
+    # As saved before marker definitions were recorded (before October 6).
+    for image_id in ids[1:]:
+        path = controller._working_dir() / "provenance" / f"{_safe(image_id)}.json"
+        provenance = json.loads(path.read_text(encoding="utf-8"))
+        provenance.pop("classification_definitions", None)
+        path.write_text(json.dumps(provenance), encoding="utf-8")
+        controller.last_results.pop(image_id, None)
+    controller.update_thresholds(ids[0], {"class_a": 900})
+    out = controller.export(tmp_path / "out")
+    objects = pd.read_csv(out / "objects.csv")
+    assert set(objects["image_id"]) == set(ids)
+    assert not objects["class_a"].astype(str).str.lower().eq("true").any()
+    assert not (out / "mixed_settings.txt").exists()
+
+
 def test_automatic_cutoff_methods():
     from cellquant.quicksetup import auto_threshold
 
