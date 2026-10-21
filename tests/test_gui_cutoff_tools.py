@@ -27,17 +27,28 @@ def _settle(seconds: float = 0.2) -> None:
 def test_cutoff_tools(tmp_path: Path, monkeypatch):
     from qtpy.QtWidgets import QMessageBox
 
+    from qtpy.QtCore import Qt
+
     from cellquant.gui import guide
     from cellquant.gui.app import CellQuantWindow
     from cellquant.quicksetup import auto_threshold
 
     monkeypatch.setattr(guide, "choose_practice_folder", lambda parent: tmp_path / "practice")
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    answers: list = []  # what the next Reset confirmation answers; each question is recorded
+    asked: list[str] = []
+
+    def question(_parent, _title, text, *args, **kwargs):
+        asked.append(text)
+        return answers.pop(0)
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(question))
     try:
         viewer = napari.Viewer(show=False)
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"napari viewer could not start: {exc}")
     shell = CellQuantWindow(viewer, None)
+    said: list[str] = []
+    monkeypatch.setattr(shell, "message", said.append)
     try:
         shell.start_practice()
         _wait(shell)
@@ -52,9 +63,21 @@ def test_cutoff_tools(tmp_path: Path, monkeypatch):
         assert panel.auto_method.currentData() == "otsu" and panel.apply_to.currentData() == "all"
 
         # Dragging the histogram line moves the shared cutoff.
-        panel.histogram.cutoff_dragged.emit(500.0)
+        from qtpy.QtCore import QEvent, QPoint, QPointF
+        from qtpy.QtGui import QMouseEvent
+        from qtpy.QtTest import QTest
+        from qtpy.QtWidgets import QApplication
+
+        histogram = panel.histogram
+        histogram.resize(400, 80)
+        x = int(round(histogram._x(500.0)))
+        QTest.mousePress(histogram, Qt.LeftButton, Qt.NoModifier, QPoint(x - 40, 40))
+        # QTest.mouseMove carries no buttons: send a move with the left button held.
+        move = QMouseEvent(QEvent.MouseMove, QPointF(x, 40), Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+        QApplication.sendEvent(histogram, move)
+        QTest.mouseRelease(histogram, Qt.LeftButton, Qt.NoModifier, QPoint(x, 40))
         _settle()
-        assert controller.recipe.classifications[0].threshold == pytest.approx(500.0, rel=0.01)
+        assert controller.recipe.classifications[0].threshold == pytest.approx(500.0, rel=0.02)
 
         # This image only: a cutoff of its own; the shared one stays.
         panel.apply_to.setCurrentIndex(panel.apply_to.findData("image"))
@@ -65,23 +88,49 @@ def test_cutoff_tools(tmp_path: Path, monkeypatch):
         assert controller.recipe.classifications[0].threshold == pytest.approx(500.0, rel=0.01)
         assert "> 300" in panel.counts.text()  # the rule shown is this image's own
 
-        # Choosing a method uses it at once, here for this image's own objects.
+        # Choosing a method moves this image's own cutoff to its value; the shared one stays.
         panel.auto_method.setCurrentIndex(panel.auto_method.findData("triangle"))
         panel._auto_method_chosen()
         values = controller.marker_values(marker.id, [image_id])
         assert controller.recipe.classifications[0].auto_method == "triangle"
         assert controller.own_cutoff(image_id, marker.id) == pytest.approx(auto_threshold(values, "triangle"))
+        assert controller.recipe.classifications[0].threshold == pytest.approx(500.0, rel=0.02)
+        # The % box losing focus with nothing changed does nothing.
+        before = controller.own_cutoff(image_id, marker.id)
+        panel.auto_percent.editingFinished.emit()
+        assert controller.own_cutoff(image_id, marker.id) == before
 
         # All images again: the image drops its own cutoff.
         panel.apply_to.setCurrentIndex(panel.apply_to.findData("all"))
         panel._apply_to_chosen()
         assert controller.own_cutoff(image_id, marker.id) is None
 
-        # Reset (all images) finds the cutoff by the chosen method from every included image.
+        # Reset (all images) asks first when an image is approved; No changes nothing.
+        top = float(values.max()) + 1  # nothing positive: any automatic cutoff changes the calls
+        controller.update_thresholds(image_id, {marker.id: top})
+        controller.set_status(image_id, "approved")
+        answers.append(QMessageBox.No)
         panel.reset_cutoff.click()
-        included = [r.image_id for r in controller.experiment.images if r.include and controller.has_result(r.image_id)]
-        expected = auto_threshold(controller.marker_values(marker.id, included), "triangle")
+        assert asked and "approving again" in asked[-1]
+        assert controller.recipe.classifications[0].threshold == top
+        # Yes: the cutoff by the chosen method, from every measured image.
+        answers.append(QMessageBox.Yes)
+        panel.reset_cutoff.click()
+        expected = auto_threshold(controller.marker_values(marker.id, controller.measured_images(marker.id)), "triangle")
         assert controller.recipe.classifications[0].threshold == pytest.approx(expected)
         assert panel.threshold_slider.value() == pytest.approx(expected, rel=0.01, abs=1.0)
+        assert controller.cleared_approvals == [image_id]  # its positives changed
+        assert controller.experiment.image(image_id).processing_status == "analyzed"
+        assert "Approval cleared for 1 image" in said[-1]
+
+        # While a run uses the settings, the cutoff tools stay locked, even when the panel refreshes.
+        shell.set_busy(True)
+        try:
+            panel.show_result(controller.recall(image_id))
+            for widget in (panel.histogram, panel.threshold_slider, panel.auto_method, panel.apply_to, panel.reset_cutoff):
+                assert not widget.isEnabled()
+        finally:
+            shell.set_busy(False)
+        assert panel.reset_cutoff.isEnabled() and panel.histogram.isEnabled()
     finally:
         viewer.close()
