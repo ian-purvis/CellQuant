@@ -669,6 +669,9 @@ def test_run_buttons_live_in_the_steps_not_the_bottom_bar(window):
 
     names = [button.text() for button in window._objects_panel.findChildren(QPushButton)]
     assert "Preview" in names and names.count("Run this image") == 1
+    assert names.count("Run all images") == 1
+    batch = [b for b in window._objects_panel.findChildren(QPushButton) if b.text() == "Run all images"][0]
+    assert batch.isEnabled(), "batch run must not wait for a single-image run"
     summary = [button.text() for button in window._results_summary.findChildren(QPushButton)]
     assert "Run all images" in summary and "Run all analyses" in summary
     footer_names = [button.text() for button in window._footer.findChildren(QPushButton)]
