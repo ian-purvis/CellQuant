@@ -873,3 +873,112 @@ def test_napari_layer_panels_cannot_be_hidden_by_accident_and_pop_out_with_a_hea
     assert dock.isHidden()
     action.trigger()
     assert not dock.isHidden()
+
+
+def test_pixel_size_controls_show_only_when_a_size_is_missing(window):
+    """Step 1 hides the manual pixel-size controls when every included image has a size."""
+
+    from qtpy.QtCore import Qt
+
+    panel = window._experiment_panel
+    records = window.controller.experiment.images
+    shown = lambda: tuple(w.isVisibleTo(panel) for w in (panel.calibration_widget, panel.scope_widget, panel.pixel_summary))
+
+    def set_sizes(record, x, y, z=None, planes=1):
+        record.pixel_size_x, record.pixel_size_y, record.pixel_size_z, record.z_planes = x, y, z, planes
+
+    for record in records:
+        set_sizes(record, None, None)
+    panel.refresh_table()
+    assert shown() == (True, True, False)
+    assert "Shown because 2 included images lack a pixel size or Z step" in panel.pixel_x.toolTip()
+    assert "Pixel width" in panel.pixel_x.toolTip()  # the guide text is kept
+    assert "Shown because" in panel.apply_sizes_button.toolTip()
+    assert not panel.change_sizes_button.isVisibleTo(panel)
+
+    for record in records:
+        set_sizes(record, 0.57, 0.57)
+    panel.refresh_table()
+    assert shown() == (False, False, True)
+    assert panel.pixel_summary.text() == "Pixel size 0.570 µm/pixel"
+
+    # Missing Y alone keeps the controls; different X and Y are both shown.
+    set_sizes(records[0], 0.57, None)
+    panel.refresh_table()
+    assert shown()[0]
+    set_sizes(records[0], 0.57, 0.6)
+    panel.refresh_table()
+    assert panel.pixel_summary.text() == "Pixel size X 0.570, Y 0.570–0.600 µm/pixel"
+
+    # A stack without a Z step keeps the controls; a 2D image's leftover Z step is not shown.
+    set_sizes(records[0], 0.57, 0.57, None, planes=5)
+    panel.refresh_table()
+    assert shown()[0]
+    set_sizes(records[0], 0.57, 0.57, 1.5, planes=5)
+    set_sizes(records[1], 0.86, 0.86, 1.0, planes=1)
+    panel.refresh_table()
+    assert shown() == (False, False, True)
+    assert panel.pixel_summary.text() == "Pixel size 0.570–0.860 µm/pixel, Z step 1.500 µm"
+
+    # Typed sizes count like file sizes.
+    set_sizes(records[1], None, None)
+    panel.refresh_table()
+    panel.pixel_x.setValue(0.65)
+    panel.pixel_y.setValue(0.65)
+    panel.pixel_z.setValue(1.5)
+    panel._apply_pixel_size()
+    assert shown() == (False, False, True)
+    assert "0.650" in panel.pixel_summary.text()
+
+    # The default scope also fills a stack that only lacks a Z step.
+    set_sizes(records[0], 0.57, 0.57)
+    set_sizes(records[1], 0.57, 0.57, None, planes=5)
+    panel.refresh_table()
+    window._nav_index = 0
+    panel.pixel_x.setValue(0.57)
+    panel.pixel_y.setValue(0.57)
+    panel.pixel_z.setValue(1.5)
+    panel._apply_pixel_size()
+    assert records[1].pixel_size_z == 1.5
+
+    # Filling a stack's missing Z keeps the X and Y read from its file.
+    set_sizes(records[0], 0.568, 0.568)
+    set_sizes(records[1], 0.9, 0.9, None, planes=5)
+    panel.refresh_table()
+    panel.pixel_x.setValue(0.568)
+    panel.pixel_y.setValue(0.568)
+    panel.pixel_z.setValue(1.5)
+    panel._apply_pixel_size()
+    assert (records[1].pixel_size_x, records[1].pixel_size_y, records[1].pixel_size_z) == (0.9, 0.9, 1.5)
+
+    # Change… shows the controls again for a typed size; Set sizes tucks them away.
+    assert panel.change_sizes_button.isVisibleTo(panel)
+    assert "Shown because" not in panel.pixel_x.toolTip()
+    panel.change_sizes_button.click()
+    assert shown()[:2] == (True, True)
+    assert not panel.change_sizes_button.isVisibleTo(panel)
+    assert "Shown because" not in panel.pixel_x.toolTip()
+    panel.pixel_x.setValue(0.7)
+    panel.pixel_y.setValue(0.7)
+    panel._apply_pixel_size()
+    assert shown() == (False, False, True)
+
+    # Opening another experiment leaves change mode.
+    panel.change_sizes_button.click()
+    assert panel.calibration_widget.isVisibleTo(panel)
+    panel._size_controller = object()  # as if another experiment had been open
+    panel.refresh_table()
+    assert shown() == (False, False, True)
+    set_sizes(records[1], None, None)
+
+    # Unticking the only image without a size hides the controls; ticking it brings them back.
+    set_sizes(records[1], None, None)
+    panel.refresh_table()
+    assert shown()[0]
+    item = panel.table.item(1, 0)
+    item.setCheckState(Qt.Unchecked)
+    assert shown() == (False, False, True)
+    item.setCheckState(Qt.Checked)
+    assert shown()[0]
+    assert "1 included image lacks a pixel size or Z step" in panel.pixel_x.toolTip()
+    _wait(window)
