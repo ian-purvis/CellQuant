@@ -741,7 +741,9 @@ class AnalysisController:
             images = [other for other in self.measured_images(classification_id) if pool is None or other in pool]
         values = self.marker_values(classification_id, images) if images else np.zeros(0)
         if not np.isfinite(values).any():
-            raise CellQuantError(f"No measured {item.name} values yet: run {'this image' if this_image_only else 'an image'} first.")
+            if not images:
+                raise CellQuantError(f"No measured {item.name} values yet: run {'this image' if this_image_only else 'an image'} first.")
+            raise CellQuantError(f"No counted objects with a {item.name} value: check the objects and the count area.")
         return auto_threshold(values, item.auto_method, item.auto_percent), len(images)
 
     def reset_cutoff(
