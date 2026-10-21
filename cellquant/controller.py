@@ -151,6 +151,9 @@ class AnalysisController:
         self.run_dir: Path | None = None
         self.run_log: RunLog | None = None
         self.last_results: dict[str, ImageResult] = {}
+        # Images whose approval the last cutoff change cleared, and marker columns kept between cutoff moves.
+        self.cleared_approvals: list[str] = []
+        self._column_cache: dict[tuple[str, str], tuple[tuple, np.ndarray]] = {}
         self._session_images: OrderedDict[str, LoadedImage] = OrderedDict()
         self._segmentation_ids: dict[str, str] = {}
         self._display_cache: OrderedDict[tuple, LoadedImage] = OrderedDict()
@@ -214,7 +217,8 @@ class AnalysisController:
 
     def _at_current_cutoffs(self, image_id: str, result: ImageResult) -> ImageResult:
         """The result classified at the cutoffs this image uses now (a cutoff set for all images
-        reaches each saved image here). Nothing is measured again."""
+        reaches each saved image here). Only cutoffs are brought up to date: a result whose markers
+        differ in anything else stays as it was saved. Nothing is measured again."""
 
         if getattr(self, "_unswapped_recipe", None) is not None:
             return result  # in the middle of analyzing an image: it is classified there
@@ -225,11 +229,28 @@ class AnalysisController:
         with self._image_settings(record):
             recipe = self.recipe
         wanted = [item.model_dump(mode="json") for item in recipe.classifications]
-        if result.provenance.get("classification_definitions") == wanted:
+        stored = result.provenance.get("classification_definitions")
+        if stored == wanted or not _same_but_cutoffs(stored, wanted):
             return result
         if any(item.measurement not in result.objects.columns for item in recipe.classifications):
-            return result  # measured with other settings: only a new measurement can fix it
-        return reclassify_result(result, recipe)
+            return result
+        return self._reclassified(result, recipe)
+
+    @staticmethod
+    def _reclassified(result: ImageResult, recipe: Recipe) -> ImageResult:
+        """Classified at the recipe's cutoffs. The provenance keeps the settings the objects were found
+        and measured with; only its markers change, so different settings still show as mixed."""
+
+        updated = reclassify_result(result, recipe)
+        saved = result.provenance.get("recipe")
+        if isinstance(saved, dict):
+            merged = {**saved, "classifications": [item.model_dump(mode="json") for item in recipe.classifications]}
+            updated.provenance["recipe"] = merged
+            try:
+                updated.provenance["recipe_sha256"] = load_recipe(merged).content_hash()
+            except Exception:  # noqa: BLE001 - settings saved by another version: keep their hash
+                updated.provenance["recipe_sha256"] = result.provenance.get("recipe_sha256", "")
+        return updated
 
     def _with_count_area(self, image_id: str, result: ImageResult) -> ImageResult:
         """The result counted in this image's current count area (saved results may predate it)."""
@@ -550,8 +571,10 @@ class AnalysisController:
 
         A cutoff is shared by every image without a cutoff of its own; ``this_image_only`` gives
         this image its own. Other images pick up a shared cutoff when they are next shown or exported.
+        An approved image whose positive calls change loses its approval (see ``cleared_approvals``).
         """
 
+        before = self.recipe
         data = self.recipe.model_dump(mode="json")
         known = {item["id"]: item for item in data["classifications"]}
         for classification_id, threshold in thresholds.items():
@@ -562,7 +585,52 @@ class AnalysisController:
             else:
                 known[classification_id]["threshold"] = float(threshold)
         self.set_recipe(data)
+        self.cleared_approvals = self._clear_changed_approvals(before, [image_id] if this_image_only else None)
         return self.recall(image_id)
+
+    def _clear_changed_approvals(self, before: Recipe, image_ids: list[str] | None = None) -> list[str]:
+        """Clear the approval of each approved image (of ``image_ids``; None: all) whose positive
+        calls differ between the ``before`` cutoffs and the current ones. Returns those images."""
+
+        cleared = []
+        for record in self.experiment.images:
+            if record.processing_status != "approved" or (image_ids is not None and record.image_id not in image_ids):
+                continue
+            for item in self.recipe.classifications:
+                old = next((entry for entry in before.classifications if entry.id == item.id), None)
+                if old is None:
+                    continue
+                low, high = old.threshold_for(record.image_id), item.threshold_for(record.image_id)
+                if low == high:
+                    continue
+                values = self._marker_column(record.image_id, item.measurement)
+                if values is not None and np.any(_positive_calls(values, low, item.comparison) != _positive_calls(values, high, item.comparison)):
+                    cleared.append(record.image_id)
+                    break
+        self._clear_approvals(cleared, "Approval was cleared because the cutoff changed.")
+        return cleared
+
+    def _marker_column(self, image_id: str, measurement_id: str) -> np.ndarray | None:
+        """One measurement of every object in the image (kept between cutoff moves)."""
+
+        result = self.last_results.get(image_id)
+        if result is not None:
+            key = ("open", result.objects)  # compared by identity below
+        else:
+            path = self._saved_table_path(image_id)
+            if path is None:
+                return None
+            key = (str(path), path.stat().st_mtime_ns)
+        cache = self._column_cache
+        hit = cache.get((image_id, measurement_id))
+        if hit is not None and hit[0][0] == key[0] and (hit[0][1] is key[1] if key[0] == "open" else hit[0][1] == key[1]):
+            return hit[1]
+        table = self._objects_table(image_id)
+        if table is None or measurement_id not in table.columns:
+            return None
+        values = table[measurement_id].to_numpy(dtype=float)
+        cache[(image_id, measurement_id)] = (key, values)
+        return values
 
     def own_cutoff(self, image_id: str, classification_id: str) -> float | None:
         """This image's own cutoff for the marker, or None when it uses the shared one."""
@@ -596,52 +664,76 @@ class AnalysisController:
         return np.concatenate(values) if values else np.zeros(0)
 
     def _objects_table(self, image_id: str) -> pd.DataFrame | None:
+        """The image's object table: the open result's, else the saved one (labels are not read)."""
+
         result = self.last_results.get(image_id)
         if result is not None:
             return result.objects
+        path = self._saved_table_path(image_id)
+        return None if path is None else pd.read_csv(path)
+
+    def _saved_table_path(self, image_id: str) -> Path | None:
         from cellquant.storage import _safe
 
         for folder in self._result_folders():
             path = folder / "measurements" / f"{_safe(image_id)}.csv"
             if path.is_file():
-                return pd.read_csv(path)
+                return path
         return None
 
-    def reset_cutoff(self, classification_id: str, image_id: str, *, this_image_only: bool) -> tuple[float, float, list[str]]:
-        """Put the cutoff back to its automatic value, by the marker's own method.
+    def measured_images(self, classification_id: str) -> list[str]:
+        """Included images whose object table has this marker's measurement."""
 
-        This image only: its own cutoff becomes the automatic value for its own objects. All images:
-        the shared cutoff is found again from every included image, and no image keeps its own.
-        Returns (old, new, images whose cutoff changed); their approvals are cleared.
-        """
+        item = next(item for item in self.recipe.classifications if item.id == classification_id)
+        return [
+            record.image_id
+            for record in self.experiment.images
+            if record.include and self._marker_column(record.image_id, item.measurement) is not None
+        ]
+
+    def auto_cutoff(self, classification_id: str, image_id: str, *, this_image_only: bool) -> tuple[float, int]:
+        """The marker's automatic cutoff, by its own method: from this image's objects, or from every
+        measured included image. Returns (cutoff, number of images used)."""
 
         from cellquant.quicksetup import auto_threshold
 
         item = next(item for item in self.recipe.classifications if item.id == classification_id)
+        images = [image_id] if this_image_only else self.measured_images(classification_id)
+        return auto_threshold(self.marker_values(classification_id, images), item.auto_method, item.auto_percent), len(images)
+
+    def reset_cutoff(self, classification_id: str, image_id: str, *, this_image_only: bool) -> tuple[float, float, int]:
+        """Put the cutoff back to its automatic value, by the marker's own method.
+
+        This image only: its own cutoff becomes the automatic value for its own objects. All images:
+        the shared cutoff is found again from every measured included image, and no image keeps its
+        own. Approved images whose positive calls change lose their approval (``cleared_approvals``).
+        Returns (old, new, number of images the value came from).
+        """
+
+        item = next(item for item in self.recipe.classifications if item.id == classification_id)
         old = item.threshold_for(image_id)
+        new, used = self.auto_cutoff(classification_id, image_id, this_image_only=this_image_only)
+        before = self.recipe
         data = self.recipe.model_dump(mode="json")
         stored = next(entry for entry in data["classifications"] if entry["id"] == classification_id)
         if this_image_only:
-            new = auto_threshold(self.marker_values(classification_id, [image_id]), item.auto_method, item.auto_percent)
             stored.setdefault("image_thresholds", {})[image_id] = new
-            changed = [image_id] if new != old else []
         else:
-            included = [record.image_id for record in self.experiment.images if record.include and self.has_result(record.image_id)]
-            new = auto_threshold(self.marker_values(classification_id, included), item.auto_method, item.auto_percent)
             stored["threshold"] = new
             stored["image_thresholds"] = {}
-            changed = [other for other in included if item.threshold_for(other) != new]
         self.set_recipe(data)
-        self._clear_approvals(changed, "Approval was cleared because the cutoff was reset.")
-        return old, new, changed
+        self.cleared_approvals = self._clear_changed_approvals(before, [image_id] if this_image_only else None)
+        return old, new, used
 
     def use_shared_cutoff(self, classification_id: str, image_id: str) -> None:
         """This image drops its own cutoff and uses the shared one again."""
 
+        before = self.recipe
         data = self.recipe.model_dump(mode="json")
         stored = next(entry for entry in data["classifications"] if entry["id"] == classification_id)
         stored.get("image_thresholds", {}).pop(image_id, None)
         self.set_recipe(data)
+        self.cleared_approvals = self._clear_changed_approvals(before, [image_id])
 
     def _clear_approvals(self, image_ids: list[str], reason: str) -> None:
         for image_id in image_ids:
@@ -2155,6 +2247,19 @@ def process_experiment(
     if recipe is not None:
         controller.set_recipe(recipe)
     return controller.run_images(image_ids, on_progress=on_progress)
+
+
+def _same_but_cutoffs(stored, wanted: list[dict]) -> bool:
+    """Whether two lists of marker definitions differ in their cutoffs at most."""
+
+    if not isinstance(stored, list) or len(stored) != len(wanted):
+        return False
+    strip = lambda items: [{key: value for key, value in item.items() if key != "threshold"} for item in items]  # noqa: E731
+    return strip(stored) == strip(wanted)
+
+
+def _positive_calls(values: np.ndarray, cutoff: float, comparison: str) -> np.ndarray:
+    return values >= cutoff if comparison == "at_least" else values > cutoff
 
 
 _SEGMENTATION_SETTINGS = ("z_stack", "z_index", "z_stitch_threshold", "z_scale_brightness", "z_min_slices", "object_set")

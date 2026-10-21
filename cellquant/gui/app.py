@@ -1250,7 +1250,7 @@ class CellQuantWindow:
             # Buttons that change the settings: never while images are being analyzed with them.
             "Load settings…", "Add measurement", "Remove measurement",
             "Add marker", "Remove marker", "Add result row", "Remove result row", "Apply pixel level",
-            "Run all images (this analysis)", "Set sizes (µm)",
+            "Run all images (this analysis)", "Set sizes (µm)", "Reset cutoff",
         }
     )
 
@@ -1306,7 +1306,7 @@ class CellQuantWindow:
             self._review_panel.advanced_toggle,
             self._review_panel.display,
         }
-        inputs: list[QWidget] = [self._review_panel.threshold_slider]
+        inputs: list[QWidget] = [self._review_panel.threshold_slider, self._review_panel.histogram]
         panels = (self._experiment_panel, self._objects_panel, self._measurements_panel, self._review_panel, self._marker_setup)
         for panel in panels:
             for kind in (QComboBox, QAbstractSpinBox, QLineEdit, QCheckBox, QSlider):
@@ -4361,7 +4361,7 @@ class ReviewPanel(QWidget):
         classification = self._current_classification()
         for widget in (self.min_percent, self.pixel_level, self.pixel_level_high, self.use_high):
             widget.blockSignals(True)
-        self.min_percent.setValue(float(classification.threshold))
+        self.min_percent.setValue(classification.threshold_for(self._shown_image_id()))
         self.pixel_level.setValue(float(spec.pixel_level))
         self.use_high.setChecked(spec.pixel_level_high is not None)
         self.pixel_level_high.setEnabled(spec.pixel_level_high is not None)
@@ -4372,7 +4372,7 @@ class ReviewPanel(QWidget):
 
     def _min_percent_changed(self, value: float) -> None:
         classification = self._current_classification()
-        if classification is None or float(classification.threshold) == float(value):
+        if classification is None or classification.threshold_for(self._shown_image_id()) == float(value):
             return
         self._threshold_moved(float(value))
 
@@ -4508,6 +4508,8 @@ class ReviewPanel(QWidget):
         self.auto_percent.setValue(float(classification.auto_percent))
         self.auto_percent.blockSignals(False)
         self.auto_percent.setVisible(classification.auto_method == "top_percent")
+        if not self.threshold_slider.isEnabled():
+            return  # locked while a run uses the settings; unlocking restores them
         # The percent-of-cell rule's cutoff is a minimum percent: no automatic value for it.
         for widget in (self.auto_method, self.auto_percent, self.reset_cutoff):
             widget.setEnabled(not percent_rule)
@@ -4521,15 +4523,39 @@ class ReviewPanel(QWidget):
         return self.shell._nav_ids[self.shell._nav_index]
 
     def _auto_method_chosen(self) -> None:
-        """Remember the method and use its cutoff (for all images, or this image only)."""
+        """Remember the method and move the cutoff to its value, like a slider move: for all images
+        (from every measured image) or for this image only. Own cutoffs of other images stay."""
 
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
         if classification is None or image_id is None:
             return
-        method = str(self.auto_method.currentData())
+        method, percent = str(self.auto_method.currentData()), round(self.auto_percent.value(), 1)
         self.auto_percent.setVisible(method == "top_percent")
-        controller.set_auto_method(classification.id, method, self.auto_percent.value())
-        self._reset_cutoff()
+        if method == classification.auto_method and (method != "top_percent" or percent == round(classification.auto_percent, 1)):
+            return  # nothing changed (for example the % box lost focus)
+        controller.set_auto_method(classification.id, method, percent)
+        value, used = controller.auto_cutoff(classification.id, image_id, this_image_only=self._this_image_only())
+        old = classification.threshold_for(image_id)
+        result = controller.update_thresholds(image_id, {classification.id: value}, this_image_only=self._this_image_only())
+        source = "this image" if self._this_image_only() else f"{used} image{'s' if used != 1 else ''}"
+        self._after_cutoff_change(result, f"{classification.name} cutoff ({self.auto_method.currentText()}, from {source}): {old:g} → {value:g}.")
+
+    def _after_cutoff_change(self, result, text: str = "") -> None:
+        """Save, show the new calls, and say (and show) which approvals the change cleared."""
+
+        controller = self.shell.controller
+        controller.save()
+        if result is not None:
+            self.shell.show_classification(result)
+        cleared = len(controller.cleared_approvals)
+        if cleared:
+            text = f"{text} Approval cleared for {cleared} image{'s' if cleared != 1 else ''} whose positives changed.".strip()
+            self.shell._experiment_panel.refresh_table()
+            self.shell._refresh_plan()
+            self.update_status_line()
+            self.shell.refresh_guidance()
+        if text:
+            self.shell.message(text)
 
     def _apply_to_chosen(self) -> None:
         """This image only: it keeps its cutoff as its own. All images: it uses the shared cutoff again."""
@@ -4542,42 +4568,39 @@ class ReviewPanel(QWidget):
             return
         if self._this_image_only():
             result = controller.update_thresholds(image_id, {classification.id: classification.threshold}, this_image_only=True)
-            self.shell.message(f"{classification.name}: this image now has its own cutoff. Other images keep the shared one.")
+            text = f"{classification.name}: this image now has its own cutoff. Other images keep the shared one."
         else:
             controller.use_shared_cutoff(classification.id, image_id)
             result = controller.recall(image_id)
-            self.shell.message(f"{classification.name}: this image uses the shared cutoff ({classification.threshold:g}) again.")
-        controller.save()
-        if result is not None:
-            self.shell.show_classification(result)
+            text = f"{classification.name}: this image uses the shared cutoff ({classification.threshold:g}) again."
+        self._after_cutoff_change(result, text)
 
     def _reset_cutoff(self, _checked: bool = False) -> None:
         """Back to the automatic cutoff: for this image's own objects (This image only), or found
-        again from every included image (All images; then no image keeps its own)."""
+        again from every measured included image (All images; then no image keeps its own)."""
 
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
         if classification is None or image_id is None:
             return
-        own = [] if self._this_image_only() else list(classification.image_thresholds)
-        if own:
-            answer = QMessageBox.question(
-                self,
-                "Reset cutoff",
-                f"{len(own)} image{'s have their' if len(own) != 1 else ' has its'} own cutoff for {classification.name}. "
-                "Reset them too, so every image uses the new shared cutoff?",
-            )
-            if answer != QMessageBox.Yes:
+        this_image = self._this_image_only()
+        own = [] if this_image else list(classification.image_thresholds)
+        approved = [
+            record.image_id
+            for record in controller.experiment.images
+            if record.processing_status == "approved" and (not this_image or record.image_id == image_id)
+        ]
+        if own or approved:
+            lines = [f"Set the {classification.name} cutoff to its automatic value ({self.auto_method.currentText()})"
+                     + (" for this image?" if this_image else " for all images?")]
+            if own:
+                lines.append(f"{len(own)} image{'s' if len(own) != 1 else ''} with {'their' if len(own) != 1 else 'its'} own cutoff will use the shared one.")
+            if approved:
+                lines.append("Approved images whose positives change will need approving again.")
+            if QMessageBox.question(self, "Reset cutoff", "\n".join(lines)) != QMessageBox.Yes:
                 return
-        approved = {record.image_id for record in controller.experiment.images if record.processing_status == "approved"}
-        old, new, changed = controller.reset_cutoff(classification.id, image_id, this_image_only=self._this_image_only())
-        controller.save()
-        result = controller.recall(image_id)
-        if result is not None:
-            self.shell.show_classification(result)
-        cleared = len(approved & set(changed))
-        note = f" {cleared} approval{'s' if cleared != 1 else ''} cleared." if cleared else ""
-        self.shell.message(f"{classification.name} cutoff: {old:g} → {new:g}.{note}")
-        self.update_status_line()
+        old, new, used = controller.reset_cutoff(classification.id, image_id, this_image_only=this_image)
+        source = "this image" if this_image else f"{used} image{'s' if used != 1 else ''}"
+        self._after_cutoff_change(controller.recall(image_id), f"{classification.name} cutoff (from {source}): {old:g} → {new:g}.")
 
     def _slider_moved(self, value: float) -> None:
         self._pending_cutoff = float(value)
@@ -4629,7 +4652,9 @@ class ReviewPanel(QWidget):
             return  # the marker shown was removed in step 4
         image_id = self.shell._nav_ids[self.shell._nav_index]
         result = controller.update_thresholds(image_id, {classification_id: value}, this_image_only=self._this_image_only())
-        if result is not None:
+        if controller.cleared_approvals:
+            self._after_cutoff_change(result)
+        elif result is not None:
             self.shell.show_classification(result)
 
     def _recolor(self) -> None:
