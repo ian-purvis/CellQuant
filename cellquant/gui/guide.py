@@ -207,6 +207,8 @@ BUTTON_HELP = {
     "Delete in area": "Delete every object lying entirely inside the drawn area; objects crossing its edge stay. Undo brings them all back.",
     "Record drawn edits": "Save outlines you painted by hand in the Objects layer.",
     "Record all images": "Save what you painted on every image, including images you moved away from.",
+    "Reset image": "Remove every edit on this image, recorded or not, and go back to the objects found in step 2. Clears its approval. Cannot be undone.",
+    "Reset all images": "Remove every edit on every image and go back to the objects found in step 2. Clears their approvals. Cannot be undone.",
     "Approve": "Mark this image as checked and correct. Editing it later clears the approval. Opens the next unchecked image. (A)",
 }
 
