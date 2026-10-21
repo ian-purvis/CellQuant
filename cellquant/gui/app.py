@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 from qtpy.QtCore import QEvent, QObject, Qt, QSize, QThread, QTimer, Signal
-from qtpy.QtGui import QColor
+from qtpy.QtGui import QColor, QPalette
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QAbstractScrollArea,
@@ -4370,6 +4370,7 @@ class ReviewPanel(QWidget):
         layout.addWidget(self._pixel_level_box())
         self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
         layout.addWidget(self.counts)
+        layout.addWidget(self._strip_box())
         layout.addWidget(self._count_area_box())
         self.status_line = QLabel("")
         layout.addWidget(self.status_line)
@@ -4414,6 +4415,154 @@ class ReviewPanel(QWidget):
         self.qc.setWordWrap(True)
         layout.addWidget(self.qc)
         layout.addStretch(1)
+
+    def _strip_box(self) -> QGroupBox:
+        """Percent positive in every image (or the ticked ones) at the current cutoffs."""
+
+        self.strip = QGroupBox("Images ⓘ")
+        box = QVBoxLayout(self.strip)
+        self.strip_mode = QComboBox()
+        self.strip_mode.addItem("All images", "all")
+        self.strip_mode.addItem("Selected images", "selected")
+        self.strip_mode.activated.connect(lambda _index: self._strip_mode_chosen())
+        box.addWidget(self.strip_mode)
+        self.strip_table = QTableWidget(0, 3)
+        self.strip_table.setHorizontalHeaderLabels(["Image", "Positive", "%"])
+        self.strip_table.verticalHeader().setVisible(False)
+        self.strip_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.strip_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.strip_table.horizontalHeader().setStretchLastSection(False)
+        self.strip_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.strip_table.setMaximumHeight(170)
+        self.strip_table.itemChanged.connect(self._strip_ticked)
+        self.strip_table.cellDoubleClicked.connect(self._strip_open)
+        box.addWidget(self.strip_table)
+        self.strip_total = QLabel("")
+        box.addWidget(self.strip_total)
+        self._strip_ticks: set[str] | None = None  # loaded per experiment
+        self._strip_experiment = ""
+        return self.strip
+
+    def _strip_settings_key(self) -> str:
+        return f"review/strip/{self.shell.controller.experiment.experiment_id}"
+
+    def _load_strip_choice(self) -> None:
+        """The mode and ticked images, remembered per experiment on this computer."""
+
+        experiment_id = self.shell.controller.experiment.experiment_id
+        if self._strip_experiment == experiment_id:
+            return
+        self._strip_experiment = experiment_id
+        mode, ticks = "all", None
+        try:
+            settings = _settings()
+            mode = str(settings.value(f"{self._strip_settings_key()}/mode", "all"))
+            stored = settings.value(f"{self._strip_settings_key()}/ticked", None)
+            if stored is not None:
+                ticks = {str(item) for item in (stored if isinstance(stored, (list, tuple)) else [stored]) if item}
+        except Exception:  # noqa: BLE001 - settings unreadable: all images
+            pass
+        self.strip_mode.setCurrentIndex(max(0, self.strip_mode.findData(mode)))
+        self._strip_ticks = ticks
+
+    def _save_strip_choice(self) -> None:
+        try:
+            settings = _settings()
+            settings.setValue(f"{self._strip_settings_key()}/mode", self.strip_mode.currentData())
+            settings.setValue(f"{self._strip_settings_key()}/ticked", sorted(self._strip_ticks or []))
+        except Exception:  # noqa: BLE001 - not remembered this time
+            pass
+
+    def _strip_selected(self) -> bool:
+        return self.strip_mode.currentData() == "selected"
+
+    def strip_pool(self) -> list[str] | None:
+        """The images Auto and Reset use for All images: None for every measured image."""
+
+        if not self._strip_selected() or self.shell.controller is None:
+            return None
+        return [record.image_id for record in self.shell.controller.experiment.images if record.image_id in (self._strip_ticks or set())]
+
+    def _strip_mode_chosen(self) -> None:
+        if self._strip_selected() and self._strip_ticks is None:
+            self._strip_ticks = {self._shown_image_id()} - {None}  # start from the image shown
+        self._save_strip_choice()
+        self._show_strip()
+
+    def _strip_ticked(self, item) -> None:
+        if item.column() != 0 or not self._strip_selected():
+            return
+        image_id = item.data(Qt.UserRole)
+        ticks = set(self._strip_ticks or set())
+        if item.checkState() == Qt.Checked:
+            ticks.add(image_id)
+        else:
+            ticks.discard(image_id)
+        if ticks != self._strip_ticks:
+            self._strip_ticks = ticks
+            self._save_strip_choice()
+            self._show_strip()
+
+    def _strip_open(self, row: int, _column: int) -> None:
+        image_id = self.strip_table.item(row, 0).data(Qt.UserRole)
+        if image_id in self.shell._nav_ids and image_id != self._shown_image_id():
+            self.shell._nav_index = self.shell._nav_ids.index(image_id)
+            self.shell.show_current()
+
+    def _show_strip(self) -> None:
+        """One row per included image: positive / counted objects and percent positive at the cutoff it
+        uses. Selected images: tick the images to show and to find the automatic cutoff from."""
+
+        controller, classification = self.shell.controller, self._current_classification()
+        self.strip.setVisible(classification is not None)
+        if classification is None:
+            return
+        self._load_strip_choice()
+        selected = self._strip_selected()
+        included = [record for record in controller.experiment.images if record.include]
+        counts = controller.positive_counts(classification.id, [record.image_id for record in included])
+        shown = self._shown_image_id()
+        table = self.strip_table
+        table.blockSignals(True)
+        table.setRowCount(len(included))
+        total_positive = total_counted = 0
+        for row, record in enumerate(included):
+            ticked = record.image_id in (self._strip_ticks or set())
+            name = QTableWidgetItem(record.sample_name or record.filename)
+            name.setData(Qt.UserRole, record.image_id)
+            name.setToolTip(record.relative_path or record.filename)
+            if selected:
+                name.setFlags(name.flags() | Qt.ItemIsUserCheckable)
+                name.setCheckState(Qt.Checked if ticked else Qt.Unchecked)
+            else:
+                name.setFlags(name.flags() & ~Qt.ItemIsUserCheckable)
+                name.setData(Qt.CheckStateRole, None)
+            font = name.font()
+            font.setBold(record.image_id == shown)
+            name.setFont(font)
+            own = classification.image_thresholds.get(record.image_id) is not None
+            if record.image_id in counts:
+                positive, counted = counts[record.image_id]
+                count_text = f"{positive} / {counted}"
+                percent_text = f"{100 * positive / counted:.1f}" if counted else "—"
+                if not selected or ticked:
+                    total_positive += positive
+                    total_counted += counted
+            else:
+                count_text, percent_text = "—", "—"
+            cells = (name, QTableWidgetItem(count_text + (" *" if own else "")), QTableWidgetItem(percent_text))
+            for column, cell in enumerate(cells):
+                if column:
+                    cell.setTextAlignment(int(Qt.AlignRight | Qt.AlignVCenter))
+                if selected and not ticked:
+                    cell.setForeground(self.palette().color(QPalette.Disabled, QPalette.Text))
+                table.setItem(row, column, cell)
+        table.resizeColumnToContents(1)
+        table.resizeColumnToContents(2)
+        table.blockSignals(False)
+        overall = f"{100 * total_positive / total_counted:.1f}%" if total_counted else "—"
+        scope = "Ticked images" if selected else "All images"
+        self.strip_total.setText(f"{scope}: {total_positive} / {total_counted} positive ({overall})")
 
     def _count_area_box(self) -> QGroupBox:
         """Optional area to count in, drawn on the image after objects are found."""
@@ -4630,7 +4779,7 @@ class ReviewPanel(QWidget):
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
         classification_id = self.classification_id()
-        for widget in (self.cutoff_label, self.histogram, self.threshold_slider, self.cutoff_tools):
+        for widget in (self.cutoff_label, self.histogram, self.threshold_slider, self.cutoff_tools, self.strip):
             widget.setVisible(bool(classification_id))
         if not classification_id:
             return
@@ -4654,6 +4803,7 @@ class ReviewPanel(QWidget):
             f"Positive when: {rule}\n"
             f"Positive: {counts['positive']}\nNegative: {counts['negative']}\nUnmeasured: {int(counts['n_missing'])}\nPercent positive: {percent_text}"
         )
+        self._show_strip()
 
     def _set_slider(self, values: np.ndarray, threshold: float, percent_rule: bool) -> None:
         """Range: 0-100 % for the percent rule, otherwise the objects' values (and the cutoff)."""
@@ -4715,7 +4865,9 @@ class ReviewPanel(QWidget):
             return  # nothing changed (for example the % box lost focus)
         controller.set_auto_method(classification.id, method, percent)
         try:
-            value, used = controller.auto_cutoff(classification.id, image_id, this_image_only=self._this_image_only())
+            value, used = controller.auto_cutoff(
+                classification.id, image_id, this_image_only=self._this_image_only(), pool=self.strip_pool()
+            )
         except CellQuantError as exc:
             self.shell.message(f"{exc} The method is kept for later.")
             return
@@ -4784,7 +4936,7 @@ class ReviewPanel(QWidget):
             if answer != QMessageBox.Yes:
                 return
         try:
-            old, new, used = controller.reset_cutoff(classification.id, image_id, this_image_only=this_image)
+            old, new, used = controller.reset_cutoff(classification.id, image_id, this_image_only=this_image, pool=self.strip_pool())
         except CellQuantError as exc:
             self.shell.message(str(exc))
             return
