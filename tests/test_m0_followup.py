@@ -331,6 +331,17 @@ def test_results_saved_without_marker_definitions_follow_a_cutoff_move(tmp_path:
     assert not (out / "mixed_settings.txt").exists()
 
 
+def test_positive_counts_and_a_pool_for_the_automatic_cutoff(tmp_path: Path):
+    controller, ids = _three_runs(tmp_path)
+    controller.update_thresholds(ids[1], {"class_a": 900}, this_image_only=True)
+    counts = controller.positive_counts("class_a", ids)
+    assert counts == {ids[0]: (1, 2), ids[1]: (0, 2), ids[2]: (1, 2)}
+    _value, used = controller.auto_cutoff("class_a", ids[0], this_image_only=False, pool=[ids[0], ids[2]])
+    assert used == 2
+    _old, _new, used = controller.reset_cutoff("class_a", ids[0], this_image_only=False, pool=[ids[2]])
+    assert used == 1
+
+
 def test_automatic_cutoff_methods():
     from cellquant.quicksetup import auto_threshold
 
