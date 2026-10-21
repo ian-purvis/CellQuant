@@ -273,6 +273,31 @@ def test_a_cutoff_change_clears_only_approvals_whose_positives_change(tmp_path: 
     assert sorted(controller.cleared_approvals) == sorted([ids[0], ids[1]])
 
 
+def test_a_cutoff_move_after_choosing_a_method_reaches_the_shown_result_and_the_export(tmp_path: Path):
+    controller, ids = _three_runs(tmp_path)
+    controller.set_auto_method("class_a", "triangle")
+    shown = controller.update_thresholds(ids[0], {"class_a": 900})
+    assert not shown.objects["class_a"].astype(bool).any()
+    objects = pd.read_csv(controller.export(tmp_path / "out") / "objects.csv")
+    assert not objects["class_a"].astype(str).str.lower().eq("true").any()
+    value, used = controller.auto_cutoff("class_a", ids[0], this_image_only=False)
+    assert used == 3 and 20 < value < 800
+
+
+def test_no_automatic_cutoff_without_measured_values(tmp_path: Path):
+    from cellquant.errors import CellQuantError
+
+    path = tmp_path / "s.tif"
+    _write_squares(path)
+    controller = AnalysisController.create(tmp_path / "experiment", "Empty")
+    controller.add_image_paths([path])
+    controller.set_recipe(_recipe())
+    image_id = controller.experiment.images[0].image_id
+    with pytest.raises(CellQuantError):
+        controller.reset_cutoff("class_a", image_id, this_image_only=False)
+    assert controller.recipe.classifications[0].threshold == 200
+
+
 def test_automatic_cutoff_methods():
     from cellquant.quicksetup import auto_threshold
 

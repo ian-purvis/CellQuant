@@ -95,6 +95,10 @@ def test_cutoff_tools(tmp_path: Path, monkeypatch):
         assert controller.recipe.classifications[0].auto_method == "triangle"
         assert controller.own_cutoff(image_id, marker.id) == pytest.approx(auto_threshold(values, "triangle"))
         assert controller.recipe.classifications[0].threshold == pytest.approx(500.0, rel=0.02)
+        shown = controller.last_results[image_id].objects
+        own = controller.own_cutoff(image_id, marker.id)
+        calls = shown[marker.id].astype("boolean")
+        assert calls.sum() == (shown[marker.measurement] > own).sum()  # the shown result follows the new cutoff
         # The % box losing focus with nothing changed does nothing.
         before = controller.own_cutoff(image_id, marker.id)
         panel.auto_percent.editingFinished.emit()

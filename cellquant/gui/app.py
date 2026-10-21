@@ -4534,7 +4534,11 @@ class ReviewPanel(QWidget):
         if method == classification.auto_method and (method != "top_percent" or percent == round(classification.auto_percent, 1)):
             return  # nothing changed (for example the % box lost focus)
         controller.set_auto_method(classification.id, method, percent)
-        value, used = controller.auto_cutoff(classification.id, image_id, this_image_only=self._this_image_only())
+        try:
+            value, used = controller.auto_cutoff(classification.id, image_id, this_image_only=self._this_image_only())
+        except CellQuantError as exc:
+            self.shell.message(f"{exc} The method is kept for later.")
+            return
         old = classification.threshold_for(image_id)
         result = controller.update_thresholds(image_id, {classification.id: value}, this_image_only=self._this_image_only())
         source = "this image" if self._this_image_only() else f"{used} image{'s' if used != 1 else ''}"
@@ -4571,7 +4575,7 @@ class ReviewPanel(QWidget):
             text = f"{classification.name}: this image now has its own cutoff. Other images keep the shared one."
         else:
             controller.use_shared_cutoff(classification.id, image_id)
-            result = controller.recall(image_id)
+            result = controller.classified_now(image_id)
             text = f"{classification.name}: this image uses the shared cutoff ({classification.threshold:g}) again."
         self._after_cutoff_change(result, text)
 
@@ -4596,11 +4600,16 @@ class ReviewPanel(QWidget):
                 lines.append(f"{len(own)} image{'s' if len(own) != 1 else ''} with {'their' if len(own) != 1 else 'its'} own cutoff will use the shared one.")
             if approved:
                 lines.append("Approved images whose percent positive changes will need approving again.")
-            if QMessageBox.question(self, "Reset cutoff", "\n".join(lines)) != QMessageBox.Yes:
+            answer = QMessageBox.question(self, "Reset cutoff", "\n".join(lines), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
                 return
-        old, new, used = controller.reset_cutoff(classification.id, image_id, this_image_only=this_image)
+        try:
+            old, new, used = controller.reset_cutoff(classification.id, image_id, this_image_only=this_image)
+        except CellQuantError as exc:
+            self.shell.message(str(exc))
+            return
         source = "this image" if this_image else f"{used} image{'s' if used != 1 else ''}"
-        self._after_cutoff_change(controller.recall(image_id), f"{classification.name} cutoff (from {source}): {old:g} → {new:g}.")
+        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff (from {source}): {old:g} → {new:g}.")
 
     def _slider_moved(self, value: float) -> None:
         self._pending_cutoff = float(value)
