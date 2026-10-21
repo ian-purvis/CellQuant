@@ -3707,6 +3707,7 @@ class EditPanel(QWidget):
             ("Draw new object", self._draw_new, None, None),
             ("Record drawn edits", self._commit, "Record all images", self._commit_all),  # a row of their own: no label cut off
             ("Undo", self._undo, "Back", self._go_home),
+            ("Reset image", self._reset, "Reset all images", self._reset_all),
         )
         self._rows: list[tuple[QWidget, list[str]]] = []
         for left, left_slot, right, right_slot in rows:
@@ -3754,7 +3755,7 @@ class EditPanel(QWidget):
         return
 
     _MODE_BUTTONS = {
-        "home": ("Delete objects", "Add new objects", "Undo", "Record drawn edits"),
+        "home": ("Delete objects", "Add new objects", "Undo", "Record drawn edits", "Reset image", "Reset all images"),
         "delete": ("Delete object", "Restore object", "Draw area", "Delete in area", "Undo", "Back"),
         "add": ("Draw new object", "Record drawn edits", "Record all images", "Undo", "Back"),
     }
@@ -3974,6 +3975,104 @@ class EditPanel(QWidget):
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
         self.shell._start_job(lambda: controller.undo(image_id), lambda result: self.shell.show_result(result) if result is not None else None)
+
+    def _discard_drawing(self, image_id: str) -> None:
+        """Forget drawing not recorded yet; on screen, the Objects layer goes back to what it was given."""
+
+        self._pending.pop(self._key(image_id), None)
+        shown_id, base = self._shown if self._shown is not None else (None, None)
+        if shown_id == image_id and self._labels is not None and self._labels in self.shell.viewer.layers:
+            if np.asarray(self._labels.data).shape == base.shape:
+                self._labels.data = np.array(base, copy=True)
+
+    def _reset(self) -> None:
+        """Back to the objects step 2 found for this image: recorded edits and unrecorded drawing go."""
+
+        controller = self.shell.require_controller()
+        if controller is None or not self.shell._nav_ids:
+            return
+        if self.shell.is_busy():
+            self._say("Not reset: wait for the current analysis to finish.")
+            return
+        image_id = self.shell._nav_ids[self.shell._nav_index]
+        self.keep_drawing()
+        count = controller.edit_count(image_id)
+        drawn = self._key(image_id) in self._pending
+        if not count and not drawn:
+            self._say("Nothing to reset: this image has no edits.")
+            return
+        parts = [f"{count} edit{'s' if count != 1 else ''}"] if count else []
+        if drawn:
+            parts.append("drawing not recorded yet")
+        answer = QMessageBox.question(
+            self,
+            "Reset image?",
+            f"Remove {' and '.join(parts)} on this image and go back to the objects found in step 2? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._discard_drawing(image_id)
+        self._show_pending()
+
+        def finish(result) -> None:
+            if result is not None:
+                self.shell.show_result(result)
+            self._say("Reset to the objects found in step 2.")
+
+        self._say("")
+        self.shell._start_job(lambda: controller.reset_edits(image_id), finish)
+
+    def _reset_all(self) -> None:
+        """Back to the objects step 2 found, on every image of this analysis."""
+
+        controller = self.shell.require_controller()
+        if controller is None:
+            return
+        if self.shell.is_busy():
+            self._say("Not reset: wait for the current analysis to finish.")
+            return
+        self.keep_drawing()
+        analysis = self._key("")[0]
+        edited = [record.image_id for record in controller.experiment.images if controller.edit_count(record.image_id)]
+        drawn = [image_id for owner, image_id in self._pending if owner == analysis]
+        images = list(dict.fromkeys(edited + drawn))
+        if not images:
+            self._say("Nothing to reset: no image has edits.")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Reset all images?",
+            f"Remove every edit on {len(images)} image{'s' if len(images) != 1 else ''} and go back to the objects "
+            "found in step 2? This cannot be undone.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        for image_id in drawn:
+            self._discard_drawing(image_id)
+        self._show_pending()
+        shown = self.shell._labels_image_id
+
+        def reset_all():
+            on_screen = None
+            for image_id in edited:
+                result = controller.reset_edits(image_id)
+                if image_id == shown:
+                    on_screen = result
+            if on_screen is None and shown in drawn:
+                on_screen = controller.recall(shown, measure=False)
+            return on_screen
+
+        def finish(on_screen) -> None:
+            if on_screen is not None:
+                self.shell.show_result(on_screen)
+            self._say(f"Reset {len(images)} image{'s' if len(images) != 1 else ''} to the objects found in step 2.")
+
+        self._say("")
+        self.shell._start_job(reset_all, finish)
 
     def _commit(self) -> None:
         controller = self.shell.require_controller()
