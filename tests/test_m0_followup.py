@@ -179,7 +179,7 @@ def test_settings_hash_ignores_timestamps_but_not_thresholds():
     assert recipe.content_hash() != original
 
 
-def test_changed_threshold_is_still_reported_as_mixed_settings(tmp_path: Path):
+def test_a_shared_cutoff_reaches_every_image_and_an_own_cutoff_only_one(tmp_path: Path):
     paths = []
     for index in range(2):
         path = tmp_path / f"s{index}.tif"
@@ -189,14 +189,32 @@ def test_changed_threshold_is_still_reported_as_mixed_settings(tmp_path: Path):
     controller.add_image_paths(paths)
     controller.set_recipe(_recipe())
     controller.run_images()
-    first = controller.experiment.images[0].image_id
+    first, second = (record.image_id for record in controller.experiment.images)
+    # Marker A is 800 in one object and 20 in the other, in both images.
     controller.update_thresholds(first, {"class_a": 900})
     out = controller.export(tmp_path / "out")
-    assert (out / "mixed_settings.txt").exists()
-    # Exporting again after the settings match removes the stale note.
-    controller.update_thresholds(first, {"class_a": 200})
+    assert not (out / "mixed_settings.txt").exists()
+    objects = pd.read_csv(out / "objects.csv")
+    assert not objects["class_a"].astype(str).str.lower().eq("true").any()
+    # A cutoff for one image only: the other image keeps the shared one.
+    controller.update_thresholds(second, {"class_a": 100}, this_image_only=True)
+    assert controller.own_cutoff(second, "class_a") == 100
+    assert controller.own_cutoff(first, "class_a") is None
     controller.export(out)
     assert not (out / "mixed_settings.txt").exists()
+    objects = pd.read_csv(out / "objects.csv")
+    positive = objects["class_a"].astype(str).str.lower().eq("true")
+    assert positive[objects["image_id"] == second].sum() == 1
+    assert positive[objects["image_id"] == first].sum() == 0
+    # Reset for all images: the automatic cutoff, and no image keeps its own.
+    old, new, changed = controller.reset_cutoff("class_a", first, this_image_only=False)
+    assert 20 < new < 800 and controller.own_cutoff(second, "class_a") is None
+    assert set(changed) == {first, second}
+    # Reset for this image only: its own automatic cutoff; back to the shared one on request.
+    controller.reset_cutoff("class_a", second, this_image_only=True)
+    assert 20 < controller.own_cutoff(second, "class_a") < 800
+    controller.use_shared_cutoff("class_a", second)
+    assert controller.own_cutoff(second, "class_a") is None
 
 
 def test_batch_keeps_only_a_few_images_in_memory_and_edits_still_work(tmp_path: Path, monkeypatch):

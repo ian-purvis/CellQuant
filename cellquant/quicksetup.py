@@ -109,6 +109,33 @@ def describe_rule(recipe, classification) -> str:
     return f"{statistic} {sign} {classification.threshold:g}"
 
 
+# Automatic cutoffs, in the order the step 5 menu lists them (recipe value, shown text, tooltip).
+AUTO_METHODS = (
+    ("otsu", "Otsu", "Splits the objects into a dim and a bright group as cleanly as possible. Good when both groups are clear."),
+    ("triangle", "Triangle", "Finds where the bright tail leaves the main peak. Good when most objects are negative."),
+    ("li", "Li", "Minimizes the difference between the two groups' brightness. Often lower than Otsu, so it keeps dimmer positives."),
+    ("top_percent", "Top N %", "Calls the brightest N % of objects positive."),
+)
+
+
+def auto_threshold(values: np.ndarray, method: str = "otsu", percent: float = 10.0) -> float:
+    """The automatic cutoff for these object values, by ``method`` (see AUTO_METHODS)."""
+
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if method == "otsu" or finite.size < 2 or finite.min() == finite.max():
+        return starting_threshold(finite)
+    if method == "top_percent":
+        return float(np.percentile(finite, 100.0 - float(percent)))
+    from skimage.filters import threshold_li, threshold_triangle
+
+    if method == "triangle":
+        return float(threshold_triangle(finite, nbins=min(256, max(16, finite.size))))
+    if method == "li":
+        return float(threshold_li(finite))
+    raise ValueError(f"Unknown automatic cutoff method: {method}")
+
+
 def starting_threshold(values: np.ndarray) -> float:
     """A first guess at the cutoff, for the user to check in step 5.
 
