@@ -4049,6 +4049,86 @@ class EditPanel(QWidget):
 
 
 
+class CutoffHistogram(QWidget):
+    """Every object's value as a histogram, with the cutoff as a line. Drag the line, or click, to move it."""
+
+    cutoff_dragged = Signal(float)
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumHeight(80)
+        self.setCursor(Qt.SizeHorCursor)
+        self._values = np.zeros(0)
+        self._low, self._high = 0.0, 1.0
+        self._cutoff = 0.0
+        self._at_least = False
+
+    def set_data(self, values: np.ndarray, low: float, high: float, cutoff: float, comparison: str) -> None:
+        values = np.asarray(values, dtype=float)
+        self._values = values[np.isfinite(values)]
+        self._low, self._high = float(low), float(high)
+        self._cutoff = float(cutoff)
+        self._at_least = comparison == "at_least"
+        self.update()
+
+    def set_cutoff(self, value: float) -> None:
+        self._cutoff = float(value)
+        self.update()
+
+    def _plot_area(self):
+        return 4, 4, max(1, self.width() - 8), max(1, self.height() - 8)
+
+    def _x(self, value: float) -> float:
+        left, _top, width, _height = self._plot_area()
+        span = (self._high - self._low) or 1.0
+        return left + (value - self._low) / span * width
+
+    def _value(self, x: float) -> float:
+        left, _top, width, _height = self._plot_area()
+        fraction = min(1.0, max(0.0, (x - left) / width))
+        return self._low + fraction * (self._high - self._low)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt name
+        from qtpy.QtGui import QPainter, QPen
+
+        painter = QPainter(self)
+        left, top, width, height = self._plot_area()
+        text_color = self.palette().color(self.foregroundRole())
+        if self._values.size:
+            counts, edges = np.histogram(np.clip(self._values, self._low, self._high), bins=48, range=(self._low, self._high))
+            # Log heights: a few bright positives stay visible next to many dim negatives.
+            heights = np.log1p(counts) / max(np.log1p(counts.max()), 1e-9)
+            positive, negative = (QColor(color) for color in classification_colors())
+            for count, fraction, start, end in zip(counts, heights, edges[:-1], edges[1:]):
+                if not count:
+                    continue
+                middle = (start + end) / 2
+                past = middle >= self._cutoff if self._at_least else middle > self._cutoff
+                x0, x1 = self._x(start), self._x(end)
+                bar = max(1, int(fraction * height))
+                painter.fillRect(int(x0), top + height - bar, max(1, int(x1 - x0) - 1), bar, positive if past else negative)
+        pen = QPen(text_color)
+        pen.setWidth(2)
+        painter.setPen(pen)
+        x = int(self._x(self._cutoff))
+        painter.drawLine(x, top, x, top + height)
+        painter.end()
+
+    def _drag(self, event) -> None:
+        position = event.position().x() if hasattr(event, "position") else event.x()
+        value = self._value(position)
+        self.set_cutoff(value)
+        self.cutoff_dragged.emit(value)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt name
+        if self._values.size:
+            self._drag(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt name
+        if self._values.size and event.buttons() & Qt.LeftButton:
+            self._drag(event)
+
+
 class ReviewPanel(QWidget):
     def __init__(self, shell: CellQuantWindow):
         super().__init__()
@@ -4066,10 +4146,41 @@ class ReviewPanel(QWidget):
         self.cutoff_label = QLabel("Cutoff")
         self.cutoff_label.setToolTip("Drag until the right objects are positive.")
         layout.addWidget(self.cutoff_label)
+        self.histogram = CutoffHistogram()
+        self.histogram.cutoff_dragged.connect(lambda value: self.threshold_slider.setValue(value))
+        layout.addWidget(self.histogram)
         self.threshold_slider = QLabeledDoubleSlider(Qt.Horizontal)
         self.threshold_slider.setRange(0.0, 1.0)
         self.threshold_slider.valueChanged.connect(self._slider_moved)
         layout.addWidget(self.threshold_slider)
+        self.cutoff_tools = QWidget()
+        tools = QFormLayout(self.cutoff_tools)
+        tools.setContentsMargins(0, 0, 0, 0)
+        from cellquant.quicksetup import AUTO_METHODS
+
+        self.auto_method = QComboBox()
+        for value, text, tip in AUTO_METHODS:
+            self.auto_method.addItem(text, value)
+            self.auto_method.setItemData(self.auto_method.count() - 1, tip, Qt.ToolTipRole)
+        self.auto_method.activated.connect(lambda _index: self._auto_method_chosen())
+        self.auto_percent = QDoubleSpinBox()
+        self.auto_percent.setRange(0.1, 99.9)
+        self.auto_percent.setDecimals(1)
+        self.auto_percent.setSuffix(" %")
+        self.auto_percent.editingFinished.connect(self._auto_method_chosen)
+        method_row = QHBoxLayout()
+        method_row.addWidget(self.auto_method, 1)
+        method_row.addWidget(self.auto_percent)
+        tools.addRow("Auto", method_row)
+        self.apply_to = QComboBox()
+        self.apply_to.addItem("All images", "all")
+        self.apply_to.addItem("This image only", "image")
+        self.apply_to.activated.connect(lambda _index: self._apply_to_chosen())
+        tools.addRow("Apply to", self.apply_to)
+        self.reset_cutoff = QPushButton("Reset cutoff")
+        self.reset_cutoff.clicked.connect(self._reset_cutoff)
+        tools.addRow(self.reset_cutoff)
+        layout.addWidget(self.cutoff_tools)
         # Recolor at most every 40 ms while dragging, with the latest value.
         self._pending_cutoff: float | None = None
         self._cutoff_timer = QTimer(self)
@@ -4339,22 +4450,26 @@ class ReviewPanel(QWidget):
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
         classification_id = self.classification_id()
-        self.cutoff_label.setVisible(bool(classification_id))
-        self.threshold_slider.setVisible(bool(classification_id))
+        for widget in (self.cutoff_label, self.histogram, self.threshold_slider, self.cutoff_tools):
+            widget.setVisible(bool(classification_id))
         if not classification_id:
             return
         classification = next(item for item in self.shell.controller.recipe.classifications if item.id == classification_id)
         if classification.measurement not in result.objects.columns:
             return
+        image_id = result.provenance["image_id"]
+        cutoff = classification.threshold_for(image_id)
         values = result.objects[classification.measurement].to_numpy(dtype=float)
         percent_rule = self._current_percent_measurement() is not None
-        self._set_slider(values, float(classification.threshold), percent_rule)
-        counts = self.shell.controller.histogram(
-            result.provenance["image_id"], classification.measurement, classification.threshold, classification.comparison
-        )
+        self._set_slider(values, cutoff, percent_rule)
+        slider = self.threshold_slider
+        self.histogram.set_data(values, slider.minimum(), slider.maximum(), cutoff, classification.comparison)
+        self._show_cutoff_tools(classification, image_id, percent_rule)
+        counts = self.shell.controller.histogram(image_id, classification.measurement, cutoff, classification.comparison)
         percent = counts["percent_positive"]
         percent_text = "—" if percent != percent else f"{percent:.1f}%"
-        rule = guide.describe_rule(self.shell.controller.recipe, classification)
+        shown = self.shell.controller.recipe.for_image(image_id)  # this image's own cutoff, if it has one
+        rule = guide.describe_rule(shown, next(item for item in shown.classifications if item.id == classification_id))
         self.counts.setText(
             f"Positive when: {rule}\n"
             f"Positive: {counts['positive']}\nNegative: {counts['negative']}\nUnmeasured: {int(counts['n_missing'])}\nPercent positive: {percent_text}"
@@ -4382,6 +4497,87 @@ class ReviewPanel(QWidget):
         slider.setSingleStep((high - low) / 100)
         slider.setValue(threshold)
         slider.blockSignals(False)
+
+    def _show_cutoff_tools(self, classification, image_id: str, percent_rule: bool) -> None:
+        """Auto method, Apply to and Reset as stored for this marker and image."""
+
+        own = classification.image_thresholds.get(image_id) is not None
+        self.apply_to.setCurrentIndex(self.apply_to.findData("image" if own else "all"))
+        self.auto_method.setCurrentIndex(max(0, self.auto_method.findData(classification.auto_method)))
+        self.auto_percent.blockSignals(True)
+        self.auto_percent.setValue(float(classification.auto_percent))
+        self.auto_percent.blockSignals(False)
+        self.auto_percent.setVisible(classification.auto_method == "top_percent")
+        # The percent-of-cell rule's cutoff is a minimum percent: no automatic value for it.
+        for widget in (self.auto_method, self.auto_percent, self.reset_cutoff):
+            widget.setEnabled(not percent_rule)
+
+    def _this_image_only(self) -> bool:
+        return self.apply_to.currentData() == "image"
+
+    def _shown_image_id(self) -> str | None:
+        if self.shell.controller is None or not self.shell._nav_ids:
+            return None
+        return self.shell._nav_ids[self.shell._nav_index]
+
+    def _auto_method_chosen(self) -> None:
+        """Remember the method and use its cutoff (for all images, or this image only)."""
+
+        controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
+        if classification is None or image_id is None:
+            return
+        method = str(self.auto_method.currentData())
+        self.auto_percent.setVisible(method == "top_percent")
+        controller.set_auto_method(classification.id, method, self.auto_percent.value())
+        self._reset_cutoff()
+
+    def _apply_to_chosen(self) -> None:
+        """This image only: it keeps its cutoff as its own. All images: it uses the shared cutoff again."""
+
+        controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
+        if classification is None or image_id is None:
+            return
+        own = classification.image_thresholds.get(image_id) is not None
+        if self._this_image_only() == own:
+            return
+        if self._this_image_only():
+            result = controller.update_thresholds(image_id, {classification.id: classification.threshold}, this_image_only=True)
+            self.shell.message(f"{classification.name}: this image now has its own cutoff. Other images keep the shared one.")
+        else:
+            controller.use_shared_cutoff(classification.id, image_id)
+            result = controller.recall(image_id)
+            self.shell.message(f"{classification.name}: this image uses the shared cutoff ({classification.threshold:g}) again.")
+        controller.save()
+        if result is not None:
+            self.shell.show_classification(result)
+
+    def _reset_cutoff(self, _checked: bool = False) -> None:
+        """Back to the automatic cutoff: for this image's own objects (This image only), or found
+        again from every included image (All images; then no image keeps its own)."""
+
+        controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
+        if classification is None or image_id is None:
+            return
+        own = [] if self._this_image_only() else list(classification.image_thresholds)
+        if own:
+            answer = QMessageBox.question(
+                self,
+                "Reset cutoff",
+                f"{len(own)} image{'s have their' if len(own) != 1 else ' has its'} own cutoff for {classification.name}. "
+                "Reset them too, so every image uses the new shared cutoff?",
+            )
+            if answer != QMessageBox.Yes:
+                return
+        approved = {record.image_id for record in controller.experiment.images if record.processing_status == "approved"}
+        old, new, changed = controller.reset_cutoff(classification.id, image_id, this_image_only=self._this_image_only())
+        controller.save()
+        result = controller.recall(image_id)
+        if result is not None:
+            self.shell.show_classification(result)
+        cleared = len(approved & set(changed))
+        note = f" {cleared} approval{'s' if cleared != 1 else ''} cleared." if cleared else ""
+        self.shell.message(f"{classification.name} cutoff: {old:g} → {new:g}.{note}")
+        self.update_status_line()
 
     def _slider_moved(self, value: float) -> None:
         self._pending_cutoff = float(value)
@@ -4432,7 +4628,7 @@ class ReviewPanel(QWidget):
         if self._current_classification() is None:
             return  # the marker shown was removed in step 4
         image_id = self.shell._nav_ids[self.shell._nav_index]
-        result = controller.update_thresholds(image_id, {classification_id: value})
+        result = controller.update_thresholds(image_id, {classification_id: value}, this_image_only=self._this_image_only())
         if result is not None:
             self.shell.show_classification(result)
 
