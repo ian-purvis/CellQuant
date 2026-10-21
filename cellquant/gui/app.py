@@ -2065,7 +2065,25 @@ class ExperimentPanel(QWidget):
         self.channel_order.setTextFormat(Qt.RichText)
         self.channel_order.setStyleSheet("QLabel { background: rgba(60, 130, 220, 0.10); border-radius: 6px; padding: 6px; }")
         layout.addWidget(self.channel_order)
-        calibration = QHBoxLayout()
+        self.pixel_summary = QLabel("")
+        self.pixel_summary.setToolTip("Pixel size of the included images. Nothing to set.")
+        self.pixel_summary.setWordWrap(True)
+        self.pixel_summary.setVisible(False)
+        self.change_sizes_button = QPushButton("Change…")
+        self.change_sizes_button.setToolTip("Show the pixel size boxes, for example to correct a size you typed.")
+        self.change_sizes_button.clicked.connect(self._show_size_controls)
+        self.summary_row = QWidget()
+        summary_layout = QHBoxLayout(self.summary_row)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.addWidget(self.pixel_summary, 1)
+        summary_layout.addWidget(self.change_sizes_button)
+        self.summary_row.setVisible(False)
+        self._changing_sizes = False
+        self._size_controller = None
+        layout.addWidget(self.summary_row)
+        self.calibration_widget = QWidget()
+        calibration = QHBoxLayout(self.calibration_widget)
+        calibration.setContentsMargins(0, 0, 0, 0)
         self.pixel_x = QDoubleSpinBox()
         self.pixel_y = QDoubleSpinBox()
         self.pixel_z = QDoubleSpinBox()
@@ -2074,7 +2092,8 @@ class ExperimentPanel(QWidget):
             box.setMaximum(100000)
             box.setSpecialValueText("unset")
         self.pixel_z.setToolTip("Distance between slices of a Z-stack, in µm. Needed for 3D volumes and shapes.")
-        apply_cal = QPushButton("Set sizes (µm)")
+        apply_cal = self.apply_sizes_button = QPushButton("Set sizes (µm)")
+        apply_cal.setToolTip("Save these sizes for the images chosen under Apply to.")
         apply_cal.clicked.connect(self._apply_pixel_size)
         self.size_scope = QComboBox()
         self.size_scope.addItem("this + images without a size", "missing")
@@ -2088,11 +2107,15 @@ class ExperimentPanel(QWidget):
         calibration.addWidget(QLabel("Z step"))
         calibration.addWidget(self.pixel_z)
         calibration.addWidget(apply_cal)
-        layout.addLayout(calibration)
-        scope_row = QHBoxLayout()
+        layout.addWidget(self.calibration_widget)
+        self.scope_widget = QWidget()
+        scope_row = QHBoxLayout(self.scope_widget)
+        scope_row.setContentsMargins(0, 0, 0, 0)
         scope_row.addWidget(QLabel("Apply to"))
         scope_row.addWidget(self.size_scope, 1)
-        layout.addLayout(scope_row)
+        layout.addWidget(self.scope_widget)
+        self.calibration_widget.setVisible(False)
+        self.scope_widget.setVisible(False)
 
     def refresh(self) -> None:
         self.refresh_table()
@@ -2181,7 +2204,51 @@ class ExperimentPanel(QWidget):
         self.table.blockSignals(False)
         self._filter(self.filter_box.text())
         self._update_included_label()
+        self._update_calibration_visibility()
         self.shell._release_window_later()
+
+    @staticmethod
+    def _lacks_size(record) -> bool:
+        return not record.pixel_size_x or not record.pixel_size_y or (record.z_planes > 1 and not record.pixel_size_z)
+
+    def _update_calibration_visibility(self) -> None:
+        # The manual controls appear only when an included image lacks a pixel size, or a Z step for a stack.
+        controller = self.shell.controller
+        included = [r for r in controller.experiment.images if r.include] if controller is not None else []
+        missing = [r for r in included if self._lacks_size(r)]
+        if controller is not self._size_controller:
+            self._size_controller, self._changing_sizes = controller, False
+        self._changing_sizes = self._changing_sizes and bool(included)
+        self.calibration_widget.setVisible(bool(missing) or self._changing_sizes)
+        self.scope_widget.setVisible(bool(missing) or self._changing_sizes)
+        self.pixel_summary.setVisible(bool(included) and not missing)
+        self.summary_row.setVisible(bool(included) and not missing)
+        self.change_sizes_button.setVisible(not self._changing_sizes)
+        for widget in (self.pixel_x, self.pixel_y, self.pixel_z, self.apply_sizes_button):
+            widget.setToolTip(widget.toolTip().split("\n\nShown because")[0])
+        if missing:
+            why = f"\n\nShown because {len(missing)} included image{'s lack' if len(missing) != 1 else ' lacks'} a pixel size or Z step."
+            for widget in (self.pixel_x, self.pixel_y, self.pixel_z, self.apply_sizes_button):
+                widget.setToolTip(widget.toolTip() + why)
+            return
+        if not included:
+            return
+
+        def span(values: list[float]) -> str:
+            low, high = min(values), max(values)
+            return f"{low:.3f}" if f"{low:.3f}" == f"{high:.3f}" else f"{low:.3f}–{high:.3f}"
+
+        x_text = span([r.pixel_size_x for r in included])
+        y_text = span([r.pixel_size_y for r in included])
+        text = f"Pixel size {x_text} µm/pixel" if x_text == y_text else f"Pixel size X {x_text}, Y {y_text} µm/pixel"
+        z_steps = [r.pixel_size_z for r in included if r.z_planes > 1 and r.pixel_size_z]
+        if z_steps:
+            text += f", Z step {span(z_steps)} µm"
+        self.pixel_summary.setText(text)
+
+    def _show_size_controls(self) -> None:
+        self._changing_sizes = True
+        self._update_calibration_visibility()
 
     def set_notices(self, notices: list[str]) -> None:
         self.notices.setText("<br>".join(f"• {text}" for text in notices))
@@ -2207,6 +2274,7 @@ class ExperimentPanel(QWidget):
         if header == "Include":
             controller.set_included(image_id, image_item.checkState() == Qt.Checked)
             self._update_included_label()
+            self._update_calibration_visibility()
             self.shell.update_navigation()
         elif header == "Sample name":
             controller.set_sample_name(image_id, self.table.item(row, column).text())
@@ -2291,14 +2359,20 @@ class ExperimentPanel(QWidget):
         y = self.pixel_y.value() or None
         z = self.pixel_z.value()
         scope = self.size_scope.currentData()
+        self._changing_sizes = False
         targets = [image_id]
         if scope == "included":
             targets += [record.image_id for record in controller.experiment.images if record.include]
         elif scope == "missing":
-            targets += [record.image_id for record in controller.experiment.images if not record.pixel_size_x]
+            targets += [record.image_id for record in controller.experiment.images if self._lacks_size(record)]
         targets = list(dict.fromkeys(targets))
         for target in targets:
-            controller.set_pixel_size(target, x, y, z)
+            record = controller.experiment.image(target)
+            if scope == "missing" and target != image_id:
+                # Only fill what is missing; sizes read from the file stay.
+                controller.set_pixel_size(target, record.pixel_size_x or x, record.pixel_size_y or y, record.pixel_size_z or z)
+            else:
+                controller.set_pixel_size(target, x, y, z)
         self.refresh_table()
         self.shell._objects_panel.update_recommendation()
         self.shell._footer.set_units("µm" if x and y else "pixels — no pixel size in this image", keep_detail=True)
