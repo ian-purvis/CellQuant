@@ -2706,9 +2706,16 @@ class ObjectsPanel(QWidget):
         preview.setToolTip("Find objects in the part of the image on screen, to check the settings quickly.")
         run = QPushButton("Run this image")
         run.clicked.connect(shell.run_current)
-        run.setToolTip("Find objects and measure markers in the whole image on screen.")
+        run.setToolTip("Find objects and measure markers in the whole image on screen. Use it to try the settings on one image.")
+        run_all = QPushButton("Run all images")
+        run_all.clicked.connect(lambda: shell._results_panel._run_all())
+        run_all.setToolTip(
+            "Run every included image with these settings, one after another. "
+            "Use it when you already know the settings: no need to run or review one image first."
+        )
         actions.addWidget(preview)
         actions.addWidget(run)
+        actions.addWidget(run_all)
         layout.addLayout(actions)
         layout.addStretch(1)
         self._update_size_hint()
