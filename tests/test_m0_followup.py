@@ -206,15 +206,85 @@ def test_a_shared_cutoff_reaches_every_image_and_an_own_cutoff_only_one(tmp_path
     positive = objects["class_a"].astype(str).str.lower().eq("true")
     assert positive[objects["image_id"] == second].sum() == 1
     assert positive[objects["image_id"] == first].sum() == 0
-    # Reset for all images: the automatic cutoff, and no image keeps its own.
-    old, new, changed = controller.reset_cutoff("class_a", first, this_image_only=False)
-    assert 20 < new < 800 and controller.own_cutoff(second, "class_a") is None
-    assert set(changed) == {first, second}
+    # Reset for all images: the automatic cutoff, from both images, and no image keeps its own.
+    old, new, used = controller.reset_cutoff("class_a", first, this_image_only=False)
+    assert old == 900 and 20 < new < 800 and used == 2 and controller.own_cutoff(second, "class_a") is None
     # Reset for this image only: its own automatic cutoff; back to the shared one on request.
     controller.reset_cutoff("class_a", second, this_image_only=True)
     assert 20 < controller.own_cutoff(second, "class_a") < 800
     controller.use_shared_cutoff("class_a", second)
     assert controller.own_cutoff(second, "class_a") is None
+
+
+def _three_runs(tmp_path: Path) -> tuple[AnalysisController, list[str]]:
+    paths = []
+    for index in range(3):
+        path = tmp_path / f"s{index}.tif"
+        _write_squares(path)
+        paths.append(path)
+    controller = AnalysisController.create(tmp_path / "experiment", "Three")
+    controller.add_image_paths(paths)
+    controller.set_recipe(_recipe())
+    controller.run_images()
+    return controller, [record.image_id for record in controller.experiment.images]
+
+
+def test_a_cutoff_move_does_not_hide_other_mixed_settings(tmp_path: Path):
+    controller, (first, second, third) = _three_runs(tmp_path)
+    data = controller.recipe.model_dump(mode="json")
+    data["object_set"]["parameters"]["threshold"] = 150
+    controller.set_recipe(data)
+    controller.run_images([first])
+    out = controller.export(tmp_path / "out")
+    assert (out / "mixed_settings.txt").exists()
+    # A cutoff move reclassifies the other images, but they keep the settings they were found with.
+    controller.update_thresholds(first, {"class_a": 500})
+    controller.export(out)
+    assert (out / "mixed_settings.txt").exists()
+    recipe = controller.recall(second).provenance["recipe"]
+    assert recipe["object_set"]["parameters"]["threshold"] == 100
+    assert recipe["classifications"][0]["threshold"] == 500
+    # Exporting again after the settings match removes the stale note.
+    controller.run_images([second, third])
+    controller.export(out)
+    assert not (out / "mixed_settings.txt").exists()
+
+
+def test_a_cutoff_change_clears_only_approvals_whose_positives_change(tmp_path: Path):
+    controller, ids = _three_runs(tmp_path)
+    for image_id in ids:
+        controller.set_status(image_id, "approved")
+    # Marker A is 800 and 20: a move from 200 to 300 calls the same objects positive.
+    controller.update_thresholds(ids[0], {"class_a": 300})
+    assert controller.cleared_approvals == []
+    assert all(record.processing_status == "approved" for record in controller.experiment.images)
+    # One image's own cutoff past 800: only that image changes.
+    controller.update_thresholds(ids[1], {"class_a": 900}, this_image_only=True)
+    assert controller.cleared_approvals == [ids[1]]
+    assert controller.experiment.image(ids[1]).processing_status == "analyzed"
+    assert "cutoff changed" in controller.experiment.image(ids[1]).last_message
+    # The shared cutoff past 800: the other two change as well.
+    controller.update_thresholds(ids[0], {"class_a": 900})
+    assert sorted(controller.cleared_approvals) == sorted([ids[0], ids[2]])
+    # Reset: approvals are cleared only where the positives change (back to 800 positive).
+    controller.set_status(ids[0], "approved")
+    controller.set_status(ids[1], "approved")
+    controller.reset_cutoff("class_a", ids[0], this_image_only=False)
+    assert sorted(controller.cleared_approvals) == sorted([ids[0], ids[1]])
+
+
+def test_automatic_cutoff_methods():
+    from cellquant.quicksetup import auto_threshold
+
+    two_groups = np.array([1.0] * 50 + [10.0] * 50)
+    assert auto_threshold(two_groups, "otsu") == 5.5
+    assert 1 <= auto_threshold(two_groups, "li") < 10
+    mostly_negative = np.concatenate([np.random.default_rng(0).normal(100, 5, 950), np.full(50, 400.0)])
+    triangle = auto_threshold(mostly_negative, "triangle")
+    assert 100 < triangle < 400
+    assert ((mostly_negative > triangle).sum()) == 50
+    assert auto_threshold(np.arange(1.0, 101.0), "top_percent", 10) == pytest.approx(90.1)
+    assert (np.arange(1.0, 101.0) > auto_threshold(np.arange(1.0, 101.0), "top_percent", 10)).sum() == 10
 
 
 def test_batch_keeps_only_a_few_images_in_memory_and_edits_still_work(tmp_path: Path, monkeypatch):
