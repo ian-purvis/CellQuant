@@ -4549,7 +4549,7 @@ class ReviewPanel(QWidget):
             self.shell.show_classification(result)
         cleared = len(controller.cleared_approvals)
         if cleared:
-            text = f"{text} Approval cleared for {cleared} image{'s' if cleared != 1 else ''} whose positives changed.".strip()
+            text = f"{text} Approval cleared for {cleared} image{'s' if cleared != 1 else ''} whose percent positive changed.".strip()
             self.shell._experiment_panel.refresh_table()
             self.shell._refresh_plan()
             self.update_status_line()
@@ -4595,7 +4595,7 @@ class ReviewPanel(QWidget):
             if own:
                 lines.append(f"{len(own)} image{'s' if len(own) != 1 else ''} with {'their' if len(own) != 1 else 'its'} own cutoff will use the shared one.")
             if approved:
-                lines.append("Approved images whose positives change will need approving again.")
+                lines.append("Approved images whose percent positive changes will need approving again.")
             if QMessageBox.question(self, "Reset cutoff", "\n".join(lines)) != QMessageBox.Yes:
                 return
         old, new, used = controller.reset_cutoff(classification.id, image_id, this_image_only=this_image)
