@@ -324,6 +324,19 @@ def classification_colors() -> tuple[str, str]:
     return valid[0], valid[1]
 
 
+def classification_outline() -> bool:
+    """Whether the positive/negative overlay shows object outlines only (default: filled objects)."""
+
+    try:
+        return str(_settings().value("review/classification_style", "fill")) == "outline"
+    except Exception:  # noqa: BLE001 - settings unreadable: use the default
+        return False
+
+
+def save_classification_style(outline: bool) -> None:
+    _settings().setValue("review/classification_style", "outline" if outline else "fill")
+
+
 def keep_awake_preferred() -> bool:
     try:
         return str(_settings().value("run/keep_awake", "true")).lower() == "true"
@@ -1868,13 +1881,15 @@ class CellQuantWindow:
         if "Classification" not in self.viewer.layers:
             return
         positive, negative = classification_colors()
-        self.viewer.layers["Classification"].colormap = DirectLabelColormap(
+        layer = self.viewer.layers["Classification"]
+        layer.colormap = DirectLabelColormap(
             color_dict={
                 None: np.array([0, 0, 0, 0], dtype=np.float32),
                 1: _rgba(negative),
                 2: _rgba(positive),
             }
         )
+        layer.contour = 2 if classification_outline() else 0
 
     def _set_ids(self, result) -> None:
         frame = result.objects
@@ -4408,6 +4423,17 @@ class ReviewPanel(QWidget):
         for button in (self.positive_color, self.negative_color, reset):
             colors.addWidget(button)
         advanced.addLayout(colors)
+        style = QHBoxLayout()
+        style.addWidget(QLabel("Overlay"))
+        self.overlay_style = QComboBox()
+        self.overlay_style.addItem("Fill", "fill")
+        self.overlay_style.addItem("Outline", "outline")
+        self.overlay_style.setToolTip("Fill colors each whole object; Outline colors only its edge.")
+        self.overlay_style.setCurrentIndex(1 if classification_outline() else 0)
+        self.overlay_style.activated.connect(lambda _index: self._overlay_style_chosen())
+        style.addWidget(self.overlay_style)
+        style.addStretch(1)
+        advanced.addLayout(style)
         self._show_colors()
         layout.addWidget(self.advanced_toggle)
         layout.addWidget(self.advanced_box)
@@ -4979,6 +5005,10 @@ class ReviewPanel(QWidget):
     def _reset_colors(self) -> None:
         save_classification_colors(DEFAULT_POSITIVE_COLOR, DEFAULT_NEGATIVE_COLOR)
         self._colors_changed()
+
+    def _overlay_style_chosen(self) -> None:
+        save_classification_style(self.overlay_style.currentData() == "outline")
+        self.shell.apply_classification_colors()
 
     def _colors_changed(self) -> None:
         self._show_colors()
