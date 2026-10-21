@@ -651,8 +651,12 @@ class AnalysisController:
         hit = cache.get((image_id, measurement_id))
         if hit is not None and hit[0][0] == key[0] and (hit[0][1] is key[1] if key[0] == "open" else hit[0][1] == key[1]):
             return hit[1]
-        table = self._objects_table(image_id)
-        if table is None or measurement_id not in table.columns:
+        if result is not None:
+            table = result.objects
+        else:  # only the columns needed: a cutoff move may read many saved tables
+            wanted = {measurement_id, "excluded", "in_count_area"}
+            table = pd.read_csv(path, usecols=lambda column: column in wanted)
+        if measurement_id not in table.columns:
             return None
         if "excluded" in table.columns:
             table = table.loc[~table["excluded"].astype(str).str.lower().isin(["true", "1"])]
@@ -733,9 +737,10 @@ class AnalysisController:
             images = [image_id] if usable else []
         else:
             images = self.measured_images(classification_id)
-        if not images:
+        values = self.marker_values(classification_id, images) if images else np.zeros(0)
+        if not np.isfinite(values).any():
             raise CellQuantError(f"No measured {item.name} values yet: run {'this image' if this_image_only else 'an image'} first.")
-        return auto_threshold(self.marker_values(classification_id, images), item.auto_method, item.auto_percent), len(images)
+        return auto_threshold(values, item.auto_method, item.auto_percent), len(images)
 
     def reset_cutoff(self, classification_id: str, image_id: str, *, this_image_only: bool) -> tuple[float, float, int]:
         """Put the cutoff back to its automatic value, by the marker's own method.
@@ -2293,6 +2298,8 @@ _CUTOFF_KEYS = ("threshold", "auto_method", "auto_percent", "image_thresholds")
 def _same_but_cutoffs(stored, wanted: list[dict]) -> bool:
     """Whether two lists of marker definitions differ in their cutoffs at most."""
 
+    if stored is None:
+        return True  # saved before marker definitions were recorded: its table has the same markers
     if not isinstance(stored, list) or len(stored) != len(wanted):
         return False
     strip = lambda items: [{key: value for key, value in item.items() if key not in _CUTOFF_KEYS} for item in items]  # noqa: E731
