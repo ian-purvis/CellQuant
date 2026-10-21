@@ -725,9 +725,11 @@ class AnalysisController:
             and self._marker_column(record.image_id, item.measurement) is not None
         ]
 
-    def auto_cutoff(self, classification_id: str, image_id: str, *, this_image_only: bool) -> tuple[float, int]:
+    def auto_cutoff(
+        self, classification_id: str, image_id: str, *, this_image_only: bool, pool: list[str] | None = None
+    ) -> tuple[float, int]:
         """The marker's automatic cutoff, by its own method: from this image's objects, or from every
-        measured included image. Returns (cutoff, number of images used)."""
+        measured included image (of ``pool``, when given). Returns (cutoff, number of images used)."""
 
         from cellquant.quicksetup import auto_threshold
 
@@ -736,13 +738,17 @@ class AnalysisController:
             usable = not self.is_pending(image_id) and self._marker_column(image_id, item.measurement) is not None
             images = [image_id] if usable else []
         else:
-            images = self.measured_images(classification_id)
+            images = [other for other in self.measured_images(classification_id) if pool is None or other in pool]
         values = self.marker_values(classification_id, images) if images else np.zeros(0)
         if not np.isfinite(values).any():
-            raise CellQuantError(f"No measured {item.name} values yet: run {'this image' if this_image_only else 'an image'} first.")
+            if not images:
+                raise CellQuantError(f"No measured {item.name} values yet: run {'this image' if this_image_only else 'an image'} first.")
+            raise CellQuantError(f"No counted objects with a {item.name} value: check the objects and the count area.")
         return auto_threshold(values, item.auto_method, item.auto_percent), len(images)
 
-    def reset_cutoff(self, classification_id: str, image_id: str, *, this_image_only: bool) -> tuple[float, float, int]:
+    def reset_cutoff(
+        self, classification_id: str, image_id: str, *, this_image_only: bool, pool: list[str] | None = None
+    ) -> tuple[float, float, int]:
         """Put the cutoff back to its automatic value, by the marker's own method.
 
         This image only: its own cutoff becomes the automatic value for its own objects. All images:
@@ -753,7 +759,7 @@ class AnalysisController:
 
         item = next(item for item in self.recipe.classifications if item.id == classification_id)
         old = item.threshold_for(image_id)
-        new, used = self.auto_cutoff(classification_id, image_id, this_image_only=this_image_only)
+        new, used = self.auto_cutoff(classification_id, image_id, this_image_only=this_image_only, pool=pool)
         before = self.recipe
         data = self.recipe.model_dump(mode="json")
         stored = next(entry for entry in data["classifications"] if entry["id"] == classification_id)
@@ -765,6 +771,23 @@ class AnalysisController:
         self.set_recipe(data)
         self.cleared_approvals = self._clear_changed_approvals(before, [image_id] if this_image_only else None)
         return old, new, used
+
+    def positive_counts(self, classification_id: str, image_ids: list[str]) -> dict[str, tuple[int, int]]:
+        """(positive, counted) objects per measured image at the cutoff each image uses now.
+        Images without measured values are left out. Reads saved tables once, then from memory."""
+
+        item = next(item for item in self.recipe.classifications if item.id == classification_id)
+        counts = {}
+        for image_id in image_ids:
+            if self.is_pending(image_id):
+                continue
+            values = self._marker_column(image_id, item.measurement)
+            if values is None:
+                continue
+            values = values[np.isfinite(values)]
+            positive = int(_positive_calls(values, item.threshold_for(image_id), item.comparison).sum())
+            counts[image_id] = (positive, int(values.size))
+        return counts
 
     def use_shared_cutoff(self, classification_id: str, image_id: str) -> None:
         """This image drops its own cutoff and uses the shared one again."""
