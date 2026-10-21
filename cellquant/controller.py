@@ -154,6 +154,7 @@ class AnalysisController:
         # Images whose approval the last cutoff change cleared, and marker columns kept between cutoff moves.
         self.cleared_approvals: list[str] = []
         self._column_cache: dict[tuple[str, str], tuple[tuple, np.ndarray]] = {}
+        self._table_paths: dict[str, Path] = {}  # where each image's saved table was found; reset on saving
         self._session_images: OrderedDict[str, LoadedImage] = OrderedDict()
         self._segmentation_ids: dict[str, str] = {}
         self._display_cache: OrderedDict[tuple, LoadedImage] = OrderedDict()
@@ -325,6 +326,7 @@ class AnalysisController:
         """Save interactive results separately from the finished run snapshot."""
 
         destination = self._working_dir()
+        self._table_paths.clear()  # a table saved here comes before older ones
         for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits"):
             (destination / relative).mkdir(parents=True, exist_ok=True)
         for image_id, result in self.last_results.items():
@@ -586,7 +588,25 @@ class AnalysisController:
                 known[classification_id]["threshold"] = float(threshold)
         self.set_recipe(data)
         self.cleared_approvals = self._clear_changed_approvals(before, [image_id] if this_image_only else None)
-        return self.recall(image_id)
+        return self.classified_now(image_id)
+
+    def classified_now(self, image_id: str) -> ImageResult | None:
+        """This image's result at its current cutoffs, whatever its saved markers looked like (the
+        image a cutoff was set on; other images follow only cutoff changes, see _at_current_cutoffs)."""
+
+        result = self.recall(image_id)
+        if result is None or getattr(self, "_unswapped_recipe", None) is not None:
+            return result
+        with self._image_settings(self.experiment.image(image_id)):
+            recipe = self.recipe
+        wanted = [item.model_dump(mode="json") for item in recipe.classifications]
+        if result.provenance.get("classification_definitions") == wanted:
+            return result
+        if any(item.measurement not in result.objects.columns for item in recipe.classifications):
+            return result
+        result = self._reclassified(result, recipe)
+        self.last_results[image_id] = result
+        return result
 
     def _clear_changed_approvals(self, before: Recipe, image_ids: list[str] | None = None) -> list[str]:
         """Clear the approval of each approved image (of ``image_ids``; None: all) whose number of
@@ -620,9 +640,12 @@ class AnalysisController:
         if result is not None:
             key = ("open", result.objects)  # compared by identity below
         else:
-            path = self._saved_table_path(image_id)
-            if path is None:
-                return None
+            path = self._table_paths.get(image_id)
+            if path is None or not path.is_file():
+                path = self._saved_table_path(image_id)
+                if path is None:
+                    return None
+                self._table_paths[image_id] = path
             key = (str(path), path.stat().st_mtime_ns)
         cache = self._column_cache
         hit = cache.get((image_id, measurement_id))
@@ -693,7 +716,9 @@ class AnalysisController:
         return [
             record.image_id
             for record in self.experiment.images
-            if record.include and self._marker_column(record.image_id, item.measurement) is not None
+            if record.include
+            and not self.is_pending(record.image_id)  # loaded objects not measured yet: no values
+            and self._marker_column(record.image_id, item.measurement) is not None
         ]
 
     def auto_cutoff(self, classification_id: str, image_id: str, *, this_image_only: bool) -> tuple[float, int]:
@@ -703,7 +728,13 @@ class AnalysisController:
         from cellquant.quicksetup import auto_threshold
 
         item = next(item for item in self.recipe.classifications if item.id == classification_id)
-        images = [image_id] if this_image_only else self.measured_images(classification_id)
+        if this_image_only:
+            usable = not self.is_pending(image_id) and self._marker_column(image_id, item.measurement) is not None
+            images = [image_id] if usable else []
+        else:
+            images = self.measured_images(classification_id)
+        if not images:
+            raise CellQuantError(f"No measured {item.name} values yet: run {'this image' if this_image_only else 'an image'} first.")
         return auto_threshold(self.marker_values(classification_id, images), item.auto_method, item.auto_percent), len(images)
 
     def reset_cutoff(self, classification_id: str, image_id: str, *, this_image_only: bool) -> tuple[float, float, int]:
@@ -890,6 +921,7 @@ class AnalysisController:
 
     def _write_working(self, image_id: str, result: ImageResult) -> None:
         destination = self._working_dir()
+        self._table_paths.pop(image_id, None)
         for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits"):
             (destination / relative).mkdir(parents=True, exist_ok=True)
         persist_image_result(destination, result, self._active_edits(image_id))
@@ -2254,12 +2286,16 @@ def process_experiment(
     return controller.run_images(image_ids, on_progress=on_progress)
 
 
+# Marker fields that only set or choose cutoffs.
+_CUTOFF_KEYS = ("threshold", "auto_method", "auto_percent", "image_thresholds")
+
+
 def _same_but_cutoffs(stored, wanted: list[dict]) -> bool:
     """Whether two lists of marker definitions differ in their cutoffs at most."""
 
     if not isinstance(stored, list) or len(stored) != len(wanted):
         return False
-    strip = lambda items: [{key: value for key, value in item.items() if key != "threshold"} for item in items]  # noqa: E731
+    strip = lambda items: [{key: value for key, value in item.items() if key not in _CUTOFF_KEYS} for item in items]  # noqa: E731
     return strip(stored) == strip(wanted)
 
 
