@@ -571,7 +571,7 @@ class AnalysisController:
 
         A cutoff is shared by every image without a cutoff of its own; ``this_image_only`` gives
         this image its own. Other images pick up a shared cutoff when they are next shown or exported.
-        An approved image whose positive calls change loses its approval (see ``cleared_approvals``).
+        An approved image whose percent positive changes loses its approval (see ``cleared_approvals``).
         """
 
         before = self.recipe
@@ -589,8 +589,9 @@ class AnalysisController:
         return self.recall(image_id)
 
     def _clear_changed_approvals(self, before: Recipe, image_ids: list[str] | None = None) -> list[str]:
-        """Clear the approval of each approved image (of ``image_ids``; None: all) whose positive
-        calls differ between the ``before`` cutoffs and the current ones. Returns those images."""
+        """Clear the approval of each approved image (of ``image_ids``; None: all) whose number of
+        positive objects (so its percent positive) differs between the ``before`` cutoffs and the
+        current ones. Returns those images."""
 
         cleared = []
         for record in self.experiment.images:
@@ -604,14 +605,16 @@ class AnalysisController:
                 if low == high:
                     continue
                 values = self._marker_column(record.image_id, item.measurement)
-                if values is not None and np.any(_positive_calls(values, low, item.comparison) != _positive_calls(values, high, item.comparison)):
+                values = None if values is None else values[np.isfinite(values)]
+                # Approval vouches for the percent positive: only a change in the positive count clears it.
+                if values is not None and _positive_calls(values, low, item.comparison).sum() != _positive_calls(values, high, item.comparison).sum():
                     cleared.append(record.image_id)
                     break
         self._clear_approvals(cleared, "Approval was cleared because the cutoff changed.")
         return cleared
 
     def _marker_column(self, image_id: str, measurement_id: str) -> np.ndarray | None:
-        """One measurement of every object in the image (kept between cutoff moves)."""
+        """One measurement of every counted object in the image (kept between cutoff moves)."""
 
         result = self.last_results.get(image_id)
         if result is not None:
@@ -628,7 +631,9 @@ class AnalysisController:
         table = self._objects_table(image_id)
         if table is None or measurement_id not in table.columns:
             return None
-        values = table[measurement_id].to_numpy(dtype=float)
+        if "excluded" in table.columns:
+            table = table.loc[~table["excluded"].astype(str).str.lower().isin(["true", "1"])]
+        values = table.loc[~outside(table), measurement_id].to_numpy(dtype=float)
         cache[(image_id, measurement_id)] = (key, values)
         return values
 
@@ -706,7 +711,7 @@ class AnalysisController:
 
         This image only: its own cutoff becomes the automatic value for its own objects. All images:
         the shared cutoff is found again from every measured included image, and no image keeps its
-        own. Approved images whose positive calls change lose their approval (``cleared_approvals``).
+        own. Approved images whose percent positive changes lose their approval (``cleared_approvals``).
         Returns (old, new, number of images the value came from).
         """
 
