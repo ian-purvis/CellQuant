@@ -53,6 +53,22 @@ def test_image_strip(tmp_path: Path, monkeypatch):
         for row, image_id in enumerate(included):
             positive, counted = counts[image_id]
             assert table.item(row, 1).text() == f"{positive} / {counted}"
+            assert table.item(row, 2).text() == (f"{100 * positive / counted:.1f}" if counted else "\u2014")
+        total_positive = sum(p for p, _ in counts.values())
+        total_counted = sum(n for _, n in counts.values())
+        assert panel.strip_total.text() == f"All images: {total_positive} / {total_counted} positive ({100 * total_positive / total_counted:.1f}%)"
+        # An image with its own cutoff is starred; back on All images the star goes.
+        shown_row = included.index(panel._shown_image_id())
+        panel.apply_to.setCurrentIndex(panel.apply_to.findData("image"))
+        panel._apply_to_chosen()
+        _settle()
+        assert [table.item(row, 1).text().endswith(" *") for row in range(table.rowCount())] == [
+            row == shown_row for row in range(table.rowCount())
+        ]
+        panel.apply_to.setCurrentIndex(panel.apply_to.findData("all"))
+        panel._apply_to_chosen()
+        _settle()
+        assert not any(table.item(row, 1).text().endswith(" *") for row in range(table.rowCount()))
 
         # A cutoff move updates every row.
         top = max(float(controller.marker_values(marker.id, [image_id]).max()) for image_id in included) + 1
@@ -69,7 +85,12 @@ def test_image_strip(tmp_path: Path, monkeypatch):
         other_row = next(row for row, image_id in enumerate(included) if image_id != shown)
         table.item(other_row, 0).setCheckState(Qt.Checked)
         assert set(panel.strip_pool()) == {shown, included[other_row]}
-        assert panel.strip_total.text().startswith("Ticked images:")
+        ticked = controller.positive_counts(marker.id, [shown, included[other_row]])
+        ticked_positive = sum(p for p, _ in ticked.values())
+        ticked_counted = sum(n for _, n in ticked.values())
+        assert panel.strip_total.text() == (
+            f"Ticked images: {ticked_positive} / {ticked_counted} positive ({100 * ticked_positive / ticked_counted:.1f}%)"
+        )
 
         # Reset (All images) finds the cutoff from the ticked images only.
         panel.reset_cutoff.click()
