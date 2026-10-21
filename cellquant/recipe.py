@@ -200,10 +200,24 @@ class ClassificationSpec(BaseModel):
     comparison: Literal["above", "at_least"] = "above"
     positive_label: str = "positive"
     negative_label: str = "negative"
+    # How the automatic cutoff is found (step 5 "Auto" and "Reset cutoff"); "top_percent" calls
+    # the brightest auto_percent % of objects positive. Not part of the results.
+    auto_method: Literal["otsu", "triangle", "li", "top_percent"] = "otsu"
+    auto_percent: float = Field(default=10.0, gt=0.0, lt=100.0)
+    # Cutoffs for single images (image id -> cutoff); every other image uses ``threshold``.
+    image_thresholds: dict[str, float] = Field(default_factory=dict)
 
     @model_serializer(mode="wrap")
     def _drop_unused(self, handler):
-        return _without_defaults(handler(self), {"comparison": "above"})
+        return _without_defaults(
+            handler(self),
+            {"comparison": "above", "auto_method": "otsu", "auto_percent": 10.0, "image_thresholds": {}},
+        )
+
+    def threshold_for(self, image_id: str | None) -> float:
+        """The cutoff this image uses: its own, or the shared one."""
+
+        return float(self.image_thresholds.get(str(image_id), self.threshold)) if image_id else float(self.threshold)
 
     @model_validator(mode="after")
     def _check(self) -> ClassificationSpec:
@@ -317,6 +331,17 @@ class Recipe(BaseModel):
     def canonical_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
 
+    def for_image(self, image_id: str) -> Recipe:
+        """These settings as one image uses them: each marker at that image's cutoff."""
+
+        if not any(item.image_thresholds for item in self.classifications):
+            return self
+        copied = self.model_copy(deep=True)
+        for item in copied.classifications:
+            item.threshold = item.threshold_for(image_id)
+            item.image_thresholds = {}
+        return copied
+
     def content_hash(self) -> str:
         """Hash of the scientific settings only.
 
@@ -346,9 +371,16 @@ class Recipe(BaseModel):
             "object_set": self.object_set.model_dump(mode="json"),
             **({"crop": self.crop.model_dump(mode="json")} if self.crop is not None and self.crop.enabled else {}),
             "measurements": [item.model_dump(mode="json") for item in self.measurements],
-            "classifications": [item.model_dump(mode="json") for item in self.classifications],
+            "classifications": [
+                {key: value for key, value in item.model_dump(mode="json").items() if key not in _CUTOFF_CHOICES}
+                for item in self.classifications
+            ],
             "reports": [item.model_dump(mode="json") for item in self.reports],
         }
+
+
+# Classification fields that only choose or hold cutoffs; the cutoff an image uses is in "threshold".
+_CUTOFF_CHOICES = ("auto_method", "auto_percent", "image_thresholds")
 
 
 def load_recipe(source: Recipe | dict[str, Any] | str | Path) -> Recipe:
