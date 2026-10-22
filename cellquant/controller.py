@@ -408,7 +408,11 @@ class AnalysisController:
         else:
             with self._image_settings(self.experiment.image(image_id)):
                 settings = self.recipe.content_hash()
-        return f"{settings}:{len(self._active_edits(image_id))}"
+        fingerprint = f"{settings}:{len(self._active_edits(image_id))}"
+        if result is not None and result.provenance.get("crop_rectangles") and getattr(result.labels, "ndim", 2) == 3:
+            # A Z-stack cropped to its region: approvals made before stacks were cropped no longer match.
+            fingerprint += ":stack-crop"
+        return fingerprint
 
     def set_recipe(self, recipe: Recipe | dict | str | Path) -> None:
         """Replace the active analysis's settings. The analysis keeps its identity (recipe id)."""
@@ -459,6 +463,8 @@ class AnalysisController:
         if not unchanged:
             if was_approved:
                 record.last_message = "Approval was cleared: this image was analyzed again with different settings."
+                if "stack-crop" in self._approval_fingerprint(image_id):
+                    record.last_message += " Z-stacks are now cropped to the region of interest when that box is ticked."
                 record.approved_settings_sha256 = ""
             record.processing_status = "needs_attention" if status != "Success" else "analyzed"
         record.last_result = status
