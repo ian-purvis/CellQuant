@@ -194,15 +194,45 @@ def merge_rectangles(rectangles: list[Rectangle], gap: int = 0) -> list[Rectangl
     return sorted(boxes)  # type: ignore[return-value]
 
 
+def _plane(channel: np.ndarray) -> np.ndarray:
+    """One channel as a plane: a stack's maximum projection."""
+
+    channel = np.asarray(channel)
+    return channel.max(axis=0) if channel.ndim == 3 else channel
+
+
+def crop_log_line(rectangles: list[Rectangle] | None, info: dict) -> str:
+    """One line for the run log: what the crop did to this image."""
+
+    if rectangles:
+        count = len(rectangles)
+        return (
+            f"Crop: {info.get('fraction', 0.0):.0%} of the frame ({count} region{'s' if count != 1 else ''}), "
+            f"{info.get('seconds', 0.0):.1f} s to find"
+        )
+    if info.get("skipped"):
+        return f"Crop: skipped, regions cover {info.get('fraction', 0.0):.0%} of the frame"
+    if rectangles == []:
+        return "Crop: no positive region found, whole frame used"
+    reason = info.get("warning") or info.get("note") or "not applied"
+    return f"Crop: skipped. {reason}"
+
+
 def regions_for(loaded, recipe, info: dict | None = None) -> list[Rectangle] | None:
-    """Crop rectangles for this image, or None for the full image (cropping off, 3D, no pixel size,
-    or the region covers too much of the image; ``info`` says which)."""
+    """Crop rectangles for this image, or None for the full image (cropping off, no pixel size,
+    the classical method on a Z-stack, or the region covers too much of the image; ``info`` says which).
+
+    On a Z-stack the region is found on the maximum projection of each chosen channel and the
+    rectangles apply to every slice."""
 
     from cellquant.regions import isotropic_pixel_size
 
     info = {} if info is None else info
     spec = recipe.crop
-    if spec is None or not spec.enabled or loaded.is_3d:
+    if spec is None or not spec.enabled:
+        return None
+    if loaded.is_3d and recipe.object_set.algorithm != "cellpose":
+        info["warning"] = "Cropping a Z-stack needs Cellpose, so this Z-stack was analyzed in full."
         return None
     pixel_size = isotropic_pixel_size(loaded.pixel_size_x, loaded.pixel_size_y)
     if pixel_size is None:
@@ -211,7 +241,7 @@ def regions_for(loaded, recipe, info: dict | None = None) -> list[Rectangle] | N
     channels = [channel for channel in crop_channels(recipe) if 0 <= channel < loaded.n_channels]
     if not channels:
         return None
-    rectangles = detect_regions([np.asarray(loaded.data[channel]) for channel in channels], float(pixel_size), spec, info)
+    rectangles = detect_regions([_plane(loaded.data[channel]) for channel in channels], float(pixel_size), spec, info)
     if rectangles is None:
         info["note"] = (
             f"The region of interest covers {info['fraction']:.0%} of this image (more than {spec.max_fraction:.0%}), "
