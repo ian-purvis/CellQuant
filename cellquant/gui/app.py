@@ -708,6 +708,7 @@ class CellQuantWindow:
         self._keep_awake = keep_awake.KeepAwake()
         self._footer = Footer(self)
         self._tabs.currentChanged.connect(lambda _index: self._markers_page_shown())
+        self._tabs.currentChanged.connect(lambda _index: self._edit_panel.leave_delete())
         main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
 
@@ -1347,7 +1348,7 @@ class CellQuantWindow:
             "Preview", "Run this image", "Load results…", "Run selected images", "Run all images", "Set up markers",
             "Export results…", "Add images", "Add folder", "New experiment", "New experiment…", "Open",
             "Open experiment…", "Try practice images", "Include shown", "Leave out shown",
-            "Include only selected", "Delete object", "Restore object", "Undo", "Record drawn edits", "Approve", "Use recommended",
+            "Include only selected", "Undo", "Undo all", "Record drawn edits", "Approve", "Use recommended",
             "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
             # Buttons that change the settings: never while images are being analyzed with them.
             "Load settings…", "Add measurement", "Remove measurement",
@@ -1891,6 +1892,18 @@ class CellQuantWindow:
                 channel.display_settings["contrast_limits"] = [float(low), float(high)]
 
     def _set_labels(self, labels, result) -> None:
+        # Adding layers (object numbers, classification) makes napari select the newest one:
+        # the layer the user had chosen stays chosen.
+        layers = self.viewer.layers
+        active = layers.selection.active
+        name = active.name if active is not None else None
+        try:
+            self._set_labels_layers(labels, result)
+        finally:
+            if name is not None and name in layers and layers.selection.active is not layers[name]:
+                layers.selection.active = layers[name]
+
+    def _set_labels_layers(self, labels, result) -> None:
         # Adding or removing a napari layer takes on the order of a second, so
         # layers that already exist with the right shape get new data instead.
         self._edit_panel.keep_drawing()
@@ -4003,26 +4016,20 @@ class EditPanel(QWidget):
         super().__init__()
         self.shell = shell
         self._labels = None
-        # The object the user clicked. napari's own selected_label starts at 1, so it is not used
-        # until the user changes it; otherwise Delete object would remove object 1 unasked.
-        self._picked: int | None = None
-        self._last_label = 1  # napari's selected_label when last seen
         self._click_bound = False
+        self._cue_connected = False
         layout = QVBoxLayout(self)
-        self.selected = QLabel("Selected object: none")
-        self.selected.setToolTip("Click an object in the image to select it.")
-        layout.addWidget(self.selected)
         # One button per function. Which ones show depends on the mode: Home, Delete or Add (or all).
         self._mode = "home"
         self._buttons: dict[str, QPushButton] = {}
         rows = (
             ("Delete objects", self._enter_delete, "Add new objects", self._enter_add),
-            ("Delete object", self._delete, "Restore object", self._restore),
             ("Draw area", self._draw_area, "Delete in area", self._delete_in_area),
+            ("Keep only", self._keep_only, None, None),
             ("Draw new object", self._draw_new, None, None),
             ("Record drawn edits", self._commit, "Record all images", self._commit_all),  # a row of their own: no label cut off
-            ("Undo", self._undo, "Back", self._go_home),
-            ("Reset image", self._reset, "Reset all images", self._reset_all),
+            ("Undo", self._undo, "Undo all", self._reset),
+            ("Reset all images", self._reset_all, "Back", self._go_home),
         )
         self._rows: list[tuple[QWidget, list[str]]] = []
         for left, left_slot, right, right_slot in rows:
@@ -4040,8 +4047,8 @@ class EditPanel(QWidget):
                 names.append(text)
             layout.addWidget(holder)
             self._rows.append((holder, names))
-        self.delete_button = self._buttons["Delete object"]
         self.undo_button = self._buttons["Undo"]
+        self._buttons["Delete objects"].setCheckable(True)
         for text, button in self._buttons.items():
             if text in guide.BUTTON_HELP:
                 button.setToolTip(guide.BUTTON_HELP[text])
@@ -4082,13 +4089,13 @@ class EditPanel(QWidget):
         return
 
     _MODE_BUTTONS = {
-        "home": ("Delete objects", "Add new objects", "Undo", "Record drawn edits", "Reset image", "Reset all images"),
-        "delete": ("Delete object", "Restore object", "Draw area", "Delete in area", "Undo", "Back"),
-        "add": ("Draw new object", "Record drawn edits", "Record all images", "Undo", "Back"),
+        "home": ("Delete objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"),
+        "delete": ("Delete objects", "Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"),
+        "add": ("Draw new object", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"),
     }
     _MODE_HINT = {
         "home": "Pick a task: delete objects or add new ones.",
-        "delete": "Click an object, then <b>Delete object</b>.",
+        "delete": "Click an object to delete it. <b>Back</b> or Esc to stop.",
         "add": "<b>Draw new object</b>, paint it, then <b>Record drawn edits</b>.",
     }
 
@@ -4100,7 +4107,7 @@ class EditPanel(QWidget):
                 self._buttons[name].setVisible(name in wanted)
             holder.setVisible(any(name in wanted for name in names))
         self.mask_colors_row.setVisible(everything or self._mode == "home")
-        hint = "Click an object, then <b>Delete object</b>, or paint and <b>Record drawn edits</b>." if everything else self._MODE_HINT[self._mode]
+        hint = "Delete: click <b>Delete objects</b>, then click objects. Add: paint and <b>Record drawn edits</b>." if everything else self._MODE_HINT[self._mode]
         card = getattr(self.shell, "_step_pages", None)
         card = getattr(card[2], "todo_card", None) if card else None
         if card is not None:
@@ -4128,9 +4135,38 @@ class EditPanel(QWidget):
     def set_mode(self, mode: str) -> None:
         self._mode = mode
         self._apply_mode()
+        self._show_delete_cue(mode == "delete")
+        self._buttons["Delete objects"].setChecked(mode == "delete")
+
+    def leave_delete(self) -> None:
+        if self._mode == "delete":
+            self.set_mode("home")
+
+    def _show_delete_cue(self, on: bool) -> None:
+        """Delete mode shows a cross cursor over the image (napari resets it when another layer is chosen)."""
+
+        viewer = self.shell.viewer
+        if on and self._labels is not None and self._labels in viewer.layers and self._labels.mode != "pan_zoom":
+            self._labels.mode = "pan_zoom"  # a paint tool would paint on the click
+        if on and not self._cue_connected:
+            viewer.layers.selection.events.active.connect(self._cross_cursor)
+            self._cue_connected = True
+        elif not on and self._cue_connected:
+            viewer.layers.selection.events.active.disconnect(self._cross_cursor)
+            self._cue_connected = False
+        if on:
+            viewer.cursor.style = "cross"
+        else:
+            active = viewer.layers.selection.active
+            viewer.cursor.style = getattr(active, "cursor", "standard") if active is not None else "standard"
+
+    def _cross_cursor(self, _event=None) -> None:
+        if self._mode == "delete":
+            self.shell.viewer.cursor.style = "cross"
 
     def _enter_delete(self) -> None:
-        self.set_mode("delete")
+        # Pressing it again leaves delete mode.
+        self.set_mode("home" if self._mode == "delete" else "delete")
 
     def _enter_add(self) -> None:
         self.set_mode("add")
@@ -4209,20 +4245,18 @@ class EditPanel(QWidget):
 
     def bind_labels(self, boundaries) -> None:
         self._labels = boundaries
-        self._last_label = int(boundaries.selected_label)
-        boundaries.events.selected_label.connect(self._on_selected)
         self.clear_selection()
         if not self._click_bound:
-            # A plain click on the image picks the object under the pointer, whichever layer is active.
+            # In delete mode a plain click on an object deletes it, whichever layer is active.
             self.shell.viewer.mouse_drag_callbacks.append(self._on_click)
             self._click_bound = True
 
     def clear_selection(self) -> None:
-        self._picked = None
-        self.selected.setText("Selected object: none")
         self._say("")
 
     def _on_click(self, viewer, event):
+        if self._mode != "delete":
+            return
         start = tuple(event.position)
         dragged = False
         yield
@@ -4231,61 +4265,33 @@ class EditPanel(QWidget):
             yield
         if dragged or self._labels is None or self._labels not in viewer.layers:
             return
+        if self.shell._tabs.currentWidget() is not self.shell._step_pages[2]:
+            return
+        active = viewer.layers.selection.active
+        if active is not None and getattr(active, "mode", "pan_zoom") not in ("pan_zoom", "transform"):
+            return  # drawing an area, painting or picking: the click belongs to that tool
         try:
             value = self._labels.get_value(start, view_direction=event.view_direction, dims_displayed=event.dims_displayed, world=True)
-        except Exception:  # noqa: BLE001 - a click outside the image picks nothing
+        except Exception:  # noqa: BLE001 - a click outside the image deletes nothing
             value = None
-        self.pick(int(value) if isinstance(value, (int, np.integer)) else 0)
+        if isinstance(value, (int, np.integer)) and int(value) > 0:
+            self.delete_object(int(value))
 
-    def pick(self, object_id: int) -> None:
-        """Select an object for Delete / Restore (0 clears the selection)."""
+    def delete_object(self, object_id: int) -> None:
+        """Delete the clicked object at once; Undo brings it back."""
 
-        if object_id <= 0:
-            self.clear_selection()
-            return
-        self._picked = object_id
-        self.selected.setText(f"Selected object: {object_id}")
-
-    def _on_selected(self, event) -> None:
-        # Changed by napari's picker tool on the Objects layer: the same as clicking the object.
-        # napari sends this event without a value, and also when only the layer's colors change.
-        value = int(self._labels.selected_label)
-        if value == self._last_label:
-            return
-        self._last_label = value
-        self.pick(value)
-
-    def _selected_id(self) -> int | None:
-        return self._picked
-
-    def _delete(self) -> None:
-        self._edit("delete")
-
-    def _restore(self) -> None:
-        self._edit("restore")
-
-    def _edit(self, kind: str) -> None:
         controller = self.shell.require_controller()
-        object_id = self._selected_id()
         if controller is None or not self.shell._nav_ids:
             return
-        if object_id is None:
-            self.shell.message("Click an object in the image first, then Delete object or Restore object.")
+        if self.shell.is_busy():
+            self.shell.message("Wait for the current analysis to finish, then click the object again.")
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
         if self.shell._labels_image_id != image_id:
-            # The picked number belongs to the objects on screen, not to an image still loading.
+            # The clicked number belongs to the objects on screen, not to an image still loading.
             self.shell.message("Wait for the image to finish loading, then click the object again.")
-            self.clear_selection()
             return
-
-        def finish(result) -> None:
-            self.shell.show_result(result)
-
-        if kind == "delete":
-            self.shell._start_job(lambda: controller.delete_object(image_id, object_id), finish)
-        else:
-            self.shell._start_job(lambda: controller.restore_object(image_id, object_id), finish)
+        self.shell._start_job(lambda: controller.delete_object(image_id, object_id), self.shell.show_result)
 
     def _draw_area(self) -> None:
         if self.shell.require_controller() is None or not self.shell._nav_ids:
@@ -4295,13 +4301,19 @@ class EditPanel(QWidget):
         layer.mode = "add_polygon"
 
     def _delete_in_area(self) -> None:
+        self._area_edit(keep=False)
+
+    def _keep_only(self) -> None:
+        self._area_edit(keep=True)
+
+    def _area_edit(self, keep: bool) -> None:
         controller = self.shell.require_controller()
         if controller is None or not self.shell._nav_ids:
             return
         layer = self.shell.viewer.layers[DELETE_AREA_LAYER] if DELETE_AREA_LAYER in self.shell.viewer.layers else None
         polygons = drawn_polygons(layer) if layer is not None else []
         if not polygons:
-            self.shell.message("Click Draw area and outline the objects to delete first.")
+            self.shell.message("Click Draw area and outline the objects to keep first." if keep else "Click Draw area and outline the objects to delete first.")
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
 
@@ -4312,9 +4324,13 @@ class EditPanel(QWidget):
                 self.shell.message("Run step 2 on this image first.")
                 return
             self.shell.show_result(result)
-            self.shell.message(f"Deleted {count} object{'s' if count != 1 else ''}." if count else "No object lies entirely inside the area.")
+            if keep:
+                self.shell.message(f"Deleted {count} object{'s' if count != 1 else ''} outside the area." if count else "Every object touches the area.")
+            else:
+                self.shell.message(f"Deleted {count} object{'s' if count != 1 else ''}." if count else "No object lies entirely inside the area.")
 
-        self.shell._start_job(lambda: controller.delete_objects_in_area(image_id, polygons), finish)
+        change = controller.keep_objects_in_area if keep else controller.delete_objects_in_area
+        self.shell._start_job(lambda: change(image_id, polygons), finish)
 
     def _undo(self) -> None:
         controller = self.shell.require_controller()
@@ -4353,7 +4369,7 @@ class EditPanel(QWidget):
             parts.append("drawing not recorded yet")
         answer = QMessageBox.question(
             self,
-            "Reset image?",
+            "Undo all edits?",
             f"Remove {' and '.join(parts)} on this image and go back to the objects found in step 2? This cannot be undone.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -5827,12 +5843,14 @@ class Footer(QWidget):
         dock = shell._dock
         for key, button in (
             ("A", shell._review_panel.approve_button),
-            ("Del", shell._edit_panel.delete_button),
             ("Ctrl+Z", shell._edit_panel.undo_button),
         ):
             shortcut = QShortcut(QKeySequence(key), dock)
             shortcut.setContext(Qt.WidgetWithChildrenShortcut)
             shortcut.activated.connect(lambda button=button: self._panel_key(button))
+        # Esc leaves click-to-delete in step 3.
+        stop_delete = QShortcut(QKeySequence("Esc"), shell.viewer.window._qt_window)
+        stop_delete.activated.connect(shell._edit_panel.leave_delete)
         self.failed_files: list[str] = []
         self.pause.setEnabled(False)
         self.resume.setEnabled(False)

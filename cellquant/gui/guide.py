@@ -106,9 +106,9 @@ STEPS = (
         3,
         "3 Edit objects",
         "Fix the objects",
-        "Click an object in the image, then <b>Delete object</b> (debris, a bad outline) or <b>Restore object</b>. "
+        "Click <b>Delete objects</b>, then click each object to remove (debris, a bad outline); <b>Back</b> or Esc stops. "
         "To redraw outlines, select the <i>Objects</i> layer, paint or erase with napari's tools, then click "
-        "<b>Record drawn edits</b>. <b>Undo</b> takes back the last edit. "
+        "<b>Record drawn edits</b>. <b>Undo</b> takes back the last edit, <b>Undo all</b> every edit on this image. "
         "The objects found in step 2 are kept; edits are saved as a list applied on top. "
         "Running step 2 again with new settings gives new objects, and these edits no longer apply to them.",
         "Each object is one nucleus: no debris, merges, or splits left. Skip this step if step 2 looked right.",
@@ -204,18 +204,17 @@ HELP = {
 BUTTON_HELP = {
     "Preview": "Try the settings on the area you are looking at. Nothing is saved.",
     "Run": "Find objects in this image and measure them.",
-    "Delete object": "Click an object in the image first. This removes it from the counts (for debris or a bad outline). Restore object brings it back. (Del)",
-    "Restore object": "Bring back a deleted object.",
     "Undo": "Undo the last edit. (Ctrl+Z)",
-    "Delete objects": "Show the buttons for deleting objects.",
+    "Undo all": "Remove every edit on this image, recorded or not, and go back to the objects found in step 2. Clears its approval. Cannot be undone.",
+    "Delete objects": "Then click objects in the image to delete them. Undo brings the last one back. Back or Esc stops.",
     "Add new objects": "Show the buttons for drawing new objects.",
     "Draw new object": "Select the Objects layer with an unused number and napari's brush. Paint the object, then Record drawn edits. Click again for the next one.",
     "Back": "Return to the task choice.",
     "Draw area": "Outline objects to delete in the Delete area layer: click the corners, double-click to finish. Several areas are fine.",
+    "Keep only": "Delete every object that does not touch the drawn area (use Draw area first); objects crossing its edge stay. Undo brings them all back.",
     "Delete in area": "Delete every object lying entirely inside the drawn area; objects crossing its edge stay. Undo brings them all back.",
     "Record drawn edits": "Save outlines you painted by hand in the Objects layer.",
     "Record all images": "Save what you painted on every image, including images you moved away from.",
-    "Reset image": "Remove every edit on this image, recorded or not, and go back to the objects found in step 2. Clears its approval. Cannot be undone.",
     "Reset all images": "Remove every edit on every image and go back to the objects found in step 2. Clears their approvals. Cannot be undone.",
     "Approve": "Mark this image as checked and correct. Editing it later clears the approval. Opens the next unchecked image. (A)",
 }
