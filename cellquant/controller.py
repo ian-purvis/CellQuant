@@ -20,7 +20,7 @@ import pandas as pd
 
 from cellquant.__version__ import __version__
 from cellquant.cache import StageCache, stage_key
-from cellquant.edits import EditOperation, apply_edits, objects_inside, operations_from_diff
+from cellquant.edits import EditOperation, apply_edits, objects_inside, objects_outside, operations_from_diff
 from cellquant.errors import CellQuantError, ImageLoadError
 from cellquant.experiment import (
     IMAGE_STATE_FIELDS,
@@ -852,6 +852,20 @@ class AnalysisController:
             return current, 0
         # One area, one Undo: the deletions share an id.
         area = uuid.uuid4().hex[:12]
+        operations = [EditOperation.create(image_id, object_id, "delete", {"area": area}) for object_id in object_ids]
+        self._edit_and_remeasure(image_id, *operations)
+        return self.last_results[image_id], len(object_ids)
+
+    def keep_objects_in_area(self, image_id: str, polygons) -> tuple[ImageResult | None, int]:
+        """Delete every object that does not touch the polygons. Returns the result and how many went."""
+
+        current = self.recall(image_id)
+        if current is None:
+            return None, 0
+        object_ids = objects_outside(current.labels, polygons)
+        if not object_ids:
+            return current, 0
+        area = uuid.uuid4().hex[:12]  # one Undo brings them all back
         operations = [EditOperation.create(image_id, object_id, "delete", {"area": area}) for object_id in object_ids]
         self._edit_and_remeasure(image_id, *operations)
         return self.last_results[image_id], len(object_ids)
@@ -1766,8 +1780,8 @@ class AnalysisController:
                 object_set={
                     "name": "Objects",
                     "segmentation_channel": 0,
-                    "algorithm": "classical",
-                    "parameters": {"threshold_method": "otsu"},
+                    "algorithm": "cellpose",
+                    "parameters": {},
                 },
             )
         if not recipe.recipe_id:

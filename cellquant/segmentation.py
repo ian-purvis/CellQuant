@@ -282,6 +282,10 @@ class CellposeBackend:
             # Estimate the size once, from the projection, so every slice uses the same diameter.
             diameter = _estimate_classic_diameter(model, scaled.max(axis=0))
             details["estimated_diameter_px"] = diameter
+        resize = resizes_to_diameter(parameters, classic)
+        details["resized_to_diameter"] = resize
+        # Without resizing, Cellpose-SAM sees the image at its own size; the diameter still sizes the 3D cutoff.
+        cellpose_diameter = diameter if resize else None
         options = {
             "flow_threshold": float(parameters.get("flow_threshold", 0.4)),
             "cellprob_threshold": float(parameters.get("cellprob_threshold", 0.0)),
@@ -295,7 +299,7 @@ class CellposeBackend:
                 planes = []
                 for index, plane in enumerate(scaled):
                     progress.update(f"Finding objects with Cellpose: slice {index + 1} of {len(scaled)}", index, len(scaled))
-                    output = _eval(model, details, plane, diameter=diameter, do_3D=False, **options)
+                    output = _eval(model, details, plane, diameter=cellpose_diameter, do_3D=False, **options)
                     planes.append(np.asarray(output[0] if isinstance(output, (tuple, list)) else output))
                 labels = np.stack(planes)
             else:
@@ -309,7 +313,7 @@ class CellposeBackend:
                     model,
                     details,
                     scaled,
-                    diameter=diameter,
+                    diameter=cellpose_diameter,
                     do_3D=True,
                     z_axis=0,
                     anisotropy=float(anisotropy),
@@ -360,6 +364,8 @@ class CellposeBackend:
                     timings["size_estimate_network"] = _STAGE_TIMES["network"] - network_before
                 if diameter is not None:
                     details["estimated_diameter_px"] = diameter
+            resize = resizes_to_diameter(parameters, details["engine"] == CELLPOSE_CLASSIC)
+            details["resized_to_diameter"] = resize
             if details["engine"] == CELLPOSE_CLASSIC:
                 output = _eval(
                     model,
@@ -378,7 +384,7 @@ class CellposeBackend:
                     model,
                     details,
                     np.asarray(image),
-                    diameter=diameter,
+                    diameter=diameter if resize else None,
                     do_3D=False,
                     flow_threshold=flow_threshold,
                     cellprob_threshold=cellprob_threshold,
@@ -402,12 +408,24 @@ class CellposeBackend:
         return np.asarray(masks, dtype=np.int32), details
 
 
+def resizes_to_diameter(parameters: dict[str, Any], classic: bool) -> bool:
+    """Whether Cellpose rescales the image so objects match its training size, from the diameter.
+
+    ``resize_to_diameter: False`` lets Cellpose-SAM see the image at its own size (much faster
+    for small nuclei; the step 2 default since 2026-10). Settings saved without the key resize,
+    as every earlier version did. Classic Cellpose always uses its diameter.
+    """
+
+    return classic or bool(parameters.get("resize_to_diameter", True))
+
+
 # Full 3D settings from the Cellpose-SAM paper (Pachitariu, Rariden & Stringer 2025, bioRxiv
-# 10.1101/2025.04.28.651001, Methods "Fine-tuning and evaluation"): 1,000 dynamics iterations,
-# 3D flow smoothing of 2, and objects under 1,000 voxels dropped. The paper's cells were about
-# 30 px across in isotropic volumes, so the voxel cutoff is scaled to each image: the same share
-# of a typical object (about 7 %), in this image's voxels.
-FULL_3D_NITER = 1000
+# 10.1101/2025.04.28.651001, Methods "Fine-tuning and evaluation"): 3D flow smoothing of 2 and
+# objects under 1,000 voxels dropped (the paper also used 1,000 dynamics iterations; here 200,
+# Cellpose's own default, which took far less time and gave good outlines). The paper's cells were
+# about 30 px across in isotropic volumes, so the voxel cutoff is scaled to each image: the same
+# share of a typical object (about 7 %), in this image's voxels.
+FULL_3D_NITER = 200
 FULL_3D_FLOW_SMOOTH = 2.0
 FULL_3D_MIN_VOXELS = 1000
 _PAPER_DIAMETER_PX = 30.0
@@ -482,26 +500,43 @@ def _out_of_memory(exc: BaseException) -> bool:
     return "out of memory" in str(exc).lower()
 
 
+def full_3d_timing_note(niter: int, network: float, total: float) -> str:
+    """The log line for one full 3D image: the network pass apart from the flow-following (mask) step."""
+
+    from cellquant.progress import elapsed_text
+
+    rest = max(0.0, total - network)
+    return (
+        f"3D segmentation took {elapsed_text(total)}: network {elapsed_text(network)}, "
+        f"flow-following and masks {elapsed_text(rest)} ({niter} iterations)."
+    )
+
+
 def _eval(model, details: dict[str, Any], image, **options):
     """``model.eval`` with the batch size for this GPU (``details["batch_size"]``).
 
     A GPU that runs out of memory tries again with half the batch, down to Cellpose's default.
     """
 
-    from cellquant.hardware import CELLPOSE_BATCH_SIZE, cellpose_batch_size, lower_batch_size
+    from cellquant.hardware import CELLPOSE_BATCH_SIZE, cellpose_batch_size, lower_batch_size, release_gpu_cache
 
-    size = cellpose_batch_size(getattr(model, "device", None))
-    while True:
-        details["batch_size"] = size
-        try:
-            if size == CELLPOSE_BATCH_SIZE:
-                return model.eval(image, **options)  # as before on the CPU, the Apple GPU and small GPUs
-            return model.eval(image, batch_size=size, **options)
-        except Exception as exc:
-            smaller = lower_batch_size(size, getattr(model, "device", None)) if _out_of_memory(exc) else None
-            if smaller is None:
-                raise
-            size = smaller
+    device = getattr(model, "device", None)
+    size = cellpose_batch_size(device)
+    try:
+        while True:
+            details["batch_size"] = size
+            try:
+                if size == CELLPOSE_BATCH_SIZE:
+                    return model.eval(image, **options)  # as before on the CPU, the Apple GPU and small GPUs
+                return model.eval(image, batch_size=size, **options)
+            except Exception as exc:
+                smaller = lower_batch_size(size, device) if _out_of_memory(exc) else None
+                if smaller is None:
+                    raise
+                size = smaller
+    finally:
+        if str(getattr(device, "type", device)) == "cuda":
+            release_gpu_cache()  # only while another CellQuant window shares the GPU
 
 
 def _cached_model(models, classic: bool, name: str, gpu: bool, precision: str | None = None):
