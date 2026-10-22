@@ -34,6 +34,7 @@ def _torch(memory_gb: float):
             is_available=lambda: True,
             is_bf16_supported=lambda: False,
             get_device_properties=lambda device: properties,
+            get_device_name=lambda device: "RTX 6000 Ada",
             empty_cache=lambda: None,
         ),
         backends=types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: False)),
@@ -46,6 +47,8 @@ def _torch(memory_gb: float):
 def _fresh(monkeypatch, tmp_path):
     monkeypatch.setattr(segmentation, "_MODELS", {})
     monkeypatch.setattr(hardware, "_BATCH_LIMIT", None)
+    monkeypatch.setattr(hardware, "_BATCH_NOTES", [])
+    monkeypatch.setattr(hardware, "_BATCH_ANNOUNCED", set())
     monkeypatch.setattr(hardware, "_BF16", {})
     monkeypatch.setattr(hardware, "_THREADS_APPLIED", set())
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
@@ -109,6 +112,21 @@ def test_out_of_memory_halves_the_batch_and_remembers_it(tmp_path, monkeypatch):
     models.CALLS.clear()
     _segment_2d()  # the next image starts at the size that fitted
     assert [call[1]["batch_size"] for call in models.CALLS if call[0] == "CellposeModel.eval"] == [16]
+    notes = hardware.batch_notes()
+    assert notes[0] == "Cellpose batch size 64 on RTX 6000 Ada (49 GB)."
+    assert "ran out of memory at Cellpose batch size 64; trying the image again at 32" in notes[1]
+    assert "ran out of memory at Cellpose batch size 32; trying the image again at 16" in notes[2]
+    assert len(notes) == 3 and hardware.batch_notes() == []  # each line is logged once
+    assert hardware.load_settings()["gpu_batch_size"] == {"RTX 6000 Ada": 16}
+
+
+def test_the_size_that_fitted_is_kept_on_this_computer(tmp_path, monkeypatch):
+    hardware.save_settings({"gpu_batch_size": {"RTX 6000 Ada": 32}})
+    monkeypatch.setitem(sys.modules, "torch", _torch(49))  # a new session: nothing lowered yet
+    assert hardware.cellpose_batch_size(types.SimpleNamespace(type="cuda")) == 32
+    assert hardware.batch_notes() == ["Cellpose batch size 32 on RTX 6000 Ada (49 GB) (the largest that fitted on this computer before)."]
+    hardware.save_settings({"gpu_batch_size": {"Another GPU": 8}})  # saved for a different GPU: not used
+    assert hardware.cellpose_batch_size(types.SimpleNamespace(type="cuda")) == 64
 
 
 def test_out_of_memory_at_the_default_is_reported(tmp_path, monkeypatch):
