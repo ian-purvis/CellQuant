@@ -6,6 +6,7 @@ summary each cache on their own inputs, and manual edits stay out of the recipe.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import uuid
@@ -646,7 +647,7 @@ class AnalysisController:
                 if path is None:
                     return None
                 self._table_paths[image_id] = path
-            key = (str(path), path.stat().st_mtime_ns)
+            key = (str(path), (path.stat().st_mtime_ns, _canonical(self.experiment.image(image_id).count_area)))
         cache = self._column_cache
         hit = cache.get((image_id, measurement_id))
         if hit is not None and hit[0][0] == key[0] and (hit[0][1] is key[1] if key[0] == "open" else hit[0][1] == key[1]):
@@ -654,8 +655,8 @@ class AnalysisController:
         if result is not None:
             table = result.objects
         else:  # only the columns needed: a cutoff move may read many saved tables
-            wanted = {measurement_id, "excluded", "in_count_area"}
-            table = pd.read_csv(path, usecols=lambda column: column in wanted)
+            wanted = {measurement_id, "excluded", "in_count_area", "centroid_x", "centroid_y"}
+            table = self._in_current_count_area(image_id, pd.read_csv(path, usecols=lambda column: column in wanted), path)
         if measurement_id not in table.columns:
             return None
         if "excluded" in table.columns:
@@ -663,6 +664,23 @@ class AnalysisController:
         values = table.loc[~outside(table), measurement_id].to_numpy(dtype=float)
         cache[(image_id, measurement_id)] = (key, values)
         return values
+
+    def _in_current_count_area(self, image_id: str, table: pd.DataFrame, path: Path) -> pd.DataFrame:
+        """A saved object table counted in the image's count area as it is now (the table may have been
+        saved before the area changed). The same marking as apply_count_area; nothing is written."""
+
+        from cellquant import count_area as areas
+        from cellquant.regions import isotropic_pixel_size
+
+        polygons = areas.clean(self.experiment.image(image_id).count_area)
+        try:
+            saved = json.loads((path.parent.parent / "provenance" / f"{path.stem}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            saved = {}
+        if polygons == (saved.get("count_area") or []) or "centroid_x" not in table.columns:
+            return table  # the saved flags already match
+        pixel_size = isotropic_pixel_size(saved.get("pixel_size_x_um"), saved.get("pixel_size_y_um"))
+        return areas.mark_objects(table, polygons, pixel_size)
 
     def own_cutoff(self, image_id: str, classification_id: str) -> float | None:
         """This image's own cutoff for the marker, or None when it uses the shared one."""
@@ -702,7 +720,7 @@ class AnalysisController:
         if result is not None:
             return result.objects
         path = self._saved_table_path(image_id)
-        return None if path is None else pd.read_csv(path)
+        return None if path is None else self._in_current_count_area(image_id, pd.read_csv(path), path)
 
     def _saved_table_path(self, image_id: str) -> Path | None:
         from cellquant.storage import _safe
@@ -741,10 +759,17 @@ class AnalysisController:
             images = [other for other in self.measured_images(classification_id) if pool is None or other in pool]
         values = self.marker_values(classification_id, images) if images else np.zeros(0)
         if not np.isfinite(values).any():
+            if not images and pool is not None and not this_image_only:
+                raise CellQuantError(
+                    "No image is ticked." if not pool else f"None of the ticked images has {item.name} values yet: run them or tick others."
+                )
             if not images:
                 raise CellQuantError(f"No measured {item.name} values yet: run {'this image' if this_image_only else 'an image'} first.")
-            raise CellQuantError(f"No counted objects with a {item.name} value: check the objects and the count area.")
-        return auto_threshold(values, item.auto_method, item.auto_percent), len(images)
+            raise CellQuantError(f"No counted objects have a value for {item.name}: check the objects and the count area.")
+        used = sum(
+            1 for other in images if (column := self._marker_column(other, item.measurement)) is not None and np.isfinite(column).any()
+        )
+        return auto_threshold(values, item.auto_method, item.auto_percent), used
 
     def reset_cutoff(
         self, classification_id: str, image_id: str, *, this_image_only: bool, pool: list[str] | None = None
@@ -778,8 +803,9 @@ class AnalysisController:
 
         item = next(item for item in self.recipe.classifications if item.id == classification_id)
         counts = {}
+        pending = self._pending()  # read once, not once per image
         for image_id in image_ids:
-            if self.is_pending(image_id):
+            if image_id in pending:
                 continue
             values = self._marker_column(image_id, item.measurement)
             if values is None:
