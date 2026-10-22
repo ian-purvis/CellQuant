@@ -638,7 +638,7 @@ class CellQuantWindow:
         self._batch: BatchWorker | None = None
         self._job: CallWorker | None = None
         self._shown_image_id: str | None = None
-        self._pixel_scale: tuple[float, float, float] | None = None  # (z, y, x) in µm for the shown image; None: pixels
+        self._pixel_scale: tuple[float, float, float] | None = None  # (z, y, x) in µm for the shown image (z None: no Z step, stays 1 px); None: pixels
         self._shown_z: tuple[str | None, int | None] = (None, None)
         self._labels_image_id: str | None = None  # image the Objects layer holds
         self._wanted_image_id: str | None = None
@@ -1744,7 +1744,7 @@ class CellQuantWindow:
 
         x, y = record.pixel_size_x, record.pixel_size_y
         if x and y:
-            self._pixel_scale = (float(record.pixel_size_z or x), float(y), float(x))
+            self._pixel_scale = (float(record.pixel_size_z) if record.pixel_size_z else None, float(y), float(x))
         else:
             self._pixel_scale = None
         for layer in list(self.viewer.layers):
@@ -1760,12 +1760,17 @@ class CellQuantWindow:
         ndim = layer.ndim
         if ndim < 2:
             return
-        scale = self._pixel_scale or (1.0, 1.0, 1.0)
-        want = np.array(scale[-ndim:] if ndim <= 3 else (1.0,) * (ndim - 3) + scale, dtype=float)
+        if self._pixel_scale:
+            z, y, x = self._pixel_scale
+            axes = [(z or 1.0, "micrometer" if z else "pixel"), (y, "micrometer"), (x, "micrometer")]
+        else:
+            axes = [(1.0, "pixel")] * 3
+        axes = ([(1.0, "pixel")] * max(ndim - 3, 0) + axes)[-ndim:]
         try:
+            want = np.array([scale for scale, _unit in axes], dtype=float)
             if not np.allclose(layer.scale, want):
                 layer.scale = want
-            layer.units = ("micrometer" if self._pixel_scale else "pixel",) * ndim
+            layer.units = tuple(unit for _scale, unit in axes)
         except Exception:  # noqa: BLE001 - older napari has no layer units
             pass
 
@@ -2078,6 +2083,8 @@ class ViewBox(QWidget):
             elif not on and layer.name in self._stacks:
                 layer.data = self._stacks.pop(layer.name)[0]
                 layer.contrast_limits = limits
+        for layer in self._image_layers():
+            self.shell._scale_layer(layer)  # swapping 3D and 2D data pads the scale; put the pixel size back
         if not on and self._step is not None and viewer.dims.ndim > 2:
             viewer.dims.set_current_step(0, self._step)
         self.refresh()
