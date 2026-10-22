@@ -57,23 +57,18 @@ def test_image_strip(tmp_path: Path, monkeypatch):
         total_positive = sum(p for p, _ in counts.values())
         total_counted = sum(n for _, n in counts.values())
         assert panel.strip_total.text() == f"All images: {total_positive} / {total_counted} positive ({100 * total_positive / total_counted:.1f}%)"
-        # An image with its own cutoff is starred; back on All images the star goes.
+        # A cutoff move gives the shown image its own cutoff (starred); Apply to all images gives it to every row.
         shown_row = included.index(panel._shown_image_id())
-        panel.apply_to.setCurrentIndex(panel.apply_to.findData("image"))
-        panel._apply_to_chosen()
+        top = max(float(controller.marker_values(marker.id, [image_id]).max()) for image_id in included) + 1
+        panel._threshold_moved(top)  # as typed: past this image's slider range
         _settle()
         assert [table.item(row, 1).text().endswith(" *") for row in range(table.rowCount())] == [
             row == shown_row for row in range(table.rowCount())
         ]
-        panel.apply_to.setCurrentIndex(panel.apply_to.findData("all"))
-        panel._apply_to_chosen()
+        assert table.item(shown_row, 1).text().startswith("0 /")
+        panel.apply_all.click()
         _settle()
         assert not any(table.item(row, 1).text().endswith(" *") for row in range(table.rowCount()))
-
-        # A cutoff move updates every row.
-        top = max(float(controller.marker_values(marker.id, [image_id]).max()) for image_id in included) + 1
-        panel._threshold_moved(top)  # as typed: past this image's slider range
-        _settle()
         assert all(table.item(row, 1).text().startswith("0 /") for row in range(table.rowCount()))
         assert panel.strip_total.text().startswith("All images: 0 /")
 
@@ -92,12 +87,7 @@ def test_image_strip(tmp_path: Path, monkeypatch):
             f"Ticked images: {ticked_positive} / {ticked_counted} positive ({100 * ticked_positive / ticked_counted:.1f}%)"
         )
 
-        # Reset (All images) finds the cutoff from the ticked images only.
-        panel.reset_cutoff.click()
         pool = panel.strip_pool()
-        expected = auto_threshold(controller.marker_values(marker.id, pool), marker.auto_method)
-        assert controller.recipe.classifications[0].threshold == pytest.approx(expected)
-        assert "from 2 images" in said[-1]
 
         # The choice is remembered for the experiment.
         panel._strip_experiment = ""

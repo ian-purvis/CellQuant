@@ -1,4 +1,4 @@
-"""Step 5 cutoff tools: histogram, Auto method, Apply to and Reset cutoff, with the practice images.
+"""Step 5 cutoff tools: histogram, Auto method, Reset cutoff and Apply to all images, with the practice images.
 
 Needs napari, Qt and OpenGL (a desktop, or xvfb-run with Mesa). Skipped when napari is missing.
 """
@@ -60,9 +60,10 @@ def test_cutoff_tools(tmp_path: Path, monkeypatch):
         marker = controller.recipe.classifications[0]
         image_id = shell._nav_ids[shell._nav_index]
         assert panel.histogram._values.size > 0 and panel.cutoff_tools.isVisibleTo(panel)
-        assert panel.auto_method.currentData() == "otsu" and panel.apply_to.currentData() == "all"
+        assert panel.auto_method.currentData() == "otsu" and panel.apply_all.isVisibleTo(panel)
+        shared = controller.recipe.classifications[0].threshold
 
-        # Dragging the histogram line moves the shared cutoff.
+        # Dragging the histogram line moves this image's cutoff; the shared one stays.
         from qtpy.QtCore import QEvent, QPoint, QPointF
         from qtpy.QtGui import QMouseEvent
         from qtpy.QtTest import QTest
@@ -77,24 +78,22 @@ def test_cutoff_tools(tmp_path: Path, monkeypatch):
         QApplication.sendEvent(histogram, move)
         QTest.mouseRelease(histogram, Qt.LeftButton, Qt.NoModifier, QPoint(x, 40))
         _settle()
-        assert controller.recipe.classifications[0].threshold == pytest.approx(500.0, rel=0.02)
+        assert controller.own_cutoff(image_id, marker.id) == pytest.approx(500.0, rel=0.02)
+        assert controller.recipe.classifications[0].threshold == shared
 
-        # This image only: a cutoff of its own; the shared one stays.
-        panel.apply_to.setCurrentIndex(panel.apply_to.findData("image"))
-        panel._apply_to_chosen()
         panel.threshold_slider.setValue(300.0)
         _settle()
         assert controller.own_cutoff(image_id, marker.id) == pytest.approx(300.0, rel=0.01)
-        assert controller.recipe.classifications[0].threshold == pytest.approx(500.0, rel=0.01)
+        assert controller.recipe.classifications[0].threshold == shared
         assert "> 300" in panel.counts.text()  # the rule shown is this image's own
 
-        # Choosing a method moves this image's own cutoff to its value; the shared one stays.
+        # Choosing a method moves this image's cutoff to its value, from its own objects.
         panel.auto_method.setCurrentIndex(panel.auto_method.findData("triangle"))
         panel._auto_method_chosen()
         values = controller.marker_values(marker.id, [image_id])
         assert controller.recipe.classifications[0].auto_method == "triangle"
         assert controller.own_cutoff(image_id, marker.id) == pytest.approx(auto_threshold(values, "triangle"))
-        assert controller.recipe.classifications[0].threshold == pytest.approx(500.0, rel=0.02)
+        assert controller.recipe.classifications[0].threshold == shared
         shown = controller.last_results[image_id].objects
         own = controller.own_cutoff(image_id, marker.id)
         calls = shown[marker.id].astype("boolean")
@@ -104,34 +103,54 @@ def test_cutoff_tools(tmp_path: Path, monkeypatch):
         panel.auto_percent.editingFinished.emit()
         assert controller.own_cutoff(image_id, marker.id) == before
 
-        # All images again: the image drops its own cutoff.
-        panel.apply_to.setCurrentIndex(panel.apply_to.findData("all"))
-        panel._apply_to_chosen()
+        # Apply to all images: this cutoff becomes everyone's; no approved image, so nothing is asked.
+        monkeypatch.setattr(panel, "_ask_include_approved", lambda *args: pytest.fail("nothing is approved"))
+        panel.apply_all.click()
+        assert controller.recipe.classifications[0].threshold == pytest.approx(own)
         assert controller.own_cutoff(image_id, marker.id) is None
 
-        # Reset (all images) asks first when an image is approved; No changes nothing.
+        # Reset asks first when the image is approved; No changes nothing.
         top = float(values.max()) + 1  # nothing positive: any automatic cutoff changes the calls
-        controller.update_thresholds(image_id, {marker.id: top})
+        controller.update_thresholds(image_id, {marker.id: top}, this_image_only=True)
         controller.set_status(image_id, "approved")
         answers.append(QMessageBox.No)
         panel.reset_cutoff.click()
         assert asked and "approving again" in asked[-1]
-        assert controller.recipe.classifications[0].threshold == top
-        # Yes: the cutoff by the chosen method, from every measured image.
+        assert controller.own_cutoff(image_id, marker.id) == top
+        # Yes: the cutoff by the chosen method, from this image's objects.
         answers.append(QMessageBox.Yes)
         panel.reset_cutoff.click()
-        expected = auto_threshold(controller.marker_values(marker.id, controller.measured_images(marker.id)), "triangle")
-        assert controller.recipe.classifications[0].threshold == pytest.approx(expected)
+        expected = auto_threshold(values, "triangle")
+        assert controller.own_cutoff(image_id, marker.id) == pytest.approx(expected)
         assert panel.threshold_slider.value() == pytest.approx(expected, rel=0.01, abs=1.0)
         assert controller.cleared_approvals == [image_id]  # its positives changed
         assert controller.experiment.image(image_id).processing_status == "analyzed"
         assert "Approval cleared for 1 image" in said[-1]
 
+        # Apply to all images with another image approved: asked; "unapproved only" leaves it as approved.
+        other = next(i for i in shell._nav_ids if i != image_id)
+        approved_at = controller.recipe.classifications[0].threshold_for(other)
+        controller.set_status(other, "approved")
+        choices = [None, False, True]
+        monkeypatch.setattr(panel, "_ask_include_approved", lambda *args: choices.pop(0))
+        panel.threshold_slider.setValue(top)
+        _settle()
+        panel.apply_all.click()  # Cancel: nothing changes
+        assert controller.recipe.classifications[0].threshold == pytest.approx(approved_at)
+        panel.apply_all.click()
+        assert controller.recipe.classifications[0].threshold == pytest.approx(top, rel=0.01)
+        assert controller.recipe.classifications[0].threshold_for(other) == pytest.approx(approved_at)
+        assert controller.experiment.image(other).processing_status == "approved"
+        assert "1 approved image keeps its cutoff" in said[-1]
+        panel.apply_all.click()  # All images: the approved one changes too
+        assert controller.own_cutoff(other, marker.id) is None
+        assert controller.recipe.classifications[0].threshold_for(other) == pytest.approx(top, rel=0.01)
+
         # While a run uses the settings, the cutoff tools stay locked, even when the panel refreshes.
         shell.set_busy(True)
         try:
             panel.show_result(controller.recall(image_id))
-            for widget in (panel.histogram, panel.threshold_slider, panel.auto_method, panel.apply_to, panel.reset_cutoff):
+            for widget in (panel.histogram, panel.threshold_slider, panel.auto_method, panel.apply_all, panel.reset_cutoff):
                 assert not widget.isEnabled()
         finally:
             shell.set_busy(False)
