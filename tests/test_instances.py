@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
+import time
 import types
 from pathlib import Path
 
@@ -84,7 +86,18 @@ def test_other_windows_are_counted_and_ended_ones_forgotten(tmp_path):
     finally:
         _crash(other)
     assert instances.other_instances() == 0
+    assert len(list(instances.instances_folder().glob("*.lock"))) == 2  # a file just made is kept a moment
+    for path in instances.instances_folder().glob("*.lock"):
+        os.utime(path, (time.time() - 60, time.time() - 60))
+    assert instances.other_instances() == 0
     assert len(list(instances.instances_folder().glob("*.lock"))) == 1  # only this program's
+
+
+def test_a_file_just_made_by_a_starting_window_is_not_removed(tmp_path):
+    assert instances.other_instances() == 0
+    starting = instances.instances_folder() / "123-abcdef12.lock"
+    starting.touch()  # made, not locked yet
+    assert instances.other_instances() == 0 and starting.exists()
 
 
 def test_two_programs_saving_settings_keep_each_others_keys(tmp_path):
