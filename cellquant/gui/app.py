@@ -324,6 +324,30 @@ def classification_colors() -> tuple[str, str]:
     return valid[0], valid[1]
 
 
+MASK_COLOR_MAX = 24
+
+
+def mask_color_count() -> int:
+    """How many colors the object masks cycle through; 0 = every object its own color."""
+
+    try:
+        return max(0, min(MASK_COLOR_MAX, int(_settings().value("view/mask_colors", 0))))
+    except Exception:  # noqa: BLE001 - settings unreadable: use the default
+        return 0
+
+
+def mask_colormap(count: int):
+    """napari's usual random-looking object colors for 0, else `count` evenly spread hues, cycled."""
+
+    from napari.utils.colormaps import CyclicLabelColormap, label_colormap
+
+    if count <= 0:
+        return label_colormap()
+    hues = [QColor.fromHsvF(index / count, 0.85, 1.0) for index in range(count)]
+    colors = [(0.0, 0.0, 0.0, 0.0)] + [(c.redF(), c.greenF(), c.blueF(), 1.0) for c in hues]
+    return CyclicLabelColormap(colors=np.array(colors), background_value=0)
+
+
 def keep_awake_preferred() -> bool:
     try:
         return str(_settings().value("run/keep_awake", "true")).lower() == "true"
@@ -1775,6 +1799,7 @@ class CellQuantWindow:
             self._managed.update({"Object fills", "Objects"})
             self._review_panel.bind_labels(boundaries, fills)
             self._edit_panel.bind_labels(boundaries)
+        self.apply_mask_colors()
         if result is None:
             self._drop("Classification")
             self._drop("Object IDs")
@@ -1785,6 +1810,14 @@ class CellQuantWindow:
             self._set_crop_regions(result, labels.shape)
             self._labels_image_id = result.provenance.get("image_id")
             self._edit_panel.bring_back_drawing(self._labels_image_id, boundaries)
+
+    def apply_mask_colors(self) -> None:
+        """Give the object layers the colors chosen in step 3."""
+
+        count = mask_color_count()
+        for name in ("Object fills", "Objects"):
+            if name in self.viewer.layers:
+                self.viewer.layers[name].colormap = mask_colormap(count)
 
     def _set_crop_regions(self, result, shape) -> None:
         """Outline the rectangles this image was segmented in (when the analysis crops)."""
@@ -3804,6 +3837,19 @@ class EditPanel(QWidget):
         for text, button in self._buttons.items():
             if text in guide.BUTTON_HELP:
                 button.setToolTip(guide.BUTTON_HELP[text])
+        self.mask_colors_row = QWidget()
+        colors_line = QHBoxLayout(self.mask_colors_row)
+        colors_line.setContentsMargins(0, 0, 0, 0)
+        colors_line.addWidget(QLabel("Mask colours"))
+        self.mask_colors = QSpinBox()
+        self.mask_colors.setRange(0, MASK_COLOR_MAX)
+        self.mask_colors.setSpecialValueText("All different")
+        self.mask_colors.setValue(mask_color_count())
+        self.mask_colors.setToolTip("Colours of the object masks: every object its own colour, or this many colours used in turn. Remembered on this computer.")
+        self.mask_colors.valueChanged.connect(self._set_mask_colors)
+        colors_line.addWidget(self.mask_colors)
+        colors_line.addStretch(1)
+        layout.addWidget(self.mask_colors_row)
         self.show_all = QCheckBox("Show all functions")
         self.show_all.setToolTip("Show every function at once instead of one task at a time.")
         self.show_all.toggled.connect(lambda _on: self._apply_mode())
@@ -3846,11 +3892,19 @@ class EditPanel(QWidget):
             for name in names:
                 self._buttons[name].setVisible(name in wanted)
             holder.setVisible(any(name in wanted for name in names))
+        self.mask_colors_row.setVisible(everything or self._mode == "home")
         hint = "Click an object, then <b>Delete object</b>, or paint and <b>Record drawn edits</b>." if everything else self._MODE_HINT[self._mode]
         card = getattr(self.shell, "_step_pages", None)
         card = getattr(card[2], "todo_card", None) if card else None
         if card is not None:
             card.setText(f"{hint} ⓘ")
+
+    def _set_mask_colors(self, count: int) -> None:
+        try:
+            _settings().setValue("view/mask_colors", int(count))
+        except Exception:  # noqa: BLE001 - not remembered, still applied
+            pass
+        self.shell.apply_mask_colors()
 
     def set_mode(self, mode: str) -> None:
         self._mode = mode
