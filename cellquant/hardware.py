@@ -305,12 +305,34 @@ def load_settings() -> dict:
 
 def save_settings(data: dict) -> None:
     import json
+    import time
 
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")  # one per program: two windows may save at once
     temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    temporary.replace(path)
+    for attempt in range(20):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:  # Windows: another window is reading the file this moment
+            if attempt == 19:
+                temporary.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
+
+
+def update_settings(change) -> None:
+    """Read the per-computer settings, ``change(data)`` them and save, while no other CellQuant window
+    does the same, so each window's keys are kept."""
+
+    from cellquant.instances import file_lock
+
+    path = settings_path()
+    with file_lock(path.with_name(path.name + ".lock")):
+        data = load_settings()
+        change(data)
+        save_settings(data)
 
 
 def bfloat16_native(gpu: bool) -> bool:
@@ -357,6 +379,8 @@ _BATCH_SIZES = ((40, 64), (24, 32), (12, 16))
 # Per GPU name: lowered for the rest of the session once that GPU runs out of memory at a larger
 # size (and saved in the per-computer settings, so later sessions start there).
 _BATCH_LIMITS: dict[str, int] = {}
+# The same, while another CellQuant window shares the GPU: never saved, since the other window caused it.
+_SHARED_BATCH_LIMITS: dict[str, int] = {}
 # Lines for the window's log: the batch size each GPU uses, and any lowering. Read with batch_notes().
 _BATCH_NOTES: list[str] = []
 _BATCH_ANNOUNCED: set[tuple[str, int]] = set()
@@ -408,21 +432,64 @@ def _settings_readable() -> bool:
         return False
 
 
+def _other_windows() -> int:
+    from cellquant.instances import other_instances
+
+    return other_instances()
+
+
+def shared_gpu_memory(device, memory: float) -> float:
+    """GPU memory (GB) this window can use while another CellQuant window runs Cellpose: what is free
+    now plus what this window already holds (the batch size is chosen again for every image)."""
+
+    try:
+        import torch
+
+        free, _ = torch.cuda.mem_get_info(device)
+        held = torch.cuda.memory_reserved(device)
+    except Exception:  # noqa: BLE001 - free memory unknown: as when alone
+        return memory
+    return min(memory, (free + held) / 1024**3)
+
+
+def release_gpu_cache() -> None:
+    """Hand memory PyTorch keeps for later back to the GPU, when another CellQuant window may need it."""
+
+    if not _other_windows():
+        return
+    try:
+        import torch
+
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - nothing to free
+        pass
+
+
 def cellpose_batch_size(device) -> int:
-    """Batch size for a model on ``device``: by GPU memory on an NVIDIA GPU; Cellpose's default on the CPU and Apple GPU."""
+    """Batch size for a model on ``device``: by GPU memory on an NVIDIA GPU; Cellpose's default on the CPU and Apple GPU.
+
+    With another CellQuant window running Cellpose on this computer, by the memory free now.
+    """
 
     gpu = _cuda_gpu(device)
     if gpu is None:
         return CELLPOSE_BATCH_SIZE
     name, memory = gpu
+    others = _other_windows()
     saved = _saved_batch_sizes().get(name)
     saved = saved if isinstance(saved, int) and saved > 0 else None
-    limits = [limit for limit in (_BATCH_LIMITS.get(name), saved) if limit]
-    size = batch_size_for_memory(memory, min(limits) if limits else None)
-    if (name, size) not in _BATCH_ANNOUNCED:
-        _BATCH_ANNOUNCED.add((name, size))
-        kept = ", the largest that fitted on this computer before" if saved and size == saved else ""
-        _BATCH_NOTES.append(f"Cellpose batch size {size} on {name} ({memory:.0f} GB{kept}).")
+    shared = _SHARED_BATCH_LIMITS.get(name) if others else None
+    limits = [limit for limit in (_BATCH_LIMITS.get(name), saved, shared) if limit]
+    usable = shared_gpu_memory(device, memory) if others else memory
+    size = batch_size_for_memory(usable, min(limits) if limits else None)
+    if (name, size, bool(others)) not in _BATCH_ANNOUNCED:
+        _BATCH_ANNOUNCED.add((name, size, bool(others)))
+        if others:
+            windows = f"{others} other CellQuant window{'s' if others > 1 else ''}"
+            _BATCH_NOTES.append(f"Cellpose batch size {size} on {name} ({memory:.0f} GB, shared with {windows}).")
+        else:
+            kept = ", the largest that fitted on this computer before" if saved and size == saved else ""
+            _BATCH_NOTES.append(f"Cellpose batch size {size} on {name} ({memory:.0f} GB{kept}).")
     return size
 
 
@@ -443,13 +510,25 @@ def lower_batch_size(size: int, device=None) -> int | None:
         pass
     gpu = _cuda_gpu(device)
     name = gpu[0] if gpu is not None else ""
+    if gpu is not None and _other_windows():
+        # Another window was using the GPU too: lower it only while windows share the GPU, and don't save it.
+        _SHARED_BATCH_LIMITS[name] = smaller
+        _BATCH_ANNOUNCED.add((name, smaller, True))
+        _BATCH_NOTES.append(
+            f"The GPU ran out of memory at Cellpose batch size {size} while another CellQuant window was using it; "
+            f"trying the image again at {smaller}."
+        )
+        return smaller
     _BATCH_LIMITS[name] = smaller
-    _BATCH_ANNOUNCED.add((name, smaller))  # the line below already says so
+    _BATCH_ANNOUNCED.add((name, smaller, False))  # the line below already says so
     if gpu is not None and _settings_readable():
+
+        def keep(data: dict) -> None:
+            saved = data.get("gpu_batch_size")
+            data["gpu_batch_size"] = {**(saved if isinstance(saved, dict) else {}), name: smaller}
+
         try:
-            data = load_settings()
-            data["gpu_batch_size"] = {**_saved_batch_sizes(), name: smaller}
-            save_settings(data)
+            update_settings(keep)
         except OSError:
             pass  # still kept for this session
     _BATCH_NOTES.append(
@@ -457,6 +536,12 @@ def lower_batch_size(size: int, device=None) -> int | None:
         f"Later runs on this computer start at {smaller}."
     )
     return smaller
+
+
+def add_log_note(text: str) -> None:
+    """Queue a line for the window's log (read with batch_notes())."""
+
+    _BATCH_NOTES.append(text)
 
 
 def batch_notes() -> list[str]:
@@ -479,21 +564,37 @@ def best_threads(engine: str) -> int | None:
 
 
 _THREADS_APPLIED: set[str] = set()
+# Per engine: how many CellQuant windows ran Cellpose when its thread count was last set.
+_THREADS_WINDOWS: dict[str, int] = {}
+_DEFAULT_THREADS: list[int] = []
 
 
 def apply_threads(engine: str) -> int | None:
-    """Use the measured thread count for PyTorch, once per program run (it changes speed, not results)."""
+    """Use the measured thread count for PyTorch (it changes speed, not results): once per program run,
+    and again when the number of CellQuant windows running Cellpose changes, which share the CPU cores."""
 
-    if engine in _THREADS_APPLIED:
+    windows = 1 + _other_windows()
+    before = _THREADS_WINDOWS.get(engine, 1)
+    if engine in _THREADS_APPLIED and windows == before:
         return None
     _THREADS_APPLIED.add(engine)
+    _THREADS_WINDOWS[engine] = windows
     threads = best_threads(engine)
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 - PyTorch is optional for classical runs
+        return None
+    if not _DEFAULT_THREADS:
+        try:
+            _DEFAULT_THREADS.append(int(torch.get_num_threads()))
+        except Exception:  # noqa: BLE001
+            _DEFAULT_THREADS.append(os.cpu_count() or 1)
+    if windows > 1 or (threads is None and before > 1):
+        threads = max(1, (threads or _DEFAULT_THREADS[0]) // windows)
     if threads:
         try:
-            import torch
-
             torch.set_num_threads(threads)
-        except Exception:  # noqa: BLE001 - PyTorch is optional for classical runs
+        except Exception:  # noqa: BLE001
             return None
     return threads
 
@@ -551,9 +652,10 @@ def benchmark_threads(engine: str | None = None, counts=None, run=None, repeats:
     if not identical:
         result["error"] = "Results differed between thread counts; the setting was not saved."
         return result
-    data = load_settings()
-    data.setdefault("cpu_threads", {})[engine] = {"threads": fastest, "seconds": result["seconds"]}
-    save_settings(data)
+    def keep(data: dict) -> None:
+        data.setdefault("cpu_threads", {})[engine] = {"threads": fastest, "seconds": result["seconds"]}
+
+    update_settings(keep)
     return result
 
 

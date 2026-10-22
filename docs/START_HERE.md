@@ -86,8 +86,8 @@ Channels are shown in the colors saved in the file by the microscope software (f
 
 1. Set **Default channel** to the nuclear channel (shown as *Channel N = …* from the file). Without a nuclear stain, use the channel that marks the cells you want to count. If some images need another channel (for example mCherry in some, GFP in others), select them under **Channel per image** (click, Ctrl-click, Shift-click, or a folder for all its images) and pick their channel in **Set channel…**. Images left on *Default* use the Default channel; one run does them all.
 2. Choose a **Method**:
+   - **Cellpose (AI model)**: a trained model. Better for crowded or uneven nuclei. The Cellpose engine menu shows which engine is running; the box at the top says whether an NVIDIA GPU was found; Cellpose uses it automatically when it can. Only the settings of the chosen method are shown.
    - **Classical (fast, no GPU)**: good for well separated, evenly bright nuclei. **Threshold** is *Automatic (Otsu)* or *Manual threshold* (a pixel brightness; the marker *cutoff* is set later, in step 5).
-   - **Cellpose (AI model)**: a trained model. Better for crowded or uneven nuclei. The Cellpose engine menu shows which engine is running; the box at the top says whether an NVIDIA GPU was found; Cellpose uses it automatically when it can.
 3. If your images are Z-stacks, choose how to handle them under **Z-stack mode**:
    - **2D: one slice**: only that plane; misses nuclei outside it.
    - **2D: max projection**: the brightest value through all slices. Fast, but nuclei at different depths can merge into one.
@@ -97,7 +97,7 @@ Channels are shown in the colors saved in the file by the microscope software (f
    Each option shows an estimated time per image on this computer. The blue box recommends one based on the computer's GPU and memory and on your images; click **Use recommended** to choose it. Every option stays available. After the first run, the times are measured instead of estimated. The bottom bar shows what is analyzed, for example *3D, 7 slices linked slice by slice*.
 
    For stitching / true 3D, **Link overlap** sets how much an outline must overlap the next slice's to be the same nucleus (0.25 is Cellpose's usual value; lower if nuclei split across slices, higher if stacked nuclei join). **Brightness: Whole stack** scales every slice the same way, so a dim top or bottom slice still links correctly. **Minimum slices** removes objects found in fewer slices (1 keeps all).
-4. Set **Nucleus diameter (µm)** (default **6**; most nuclei are about 5–7 µm). When pixel size is known, Cellpose uses the matching pixel diameter, and **Min size** defaults to **5 µm²** to drop debris. A 6 µm nucleus is about 28 µm².
+4. Set **Nucleus diameter (µm)** (default **6**; most nuclei are about 5–7 µm). Cellpose-SAM sees each image at its own size; tick **Resize to nucleus size** (Advanced) to scale images so nuclei match its training size instead (slower for small nuclei). When pixel size is known, **Min size** defaults to **5 µm²** to drop debris. A 6 µm nucleus is about 28 µm².
 5. Click **Preview** to try the settings on the area you are looking at. Nothing is saved.
 6. Click **Run this image** (next to **Preview**). The bar at the bottom shows each step, for example *Finding objects: slice 4 of 7*; **Log** shows every message. Run buttons are greyed out until it finishes. **Cancel** stops after the current step; nothing from the unfinished image is saved. (Cellpose's whole-volume 3D step cannot be stopped part-way; Cancel takes effect when it ends.)
    To try other settings, change them and click **Run this image** again. There is no need to restart CellQuant or go back.
