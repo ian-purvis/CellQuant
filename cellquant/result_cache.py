@@ -109,9 +109,43 @@ class ResultCache(OrderedDict):
 
     def get(self, key, default=None):
         with self._lock:
-            if key not in self:
+            if not super().__contains__(key):
                 return default
             return self[key]
+
+    def __delitem__(self, key) -> None:
+        with self._lock:
+            super().__delitem__(key)
+
+    def pop(self, key, *default):
+        with self._lock:
+            return super().pop(key, *default)
+
+    def popitem(self, last: bool = True):
+        with self._lock:
+            return super().popitem(last)
+
+    def clear(self) -> None:
+        with self._lock:
+            super().clear()
+
+    def __contains__(self, key) -> bool:
+        with self._lock:
+            return super().__contains__(key)
+
+    def items(self) -> list:
+        """A snapshot: another thread may store a result while the caller goes through them."""
+
+        with self._lock:
+            return list(super().items())
+
+    def values(self) -> list:
+        with self._lock:
+            return list(super().values())
+
+    def keys(self) -> list:
+        with self._lock:
+            return list(super().keys())
 
     def trim(self) -> None:
         """Move masks out of memory again if reading results brought too many back."""
@@ -120,7 +154,7 @@ class ResultCache(OrderedDict):
             self._limit()
 
     def _limit(self) -> None:
-        results = list(self.values())
+        results = self.values()
         total = sum(array.nbytes for result in results for array in labels_in_memory(result))
         for result in results[: max(len(results) - LABELS_ALWAYS_KEPT, 0)]:
             if total <= LABELS_IN_MEMORY_BYTES:
