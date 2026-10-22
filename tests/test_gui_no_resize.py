@@ -53,3 +53,32 @@ def test_saved_cellpose_settings_keep_resizing(tmp_path: Path, open_window):
     panel.resize_to_diameter.setChecked(False)
     panel.write_recipe()
     assert shell.controller.recipe.object_set.parameters["resize_to_diameter"] is False
+
+
+def test_true_3d_starts_without_resizing_even_in_saved_settings(tmp_path: Path, open_window):
+    from cellquant.gui.app import _choose
+
+    # Saved before resizing was optional: no key, so it resized; true 3D now opens unticked.
+    controller = _experiment(tmp_path, "cellpose", {"diameter_um": 6.0, "flow_threshold": 0.4, "cellprob_threshold": 0.0})
+    recipe = controller.recipe.model_dump(mode="json")
+    recipe["z_stack"] = "full_3d"
+    controller.set_recipe(recipe)
+    controller.save()
+    shell = open_window(controller.directory)
+    panel = shell._objects_panel
+    assert not panel.resize_to_diameter.isChecked()
+    panel.write_recipe()
+    assert shell.controller.recipe.object_set.parameters["resize_to_diameter"] is False
+    # Ticked on purpose in true 3D: saved, and still ticked after reopening the settings.
+    panel.resize_to_diameter.setChecked(True)
+    panel.write_recipe()
+    assert shell.controller.recipe.object_set.parameters["resize_to_diameter"] is True
+    panel.refresh()
+    _events(0.2)
+    assert panel.resize_to_diameter.isChecked()
+    # Switching a 2D setup that resizes to true 3D unticks it.
+    _choose(panel.z_stack, "max_projection")
+    panel.resize_to_diameter.setChecked(True)
+    _choose(panel.z_stack, "full_3d")
+    _events(0.2)
+    assert not panel.resize_to_diameter.isChecked()
