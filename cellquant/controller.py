@@ -6,6 +6,7 @@ summary each cache on their own inputs, and manual edits stay out of the recipe.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import threading
@@ -53,6 +54,7 @@ from cellquant.pipeline import (
 from cellquant.count_area import outside
 from cellquant.quantify import classification_counts
 from cellquant.recipe import Recipe, load_recipe, save_recipe
+from cellquant.result_cache import ResultCache
 from cellquant.segmentation import engine_signature
 from cellquant.storage import (
     RunLog,
@@ -151,7 +153,8 @@ class AnalysisController:
         self.run_record: RunRecord | None = None
         self.run_dir: Path | None = None
         self.run_log: RunLog | None = None
-        self.last_results: dict[str, ImageResult] = {}
+        self.last_results: dict[str, ImageResult] = ResultCache()  # older results' masks are moved out of memory
+        self._written: dict[str, tuple] = {}  # image id -> (result, its edits, folder) last saved to the working folder
         # Images whose approval the last cutoff change cleared, and marker columns kept between cutoff moves.
         self.cleared_approvals: list[str] = []
         self.kept_approvals: list[str] = []  # approved images the last shared cutoff change left on their own
@@ -331,8 +334,35 @@ class AnalysisController:
         self._table_paths.clear()  # a table saved here comes before older ones
         for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits"):
             (destination / relative).mkdir(parents=True, exist_ok=True)
-        for image_id, result in self.last_results.items():
-            persist_image_result(destination, result, self._active_edits(image_id))
+        for image_id, result in list(self.last_results.items()):
+            edits = self._active_edits(image_id)
+            if not self._saved_already(image_id, result, edits, destination):
+                persist_image_result(destination, result, edits)
+                self._mark_saved(image_id, result, edits, destination)
+                if isinstance(self.last_results, ResultCache):
+                    self.last_results.trim()  # saving read back masks that were out of memory
+
+    def _saved_already(self, image_id: str, result: ImageResult, edits: list[EditOperation], destination: Path) -> bool:
+        """This very result, with these edits, was saved to ``destination`` and is still there: saving
+        it again would write the same files (with many images open, every save rewrote every one)."""
+
+        written = self._written.get(image_id)
+        if written is None:
+            return False
+        reference, saved_edits, folder, stamp = written
+        return (
+            reference() is result
+            and folder == destination
+            and saved_edits == [item.model_dump(mode="json") for item in edits]
+            and stamp == _file_stamp(destination, image_id)
+        )
+
+    def _mark_saved(self, image_id: str, result: ImageResult, edits: list[EditOperation], destination: Path) -> None:
+        import weakref
+
+        self._written[image_id] = (
+            weakref.ref(result), [item.model_dump(mode="json") for item in edits], destination, _file_stamp(destination, image_id)
+        )
 
     def add_image_paths(self, paths: list[str | Path], file_types: list[str] | tuple[str, ...] | None = None) -> list[str]:
         """Add files, or every image of the chosen types in folders and their subfolders."""
@@ -1081,7 +1111,9 @@ class AnalysisController:
         self._table_paths.pop(image_id, None)
         for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits"):
             (destination / relative).mkdir(parents=True, exist_ok=True)
-        persist_image_result(destination, result, self._active_edits(image_id))
+        edits = self._active_edits(image_id)
+        persist_image_result(destination, result, edits)
+        self._mark_saved(image_id, result, edits, destination)
 
     def _record_recipe_use(self, image_id: str, result: ImageResult) -> None:
         if self.run_record is None:
@@ -1231,8 +1263,8 @@ class AnalysisController:
     def _results_for_export(self) -> list[ImageResult]:
         """Results for every included image: open ones first, then saved ones.
 
-        Saved results are read without keeping them in memory, so exporting a
-        large experiment does not load every label image at once.
+        The export uses only their tables, so each result is given back without its masks: a large
+        experiment never has every mask in memory at once.
         """
 
         self.measure_all_loaded([record.image_id for record in self.experiment.images if record.include])
@@ -1247,7 +1279,8 @@ class AnalysisController:
                     break
                 result = read_persisted_result(folder, record.image_id)
             if result is not None:
-                results.append(apply_count_area(self._at_current_cutoffs(record.image_id, result), record.count_area))
+                result = apply_count_area(self._at_current_cutoffs(record.image_id, result), record.count_area)
+                results.append(dataclasses.replace(result, labels=_NO_MASK, automated_labels=_NO_MASK))
         return results
 
     def objects_for_export(self) -> pd.DataFrame:
@@ -1943,7 +1976,7 @@ class AnalysisController:
                 restored_excluded.append(record)  # included again while another analysis was shown
         self.experiment.latest_run_id = target.latest_run_id
         self.experiment.recipe_id = recipe_id
-        self.last_results = {}
+        self.last_results.clear()
         self._session_images.clear()
         self._segmentation_ids = {}
         self.run_record = None
@@ -2445,6 +2478,24 @@ def process_experiment(
 
 # Marker fields that only set or choose cutoffs.
 _CUTOFF_KEYS = ("threshold", "auto_method", "auto_percent", "image_thresholds")
+
+
+_NO_MASK = np.zeros((0, 0), dtype=np.int32)  # in place of the masks of a result given only for its tables
+
+
+def _file_stamp(folder: Path, image_id: str) -> tuple | None:
+    """When the image's saved table and mask in ``folder`` last changed (None: not there)."""
+
+    from cellquant.storage import _safe
+
+    stamps = []
+    for path in (folder / "measurements" / f"{_safe(image_id)}.csv", folder / "labels" / f"{_safe(image_id)}_final.tif"):
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        stamps.append((stat.st_mtime_ns, stat.st_size))
+    return tuple(stamps)
 
 
 def _same_but_cutoffs(stored, wanted: list[dict]) -> bool:
