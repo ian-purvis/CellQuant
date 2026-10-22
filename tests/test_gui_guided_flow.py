@@ -71,7 +71,8 @@ def test_practice_run_through_all_steps(tmp_path: Path, monkeypatch):
         shell._review_panel._threshold_moved(500.0)
         shell.run_current()
         _wait(shell)
-        assert shell.controller.recipe.classifications[0].threshold == 500.0
+        shown = shell._nav_ids[shell._nav_index]
+        assert shell.controller.recipe.classifications[0].threshold_for(shown) == 500.0  # this image's own
 
         shell.start_batch(None)
         _wait(shell, 120)
@@ -129,7 +130,7 @@ def test_percent_of_cell_rule_in_the_window(tmp_path: Path, monkeypatch):
 
         # Minimum percent typed in; pixel level raised past every pixel: nothing is positive.
         panel.min_percent.setValue(75.0)
-        assert shell.controller.recipe.classifications[0].threshold == 75.0
+        assert shell.controller.recipe.classifications[0].threshold_for(shell._nav_ids[shell._nav_index]) == 75.0
         panel.pixel_level.setValue(1e9)
         panel.apply_level.click()
         assert shell.controller.recipe.measurements[1].pixel_level == 1e9
@@ -141,10 +142,11 @@ def test_percent_of_cell_rule_in_the_window(tmp_path: Path, monkeypatch):
         shell.run_current()
         _wait(shell)
         assert shell.controller.recipe.measurements[1].pixel_level == 1e9
-        assert shell.controller.recipe.classifications[0].threshold == 75.0
+        assert shell.controller.recipe.classifications[0].threshold_for(shell._nav_ids[shell._nav_index]) == 75.0
         assert "Positive: 0\n" in panel.counts.text()
 
-        # Quick setup shows the rule in use.
+        # Quick setup shows the rule in use for every image (after Apply to all images).
+        panel.apply_all.click()
         setup.refresh()
         assert setup.rule.currentData() == guide.RULE_PERCENT and setup.min_percent.value() == 75.0
 
