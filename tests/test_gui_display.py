@@ -814,7 +814,7 @@ def test_full_3d_cellpose_settings_show_only_for_full_3d(tmp_path: Path):
         assert "niter_3d" not in shell.controller.recipe.object_set.parameters
         panel.z_stack.setCurrentIndex(panel.z_stack.findData("full_3d"))
         assert all(row.isVisibleTo(panel) for row in rows)
-        assert (panel.niter_3d.value(), panel.flow3d_smooth.value(), panel.min_voxels_3d.value()) == (1000, 2.0, 0)
+        assert (panel.niter_3d.value(), panel.flow3d_smooth.value(), panel.min_voxels_3d.value()) == (200, 2.0, 0)
         panel.niter_3d.setValue(500)
         panel.min_voxels_3d.setValue(40)
         panel.write_recipe()
