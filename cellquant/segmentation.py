@@ -275,7 +275,8 @@ class CellposeBackend:
         details = self.describe(parameters)
         model = self._model(details, parameters)
         classic = details["engine"] == CELLPOSE_CLASSIC
-        scaled = scale_brightness(volume, "stack" if mode == "full_3d" else scale)
+        # A part of a stack already scaled with the whole stack (cropping) is not scaled again.
+        scaled = volume if parameters.get("prescaled_volume") else scale_brightness(volume, "stack" if mode == "full_3d" else scale)
         diameter = parameters.get("diameter_px", parameters.get("diameter"))
         diameter = None if diameter in (None, 0) else float(diameter)
         if diameter is None and classic:
