@@ -24,7 +24,7 @@ def test_mask_colors_option(tmp_path: Path, open_window):  # noqa: F811
     from qtpy.QtCore import QSettings
 
     from cellquant.controller import AnalysisController
-    from cellquant.gui.app import mask_color_count
+    from cellquant.gui.app import MASK_PALETTE, mask_colors
 
     QSettings("CellQuant", "CellQuant").remove("view/mask_colors")
     image = tmp_path / "a.tif"
@@ -44,24 +44,35 @@ def test_mask_colors_option(tmp_path: Path, open_window):  # noqa: F811
     for layer in layers:
         layer.data = many.copy()
     ids = [1, 2, 3, 4, 5]
+    assert len(MASK_PALETTE) == 64 and len(set(MASK_PALETTE)) == 64
 
-    assert mask_color_count() == 0  # default: every object its own colour
+    assert mask_colors() == []  # default: every object its own colour
+    assert panel.mask_colors_button.text() == "All different"
     assert len(set(_colors(layers[0], ids))) == len(ids)
-    assert panel.mask_colors_row.isVisible() or not panel.isVisible()
 
-    panel.mask_colors.setValue(2)
-    assert mask_color_count() == 2
+    panel._pick_mask_colors()
+    dialog = panel._mask_dialog
+    assert dialog.all_different.isChecked() and not dialog._grid_holder.isEnabled()
+    dialog.all_different.setChecked(False)
+    assert mask_colors() == []  # nothing ticked yet: still all different
+    red, blue = "#ff0000", "#0000ff"
+    dialog.swatches[red].setChecked(True)
+    dialog.swatches[blue].setChecked(True)
+    assert mask_colors() == [red, blue]
+    assert panel.mask_colors_button.text() == "2 colours"
     for layer in layers:
         colors = _colors(layer, ids)
-        assert len(set(colors)) == 2
-        assert colors[0] == colors[2] and colors[0] != colors[1]
+        assert colors[0] == colors[2] == colors[4] == (1.0, 0.0, 0.0, 1.0)
+        assert colors[1] == colors[3] == (0.0, 0.0, 1.0, 1.0)
 
-    panel.mask_colors.setValue(0)
-    assert len(set(_colors(layers[0], ids))) == len(ids)
-
-    panel.mask_colors.setValue(3)
     shell.run_current()  # layers are rebuilt or refilled: the choice stays
     assert _wait(shell, 120)
     for layer in (shell.viewer.layers["Objects"], shell.viewer.layers["Object fills"]):
-        assert len(set(_colors(layer, ids))) == 3
+        assert tuple(layer.colormap.colors[1]) == (1.0, 0.0, 0.0, 1.0)
+
+    dialog.all_different.setChecked(True)
+    assert mask_colors() == []
+    layer = shell.viewer.layers["Objects"]
+    layer.data = many.copy()
+    assert len(set(_colors(layer, ids))) == len(ids)
     QSettings("CellQuant", "CellQuant").remove("view/mask_colors")

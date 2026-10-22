@@ -28,6 +28,7 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -324,28 +325,38 @@ def classification_colors() -> tuple[str, str]:
     return valid[0], valid[1]
 
 
-MASK_COLOR_MAX = 24
+# 64 common colors (CSS names) the object masks can be limited to; none picked = every object its own color.
+MASK_PALETTE = (
+    "#ff0000", "#ff4500", "#ff8c00", "#ffa500", "#ffd700", "#ffff00", "#adff2f", "#7fff00",
+    "#00ff00", "#32cd32", "#008000", "#006400", "#00fa9a", "#20b2aa", "#00ffff", "#40e0d0",
+    "#008b8b", "#00bfff", "#1e90ff", "#0000ff", "#0000cd", "#000080", "#4169e1", "#6a5acd",
+    "#8a2be2", "#800080", "#9400d3", "#ba55d3", "#ff00ff", "#ff69b4", "#ff1493", "#c71585",
+    "#dc143c", "#b22222", "#8b0000", "#a52a2a", "#800000", "#cd5c5c", "#f08080", "#fa8072",
+    "#ffa07a", "#e9967a", "#d2691e", "#8b4513", "#a0522d", "#cd853f", "#deb887", "#f4a460",
+    "#bdb76b", "#808000", "#6b8e23", "#556b2f", "#8fbc8f", "#2e8b57", "#5f9ea0", "#4682b4",
+    "#87ceeb", "#b0c4de", "#dda0dd", "#ffc0cb", "#ffffff", "#c0c0c0", "#808080", "#000000",
+)
 
 
-def mask_color_count() -> int:
-    """How many colors the object masks cycle through; 0 = every object its own color."""
+def mask_colors() -> list[str]:
+    """Colors the object masks cycle through as #rrggbb; empty = every object its own color."""
 
     try:
-        return max(0, min(MASK_COLOR_MAX, int(_settings().value("view/mask_colors", 0))))
+        saved = str(_settings().value("view/mask_colors", ""))
     except Exception:  # noqa: BLE001 - settings unreadable: use the default
-        return 0
+        return []
+    return [value for value in saved.split(",") if value in MASK_PALETTE]
 
 
-def mask_colormap(count: int):
-    """napari's usual random-looking object colors for 0, else `count` evenly spread hues, cycled."""
+def mask_colormap(colors: list[str]):
+    """napari's usual random-looking object colors for none, else the chosen colors in turn."""
 
     from napari.utils.colormaps import CyclicLabelColormap, label_colormap
 
-    if count <= 0:
+    if not colors:
         return label_colormap()
-    hues = [QColor.fromHsvF(index / count, 0.85, 1.0) for index in range(count)]
-    colors = [(0.0, 0.0, 0.0, 0.0)] + [(c.redF(), c.greenF(), c.blueF(), 1.0) for c in hues]
-    return CyclicLabelColormap(colors=np.array(colors), background_value=0)
+    rows = [(0.0, 0.0, 0.0, 0.0)] + [(c.redF(), c.greenF(), c.blueF(), 1.0) for c in map(QColor, colors)]
+    return CyclicLabelColormap(colors=np.array(rows), background_value=0)
 
 
 def keep_awake_preferred() -> bool:
@@ -1814,10 +1825,10 @@ class CellQuantWindow:
     def apply_mask_colors(self) -> None:
         """Give the object layers the colors chosen in step 3."""
 
-        count = mask_color_count()
+        colors = mask_colors()
         for name in ("Object fills", "Objects"):
             if name in self.viewer.layers:
-                self.viewer.layers[name].colormap = mask_colormap(count)
+                self.viewer.layers[name].colormap = mask_colormap(colors)
 
     def _set_crop_regions(self, result, shape) -> None:
         """Outline the rectangles this image was segmented in (when the analysis crops)."""
@@ -3788,6 +3799,63 @@ class MeasurementsPanel(QWidget):
         self.shell.message(f"Removed the marker {removed['name']}.")
 
 
+class MaskColorDialog(QDialog):
+    """Pick which of 64 common colors the object masks use; none picked means all different."""
+
+    def __init__(self, on_change, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Mask colours")
+        self._on_change = on_change
+        layout = QVBoxLayout(self)
+        self.all_different = QCheckBox("All different")
+        self.all_different.setToolTip("Every object gets its own colour, with no limit on how many. Untick to pick colours.")
+        self.all_different.toggled.connect(self._changed)
+        layout.addWidget(self.all_different)
+        self._grid_holder = QWidget()
+        grid = QGridLayout(self._grid_holder)
+        grid.setSpacing(2)
+        self.swatches: dict[str, QToolButton] = {}
+        for index, color in enumerate(MASK_PALETTE):
+            button = QToolButton()
+            button.setCheckable(True)
+            button.setFixedSize(28, 28)
+            button.setToolTip(color)
+            button.setStyleSheet(
+                f"QToolButton {{ background: {color}; border: 2px solid transparent; }}"
+                "QToolButton:checked { border: 3px solid #ffffff; }"
+            )
+            button.toggled.connect(self._changed)
+            grid.addWidget(button, index // 8, index % 8)
+            self.swatches[color] = button
+        layout.addWidget(self._grid_holder)
+        self.note = QLabel("Tick one or more colours; they are used in turn.")
+        layout.addWidget(self.note)
+        self._loading = False
+
+    def load(self, colors: list[str]) -> None:
+        self._loading = True
+        self.all_different.setChecked(not colors)
+        for color, button in self.swatches.items():
+            button.setChecked(color in colors)
+        self._loading = False
+        self._refresh()
+
+    def chosen(self) -> list[str]:
+        if self.all_different.isChecked():
+            return []
+        return [color for color, button in self.swatches.items() if button.isChecked()]
+
+    def _refresh(self) -> None:
+        self._grid_holder.setEnabled(not self.all_different.isChecked())
+        self.note.setVisible(not self.all_different.isChecked())
+
+    def _changed(self, _on=None) -> None:
+        if self._loading:
+            return
+        self._refresh()
+        self._on_change(self.chosen())
+
+
 class EditPanel(QWidget):
     """Step 3: fix the objects found in step 2 before markers are measured."""
 
@@ -3841,14 +3909,13 @@ class EditPanel(QWidget):
         colors_line = QHBoxLayout(self.mask_colors_row)
         colors_line.setContentsMargins(0, 0, 0, 0)
         colors_line.addWidget(QLabel("Mask colours"))
-        self.mask_colors = QSpinBox()
-        self.mask_colors.setRange(0, MASK_COLOR_MAX)
-        self.mask_colors.setSpecialValueText("All different")
-        self.mask_colors.setValue(mask_color_count())
-        self.mask_colors.setToolTip("Colours of the object masks: every object its own colour, or this many colours used in turn. Remembered on this computer.")
-        self.mask_colors.valueChanged.connect(self._set_mask_colors)
-        colors_line.addWidget(self.mask_colors)
+        self.mask_colors_button = QPushButton()
+        self.mask_colors_button.setToolTip("Colours of the object masks: every object its own colour, or the colours you tick, used in turn. Remembered on this computer.")
+        self.mask_colors_button.clicked.connect(self._pick_mask_colors)
+        colors_line.addWidget(self.mask_colors_button)
         colors_line.addStretch(1)
+        self._mask_dialog = None
+        self._show_mask_colors()
         layout.addWidget(self.mask_colors_row)
         self.show_all = QCheckBox("Show all functions")
         self.show_all.setToolTip("Show every function at once instead of one task at a time.")
@@ -3899,11 +3966,23 @@ class EditPanel(QWidget):
         if card is not None:
             card.setText(f"{hint} ⓘ")
 
-    def _set_mask_colors(self, count: int) -> None:
+    def _show_mask_colors(self) -> None:
+        chosen = mask_colors()
+        self.mask_colors_button.setText(f"{len(chosen)} colours" if chosen else "All different")
+
+    def _pick_mask_colors(self) -> None:
+        if self._mask_dialog is None:
+            self._mask_dialog = MaskColorDialog(self._set_mask_colors, self)
+        self._mask_dialog.load(mask_colors())
+        self._mask_dialog.show()
+        self._mask_dialog.raise_()
+
+    def _set_mask_colors(self, colors: list[str]) -> None:
         try:
-            _settings().setValue("view/mask_colors", int(count))
+            _settings().setValue("view/mask_colors", ",".join(colors))
         except Exception:  # noqa: BLE001 - not remembered, still applied
             pass
+        self._show_mask_colors()
         self.shell.apply_mask_colors()
 
     def set_mode(self, mode: str) -> None:
