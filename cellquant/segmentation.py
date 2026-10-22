@@ -309,16 +309,25 @@ class CellposeBackend:
                 )
                 settings = full_3d_settings(diameter, anisotropy, parameters)
                 details["full_3d"] = settings
-                output = _eval(
-                    model,
-                    details,
-                    scaled,
-                    diameter=cellpose_diameter,
-                    do_3D=True,
-                    z_axis=0,
-                    anisotropy=float(anisotropy),
-                    **{**options, **settings},
-                )
+                import time
+
+                from cellquant.hardware import add_log_note
+
+                started = time.perf_counter()
+                with stage_timer() as stages:
+                    output = _eval(
+                        model,
+                        details,
+                        scaled,
+                        diameter=cellpose_diameter,
+                        do_3D=True,
+                        z_axis=0,
+                        anisotropy=float(anisotropy),
+                        **{**options, **settings},
+                    )
+                elapsed = time.perf_counter() - started
+                details["timings"] = {"network": stages["network"], "masks_and_rest": max(0.0, elapsed - stages["network"])}
+                add_log_note(full_3d_timing_note(settings["niter"], stages["network"], elapsed))
                 labels = np.asarray(output[0] if isinstance(output, (tuple, list)) else output)
         except (SegmentationError, progress.AnalysisCancelled):
             raise
