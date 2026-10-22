@@ -292,7 +292,7 @@ class CellposeBackend:
             "min_size": int(parameters.get("min_size", 15)),
             "normalize": False,
         }
-        if parameters.get("augment"):
+        if parameters.get("augment") and mode != "full_3d":  # tile averaging is 2D and stitching only
             options["augment"] = True  # only passed when ticked, so other settings run exactly as before
             details["augment"] = True
         if classic:
