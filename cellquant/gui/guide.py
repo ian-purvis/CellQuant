@@ -169,7 +169,7 @@ HELP = {
     ("_objects_panel", "diameter"): "Optional Cellpose diameter in pixels, the same in every image. 0 converts Nucleus diameter (µm) with each image's own pixel size, or lets Cellpose decide when it is unknown.",
     ("_objects_panel", "flow"): "Cellpose shape check. Lower keeps fewer, cleaner objects.",
     ("_objects_panel", "cellprob"): "Cellpose confidence. Lower finds more (and fainter) objects.",
-    ("_objects_panel", "niter_3d"): "True 3D only. How many steps Cellpose takes to trace each object. More is slower but joins large or long objects better. 1000 is the Cellpose-SAM paper's setting.",
+    ("_objects_panel", "niter_3d"): "True 3D only. How many steps Cellpose takes to trace each object. More is slower but joins large or long objects better. 200 is Cellpose's default and was quick; 1000 is the Cellpose-SAM paper's setting and can take several times longer.",
     ("_objects_panel", "flow3d_smooth"): "True 3D only. Smooths Cellpose's 3D directions before objects are traced. Higher helps when objects break apart between slices. 0 turns it off; 2 is the Cellpose-SAM paper's setting.",
     ("_objects_panel", "min_voxels_3d"): "True 3D only. Objects smaller than this many voxels are removed. auto scales the Cellpose-SAM paper's cutoff to each image: about 7 % of a typical nucleus, from Nucleus diameter and the Z step.",
     ("_objects_panel", "engine_choice"): "The Cellpose installed here. Cellpose-SAM (4) is most accurate, best with a GPU; Classic Cellpose (3) is faster on the CPU. Only one is installed per environment; start CellQuant with the other to use it.",
