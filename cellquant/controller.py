@@ -855,6 +855,28 @@ class AnalysisController:
             counts[image_id] = (positive, int(values.size))
         return counts
 
+    def apply_cutoff_to_all(self, classification_id: str, value: float, *, include_approved: bool) -> None:
+        """One cutoff for every image: the shared cutoff becomes ``value`` and own cutoffs are dropped.
+        Without ``include_approved``, approved images keep the cutoff they were approved with (as their
+        own, see ``kept_approvals``). Approved images whose percent positive changes lose their approval."""
+
+        before = self.recipe
+        data = self.recipe.model_dump(mode="json")
+        stored = next(entry for entry in data["classifications"] if entry["id"] == classification_id)
+        own = stored.get("image_thresholds") or {}
+        kept = {}
+        if not include_approved:
+            for record in self.experiment.images:
+                if record.processing_status in ("approved", "reviewed"):
+                    previous = own.get(record.image_id)
+                    kept[record.image_id] = stored["threshold"] if previous is None else previous
+            kept = {image_id: cutoff for image_id, cutoff in kept.items() if float(cutoff) != float(value)}
+        stored["threshold"] = float(value)
+        stored["image_thresholds"] = kept
+        self.set_recipe(data)
+        self.kept_approvals = sorted(kept)
+        self.cleared_approvals = self._clear_changed_approvals(before)
+
     def use_shared_cutoff(self, classification_id: str, image_id: str) -> None:
         """This image drops its own cutoff and uses the shared one again."""
 
