@@ -68,3 +68,51 @@ def test_vispy_logged_drawing_errors_are_graphics_errors():
     assert graphics.is_graphics_error_text(logged)
     assert graphics.is_graphics_error_text(logged.replace("RuntimeError: Using glBindFramebuffer with no OpenGL context.", "OSError: exception: access violation reading 0x34"))
     assert not graphics.is_graphics_error_text("Error drawing visual <Image>")
+
+
+def test_one_error_mid_session_only_warns_and_repeats_switch(tmp_path, monkeypatch):
+    pytest.importorskip("napari")
+    import logging
+    import time
+
+    import napari.utils.notifications as notifications
+
+    target = tmp_path / "graphics.txt"
+    monkeypatch.setenv("CELLQUANT_GRAPHICS_FILE", str(target))
+    monkeypatch.delenv("CELLQUANT_SOFTWARE_GRAPHICS", raising=False)
+    warnings: list[str] = []
+    monkeypatch.setattr(notifications, "show_warning", warnings.append)
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+
+    class _Signal:
+        def connect(self, callback):
+            self.callback = callback
+
+    class _Manager:
+        notification_ready = _Signal()
+
+    monkeypatch.setattr(notifications, "notification_manager", _Manager())
+    vispy_logger = logging.getLogger("vispy")
+    handlers = list(vispy_logger.handlers)
+    try:
+        graphics.watch_viewer_errors(app=None)
+        report = _Manager.notification_ready.callback
+        error = type("Notification", (), {"exception": _raise_from(r"C:\env\Lib\site-packages\vispy\gloo\gl\_gl2.py", OSError("exception: access violation reading 0x34"))})
+
+        clock[0] += 600  # well after startup, during a run
+        report(error)
+        report(error)  # the same paint reported twice
+        assert not target.exists() and not graphics.restart_requested
+        assert len(warnings) == 1 and "keeps going" in warnings[0]
+
+        clock[0] += 60
+        report(error)
+        assert not target.exists() and len(warnings) == 1
+        clock[0] += 60
+        report(error)
+        assert target.read_text(encoding="ascii").strip() == "software"
+        assert len(warnings) == 2 and "software graphics from the next start" in warnings[1]
+        assert not graphics.restart_requested
+    finally:
+        vispy_logger.handlers = handlers
