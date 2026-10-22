@@ -3046,6 +3046,7 @@ class ObjectsPanel(QWidget):
         # and so does true 3D, where resizing small nuclei is very slow.
         resize = recipe.object_set.algorithm == "cellpose" and recipe.z_stack != "full_3d"
         self.resize_to_diameter.setChecked(bool(parameters.get("resize_to_diameter", resize)))
+        self._show_3d_rows()
         self.flow.setValue(float(parameters.get("flow_threshold", 0.4)))
         self.cellprob.setValue(float(parameters.get("cellprob_threshold", 0)))
         self.niter_3d.setValue(int(parameters.get("niter_3d") or FULL_3D_NITER))
@@ -3300,12 +3301,19 @@ class ObjectsPanel(QWidget):
             _show_row(advanced, widget, not cellpose and self.watershed.isChecked())
         for widget in (self.cellpose_model, self.cellprob):
             _show_row(advanced, widget, cellpose)
-        from cellquant.engines import CELLPOSE_CLASSIC
-
-        # Classic Cellpose always resizes to its diameter.
-        _show_row(advanced, self.resize_to_diameter, cellpose and self.engine.key != CELLPOSE_CLASSIC)
         self._show_3d_rows()
         self._refresh_gpu_banner()
+
+    def _engine_key(self) -> str | None:
+        """The engine these settings use: the installed one, else the one saved in the settings
+        (a computer that only prepares cluster packages has no Cellpose)."""
+
+        if self.engine.installed and self.engine.key is not None:
+            return self.engine.key
+        controller = self.shell.controller
+        if controller is None:
+            return None
+        return (controller.recipe.object_set.parameters or {}).get("engine")
 
     def _show_3d_rows(self) -> None:
         if not hasattr(self, "min_voxels_3d"):  # the Z options are built before the Advanced box
@@ -3321,10 +3329,12 @@ class ObjectsPanel(QWidget):
         _show_row(self._advanced_form, self.flow, cellpose and mode != "full_3d")
         for widget in (self.min_size_px, self.augment):
             _show_row(self._advanced_form, widget, cellpose and mode != "full_3d")
+        # Classic Cellpose always resizes to its diameter.
+        _show_row(self._advanced_form, self.resize_to_diameter, cellpose and self._engine_key() != CELLPOSE_CLASSIC)
         # The diameter sizes Cellpose's resizing (always for classic Cellpose, optional for Cellpose-SAM)
         # and the 3D smallest-object cutoff; Cellpose-SAM without resizing in 2D does not use it.
         diameter = cellpose and (
-            self.engine.key == CELLPOSE_CLASSIC or self.resize_to_diameter.isChecked() or mode == "full_3d"
+            self._engine_key() == CELLPOSE_CLASSIC or self.resize_to_diameter.isChecked() or mode == "full_3d"
         )
         _show_row(self._form, self.nucleus_diameter_um, diameter)
         _show_row(self._form, self.size_hint, diameter)
