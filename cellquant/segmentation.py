@@ -498,7 +498,7 @@ def _eval(model, details: dict[str, Any], image, **options):
                 return model.eval(image, **options)  # as before on the CPU, the Apple GPU and small GPUs
             return model.eval(image, batch_size=size, **options)
         except Exception as exc:
-            smaller = lower_batch_size(size) if _out_of_memory(exc) else None
+            smaller = lower_batch_size(size, getattr(model, "device", None)) if _out_of_memory(exc) else None
             if smaller is None:
                 raise
             size = smaller
