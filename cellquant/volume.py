@@ -177,6 +177,8 @@ def segment_volume(
             scale=scale,
             anisotropy=ratio or 1.0,
         )
+        if "timings" in engine_details:
+            info["timings"] = engine_details.pop("timings")
         info["engine"] = engine_details
     elif mode == "stitch_slices":
         planes = []
