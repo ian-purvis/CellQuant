@@ -150,3 +150,35 @@ def test_plan_dock(tmp_path: Path):
         assert result.provenance["recipe"]["object_set"]["segmentation_channel"] == 0
     finally:
         viewer.close()
+
+
+def test_unticked_image_leaves_step_2_list(tmp_path: Path):
+    from qtpy.QtCore import Qt
+
+    from cellquant.gui.app import CellQuantWindow
+    from tests.test_plan import _experiment, _ids
+
+    controller = _experiment(tmp_path)
+    ids = _ids(controller)
+    try:
+        viewer = napari.Viewer(show=False)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"napari viewer could not start: {exc}")
+    shell = CellQuantWindow(viewer, controller.directory)
+    try:
+        _wait(shell)
+        panel = shell._objects_panel
+        tree = panel.image_tree
+        leaves = lambda: [i for i in _items(tree) if i.data(0, Qt.ItemDataRole.UserRole)]  # noqa: E731
+        total = len(leaves())
+        assert total == len(ids)
+        table = shell._experiment_panel.table
+        include = next(c for c in range(table.columnCount()) if table.horizontalHeaderItem(c).text() == "Include")
+        table.item(0, include).setCheckState(Qt.Unchecked)
+        _settle()
+        assert len(leaves()) == total - 1
+        table.item(0, include).setCheckState(Qt.Checked)
+        _settle()
+        assert len(leaves()) == total
+    finally:
+        viewer.close()
