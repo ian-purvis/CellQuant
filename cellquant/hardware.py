@@ -354,26 +354,23 @@ def cellpose_precision(parameters: dict, engine: str) -> str:
 CELLPOSE_BATCH_SIZE = 8  # Cellpose's own default, sized for small GPUs
 # (GPU memory in GB, batch size): Cellpose-SAM used about 4 GB at the default 8.
 _BATCH_SIZES = ((40, 64), (24, 32), (12, 16))
-# Lowered for the rest of the session once the GPU runs out of memory at a larger size
-# (and saved per GPU in the per-computer settings, so later sessions start there).
-_BATCH_LIMIT: int | None = None
+# Per GPU name: lowered for the rest of the session once that GPU runs out of memory at a larger
+# size (and saved in the per-computer settings, so later sessions start there).
+_BATCH_LIMITS: dict[str, int] = {}
 # Lines for the window's log: the batch size each GPU uses, and any lowering. Read with batch_notes().
 _BATCH_NOTES: list[str] = []
 _BATCH_ANNOUNCED: set[tuple[str, int]] = set()
 
 
-def batch_size_for_memory(memory_gb: float | None, saved: int | None = None) -> int:
+def batch_size_for_memory(memory_gb: float | None, limit: int | None = None) -> int:
     """Tiles Cellpose sends to the GPU at once: larger on GPUs with more memory (it changes speed, not results).
 
-    ``saved`` is the size this computer's GPU last fitted after running out of memory.
+    ``limit`` is the largest size known to fit this GPU, after it ran out of memory at a larger one.
     """
 
     for least, size in _BATCH_SIZES:
         if memory_gb and memory_gb >= least:
-            for limit in (_BATCH_LIMIT, saved):
-                if limit:
-                    size = min(size, limit)
-            return max(size, CELLPOSE_BATCH_SIZE)
+            return max(min(size, limit or size), CELLPOSE_BATCH_SIZE)
     return CELLPOSE_BATCH_SIZE
 
 
@@ -397,6 +394,20 @@ def _saved_batch_sizes() -> dict:
     return saved if isinstance(saved, dict) else {}
 
 
+def _settings_readable() -> bool:
+    """False when the settings file exists but cannot be read, so saving would replace what is in it."""
+
+    import json
+
+    path = settings_path()
+    if not path.is_file():
+        return True
+    try:
+        return isinstance(json.loads(path.read_text(encoding="utf-8")), dict)
+    except (OSError, ValueError):
+        return False
+
+
 def cellpose_batch_size(device) -> int:
     """Batch size for a model on ``device``: by GPU memory on an NVIDIA GPU; Cellpose's default on the CPU and Apple GPU."""
 
@@ -405,11 +416,13 @@ def cellpose_batch_size(device) -> int:
         return CELLPOSE_BATCH_SIZE
     name, memory = gpu
     saved = _saved_batch_sizes().get(name)
-    size = batch_size_for_memory(memory, saved if isinstance(saved, int) else None)
+    saved = saved if isinstance(saved, int) and saved > 0 else None
+    limits = [limit for limit in (_BATCH_LIMITS.get(name), saved) if limit]
+    size = batch_size_for_memory(memory, min(limits) if limits else None)
     if (name, size) not in _BATCH_ANNOUNCED:
         _BATCH_ANNOUNCED.add((name, size))
-        kept = " (the largest that fitted on this computer before)" if isinstance(saved, int) and size == saved else ""
-        _BATCH_NOTES.append(f"Cellpose batch size {size} on {name} ({memory:.0f} GB){kept}.")
+        kept = ", the largest that fitted on this computer before" if saved and size == saved else ""
+        _BATCH_NOTES.append(f"Cellpose batch size {size} on {name} ({memory:.0f} GB{kept}).")
     return size
 
 
@@ -419,10 +432,9 @@ def lower_batch_size(size: int, device=None) -> int | None:
     The new size is kept for the session and saved for this GPU on this computer.
     """
 
-    global _BATCH_LIMIT
     if size <= CELLPOSE_BATCH_SIZE:
         return None
-    _BATCH_LIMIT = max(CELLPOSE_BATCH_SIZE, size // 2)
+    smaller = max(CELLPOSE_BATCH_SIZE, size // 2)
     try:
         import torch
 
@@ -430,19 +442,21 @@ def lower_batch_size(size: int, device=None) -> int | None:
     except Exception:  # noqa: BLE001 - nothing to free
         pass
     gpu = _cuda_gpu(device)
-    if gpu is not None:
-        _BATCH_ANNOUNCED.add((gpu[0], _BATCH_LIMIT))  # the line below already says so
+    name = gpu[0] if gpu is not None else ""
+    _BATCH_LIMITS[name] = smaller
+    _BATCH_ANNOUNCED.add((name, smaller))  # the line below already says so
+    if gpu is not None and _settings_readable():
         try:
             data = load_settings()
-            data["gpu_batch_size"] = {**_saved_batch_sizes(), gpu[0]: _BATCH_LIMIT}
+            data["gpu_batch_size"] = {**_saved_batch_sizes(), name: smaller}
             save_settings(data)
         except OSError:
             pass  # still kept for this session
     _BATCH_NOTES.append(
-        f"The GPU ran out of memory at Cellpose batch size {size}; trying the image again at {_BATCH_LIMIT}. "
-        f"{_BATCH_LIMIT} is kept as this computer's largest batch size."
+        f"The GPU ran out of memory at Cellpose batch size {size}; trying the image again at {smaller}. "
+        f"Later runs on this computer start at {smaller}."
     )
-    return _BATCH_LIMIT
+    return smaller
 
 
 def batch_notes() -> list[str]:

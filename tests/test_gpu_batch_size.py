@@ -46,7 +46,7 @@ def _torch(memory_gb: float):
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch, tmp_path):
     monkeypatch.setattr(segmentation, "_MODELS", {})
-    monkeypatch.setattr(hardware, "_BATCH_LIMIT", None)
+    monkeypatch.setattr(hardware, "_BATCH_LIMITS", {})
     monkeypatch.setattr(hardware, "_BATCH_NOTES", [])
     monkeypatch.setattr(hardware, "_BATCH_ANNOUNCED", set())
     monkeypatch.setattr(hardware, "_BF16", {})
@@ -124,7 +124,7 @@ def test_the_size_that_fitted_is_kept_on_this_computer(tmp_path, monkeypatch):
     hardware.save_settings({"gpu_batch_size": {"RTX 6000 Ada": 32}})
     monkeypatch.setitem(sys.modules, "torch", _torch(49))  # a new session: nothing lowered yet
     assert hardware.cellpose_batch_size(types.SimpleNamespace(type="cuda")) == 32
-    assert hardware.batch_notes() == ["Cellpose batch size 32 on RTX 6000 Ada (49 GB) (the largest that fitted on this computer before)."]
+    assert hardware.batch_notes() == ["Cellpose batch size 32 on RTX 6000 Ada (49 GB, the largest that fitted on this computer before)."]
     hardware.save_settings({"gpu_batch_size": {"Another GPU": 8}})  # saved for a different GPU: not used
     assert hardware.cellpose_batch_size(types.SimpleNamespace(type="cuda")) == 64
 
@@ -175,3 +175,37 @@ def test_time_left_reports_image_times():
 @pytest.mark.parametrize(("seconds", "text"), [(4.6, "4 s"), (59, "59 s"), (252, "4 min 12 s"), (3780, "1 h 3 min")])
 def test_elapsed_text(seconds, text):
     assert progress.elapsed_text(seconds) == text
+
+
+def test_a_saved_size_above_the_gpus_tier_is_not_used(monkeypatch):
+    hardware.save_settings({"gpu_batch_size": {"RTX 6000 Ada": 256}})
+    monkeypatch.setitem(sys.modules, "torch", _torch(49))
+    assert hardware.cellpose_batch_size(types.SimpleNamespace(type="cuda")) == 64
+
+
+def test_a_settings_file_that_cannot_be_read_is_not_overwritten(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _torch(49))
+    path = hardware.settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    assert hardware.cellpose_batch_size(types.SimpleNamespace(type="cuda")) == 64
+    assert hardware.lower_batch_size(64, types.SimpleNamespace(type="cuda")) == 32
+    assert path.read_text(encoding="utf-8") == "{not json"  # the CPU thread and precision settings in it survive
+    assert hardware.cellpose_batch_size(types.SimpleNamespace(type="cuda")) == 32  # still lowered for the session
+
+
+def test_other_settings_are_kept_when_the_size_is_saved(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", _torch(49))
+    hardware.save_settings({"cpu_threads": {"cellpose4": {"threads": 6}}})
+    hardware.lower_batch_size(64, types.SimpleNamespace(type="cuda"))
+    assert hardware.load_settings() == {"cpu_threads": {"cellpose4": {"threads": 6}}, "gpu_batch_size": {"RTX 6000 Ada": 32}}
+
+
+def test_one_gpus_lowered_size_does_not_limit_another(monkeypatch):
+    torch = _torch(49)
+    names = iter(["Card A", "Card A", "Card B"])
+    torch.cuda.get_device_name = lambda device: next(names)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    hardware.lower_batch_size(64, types.SimpleNamespace(type="cuda"))  # Card A
+    assert hardware.cellpose_batch_size(types.SimpleNamespace(type="cuda")) == 32  # Card A
+    assert hardware.cellpose_batch_size(types.SimpleNamespace(type="cuda")) == 64  # Card B
