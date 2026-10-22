@@ -1766,8 +1766,8 @@ class AnalysisController:
                 object_set={
                     "name": "Objects",
                     "segmentation_channel": 0,
-                    "algorithm": "classical",
-                    "parameters": {"threshold_method": "otsu"},
+                    "algorithm": "cellpose",
+                    "parameters": {},
                 },
             )
         if not recipe.recipe_id:
