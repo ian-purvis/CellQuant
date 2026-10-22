@@ -199,11 +199,15 @@ def _set_layer(layer, **values) -> None:
 def _initial_contrast(layer) -> None:
     """The contrast napari gives a newly added image layer of the same pixels."""
 
-    if not isinstance(layer.data, np.ndarray):
+    try:
+        if not isinstance(layer.data, np.ndarray):
+            raise TypeError("not a plain array")
+        limits = layer._calc_data_range()  # what napari's Image uses for new layers
+    except Exception:  # noqa: BLE001 - another napari: its public reset
         layer.reset_contrast_limits_range()
         layer.reset_contrast_limits()
         return
-    layer.contrast_limits_range = layer._calc_data_range()
+    layer.contrast_limits_range = limits
     layer.contrast_limits = tuple(layer.contrast_limits_range)
     low, high = layer.contrast_limits_range
     layer.iso_threshold = low + (high - low) / 2
@@ -1966,6 +1970,7 @@ class CellQuantWindow:
             if hasattr(layer, "_reset_history"):
                 layer._reset_history()
             _set_layer(layer, mode="pan_zoom", selected_label=1, show_selected_label=False, opacity=opacity)
+            _set_layer(layer, brush_size=10, preserve_labels=False, n_edit_dimensions=2)  # napari's defaults
         if "Objects" in layers and "Object fills" in layers:
             _set_layer(layers["Objects"], contour=2)
             self._review_panel.bind_labels(layers["Objects"], layers["Object fills"])
@@ -2205,6 +2210,8 @@ class CellQuantWindow:
             self.viewer.layers.remove(name)
         self._managed.discard(name)
         self._contrast_hooks.pop(name, None)
+        if name == "Object IDs":
+            self._ids_image_id = None
 
     def _clear_managed(self, keep=()) -> None:
         self._measure_dock.keep()  # what is drawn to measure stays with its image

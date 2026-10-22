@@ -1281,6 +1281,8 @@ class AnalysisController:
             if result is not None:
                 result = apply_count_area(self._at_current_cutoffs(record.image_id, result), record.count_area)
                 results.append(dataclasses.replace(result, labels=_NO_MASK, automated_labels=_NO_MASK))
+                if isinstance(self.last_results, ResultCache):
+                    self.last_results.trim()  # a changed cutoff or count area read this image's masks back
         return results
 
     def objects_for_export(self) -> pd.DataFrame:
