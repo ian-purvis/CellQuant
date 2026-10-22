@@ -1,4 +1,4 @@
-"""Reset image and Reset all images in step 3: back to the objects step 2 found.
+"""Undo all and Reset all images in step 3: back to the objects step 2 found.
 
 Needs napari and Qt; skipped without napari.
 """
@@ -53,8 +53,7 @@ def test_reset_image_and_all_images(tmp_path: Path, open_window, monkeypatch):  
 
     # Delete an object and approve, then reset: the object and the approval come back / go.
     target = int(original[15, 15])
-    panel.pick(target)
-    panel._delete()
+    panel.delete_object(target)
     assert _wait(shell)
     controller.set_status(ids[0], "approved")
     answer(False)
@@ -71,8 +70,7 @@ def test_reset_image_and_all_images(tmp_path: Path, open_window, monkeypatch):  
     assert controller.experiment.image(ids[0]).processing_status != "approved"
 
     # Edits on both images (one recorded, one only drawn): Reset all images clears both.
-    panel.pick(target)
-    panel._delete()
+    panel.delete_object(target)
     assert _wait(shell)
     shell._nav_index = 1
     shell.show_current()

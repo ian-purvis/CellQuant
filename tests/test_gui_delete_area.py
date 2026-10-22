@@ -68,8 +68,7 @@ def test_deleted_object_leaves_the_outline_layer_and_drawing_is_kept(tmp_path: P
     panel = shell._edit_panel
 
     # Delete object: the outline goes from the Objects layer too, and is not kept as a drawing.
-    panel.pick(int(np.asarray(shell.viewer.layers["Objects"].data)[15, 15]))
-    panel._delete()
+    panel.delete_object(int(np.asarray(shell.viewer.layers["Objects"].data)[15, 15]))
     assert _wait(shell)
     _events(0.2)
     assert int(np.asarray(shell.viewer.layers["Objects"].data)[15, 15]) == 0
@@ -110,12 +109,12 @@ def test_step3_modes_and_draw_new_object(tmp_path: Path, open_window):  # noqa: 
     def shown():
         return {name for name, button in panel._buttons.items() if not button.isHidden()}
 
-    assert shown() == {"Delete objects", "Add new objects", "Undo", "Record drawn edits", "Reset image", "Reset all images"}
+    assert shown() == {"Delete objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"}
     panel._buttons["Delete objects"].click()
-    assert shown() == {"Delete object", "Restore object", "Draw area", "Delete in area", "Undo", "Back"}
+    assert shown() == {"Draw area", "Delete in area", "Undo", "Undo all", "Back"}
     panel._buttons["Back"].click()
     panel._buttons["Add new objects"].click()
-    assert shown() == {"Draw new object", "Record drawn edits", "Record all images", "Undo", "Back"}
+    assert shown() == {"Draw new object", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"}
 
     top = int(shell.controller.last_results[image_id].automated_labels.max())
     panel._buttons["Draw new object"].click()
