@@ -88,8 +88,8 @@ STEPS = (
         "Find the nuclei (or cells)",
         "Set <b>Default channel</b> to the nuclear channel (for example Channel 1 = Far Red). "
         "Images that need another channel: select them under <b>Channel per image</b> and pick it in <b>Set channel…</b>.<br>"
-        "<b>Method</b>: <i>Classical (fast, no GPU)</i>, or <i>Cellpose (AI model)</i>, which handles crowded "
-        "or uneven nuclei better (pick the Cellpose engine when that method is selected).<br>"
+        "<b>Method</b>: <i>Cellpose (AI model)</i>, which handles crowded or uneven nuclei well, "
+        "or <i>Classical (fast, no GPU)</i>. Only the settings of the chosen method are shown.<br>"
         "If the images are Z-stacks, choose <b>Z-stack mode</b>: "
         "<i>2D: one slice</i>, <i>2D: max projection</i>, <i>2D + stitching</i>, or <i>True 3D</i>. "
         "The blue box recommends one for this computer; every option stays available.<br>"
@@ -156,7 +156,7 @@ STEPS = (
 # (panel attribute on the window, widget attribute on the panel).
 HELP = {
     ("_objects_panel", "channel"): "The channel whose signal marks every object, usually the nuclear stain. Labels show Channel N = the name from the file.",
-    ("_objects_panel", "method"): "Classical: threshold and split touching objects. Fast, no GPU.\nCellpose (AI model): a trained model. Better for crowded or uneven nuclei; faster with an NVIDIA GPU.",
+    ("_objects_panel", "method"): "Cellpose (AI model): a trained model. Better for crowded or uneven nuclei; faster with an NVIDIA GPU.\nClassical: threshold and split touching objects. Fast, no GPU.",
     ("_objects_panel", "threshold_method"): "Automatic (Otsu) picks the brightness threshold automatically. Manual threshold uses the value below.",
     ("_objects_panel", "threshold"): "Brightness above which a pixel counts as part of an object (Manual threshold only), in the image's own units.",
     ("_objects_panel", "sigma"): "Smoothing before finding objects, in pixels. 1-2 helps with noisy images. 0 turns it off.",
