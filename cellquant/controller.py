@@ -154,6 +154,7 @@ class AnalysisController:
         self.last_results: dict[str, ImageResult] = {}
         # Images whose approval the last cutoff change cleared, and marker columns kept between cutoff moves.
         self.cleared_approvals: list[str] = []
+        self.kept_approvals: list[str] = []  # approved images the last shared cutoff change left on their own
         self._column_cache: dict[tuple[str, str], tuple[tuple, np.ndarray]] = {}
         self._table_paths: dict[str, Path] = {}  # where each image's saved table was found; reset on saving
         self._session_images: OrderedDict[str, LoadedImage] = OrderedDict()
@@ -574,22 +575,60 @@ class AnalysisController:
 
         A cutoff is shared by every image without a cutoff of its own; ``this_image_only`` gives
         this image its own. Other images pick up a shared cutoff when they are next shown or exported.
+        Other approved images keep the cutoff they were approved with: a new shared cutoff gives each
+        of them the old one as its own (see ``kept_approvals``). Reset cutoff (all images) is what changes them.
         An approved image whose percent positive changes loses its approval (see ``cleared_approvals``).
         """
 
         before = self.recipe
         data = self.recipe.model_dump(mode="json")
         known = {item["id"]: item for item in data["classifications"]}
+        approved = [record.image_id for record in self.experiment.images if record.processing_status in ("approved", "reviewed")]
+        kept = set()
         for classification_id, threshold in thresholds.items():
             if classification_id not in known:
                 raise KeyError(classification_id)
+            stored = known[classification_id].setdefault("image_thresholds", {})
             if this_image_only:
-                known[classification_id].setdefault("image_thresholds", {})[image_id] = float(threshold)
-            else:
+                stored[image_id] = float(threshold)
+            elif float(threshold) != known[classification_id]["threshold"]:
+                for other in approved:
+                    if other != image_id and stored.get(other) is None:
+                        stored[other] = known[classification_id]["threshold"]
+                        kept.add(other)
                 known[classification_id]["threshold"] = float(threshold)
         self.set_recipe(data)
+        self.kept_approvals = sorted(kept)
         self.cleared_approvals = self._clear_changed_approvals(before, [image_id] if this_image_only else None)
         return self.classified_now(image_id)
+
+    def lacks_markers(self, image_id: str) -> bool:
+        """True when this image's result has no values for a marker of this analysis (it was run
+        before the marker was set up)."""
+
+        result = self.last_results.get(image_id)
+        if result is None:
+            return False
+        with self._image_settings(self.experiment.image(image_id)):
+            wanted = {item.measurement for item in self.recipe.classifications}
+        return not wanted <= set(result.objects.columns)
+
+    def measure_markers(self, image_id: str) -> ImageResult:
+        """Measure the markers in this image's saved objects, with its edits. Never segments."""
+
+        record = self.experiment.image(image_id)
+        prior = self.recall(image_id, measure=False)
+        if prior is None:
+            raise CellQuantError("Run this image first.")
+        if image_id not in self._session_images:
+            progress.update("Reading the image file")
+            with self._image_settings(record):
+                loaded = self._load_record(record)
+            if loaded.spatial_shape != np.asarray(prior.automated_labels).shape:
+                raise CellQuantError("This image's settings changed since it was run: run it again to measure its markers.")
+            self._remember_image(image_id, loaded)
+        progress.update("Measuring markers in each object")
+        return self._remeasure_cached(image_id)
 
     def classified_now(self, image_id: str) -> ImageResult | None:
         """This image's result at its current cutoffs, whatever its saved markers looked like (the
@@ -794,6 +833,7 @@ class AnalysisController:
             stored["threshold"] = new
             stored["image_thresholds"] = {}
         self.set_recipe(data)
+        self.kept_approvals = []
         self.cleared_approvals = self._clear_changed_approvals(before, [image_id] if this_image_only else None)
         return old, new, used
 
@@ -815,6 +855,28 @@ class AnalysisController:
             counts[image_id] = (positive, int(values.size))
         return counts
 
+    def apply_cutoff_to_all(self, classification_id: str, value: float, *, include_approved: bool) -> None:
+        """One cutoff for every image: the shared cutoff becomes ``value`` and own cutoffs are dropped.
+        Without ``include_approved``, approved images keep the cutoff they were approved with (as their
+        own, see ``kept_approvals``). Approved images whose percent positive changes lose their approval."""
+
+        before = self.recipe
+        data = self.recipe.model_dump(mode="json")
+        stored = next(entry for entry in data["classifications"] if entry["id"] == classification_id)
+        own = stored.get("image_thresholds") or {}
+        kept = {}
+        if not include_approved:
+            for record in self.experiment.images:
+                if record.processing_status in ("approved", "reviewed"):
+                    previous = own.get(record.image_id)
+                    kept[record.image_id] = stored["threshold"] if previous is None else previous
+            kept = {image_id: cutoff for image_id, cutoff in kept.items() if float(cutoff) != float(value)}
+        stored["threshold"] = float(value)
+        stored["image_thresholds"] = kept
+        self.set_recipe(data)
+        self.kept_approvals = sorted(kept)
+        self.cleared_approvals = self._clear_changed_approvals(before)
+
     def use_shared_cutoff(self, classification_id: str, image_id: str) -> None:
         """This image drops its own cutoff and uses the shared one again."""
 
@@ -823,6 +885,7 @@ class AnalysisController:
         stored = next(entry for entry in data["classifications"] if entry["id"] == classification_id)
         stored.get("image_thresholds", {}).pop(image_id, None)
         self.set_recipe(data)
+        self.kept_approvals = []
         self.cleared_approvals = self._clear_changed_approvals(before, [image_id])
 
     def _clear_approvals(self, image_ids: list[str], reason: str) -> None:
