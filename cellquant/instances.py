@@ -157,6 +157,8 @@ def other_instances() -> int:
         if locked:
             _unlock(descriptor)
             try:
+                if time.time() - path.stat().st_mtime < 10:
+                    continue  # just made: its program may not have locked it yet
                 path.unlink()  # its program has ended
             except OSError:
                 pass
