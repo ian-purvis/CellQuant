@@ -139,6 +139,17 @@ class TimeLeft:
         if self._counted_end is not None:
             self._counted_end += gap
 
+    def image_seconds(self) -> float:
+        """Working time of the running image so far (paused time not counted)."""
+
+        now = self._paused_at if self._paused_at is not None else self._clock()
+        return now - self._image_start
+
+    def last_image_seconds(self) -> float | None:
+        """How long the last finished image took."""
+
+        return self._durations[-1] if self._durations else None
+
     def per_image(self) -> float | None:
         return sum(self._durations) / len(self._durations) if self._durations else None
 
@@ -197,6 +208,17 @@ class TimeLeft:
         if rate is not None and not self._tails and self._counted_end is None:
             lines.append(f"Time after the last {self.unit} (linking, measuring, saving) is a guess until the first image finishes.")
         return "\n".join(lines)
+
+
+def elapsed_text(seconds: float) -> str:
+    """A running time to the second: '45 s', '4 min 12 s', '1 h 3 min'."""
+
+    whole = int(seconds)
+    if whole < 60:
+        return f"{whole} s"
+    if whole < 3600:
+        return f"{whole // 60} min {whole % 60} s"
+    return f"{whole // 3600} h {whole % 3600 // 60} min"
 
 
 def _seconds(seconds: float) -> str:

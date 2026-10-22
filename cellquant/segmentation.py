@@ -199,7 +199,10 @@ class CellposeBackend:
         _seed_everything(parameters.get("random_seed"))
         _opt_out_of_sparse_checks()
         apply_threads(details["engine"])
-        return _cached_model(models, details["engine"] == CELLPOSE_CLASSIC, details["model"], gpu, details.get("precision"))
+        classic = details["engine"] == CELLPOSE_CLASSIC
+        if not _model_loaded(models, classic, details["model"], gpu, details.get("precision")):
+            progress.update(f"Loading {_short_label(details)} (the first image of a session only)")
+        return _cached_model(models, classic, details["model"], gpu, details.get("precision"))
 
     def _finish(self, model, details: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
         device = getattr(model, "device", None)
@@ -292,14 +295,19 @@ class CellposeBackend:
                 planes = []
                 for index, plane in enumerate(scaled):
                     progress.update(f"Finding objects with Cellpose: slice {index + 1} of {len(scaled)}", index, len(scaled))
-                    output = model.eval(plane, diameter=diameter, do_3D=False, **options)
+                    output = _eval(model, details, plane, diameter=diameter, do_3D=False, **options)
                     planes.append(np.asarray(output[0] if isinstance(output, (tuple, list)) else output))
                 labels = np.stack(planes)
             else:
-                progress.update("Finding objects with Cellpose in the whole volume (this step cannot be stopped part-way)")
+                where = {"cuda": " on the GPU", "mps": " on the Apple GPU"}.get(_device_type(model), " on the CPU")
+                progress.update(
+                    f"Finding objects with {_short_label(details)} in the whole volume{where} (cannot be stopped part-way)"
+                )
                 settings = full_3d_settings(diameter, anisotropy, parameters)
                 details["full_3d"] = settings
-                output = model.eval(
+                output = _eval(
+                    model,
+                    details,
                     scaled,
                     diameter=diameter,
                     do_3D=True,
@@ -353,7 +361,9 @@ class CellposeBackend:
                 if diameter is not None:
                     details["estimated_diameter_px"] = diameter
             if details["engine"] == CELLPOSE_CLASSIC:
-                output = model.eval(
+                output = _eval(
+                    model,
+                    details,
                     np.asarray(image),
                     diameter=diameter,
                     channels=[0, 0],
@@ -364,7 +374,9 @@ class CellposeBackend:
                     normalize=normalize,
                 )
             else:
-                output = model.eval(
+                output = _eval(
+                    model,
+                    details,
                     np.asarray(image),
                     diameter=diameter,
                     do_3D=False,
@@ -374,7 +386,7 @@ class CellposeBackend:
                     normalize=normalize,
                 )
             device = getattr(model, "device", None)
-        except SegmentationError:
+        except (SegmentationError, progress.AnalysisCancelled):
             raise
         except Exception as exc:
             raise SegmentationError(f"Cellpose failed: {exc}") from exc
@@ -447,6 +459,51 @@ def stage_timer() -> Iterator[dict]:
 _APPLE_GPU_FAILED: str | bool = False
 
 
+def _model_key(models, classic: bool, name: str, gpu: bool, precision: str | None) -> tuple:
+    return (models.Cellpose if classic else models.CellposeModel, str(name), bool(gpu), precision)
+
+
+def _model_loaded(models, classic: bool, name: str, gpu: bool, precision: str | None = None) -> bool:
+    return _model_key(models, classic, name, gpu, precision) in _MODELS
+
+
+def _short_label(details: dict[str, Any]) -> str:
+    """'Cellpose-SAM' or 'Classic Cellpose', without the version in brackets."""
+
+    return str(details["engine_label"]).split(" (")[0]
+
+
+def _device_type(model) -> str:
+    device = getattr(model, "device", None)
+    return str(getattr(device, "type", device or "cpu"))
+
+
+def _out_of_memory(exc: BaseException) -> bool:
+    return "out of memory" in str(exc).lower()
+
+
+def _eval(model, details: dict[str, Any], image, **options):
+    """``model.eval`` with the batch size for this GPU (``details["batch_size"]``).
+
+    A GPU that runs out of memory tries again with half the batch, down to Cellpose's default.
+    """
+
+    from cellquant.hardware import CELLPOSE_BATCH_SIZE, cellpose_batch_size, lower_batch_size
+
+    size = cellpose_batch_size(getattr(model, "device", None))
+    while True:
+        details["batch_size"] = size
+        try:
+            if size == CELLPOSE_BATCH_SIZE:
+                return model.eval(image, **options)  # as before on the CPU, the Apple GPU and small GPUs
+            return model.eval(image, batch_size=size, **options)
+        except Exception as exc:
+            smaller = lower_batch_size(size) if _out_of_memory(exc) else None
+            if smaller is None:
+                raise
+            size = smaller
+
+
 def _cached_model(models, classic: bool, name: str, gpu: bool, precision: str | None = None):
     """One Cellpose model per (class, name, GPU, precision) for the life of the program.
 
@@ -454,7 +511,7 @@ def _cached_model(models, classic: bool, name: str, gpu: bool, precision: str | 
     """
 
     cls = models.Cellpose if classic else models.CellposeModel
-    key = (cls, str(name), bool(gpu), precision)
+    key = _model_key(models, classic, name, gpu, precision)
     model = _MODELS.get(key)
     if model is None:
         from cellquant.engines import gpu_device

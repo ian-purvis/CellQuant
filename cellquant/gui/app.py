@@ -1266,10 +1266,13 @@ class CellQuantWindow:
         self.show_result(result)
         self._refresh_plan()
         self._experiment_panel.refresh_table()
+        took = self._footer.run_time_text()
         if result.qc.warnings:
+            if took:
+                self._footer.log.append(f"Found {result.qc.n_objects} objects{took}.")
             self._footer.message(result.qc.warnings[0])
         else:
-            self._footer.message(f"Found {result.qc.n_objects} objects. Check that the outlines match, then continue.")
+            self._footer.message(f"Found {result.qc.n_objects} objects{took}. Check that the outlines match, then continue.")
         self.refresh_guidance()
 
     def _start_job(self, fn, on_success) -> None:
@@ -5729,6 +5732,9 @@ class Footer(QWidget):
         self.time_left.setMinimumWidth(110)
         self.time_left.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self._clock = None  # a TimeLeft while a run is going
+        self._step_line: str | None = None  # the running step, shown with its time so far
+        self._step_name: str | None = None
+        self._step_since: float | None = None  # when a step of unknown length started
         self._clock_timer = QTimer(self)
         self._clock_timer.setInterval(1000)
         self._clock_timer.timeout.connect(self._show_time_left)
@@ -5783,6 +5789,7 @@ class Footer(QWidget):
         self.units.setToolTip(self.units.text())
 
     def message(self, text: str) -> None:
+        self._step_line = None  # the step line stops ticking once something else is said
         self.status.setText(text)
         self.status.setToolTip(text)
         self.log.append(text)
@@ -5805,6 +5812,24 @@ class Footer(QWidget):
             text = f"~{format_seconds(left)} left"
         self.time_left.setText(text)
         self.time_left.setToolTip(self._clock.detail())
+        self._show_step_text()
+
+    def _show_step_text(self) -> None:
+        """The step line, with how long a step of unknown length (a whole 3D volume) has run so far."""
+
+        import time
+
+        from cellquant.progress import elapsed_text
+
+        line = self._step_line
+        if line is None:
+            return
+        since = self._step_since
+        if since is not None and time.monotonic() - since >= 5:
+            dots = "..." if line.endswith("...") else ""
+            line = f"{line.removesuffix('...')}, {elapsed_text(time.monotonic() - since)} so far{dots}"
+        self._step_text = line
+        self.status.setText(line)
 
     def start_busy(self, batch: bool) -> None:
         from cellquant.progress import TimeLeft
@@ -5837,10 +5862,16 @@ class Footer(QWidget):
         if self.status.text() and self.status.text() == getattr(self, "_step_text", None):
             self.status.setText("")
         self._step_text = None
+        self._step_line = None
 
     def show_step(self, text: str, fraction: float) -> None:
         """One step of the running analysis, e.g. 'Finding objects: slice 3 of 7'."""
 
+        import time
+
+        if fraction >= 0 or text != self._step_name:
+            self._step_since = time.monotonic() if fraction < 0 else None
+        self._step_name = text
         if self._clock is not None:
             self._clock.step(text, None if fraction < 0 else fraction)
             self._show_time_left()
@@ -5849,18 +5880,20 @@ class Footer(QWidget):
             done = (self._batch_index - 1 + max(fraction, 0.0)) / total
             self.progress.setRange(0, 1000)
             self.progress.setValue(int(round(1000 * done)))
-            self._step_text = f"Image {self._batch_index} of {total} ({self._batch_name}): {text}"
-            self.status.setText(self._step_text)
+            self._step_line = f"Image {self._batch_index} of {total} ({self._batch_name}): {text}"
+            self._show_step_text()
             return
         if fraction < 0:
             self.progress.setRange(0, 0)  # busy: this step's length is unknown
         else:
             self.progress.setRange(0, 1000)
             self.progress.setValue(int(round(1000 * fraction)))
-        self._step_text = text + "..."
-        self.status.setText(self._step_text)
+        self._step_line = text + "..."
+        self._show_step_text()
 
     def update_progress(self, index: int, total: int, filename: str, status: str) -> None:
+        from cellquant.progress import elapsed_text
+
         self._batch_index, self._batch_total, self._batch_name = index, total, filename
         self.progress.setRange(0, 1000)
         finished = status != "running"
@@ -5871,9 +5904,19 @@ class Footer(QWidget):
         if finished:
             if status == "Failure":
                 self.failed_files.append(filename)
-            self.message(f"Image {index} of {total} ({filename}): {JOB_WORDS.get(status, status)}")
+            took = self._clock.last_image_seconds() if self._clock is not None else None
+            timing = "" if took is None else f" in {elapsed_text(took)}"
+            self.message(f"Image {index} of {total} ({filename}): {JOB_WORDS.get(status, status)}{timing}")
         else:
+            self._step_line = None
             self.status.setText(f"Image {index} of {total} ({filename}): starting")
+
+    def run_time_text(self) -> str:
+        """' in 4 min 12 s' for the running single image, or '' outside a run."""
+
+        from cellquant.progress import elapsed_text
+
+        return "" if self._clock is None else f" in {elapsed_text(self._clock.image_seconds())}"
 
     def _show_log(self, shown: bool) -> None:
         self.log.setVisible(shown)
