@@ -278,6 +278,23 @@ def test_a_cutoff_change_clears_only_approvals_whose_positives_change(tmp_path: 
     assert sorted(controller.cleared_approvals) == sorted([ids[0], ids[1]])
 
 
+def test_apply_to_all_images_with_or_without_the_approved_ones(tmp_path: Path):
+    controller, ids = _three_runs(tmp_path)
+    controller.set_status(ids[1], "approved")
+    controller.update_thresholds(ids[2], {"class_a": 300}, this_image_only=True)
+    # Unapproved only: the approved image keeps 200 as its own; the others take 900.
+    controller.apply_cutoff_to_all("class_a", 900, include_approved=False)
+    item = controller.recipe.classifications[0]
+    assert [item.threshold_for(image_id) for image_id in ids] == [900, 200, 900]
+    assert controller.kept_approvals == [ids[1]] and controller.cleared_approvals == []
+    assert controller.experiment.image(ids[1]).processing_status == "approved"
+    # All images: the approved one too, and its positives changed (800 is no longer past the cutoff).
+    controller.apply_cutoff_to_all("class_a", 900, include_approved=True)
+    item = controller.recipe.classifications[0]
+    assert item.image_thresholds == {} and controller.cleared_approvals == [ids[1]]
+    assert controller.experiment.image(ids[1]).processing_status == "analyzed"
+
+
 def test_a_cutoff_move_after_choosing_a_method_reaches_the_shown_result_and_the_export(tmp_path: Path):
     controller, ids = _three_runs(tmp_path)
     controller.set_auto_method("class_a", "triangle")

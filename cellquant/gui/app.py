@@ -1362,7 +1362,7 @@ class CellQuantWindow:
             # Buttons that change the settings: never while images are being analyzed with them.
             "Load settings…", "Add measurement", "Remove measurement",
             "Add marker", "Remove marker", "Add result row", "Remove result row", "Apply pixel level",
-            "Run all images (this analysis)", "Set sizes (µm)", "Reset cutoff",
+            "Run all images (this analysis)", "Set sizes (µm)", "Reset cutoff", "Apply to all images",
         }
     )
 
@@ -4650,11 +4650,6 @@ class ReviewPanel(QWidget):
         method_row.addWidget(self.auto_method, 1)
         method_row.addWidget(self.auto_percent)
         tools.addRow("Auto", method_row)
-        self.apply_to = QComboBox()
-        self.apply_to.addItem("All images", "all")
-        self.apply_to.addItem("This image only", "image")
-        self.apply_to.activated.connect(lambda _index: self._apply_to_chosen())
-        tools.addRow("Apply to", self.apply_to)
         self.reset_cutoff = QPushButton("Reset cutoff")
         self.reset_cutoff.clicked.connect(self._reset_cutoff)
         tools.addRow(self.reset_cutoff)
@@ -4724,6 +4719,10 @@ class ReviewPanel(QWidget):
         self.qc.setWordWrap(True)
         layout.addWidget(self.qc)
         layout.addStretch(1)
+        # The cutoff tools change this image only; this copies its cutoff to the other images.
+        self.apply_all = QPushButton("Apply to all images")
+        self.apply_all.clicked.connect(self._apply_to_all)
+        layout.addWidget(self.apply_all)
 
     def _strip_box(self) -> QGroupBox:
         """Percent positive in every image (or the ticked ones) at the current cutoffs."""
@@ -5095,7 +5094,7 @@ class ReviewPanel(QWidget):
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
         classification_id = self.classification_id()
-        for widget in (self.cutoff_label, self.histogram, self.threshold_slider, self.cutoff_tools, self.strip):
+        for widget in (self.cutoff_label, self.histogram, self.threshold_slider, self.cutoff_tools, self.strip, self.apply_all):
             widget.setVisible(bool(classification_id))
         if not classification_id:
             return
@@ -5146,10 +5145,8 @@ class ReviewPanel(QWidget):
         slider.blockSignals(False)
 
     def _show_cutoff_tools(self, classification, image_id: str, percent_rule: bool) -> None:
-        """Auto method, Apply to and Reset as stored for this marker and image."""
+        """Auto method and Reset as stored for this marker and image."""
 
-        own = classification.image_thresholds.get(image_id) is not None
-        self.apply_to.setCurrentIndex(self.apply_to.findData("image" if own else "all"))
         self.auto_method.setCurrentIndex(max(0, self.auto_method.findData(classification.auto_method)))
         self.auto_percent.blockSignals(True)
         self.auto_percent.setValue(float(classification.auto_percent))
@@ -5162,7 +5159,7 @@ class ReviewPanel(QWidget):
             widget.setEnabled(not percent_rule)
 
     def _this_image_only(self) -> bool:
-        return self.apply_to.currentData() == "image"
+        return True  # every cutoff tool changes the image shown; Apply to all images copies it
 
     def _shown_image_id(self) -> str | None:
         if self.shell.controller is None or not self.shell._nav_ids:
@@ -5213,23 +5210,42 @@ class ReviewPanel(QWidget):
         if text:
             self.shell.message(text)
 
-    def _apply_to_chosen(self) -> None:
-        """This image only: it keeps its cutoff as its own. All images: it uses the shared cutoff again."""
+    def _apply_to_all(self, _checked: bool = False) -> None:
+        """This image's cutoff for the marker shown, for every image. Approved images are asked about."""
 
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
         if classification is None or image_id is None:
+            self.shell.message("Choose a marker under Display objects by first.")
             return
-        own = classification.image_thresholds.get(image_id) is not None
-        if self._this_image_only() == own:
+        value = classification.threshold_for(image_id)
+        approved = [
+            record.image_id
+            for record in controller.experiment.images
+            if record.processing_status in ("approved", "reviewed") and record.image_id != image_id
+        ]
+        include_approved = self._ask_include_approved(classification.name, value, len(approved)) if approved else True
+        if include_approved is None:
             return
-        if self._this_image_only():
-            result = controller.update_thresholds(image_id, {classification.id: classification.threshold}, this_image_only=True)
-            text = f"{classification.name}: this image now has its own cutoff. Other images keep the shared one."
-        else:
-            controller.use_shared_cutoff(classification.id, image_id)
-            result = controller.classified_now(image_id)
-            text = f"{classification.name}: this image uses the shared cutoff ({classification.threshold:g}) again."
-        self._after_cutoff_change(result, text)
+        controller.apply_cutoff_to_all(classification.id, value, include_approved=include_approved)
+        which = "every image" if include_approved else "every unapproved image"
+        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff {value:g} applied to {which}.")
+
+    def _ask_include_approved(self, name: str, value: float, approved: int) -> bool | None:
+        """Change the approved images too (True), only the unapproved ones (False), or nothing (None)."""
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Apply to all images")
+        count = f"{approved} other image{'s are' if approved != 1 else ' is'} approved"
+        box.setText(f"Apply the {name} cutoff {value:g} to every image? {count}.")
+        box.setInformativeText("Approved images whose percent positive changes will need approving again.")
+        every = box.addButton("All images", QMessageBox.AcceptRole)
+        unapproved = box.addButton("Unapproved images only", QMessageBox.AcceptRole)
+        box.addButton(QMessageBox.Cancel)
+        box.setDefaultButton(unapproved)
+        box.exec()
+        if box.clickedButton() not in (every, unapproved):
+            return None
+        return box.clickedButton() is every
 
     def _reset_cutoff(self, _checked: bool = False) -> None:
         """Back to the automatic cutoff: for this image's own objects (This image only), or found
