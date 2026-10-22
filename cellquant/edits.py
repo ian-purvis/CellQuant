@@ -187,3 +187,24 @@ def objects_inside(labels: np.ndarray, polygons) -> list[int]:
     present = np.unique(labels[area])
     crossing = np.unique(labels[~area])
     return [int(object_id) for object_id in np.setdiff1d(present, crossing) if object_id != 0]
+
+
+def objects_outside(labels: np.ndarray, polygons) -> list[int]:
+    """Objects that do not touch the (row, column) polygons at all; one that crosses an edge stays.
+
+    A polygon applies through every slice of a 3D image. No usable polygon: nothing is returned.
+    """
+
+    from cellquant.count_area import clean
+    from skimage.draw import polygon2mask
+
+    polygons = clean(polygons)
+    labels = np.asarray(labels)
+    if not polygons or labels.size == 0:
+        return []
+    area = np.zeros(labels.shape[-2:], dtype=bool)
+    for polygon in polygons:
+        area |= polygon2mask(area.shape, np.asarray(polygon, dtype=float))
+    area = np.broadcast_to(area, labels.shape)
+    everything = np.unique(labels)
+    return [int(object_id) for object_id in np.setdiff1d(everything, np.unique(labels[area])) if object_id != 0]

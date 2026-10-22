@@ -542,17 +542,16 @@ def test_review_fixes_selection_errors_navigation_and_sizes(window, monkeypatch)
     before = controller.recall(image_id)
     kept = int((~before.objects["excluded"].astype(bool)).sum())
 
-    # Nothing clicked: Delete object refuses instead of removing object 1.
-    panel._delete()
-    _wait(shell)
-    assert "Click an object" in shell._footer.status.text()
-    assert int((~controller.recall(image_id).objects["excluded"].astype(bool)).sum()) == kept
-    # A picked object is deleted.
-    panel.pick(1)
-    assert "Selected object: 1" in panel.selected.text()
-    panel._delete()
+    # Deleting an object by a click keeps the layer the user had chosen.
+    panel.set_mode("delete")
+    shell.viewer.layers.selection.active = shell.viewer.layers["Objects"]
+    panel.delete_object(1)
     _wait(shell)
     assert int((~controller.recall(image_id).objects["excluded"].astype(bool)).sum()) == kept - 1
+    assert shell.viewer.layers.selection.active is shell.viewer.layers["Objects"]
+    assert shell.viewer.cursor.style == "cross"
+    panel.leave_delete()
+    assert shell.viewer.cursor.style != "cross"
 
     # A batch that crashes leaves the running state and says why.
     def boom(*_args, **_kwargs):
