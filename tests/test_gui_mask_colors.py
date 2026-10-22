@@ -76,3 +76,21 @@ def test_mask_colors_option(tmp_path: Path, open_window):  # noqa: F811
     layer.data = many.copy()
     assert len(set(_colors(layer, ids))) == len(ids)
     QSettings("CellQuant", "CellQuant").remove("view/mask_colors")
+
+
+def test_mask_colors_read_back(tmp_path: Path):
+    """Several colours survive a restart: stored text, a list from the backend, or an older comma string."""
+    from qtpy.QtCore import QSettings
+
+    from cellquant.gui.app import _settings, mask_colors
+
+    pair = ["#ff0000", "#0000ff"]
+    try:
+        _settings().setValue("view/mask_colors", ";".join(pair))
+        _settings().sync()
+        assert mask_colors() == pair  # read through a fresh QSettings
+        for stored in (pair, "#ff0000,#0000ff", ["#ff0000", "#not-a-colour", "#0000ff"]):
+            _settings().setValue("view/mask_colors", stored)
+            assert mask_colors() == pair
+    finally:
+        QSettings("CellQuant", "CellQuant").remove("view/mask_colors")
