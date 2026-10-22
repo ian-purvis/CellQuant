@@ -111,7 +111,7 @@ def test_step3_modes_and_draw_new_object(tmp_path: Path, open_window):  # noqa: 
 
     assert shown() == {"Delete objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"}
     panel._buttons["Delete objects"].click()
-    assert shown() == {"Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"}
+    assert shown() == {"Delete objects", "Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"}
     panel._buttons["Back"].click()
     panel._buttons["Add new objects"].click()
     assert shown() == {"Draw new object", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"}
@@ -165,3 +165,69 @@ def test_keep_only_deletes_what_does_not_touch_the_area(tmp_path: Path, open_win
     panel._undo()  # one Undo for the whole keep-only
     assert _wait(shell)
     assert int((~shell.controller.last_results[image_id].objects["excluded"].astype(bool)).sum()) == start
+
+
+def _click(panel, viewer, data, position):
+    from types import SimpleNamespace
+
+    event = SimpleNamespace(position=position, type="mouse_press", view_direction=None, dims_displayed=(data.ndim - 2, data.ndim - 1))
+    gen = panel._on_click(viewer, event)
+    next(gen, None)
+    event.type = "mouse_release"
+    next(gen, None)
+
+
+def test_click_delete_mode_rules(tmp_path: Path, open_window):  # noqa: F811
+    from cellquant.controller import AnalysisController
+
+    image = tmp_path / "a.tif"
+    _write_squares(image)
+    controller = AnalysisController.create(tmp_path / "experiment", "Click delete")
+    controller.add_image_paths([image])
+    controller.set_recipe(_recipe())
+    controller.save()
+    shell = open_window(controller.directory)
+    shell.run_current()
+    assert _wait(shell, 120)
+    shell._tabs.setCurrentWidget(shell._step_pages[2])
+    panel, viewer = shell._edit_panel, shell.viewer
+    image_id = shell.controller.experiment.images[0].image_id
+    data = np.asarray(viewer.layers["Objects"].data)
+
+    def count():
+        return int(shell.controller.last_results[image_id].objects["excluded"].sum())
+
+    button = panel._buttons["Delete objects"]
+    button.click()
+    assert button.isChecked() and viewer.cursor.style == "cross"
+    _click(panel, viewer, data, (1.0, 1.0))  # background: nothing
+    assert count() == 0
+    # Drawing an area: a click over an object is a polygon corner, not a delete.
+    panel._draw_area()
+    _click(panel, viewer, data, (15.0, 15.0))
+    assert count() == 0
+    viewer.layers.selection.active = viewer.layers["Objects"]
+    _click(panel, viewer, data, (15.0, 15.0))
+    assert _wait(shell)
+    assert count() == 1
+    button.click()  # pressing again leaves the mode
+    assert panel._mode == "home" and not button.isChecked() and viewer.cursor.style != "cross"
+    button.click()
+    panel._buttons["Back"].click()
+    assert viewer.cursor.style != "cross"
+    button.click()
+    panel.leave_delete()  # Esc
+    assert panel._mode == "home" and viewer.cursor.style != "cross"
+    _click(panel, viewer, data, (15.0, 15.0))
+    assert count() == 1
+
+
+def test_keep_only_in_3d(tmp_path: Path):
+    from cellquant.edits import objects_outside
+
+    labels = np.zeros((4, 40, 40), dtype=np.int32)
+    labels[0:2, 5:10, 5:10] = 1  # inside the area on two slices
+    labels[3, 30:35, 30:35] = 2  # outside on every slice
+    labels[1, 18:24, 18:24] = 3  # crosses the edge
+    area = [np.array([[0.0, 0.0], [0.0, 20.0], [20.0, 20.0], [20.0, 0.0]])]
+    assert objects_outside(labels, area) == [2]
