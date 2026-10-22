@@ -305,16 +305,25 @@ class CellposeBackend:
                 )
                 settings = full_3d_settings(diameter, anisotropy, parameters)
                 details["full_3d"] = settings
-                output = _eval(
-                    model,
-                    details,
-                    scaled,
-                    diameter=diameter,
-                    do_3D=True,
-                    z_axis=0,
-                    anisotropy=float(anisotropy),
-                    **{**options, **settings},
-                )
+                import time
+
+                from cellquant.hardware import add_log_note
+
+                started = time.perf_counter()
+                with stage_timer() as stages:
+                    output = _eval(
+                        model,
+                        details,
+                        scaled,
+                        diameter=diameter,
+                        do_3D=True,
+                        z_axis=0,
+                        anisotropy=float(anisotropy),
+                        **{**options, **settings},
+                    )
+                elapsed = time.perf_counter() - started
+                details["timings"] = {"network": stages["network"], "masks_and_rest": max(0.0, elapsed - stages["network"])}
+                add_log_note(full_3d_timing_note(settings["niter"], stages["network"], elapsed))
                 labels = np.asarray(output[0] if isinstance(output, (tuple, list)) else output)
         except (SegmentationError, progress.AnalysisCancelled):
             raise
@@ -403,11 +412,12 @@ class CellposeBackend:
 
 
 # Full 3D settings from the Cellpose-SAM paper (Pachitariu, Rariden & Stringer 2025, bioRxiv
-# 10.1101/2025.04.28.651001, Methods "Fine-tuning and evaluation"): 1,000 dynamics iterations,
-# 3D flow smoothing of 2, and objects under 1,000 voxels dropped. The paper's cells were about
-# 30 px across in isotropic volumes, so the voxel cutoff is scaled to each image: the same share
-# of a typical object (about 7 %), in this image's voxels.
-FULL_3D_NITER = 1000
+# 10.1101/2025.04.28.651001, Methods "Fine-tuning and evaluation"): 3D flow smoothing of 2 and
+# objects under 1,000 voxels dropped (the paper also used 1,000 dynamics iterations; here 200,
+# Cellpose's own default, which took far less time and gave good outlines). The paper's cells were
+# about 30 px across in isotropic volumes, so the voxel cutoff is scaled to each image: the same
+# share of a typical object (about 7 %), in this image's voxels.
+FULL_3D_NITER = 200
 FULL_3D_FLOW_SMOOTH = 2.0
 FULL_3D_MIN_VOXELS = 1000
 _PAPER_DIAMETER_PX = 30.0
@@ -480,6 +490,18 @@ def _device_type(model) -> str:
 
 def _out_of_memory(exc: BaseException) -> bool:
     return "out of memory" in str(exc).lower()
+
+
+def full_3d_timing_note(niter: int, network: float, total: float) -> str:
+    """The log line for one full 3D image: the network pass apart from the flow-following (mask) step."""
+
+    from cellquant.progress import elapsed_text
+
+    rest = max(0.0, total - network)
+    return (
+        f"3D segmentation took {elapsed_text(total)}: network {elapsed_text(network)}, "
+        f"flow-following and masks {elapsed_text(rest)} ({niter} iterations)."
+    )
 
 
 def _eval(model, details: dict[str, Any], image, **options):

@@ -459,6 +459,12 @@ def lower_batch_size(size: int, device=None) -> int | None:
     return smaller
 
 
+def add_log_note(text: str) -> None:
+    """Queue a line for the window's log (read with batch_notes())."""
+
+    _BATCH_NOTES.append(text)
+
+
 def batch_notes() -> list[str]:
     """The batch-size lines not shown yet (each is returned once)."""
 
