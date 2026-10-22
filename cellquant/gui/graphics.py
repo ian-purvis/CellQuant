@@ -3,7 +3,8 @@
 "Open CellQuant.bat" sets CELLQUANT_GRAPHICS_FILE. When the viewer hits an
 OpenGL error (for example an NVIDIA "access violation" in glDrawArrays, or a
 computer with no OpenGL 2 driver), CellQuant writes "software" to that file,
-and the launcher starts the viewer with software OpenGL from then on.
+and the launcher starts the viewer with software OpenGL from then on. Later in a
+session, a single error is only reported; repeated errors switch.
 Running Install CellQuant.bat again clears the file.
 """
 
@@ -20,6 +21,9 @@ _FILE_VARIABLE = "CELLQUANT_GRAPHICS_FILE"
 _SOFTWARE_VARIABLE = "CELLQUANT_SOFTWARE_GRAPHICS"
 # A graphics error this soon after the window opens restarts CellQuant at once.
 _STARTUP_SECONDS = 60
+# Later, this many separate errors switch the next start to software graphics.
+_REPEATED_ERRORS = 3
+_SAME_ERROR_SECONDS = 2.0
 restart_requested = False
 
 
@@ -100,11 +104,13 @@ def drawing_works(viewer) -> bool:
 
 
 def watch_viewer_errors(app) -> None:
-    """Act on the first graphics error after the window opens.
+    """Act on graphics errors after the window opens.
 
     Shortly after opening, nothing can be lost yet: CellQuant closes, and the
-    launcher reopens it with software graphics. Later, the user is asked to
-    record their edits and reopen CellQuant.
+    launcher reopens it with software graphics. Later, one error is often a
+    driver hiccup while Cellpose keeps the same GPU busy, and drawing recovers:
+    the user is told the run goes on. Only repeated errors switch the next
+    start to software graphics.
     """
 
     import logging
@@ -115,24 +121,49 @@ def watch_viewer_errors(app) -> None:
 
     global restart_requested
     opened = time.monotonic()
+    errors: list[float] = []
+    warned = False
     done = False
 
     def handle() -> None:
-        nonlocal done
+        nonlocal warned, done
         global restart_requested
-        if done or not remember_software_graphics():
+        if done:
             return
-        done = True
-        if time.monotonic() - opened < _STARTUP_SECONDS:
+        now = time.monotonic()
+        if now - opened < _STARTUP_SECONDS:
+            if not remember_software_graphics():
+                return
+            done = True
             print("CellQuant: graphics error at startup. Reopening with software graphics.", flush=True)
             restart_requested = True
             QTimer.singleShot(0, app.quit)
             return
-        print("CellQuant: graphics driver error. The next start will use software graphics.", flush=True)
-        show_warning(
-            "Graphics driver error. CellQuant will use software graphics from the next start. "
-            "Record your edits, then close and reopen CellQuant."
-        )
+        # vispy logs an error and napari reports it too: one paint counts once.
+        if errors and now - errors[-1] < _SAME_ERROR_SECONDS:
+            return
+        errors.append(now)
+        if len(errors) >= _REPEATED_ERRORS:
+            done = True
+            if remember_software_graphics():
+                print("CellQuant: repeated graphics driver errors. The next start will use software graphics.", flush=True)
+                show_warning(
+                    "Graphics driver errors keep happening. CellQuant will use software graphics from the next start. "
+                    "A run keeps going and saves each image as it finishes. When it is done, record your edits, then close and reopen CellQuant."
+                )
+            else:
+                show_warning(
+                    "Graphics driver errors keep happening. A run keeps going and saves each image as it finishes. "
+                    "When it is done, record your edits, then close and reopen CellQuant."
+                )
+            return
+        if not warned:
+            warned = True
+            print("CellQuant: graphics driver error while drawing the viewer.", flush=True)
+            show_warning(
+                "The graphics driver failed to draw the viewer once. This can happen while Cellpose keeps the same GPU busy. "
+                "A run keeps going and saves each image as it finishes."
+            )
 
     def check_notification(notification) -> None:
         exc = getattr(notification, "exception", None)
