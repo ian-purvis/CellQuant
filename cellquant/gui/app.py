@@ -2520,9 +2520,9 @@ class ExperimentPanel(QWidget):
             self._paste_cells(controller, row, column, lines, headers)
         finally:
             self._pasting = False
-        for header in ("Include", "Sample name"):
-            if header in self._pasted_headers:
-                self._cell_edited_elsewhere(header)
+            for header in ("Include", "Sample name"):
+                if header in self._pasted_headers:
+                    self._cell_edited_elsewhere(header)
 
     def _paste_cells(self, controller, row: int, column: int, lines: list[list[str]], headers: list[str]) -> None:
         for row_offset, values in enumerate(lines):
