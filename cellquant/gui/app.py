@@ -3007,9 +3007,10 @@ class ObjectsPanel(QWidget):
             self.diameter.setValue(float(parameters["diameter_px"]))
         else:
             self.diameter.setValue(0)
-        # Cellpose settings saved without the key resized; a new Cellpose setup starts without resizing.
-        cellpose_settings = recipe.object_set.algorithm == "cellpose"
-        self.resize_to_diameter.setChecked(cellpose_settings and bool(parameters.get("resize_to_diameter", True)))
+        # Cellpose settings saved without the key resized; a new Cellpose setup starts without resizing,
+        # and so does true 3D, where resizing small nuclei is very slow.
+        resize = recipe.object_set.algorithm == "cellpose" and recipe.z_stack != "full_3d"
+        self.resize_to_diameter.setChecked(bool(parameters.get("resize_to_diameter", resize)))
         self.flow.setValue(float(parameters.get("flow_threshold", 0.4)))
         self.cellprob.setValue(float(parameters.get("cellprob_threshold", 0)))
         self.niter_3d.setValue(int(parameters.get("niter_3d") or FULL_3D_NITER))
@@ -3366,6 +3367,8 @@ class ObjectsPanel(QWidget):
 
     def _z_mode_changed(self) -> None:
         mode = self.z_stack.currentData()
+        if mode == "full_3d" and hasattr(self, "resize_to_diameter"):
+            self.resize_to_diameter.setChecked(False)  # true 3D starts without resizing; it can be ticked again
         busy = self.shell.is_busy()
         self.z_slice.setVisible(mode == "single_plane")
         self.z_slice_label.setVisible(mode == "single_plane")
@@ -3564,9 +3567,10 @@ class ObjectsPanel(QWidget):
                 "gpu": self.use_gpu() if local else bool(previous.get("gpu", False)),
                 **size_filters,
             }
-            if not self.resize_to_diameter.isChecked():
-                # Only written when off, so settings that resize stay as every earlier version saved them.
-                parameters["resize_to_diameter"] = False
+            if not self.resize_to_diameter.isChecked() or self.z_stack.currentData() == "full_3d":
+                # Written when off, and always in true 3D (where it starts off), so 2D settings that
+                # resize stay as every earlier version saved them.
+                parameters["resize_to_diameter"] = self.resize_to_diameter.isChecked()
             if self.z_stack.currentData() == "full_3d":
                 # Only for full 3D, so the settings (and saved results) of the other modes do not change.
                 parameters["niter_3d"] = self.niter_3d.value()
