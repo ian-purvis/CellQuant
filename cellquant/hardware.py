@@ -351,6 +351,52 @@ def cellpose_precision(parameters: dict, engine: str) -> str:
     return "bfloat16" if bfloat16_native(bool(parameters.get("gpu", False))) else "float32"
 
 
+CELLPOSE_BATCH_SIZE = 8  # Cellpose's own default, sized for small GPUs
+# (GPU memory in GB, batch size): Cellpose-SAM used about 4 GB at the default 8.
+_BATCH_SIZES = ((40, 64), (24, 32), (12, 16))
+# Lowered for the rest of the session once the GPU runs out of memory at a larger size.
+_BATCH_LIMIT: int | None = None
+
+
+def batch_size_for_memory(memory_gb: float | None) -> int:
+    """Tiles Cellpose sends to the GPU at once: larger on GPUs with more memory (it changes speed, not results)."""
+
+    for least, size in _BATCH_SIZES:
+        if memory_gb and memory_gb >= least:
+            return size if _BATCH_LIMIT is None else min(size, _BATCH_LIMIT)
+    return CELLPOSE_BATCH_SIZE
+
+
+def cellpose_batch_size(device) -> int:
+    """Batch size for a model on ``device``: by GPU memory on an NVIDIA GPU; Cellpose's default on the CPU and Apple GPU."""
+
+    if str(getattr(device, "type", device)) != "cuda":
+        return CELLPOSE_BATCH_SIZE
+    try:
+        import torch
+
+        memory = torch.cuda.get_device_properties(device).total_memory / 1024**3
+    except Exception:  # noqa: BLE001 - memory unknown: the default
+        return CELLPOSE_BATCH_SIZE
+    return batch_size_for_memory(memory)
+
+
+def lower_batch_size(size: int) -> int | None:
+    """After the GPU ran out of memory at ``size``: the next size to try (kept for the session), or None at the default."""
+
+    global _BATCH_LIMIT
+    if size <= CELLPOSE_BATCH_SIZE:
+        return None
+    _BATCH_LIMIT = max(CELLPOSE_BATCH_SIZE, size // 2)
+    try:
+        import torch
+
+        torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001 - nothing to free
+        pass
+    return _BATCH_LIMIT
+
+
 def best_threads(engine: str) -> int | None:
     """The fastest CPU thread count measured here for this engine, or None when not measured."""
 
