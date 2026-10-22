@@ -230,6 +230,9 @@ def format_channel_order_text(names, n_channels: int) -> str:
     return " · ".join(format_channel_labels(names, n_channels))
 
 
+# Cellpose's own default for the smallest object, in pixels (2D and stitching).
+DEFAULT_CELLPOSE_MIN_SIZE = 15
+
 # Typical mammalian nucleus diameter users can adjust (µm). Area of a circle that wide ≈ 28 µm².
 DEFAULT_NUCLEUS_DIAMETER_UM = 6.0
 DEFAULT_MIN_AREA_UM2 = 5.0
@@ -2773,6 +2776,7 @@ class ObjectsPanel(QWidget):
         guide.add_range_tip(self.z_min_slices, "slices")
         self.z3d_box = QWidget()
         z3d = QFormLayout(self.z3d_box)
+        self._z3d_form = z3d
         z3d.setContentsMargins(0, 0, 0, 0)
         z3d.addRow("Link overlap", self.z_link)
         z3d.addRow("Brightness", self.z_scale)
@@ -2941,11 +2945,18 @@ class ObjectsPanel(QWidget):
         self.flow3d_smooth.setSingleStep(0.5)
         self.flow3d_smooth.setValue(FULL_3D_FLOW_SMOOTH)
         guide.add_range_tip(self.flow3d_smooth)
+        # 2D and stitching only; in true 3D the 3D smallest object replaces it.
+        self.min_size_px = QSpinBox()
+        self.min_size_px.setRange(0, 1000000)
+        self.min_size_px.setValue(DEFAULT_CELLPOSE_MIN_SIZE)
+        guide.add_range_tip(self.min_size_px, "px")
+        self.augment = QCheckBox("Average over tiles (slower)")
         self.min_voxels_3d = QSpinBox()
         self.min_voxels_3d.setRange(0, 1000000)
         self.min_voxels_3d.setSpecialValueText("auto")
         guide.add_range_tip(self.min_voxels_3d, "voxels")
         self.watershed.toggled.connect(lambda _checked: self._method_changed())
+        self.resize_to_diameter.toggled.connect(lambda _checked: self._show_3d_rows())
         self.object_name.setToolTip("The name of the objects in the results, for example Nuclei.")
         advanced.addRow("Object set name", self.object_name)
         advanced.addRow(self.fill_holes)
@@ -2959,6 +2970,8 @@ class ObjectsPanel(QWidget):
         advanced.addRow("Cellpose diameter (px)", self.diameter)
         advanced.addRow("Flow threshold", self.flow)
         advanced.addRow("Cell probability threshold", self.cellprob)
+        advanced.addRow("Smallest object (px)", self.min_size_px)
+        advanced.addRow(self.augment)
         advanced.addRow("3D iterations", self.niter_3d)
         advanced.addRow("3D flow smoothing", self.flow3d_smooth)
         advanced.addRow("3D smallest object (voxels)", self.min_voxels_3d)
@@ -3038,6 +3051,8 @@ class ObjectsPanel(QWidget):
         self.niter_3d.setValue(int(parameters.get("niter_3d") or FULL_3D_NITER))
         self.flow3d_smooth.setValue(float(parameters.get("flow3D_smooth", FULL_3D_FLOW_SMOOTH)))
         self.min_voxels_3d.setValue(int(parameters.get("min_voxels_3d") or 0))
+        self.min_size_px.setValue(int(parameters.get("min_size", DEFAULT_CELLPOSE_MIN_SIZE)))
+        self.augment.setChecked(bool(parameters.get("augment", False)))
         has_calibration = pixel is not None
         if parameters.get("min_area_um2") is not None:
             _choose(self.area_unit, "um2")
@@ -3275,8 +3290,6 @@ class ObjectsPanel(QWidget):
         cellpose = self.method.currentData() == "cellpose"
         self.engine_choice_label.setVisible(cellpose)
         self.engine_choice.setVisible(cellpose)
-        _show_row(self._form, self.nucleus_diameter_um, cellpose)
-        _show_row(self._form, self.size_hint, cellpose)
         _show_row(self._form, self.threshold_method, not cellpose)
         _show_row(self._form, self.threshold, not cellpose and self.threshold_method.currentData() == "manual")
         _show_row(self._form, self.sigma, not cellpose)
@@ -3285,7 +3298,7 @@ class ObjectsPanel(QWidget):
             _show_row(advanced, widget, not cellpose)
         for widget in (self.watershed_distance, self.compactness):
             _show_row(advanced, widget, not cellpose and self.watershed.isChecked())
-        for widget in (self.cellpose_model, self.diameter, self.flow, self.cellprob):
+        for widget in (self.cellpose_model, self.cellprob):
             _show_row(advanced, widget, cellpose)
         from cellquant.engines import CELLPOSE_CLASSIC
 
@@ -3297,9 +3310,28 @@ class ObjectsPanel(QWidget):
     def _show_3d_rows(self) -> None:
         if not hasattr(self, "min_voxels_3d"):  # the Z options are built before the Advanced box
             return
-        shown = self.method.currentData() == "cellpose" and self.z_stack.currentData() == "full_3d"
+        from cellquant.engines import CELLPOSE_CLASSIC
+
+        cellpose = self.method.currentData() == "cellpose"
+        mode = self.z_stack.currentData()
+        full_3d = cellpose and mode == "full_3d"
         for widget in (self.niter_3d, self.flow3d_smooth, self.min_voxels_3d):
-            _show_row(self._advanced_form, widget, shown)
+            _show_row(self._advanced_form, widget, full_3d)
+        # Cellpose ignores the flow threshold when it segments the whole volume.
+        _show_row(self._advanced_form, self.flow, cellpose and mode != "full_3d")
+        for widget in (self.min_size_px, self.augment):
+            _show_row(self._advanced_form, widget, cellpose and mode != "full_3d")
+        # The diameter sizes Cellpose's resizing (always for classic Cellpose, optional for Cellpose-SAM)
+        # and the 3D smallest-object cutoff; Cellpose-SAM without resizing in 2D does not use it.
+        diameter = cellpose and (
+            self.engine.key == CELLPOSE_CLASSIC or self.resize_to_diameter.isChecked() or mode == "full_3d"
+        )
+        _show_row(self._form, self.nucleus_diameter_um, diameter)
+        _show_row(self._form, self.size_hint, diameter)
+        _show_row(self._advanced_form, self.diameter, diameter)
+        # Link overlap and Brightness belong to 2D + stitching only.
+        _show_row(self._z3d_form, self.z_link, mode == "stitch_slices")
+        _show_row(self._z3d_form, self.z_scale, mode == "stitch_slices")
 
     def _refresh_crop(self, controller) -> None:
         from cellquant.crop import crop_channels
@@ -3593,6 +3625,12 @@ class ObjectsPanel(QWidget):
                 # Written when off, and always in true 3D (where it starts off), so 2D settings that
                 # resize stay as every earlier version saved them.
                 parameters["resize_to_diameter"] = self.resize_to_diameter.isChecked()
+            if self.z_stack.currentData() != "full_3d":
+                # Written only when changed, so settings saved by earlier versions keep their content.
+                if self.min_size_px.value() != DEFAULT_CELLPOSE_MIN_SIZE:
+                    parameters["min_size"] = self.min_size_px.value()
+                if self.augment.isChecked():
+                    parameters["augment"] = True
             if self.z_stack.currentData() == "full_3d":
                 # Only for full 3D, so the settings (and saved results) of the other modes do not change.
                 parameters["niter_3d"] = self.niter_3d.value()
