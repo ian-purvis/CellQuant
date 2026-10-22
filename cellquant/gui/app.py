@@ -5912,6 +5912,7 @@ class Footer(QWidget):
         if finished:
             if status == "Failure":
                 self.failed_files.append(filename)
+            self._log_batch_notes()  # e.g. the 3D time split, before this image's line
             took = self._clock.last_image_seconds() if self._clock is not None else None
             timing = "" if took is None else f" in {elapsed_text(took)}"
             self.message(f"Image {index} of {total} ({filename}): {JOB_WORDS.get(status, status)}{timing}")

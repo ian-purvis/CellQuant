@@ -344,16 +344,23 @@ def test_cellpose_full_3d_uses_the_paper_settings(tmp_path, monkeypatch, version
         pixel_size_x=0.28, pixel_size_y=0.28, pixel_size_z=1.5, details=details,
     )
     call = next(item[1] for item in models.CALLS if item[0] == "CellposeModel.eval")
-    assert call["niter"] == 1000 and call["flow3D_smooth"] == 2.0
+    assert call["niter"] == 200 and call["flow3D_smooth"] == 2.0
     # 1,000 voxels for a 30 px cell in an isotropic volume, scaled to a 21.4 px nucleus and 1.5 µm slices.
     assert call["min_size"] == round(1000 * (21.4 / 30) ** 3 / (1.5 / 0.28))
     assert details["engine"]["full_3d"]["min_size"] == call["min_size"]
+    from cellquant.hardware import batch_notes
+
+    note = next(item for item in batch_notes() if item.startswith("3D segmentation took"))
+    assert "network" in note and "flow-following and masks" in note and "(200 iterations)" in note
+    assert set(details["timings"]) == {"network", "masks_and_rest"}
 
 
 def test_full_3d_cutoff_follows_the_calibration():
     from cellquant.segmentation import full_3d_settings
 
     assert full_3d_settings(None, 1.0, {})["min_size"] == 1000  # the paper's own case
+    assert full_3d_settings(None, 1.0, {})["niter"] == 200
+    assert full_3d_settings(None, 1.0, {"niter_3d": 1000})["niter"] == 1000  # saved recipes keep theirs
     assert full_3d_settings(7.0, 1.5 / 0.86, {})["min_size"] == 7
     assert full_3d_settings(21.4, 1.5 / 0.28, {"min_size": 50})["min_size"] == 50
     chosen = full_3d_settings(21.4, 1.5 / 0.28, {"niter_3d": 400, "flow3D_smooth": 0.0, "min_voxels_3d": 120})
