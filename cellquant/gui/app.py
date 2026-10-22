@@ -638,6 +638,7 @@ class CellQuantWindow:
         self._batch: BatchWorker | None = None
         self._job: CallWorker | None = None
         self._shown_image_id: str | None = None
+        self._pixel_scale: tuple[float, float, float] | None = None  # (z, y, x) in µm for the shown image (z None: no Z step, stays 1 px); None: pixels
         self._shown_z: tuple[str | None, int | None] = (None, None)
         self._labels_image_id: str | None = None  # image the Objects layer holds
         self._wanted_image_id: str | None = None
@@ -743,6 +744,7 @@ class CellQuantWindow:
         self.viewer.layers.events.inserted.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.removed.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.inserted.connect(lambda _event: self._view_box.refresh())
+        self.viewer.layers.events.inserted.connect(lambda event: self._scale_layer(event.value))
         self.viewer.layers.events.removed.connect(lambda _event: self._view_box.refresh())
         self._release_window_later()
         self._watch_settings()
@@ -1737,6 +1739,41 @@ class CellQuantWindow:
         # The Markers table is read back into the settings before every run; keep its cutoffs current.
         self._measurements_panel.refresh()
 
+    def set_pixel_scale(self, record) -> None:
+        """Give every layer the shown image's pixel size, so napari's scale bar reads in µm (px when unknown)."""
+
+        x, y = record.pixel_size_x, record.pixel_size_y
+        if x and y:
+            self._pixel_scale = (float(record.pixel_size_z) if record.pixel_size_z else None, float(y), float(x))
+        else:
+            self._pixel_scale = None
+        for layer in list(self.viewer.layers):
+            self._scale_layer(layer)
+        try:
+            self.viewer.scale_bar.unit = "µm" if self._pixel_scale else "px"
+        except Exception:  # noqa: BLE001 - older napari: the bar keeps its own unit
+            pass
+
+    def _scale_layer(self, layer) -> None:
+        """Layers stay in pixel coordinates (shapes, points, painting); only their scale and unit change."""
+
+        ndim = layer.ndim
+        if ndim < 2:
+            return
+        if self._pixel_scale:
+            z, y, x = self._pixel_scale
+            axes = [(z or 1.0, "micrometer" if z else "pixel"), (y, "micrometer"), (x, "micrometer")]
+        else:
+            axes = [(1.0, "pixel")] * 3
+        axes = ([(1.0, "pixel")] * max(ndim - 3, 0) + axes)[-ndim:]
+        try:
+            want = np.array([scale for scale, _unit in axes], dtype=float)
+            if not np.allclose(layer.scale, want):
+                layer.scale = want
+            layer.units = tuple(unit for _scale, unit in axes)
+        except Exception:  # noqa: BLE001 - older napari has no layer units
+            pass
+
     def _has_image_layers(self) -> bool:
         return any(name in self.viewer.layers for name in self._managed if name not in _OBJECT_LAYERS)
 
@@ -1753,6 +1790,7 @@ class CellQuantWindow:
         by_index = {channel.channel_index: channel for channel in self.controller.experiment.channels}
         owners = self.controller.display_channels(record, loaded.n_channels)
         colormaps = channel_colormaps(loaded)
+        self.set_pixel_scale(record)
         added = self.viewer.add_image(
             loaded.data,
             channel_axis=0,
@@ -2003,6 +2041,10 @@ class ViewBox(QWidget):
         )
         self.max_projection.toggled.connect(self._toggled)
         layout.addWidget(self.max_projection)
+        self.measure = QPushButton("Measure…")
+        self.measure.setToolTip("Open the Measure window: draw lines or shapes on the image to get length, area and volume, and export them to a CSV.")
+        self.measure.clicked.connect(lambda: shell.show_measure())
+        layout.addWidget(self.measure)
         self.refresh()
 
     def _image_layers(self):
@@ -2041,6 +2083,8 @@ class ViewBox(QWidget):
             elif not on and layer.name in self._stacks:
                 layer.data = self._stacks.pop(layer.name)[0]
                 layer.contrast_limits = limits
+        for layer in self._image_layers():
+            self.shell._scale_layer(layer)  # swapping 3D and 2D data pads the scale; put the pixel size back
         if not on and self._step is not None and viewer.dims.ndim > 2:
             viewer.dims.set_current_step(0, self._step)
         self.refresh()
@@ -2439,6 +2483,8 @@ class ExperimentPanel(QWidget):
                 controller.set_pixel_size(target, x, y, z)
         self.refresh_table()
         self.shell._objects_panel.update_recommendation()
+        if self.shell._shown_image_id in targets:
+            self.shell.set_pixel_scale(controller.experiment.image(self.shell._shown_image_id))
         self.shell._footer.set_units("µm" if x and y else "pixels — no pixel size in this image", keep_detail=True)
         self.shell.message(f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.")
         self.shell._autosave()
@@ -5494,10 +5540,6 @@ class AnalysisBar(QWidget):
         menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu_button.setMenu(menu)
         top.addWidget(menu_button)
-        measure = QPushButton("Measure")
-        measure.setToolTip("Open the Measure window: draw lines or shapes on the image to get length, area and volume, and export them to a CSV.")
-        measure.clicked.connect(lambda: shell.show_measure())
-        top.addWidget(measure)
         layout.addLayout(top)
         self.refresh()
 
