@@ -2580,6 +2580,7 @@ class ExperimentPanel(QWidget):
             self._update_included_label()
             self._update_calibration_visibility()
             self.shell.update_navigation()
+            self.shell._objects_panel.refresh_image_channels()
         elif header == "Sample name":
             controller.set_sample_name(image_id, self.table.item(row, column).text())
         elif header in controller.experiment.metadata_columns:
