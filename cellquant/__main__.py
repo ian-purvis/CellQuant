@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> None:
         help="Analyze every included image of an experiment, without the window",
         description="Analyze every included image of an experiment with its settings (or the settings in --recipe).",
     )
-    run.add_argument("--experiment", required=True, metavar="FOLDER", help="The experiment's results folder (it holds experiment.json).")
+    run.add_argument("--experiment", dest="run_experiment", required=True, metavar="FOLDER", help="The experiment's results folder (it holds experiment.json).")
     run.add_argument("--recipe", metavar="FILE", help="A recipe.yaml to use instead of the experiment's own settings, for example from an export.")
     parser.add_argument("experiment", nargs="?", metavar="FOLDER", help="Open this experiment's results folder in the window.")
     args = parser.parse_args(argv)
@@ -28,15 +28,20 @@ def main(argv: list[str] | None = None) -> None:
         from cellquant.controller import process_experiment
 
         from cellquant.errors import CellQuantError
+        from cellquant.instances import lock_folder
 
+        lock = lock_folder(args.run_experiment)
+        if lock is None:
+            print(f"cellquant: {args.run_experiment} is open in a CellQuant window. Close it there first.", file=sys.stderr)
+            sys.exit(2)
         try:
-            report = process_experiment(args.experiment, args.recipe)
+            report = process_experiment(args.run_experiment, args.recipe)
         except (CellQuantError, OSError, ValueError) as exc:
             print(f"cellquant: {exc}", file=sys.stderr)
             sys.exit(2)
         print(
             f"Run {report.run_id}: {report.completed} finished, {report.warnings} need a look, {report.failed} failed. "
-            f"Results are in {args.experiment}."
+            f"Results are in {args.run_experiment}."
         )
         if report.failed:
             sys.exit(1)

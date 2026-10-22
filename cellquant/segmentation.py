@@ -488,20 +488,25 @@ def _eval(model, details: dict[str, Any], image, **options):
     A GPU that runs out of memory tries again with half the batch, down to Cellpose's default.
     """
 
-    from cellquant.hardware import CELLPOSE_BATCH_SIZE, cellpose_batch_size, lower_batch_size
+    from cellquant.hardware import CELLPOSE_BATCH_SIZE, cellpose_batch_size, lower_batch_size, release_gpu_cache
 
-    size = cellpose_batch_size(getattr(model, "device", None))
-    while True:
-        details["batch_size"] = size
-        try:
-            if size == CELLPOSE_BATCH_SIZE:
-                return model.eval(image, **options)  # as before on the CPU, the Apple GPU and small GPUs
-            return model.eval(image, batch_size=size, **options)
-        except Exception as exc:
-            smaller = lower_batch_size(size, getattr(model, "device", None)) if _out_of_memory(exc) else None
-            if smaller is None:
-                raise
-            size = smaller
+    device = getattr(model, "device", None)
+    size = cellpose_batch_size(device)
+    try:
+        while True:
+            details["batch_size"] = size
+            try:
+                if size == CELLPOSE_BATCH_SIZE:
+                    return model.eval(image, **options)  # as before on the CPU, the Apple GPU and small GPUs
+                return model.eval(image, batch_size=size, **options)
+            except Exception as exc:
+                smaller = lower_batch_size(size, device) if _out_of_memory(exc) else None
+                if smaller is None:
+                    raise
+                size = smaller
+    finally:
+        if str(getattr(device, "type", device)) == "cuda":
+            release_gpu_cache()  # only while another CellQuant window shares the GPU
 
 
 def _cached_model(models, classic: bool, name: str, gpu: bool, precision: str | None = None):

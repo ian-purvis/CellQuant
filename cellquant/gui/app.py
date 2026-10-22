@@ -632,6 +632,7 @@ class CellQuantWindow:
     def __init__(self, viewer, experiment_dir: str | Path | None = None):
         self.viewer = viewer
         self.controller: AnalysisController | None = None
+        self._folder_lock = None  # this window's hold on the open experiment folder
         self._managed: set[str] = set()
         self._nav_ids: list[str] = []
         self._nav_index = 0
@@ -831,6 +832,10 @@ class CellQuantWindow:
         self.message("Making the practice images...")
 
         def ready(controller) -> None:
+            lock = self._lock_folder(controller.directory)
+            if lock is None:
+                return
+            self._hold_folder(lock)
             self.controller = controller
             self._exported_to = None
             self._measure_dock.forget()
@@ -943,12 +948,44 @@ class CellQuantWindow:
         self._gpu_check.failed.connect(lambda message: self._objects_panel.show_gpu_status({"available": False, "reason": message}))
         self._gpu_check.start()
 
+    def _lock_folder(self, directory: str | Path, create: bool = False):
+        """Hold an experiment folder for this window, or None (and say so) when another CellQuant window has it open."""
+
+        from cellquant.instances import lock_folder
+
+        if self._folder_lock is not None and self._folder_lock.covers(directory):
+            return self._folder_lock
+        root = Path(directory)
+        lock = lock_folder(root.parent if root.name == "experiment.json" else root, create=create)
+        if lock is None:
+            self.show_error(
+                f"{directory} is open in another CellQuant window. Close it there first, or open another experiment."
+            )
+        return lock
+
+    def _hold_folder(self, lock) -> None:
+        """Keep ``lock`` for the experiment now open, and let go of the previous folder."""
+
+        if self._folder_lock is not None and self._folder_lock is not lock:
+            self._folder_lock.release()
+        self._folder_lock = lock
+
+    def _drop_lock(self, lock) -> None:
+        if lock is not None and lock is not self._folder_lock:
+            lock.release()
+
     def open_experiment(self, directory: str | Path) -> None:
+        lock = self._lock_folder(directory)
+        if lock is None:
+            return
         try:
-            self.controller = AnalysisController.open(directory)
+            controller = AnalysisController.open(directory)
         except Exception as exc:  # noqa: BLE001 - shown to the user; the window stays usable
+            self._drop_lock(lock)
             self.show_error(f"{directory} could not be opened as an experiment. {_error_text(exc)}")
             return
+        self._hold_folder(lock)
+        self.controller = controller
         self._exported_to = None
         self._measure_dock.forget()
         self._refresh_all()
@@ -963,13 +1000,18 @@ class CellQuantWindow:
         if (output / "experiment.json").is_file():
             self.message("That results folder already has an experiment. Use Open experiment… to open it, or choose another folder.")
             return
+        lock = self._lock_folder(output, create=True)
+        if lock is None:
+            return
         try:
             controller = AnalysisController.create(output, dialog.experiment_name(), input_directory=images or None)
         except Exception as exc:  # noqa: BLE001 - e.g. a results folder that cannot be written
+            self._drop_lock(lock)
             self.show_error(f"The experiment could not be created in {output}. {_error_text(exc)}")
             return
         file_types = dialog.file_types() if hasattr(dialog, "file_types") else ["nd2", "tiff"]
         controller.experiment.import_file_types = list(file_types)
+        self._hold_folder(lock)
         self.controller = controller
         self._exported_to = None
         self._measure_dock.forget()
@@ -1174,11 +1216,16 @@ class CellQuantWindow:
         if (output / "experiment.json").is_file():
             self.message("That folder already has an experiment. Open it with Open experiment…, or choose another folder.")
             return None
+        lock = self._lock_folder(output, create=True)
+        if lock is None:
+            return None
         try:
             controller = AnalysisController.create(output, package.name)
         except Exception as exc:  # noqa: BLE001 - e.g. a folder that cannot be written
+            self._drop_lock(lock)
             self.show_error(f"The experiment could not be created in {output}. {_error_text(exc)}")
             return None
+        self._hold_folder(lock)
         self.controller = controller
         self._exported_to = None
         self._measure_dock.forget()
