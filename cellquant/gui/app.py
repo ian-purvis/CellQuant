@@ -2313,6 +2313,8 @@ class ExperimentPanel(QWidget):
         layout.addWidget(self.scope_widget)
         self.calibration_widget.setVisible(False)
         self.scope_widget.setVisible(False)
+        self._pasting = False  # while a paste fills cells, other panels follow once at the end
+        self._pasted_headers: set[str] = set()
 
     def refresh(self) -> None:
         self.refresh_table()
@@ -2406,17 +2408,14 @@ class ExperimentPanel(QWidget):
         if controller is None or not self.table.columnCount():
             return
         column = self.table.columnCount() - 1
+        records = {record.image_id: record for record in controller.experiment.images}
         self.table.blockSignals(True)
         try:
             for row in range(self.table.rowCount()):
                 item = self.table.item(row, 0)
-                if item is None:
-                    continue
-                try:
-                    record = controller.experiment.image(item.data(Qt.UserRole))
-                except KeyError:
-                    continue
-                self.table.setItem(row, column, _status_item(record))
+                record = records.get(item.data(Qt.UserRole)) if item is not None else None
+                if record is not None:
+                    self.table.setItem(row, column, _status_item(record))
         finally:
             self.table.blockSignals(False)
 
@@ -2498,6 +2497,12 @@ class ExperimentPanel(QWidget):
             return
         record.sample_name = controller.experiment.image(image_id).sample_name
         self.shell._autosave()
+        if self._pasting:
+            self._pasted_headers.add(header)  # the other panels follow once, when the paste is done
+            return
+        self._cell_edited_elsewhere(header)
+
+    def _cell_edited_elsewhere(self, header: str) -> None:
         if header == "Include":
             self.refresh_status()
             self.shell._review_panel.update_status_line()
@@ -2510,6 +2515,16 @@ class ExperimentPanel(QWidget):
             return
         lines = [line.split("\t") for line in text.strip().splitlines() if line.strip()]
         headers = [self.table.horizontalHeaderItem(index).text() for index in range(self.table.columnCount())]
+        self._pasting, self._pasted_headers = True, set()
+        try:
+            self._paste_cells(controller, row, column, lines, headers)
+        finally:
+            self._pasting = False
+        for header in ("Include", "Sample name"):
+            if header in self._pasted_headers:
+                self._cell_edited_elsewhere(header)
+
+    def _paste_cells(self, controller, row: int, column: int, lines: list[list[str]], headers: list[str]) -> None:
         for row_offset, values in enumerate(lines):
             target_row = row + row_offset
             if target_row >= self.table.rowCount():
@@ -5619,9 +5634,13 @@ class ResultsPanel(QWidget):
                         )
                         choices.append((f"{first.name}{first_sign} and {second.name}{second_sign}", expression))
         for box, extra in ((self.report_count, []), (self.report_among, [("all objects", "all_objects")])):
+            keep = box.currentData()
+            box.blockSignals(True)
             box.clear()
             for text, value in [*extra, *choices]:
                 box.addItem(text, value)
+            box.setCurrentIndex(max(0, box.findData(keep)))
+            box.blockSignals(False)
 
     def _fill_summary_options(self, controller) -> None:
         import pandas as pd
