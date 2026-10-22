@@ -236,7 +236,7 @@ DEFAULT_MIN_AREA_UM2 = 5.0
 
 
 # Dropdown wording: the saved value first, then the plain words shown for it.
-METHOD_OPTIONS = (("classical", "Classical (fast, no GPU)"), ("cellpose", "Cellpose (AI model)"))
+METHOD_OPTIONS = (("cellpose", "Cellpose (AI model)"), ("classical", "Classical (fast, no GPU)"))
 THRESHOLD_OPTIONS = (("otsu", "Automatic (Otsu)"), ("manual", "Manual threshold"))
 AREA_UNIT_OPTIONS = (("px", "pixels"), ("um2", "µm²"))
 REGION_OPTIONS = (
@@ -632,12 +632,14 @@ class CellQuantWindow:
     def __init__(self, viewer, experiment_dir: str | Path | None = None):
         self.viewer = viewer
         self.controller: AnalysisController | None = None
+        self._folder_lock = None  # this window's hold on the open experiment folder
         self._managed: set[str] = set()
         self._nav_ids: list[str] = []
         self._nav_index = 0
         self._batch: BatchWorker | None = None
         self._job: CallWorker | None = None
         self._shown_image_id: str | None = None
+        self._pixel_scale: tuple[float, float, float] | None = None  # (z, y, x) in µm for the shown image (z None: no Z step, stays 1 px); None: pixels
         self._shown_z: tuple[str | None, int | None] = (None, None)
         self._labels_image_id: str | None = None  # image the Objects layer holds
         self._wanted_image_id: str | None = None
@@ -743,6 +745,7 @@ class CellQuantWindow:
         self.viewer.layers.events.inserted.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.removed.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.inserted.connect(lambda _event: self._view_box.refresh())
+        self.viewer.layers.events.inserted.connect(lambda event: self._scale_layer(event.value))
         self.viewer.layers.events.removed.connect(lambda _event: self._view_box.refresh())
         self._release_window_later()
         self._watch_settings()
@@ -831,6 +834,10 @@ class CellQuantWindow:
         self.message("Making the practice images...")
 
         def ready(controller) -> None:
+            lock = self._lock_folder(controller.directory)
+            if lock is None:
+                return
+            self._hold_folder(lock)
             self.controller = controller
             self._exported_to = None
             self._measure_dock.forget()
@@ -943,12 +950,44 @@ class CellQuantWindow:
         self._gpu_check.failed.connect(lambda message: self._objects_panel.show_gpu_status({"available": False, "reason": message}))
         self._gpu_check.start()
 
+    def _lock_folder(self, directory: str | Path, create: bool = False):
+        """Hold an experiment folder for this window, or None (and say so) when another CellQuant window has it open."""
+
+        from cellquant.instances import lock_folder
+
+        if self._folder_lock is not None and self._folder_lock.covers(directory):
+            return self._folder_lock
+        root = Path(directory)
+        lock = lock_folder(root.parent if root.name == "experiment.json" else root, create=create)
+        if lock is None:
+            self.show_error(
+                f"{directory} is open in another CellQuant window. Close it there first, or open another experiment."
+            )
+        return lock
+
+    def _hold_folder(self, lock) -> None:
+        """Keep ``lock`` for the experiment now open, and let go of the previous folder."""
+
+        if self._folder_lock is not None and self._folder_lock is not lock:
+            self._folder_lock.release()
+        self._folder_lock = lock
+
+    def _drop_lock(self, lock) -> None:
+        if lock is not None and lock is not self._folder_lock:
+            lock.release()
+
     def open_experiment(self, directory: str | Path) -> None:
+        lock = self._lock_folder(directory)
+        if lock is None:
+            return
         try:
-            self.controller = AnalysisController.open(directory)
+            controller = AnalysisController.open(directory)
         except Exception as exc:  # noqa: BLE001 - shown to the user; the window stays usable
+            self._drop_lock(lock)
             self.show_error(f"{directory} could not be opened as an experiment. {_error_text(exc)}")
             return
+        self._hold_folder(lock)
+        self.controller = controller
         self._exported_to = None
         self._measure_dock.forget()
         self._refresh_all()
@@ -963,13 +1002,18 @@ class CellQuantWindow:
         if (output / "experiment.json").is_file():
             self.message("That results folder already has an experiment. Use Open experiment… to open it, or choose another folder.")
             return
+        lock = self._lock_folder(output, create=True)
+        if lock is None:
+            return
         try:
             controller = AnalysisController.create(output, dialog.experiment_name(), input_directory=images or None)
         except Exception as exc:  # noqa: BLE001 - e.g. a results folder that cannot be written
+            self._drop_lock(lock)
             self.show_error(f"The experiment could not be created in {output}. {_error_text(exc)}")
             return
         file_types = dialog.file_types() if hasattr(dialog, "file_types") else ["nd2", "tiff"]
         controller.experiment.import_file_types = list(file_types)
+        self._hold_folder(lock)
         self.controller = controller
         self._exported_to = None
         self._measure_dock.forget()
@@ -1174,11 +1218,16 @@ class CellQuantWindow:
         if (output / "experiment.json").is_file():
             self.message("That folder already has an experiment. Open it with Open experiment…, or choose another folder.")
             return None
+        lock = self._lock_folder(output, create=True)
+        if lock is None:
+            return None
         try:
             controller = AnalysisController.create(output, package.name)
         except Exception as exc:  # noqa: BLE001 - e.g. a folder that cannot be written
+            self._drop_lock(lock)
             self.show_error(f"The experiment could not be created in {output}. {_error_text(exc)}")
             return None
+        self._hold_folder(lock)
         self.controller = controller
         self._exported_to = None
         self._measure_dock.forget()
@@ -1737,6 +1786,41 @@ class CellQuantWindow:
         # The Markers table is read back into the settings before every run; keep its cutoffs current.
         self._measurements_panel.refresh()
 
+    def set_pixel_scale(self, record) -> None:
+        """Give every layer the shown image's pixel size, so napari's scale bar reads in µm (px when unknown)."""
+
+        x, y = record.pixel_size_x, record.pixel_size_y
+        if x and y:
+            self._pixel_scale = (float(record.pixel_size_z) if record.pixel_size_z else None, float(y), float(x))
+        else:
+            self._pixel_scale = None
+        for layer in list(self.viewer.layers):
+            self._scale_layer(layer)
+        try:
+            self.viewer.scale_bar.unit = "µm" if self._pixel_scale else "px"
+        except Exception:  # noqa: BLE001 - older napari: the bar keeps its own unit
+            pass
+
+    def _scale_layer(self, layer) -> None:
+        """Layers stay in pixel coordinates (shapes, points, painting); only their scale and unit change."""
+
+        ndim = layer.ndim
+        if ndim < 2:
+            return
+        if self._pixel_scale:
+            z, y, x = self._pixel_scale
+            axes = [(z or 1.0, "micrometer" if z else "pixel"), (y, "micrometer"), (x, "micrometer")]
+        else:
+            axes = [(1.0, "pixel")] * 3
+        axes = ([(1.0, "pixel")] * max(ndim - 3, 0) + axes)[-ndim:]
+        try:
+            want = np.array([scale for scale, _unit in axes], dtype=float)
+            if not np.allclose(layer.scale, want):
+                layer.scale = want
+            layer.units = tuple(unit for _scale, unit in axes)
+        except Exception:  # noqa: BLE001 - older napari has no layer units
+            pass
+
     def _has_image_layers(self) -> bool:
         return any(name in self.viewer.layers for name in self._managed if name not in _OBJECT_LAYERS)
 
@@ -1753,6 +1837,7 @@ class CellQuantWindow:
         by_index = {channel.channel_index: channel for channel in self.controller.experiment.channels}
         owners = self.controller.display_channels(record, loaded.n_channels)
         colormaps = channel_colormaps(loaded)
+        self.set_pixel_scale(record)
         added = self.viewer.add_image(
             loaded.data,
             channel_axis=0,
@@ -2003,6 +2088,10 @@ class ViewBox(QWidget):
         )
         self.max_projection.toggled.connect(self._toggled)
         layout.addWidget(self.max_projection)
+        self.measure = QPushButton("Measure…")
+        self.measure.setToolTip("Open the Measure window: draw lines or shapes on the image to get length, area and volume, and export them to a CSV.")
+        self.measure.clicked.connect(lambda: shell.show_measure())
+        layout.addWidget(self.measure)
         self.refresh()
 
     def _image_layers(self):
@@ -2041,6 +2130,8 @@ class ViewBox(QWidget):
             elif not on and layer.name in self._stacks:
                 layer.data = self._stacks.pop(layer.name)[0]
                 layer.contrast_limits = limits
+        for layer in self._image_layers():
+            self.shell._scale_layer(layer)  # swapping 3D and 2D data pads the scale; put the pixel size back
         if not on and self._step is not None and viewer.dims.ndim > 2:
             viewer.dims.set_current_step(0, self._step)
         self.refresh()
@@ -2439,6 +2530,8 @@ class ExperimentPanel(QWidget):
                 controller.set_pixel_size(target, x, y, z)
         self.refresh_table()
         self.shell._objects_panel.update_recommendation()
+        if self.shell._shown_image_id in targets:
+            self.shell.set_pixel_scale(controller.experiment.image(self.shell._shown_image_id))
         self.shell._footer.set_units("µm" if x and y else "pixels — no pixel size in this image", keep_detail=True)
         self.shell.message(f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.")
         self.shell._autosave()
@@ -3159,6 +3252,8 @@ class ObjectsPanel(QWidget):
         cellpose = self.method.currentData() == "cellpose"
         self.engine_choice_label.setVisible(cellpose)
         self.engine_choice.setVisible(cellpose)
+        _show_row(self._form, self.nucleus_diameter_um, cellpose)
+        _show_row(self._form, self.size_hint, cellpose)
         _show_row(self._form, self.threshold_method, not cellpose)
         _show_row(self._form, self.threshold, not cellpose and self.threshold_method.currentData() == "manual")
         _show_row(self._form, self.sigma, not cellpose)
@@ -5515,10 +5610,6 @@ class AnalysisBar(QWidget):
         menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu_button.setMenu(menu)
         top.addWidget(menu_button)
-        measure = QPushButton("Measure")
-        measure.setToolTip("Open the Measure window: draw lines or shapes on the image to get length, area and volume, and export them to a CSV.")
-        measure.clicked.connect(lambda: shell.show_measure())
-        top.addWidget(measure)
         layout.addLayout(top)
         self.refresh()
 
@@ -5933,6 +6024,7 @@ class Footer(QWidget):
         if finished:
             if status == "Failure":
                 self.failed_files.append(filename)
+            self._log_batch_notes()  # e.g. the 3D time split, before this image's line
             took = self._clock.last_image_seconds() if self._clock is not None else None
             timing = "" if took is None else f" in {elapsed_text(took)}"
             self.message(f"Image {index} of {total} ({filename}): {JOB_WORDS.get(status, status)}{timing}")
