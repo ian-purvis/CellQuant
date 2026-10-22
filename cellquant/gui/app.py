@@ -361,6 +361,19 @@ def mask_colormap(colors: list[str]):
     return CyclicLabelColormap(colors=np.array(rows), background_value=0)
 
 
+def classification_outline() -> bool:
+    """Whether the positive/negative overlay shows object outlines only (default) or filled objects."""
+
+    try:
+        return str(_settings().value("review/classification_style", "outline")) != "fill"
+    except Exception:  # noqa: BLE001 - settings unreadable: use the default
+        return True
+
+
+def save_classification_style(outline: bool) -> None:
+    _settings().setValue("review/classification_style", "outline" if outline else "fill")
+
+
 def keep_awake_preferred() -> bool:
     try:
         return str(_settings().value("run/keep_awake", "true")).lower() == "true"
@@ -1914,13 +1927,15 @@ class CellQuantWindow:
         if "Classification" not in self.viewer.layers:
             return
         positive, negative = classification_colors()
-        self.viewer.layers["Classification"].colormap = DirectLabelColormap(
+        layer = self.viewer.layers["Classification"]
+        layer.colormap = DirectLabelColormap(
             color_dict={
                 None: np.array([0, 0, 0, 0], dtype=np.float32),
                 1: _rgba(negative),
                 2: _rgba(positive),
             }
         )
+        layer.contour = 2 if classification_outline() else 0
 
     def _set_ids(self, result) -> None:
         frame = result.objects
@@ -4543,6 +4558,17 @@ class ReviewPanel(QWidget):
         for button in (self.positive_color, self.negative_color, reset):
             colors.addWidget(button)
         advanced.addLayout(colors)
+        style = QHBoxLayout()
+        style.addWidget(QLabel("Overlay"))
+        self.overlay_style = QComboBox()
+        self.overlay_style.addItem("Fill", "fill")
+        self.overlay_style.addItem("Outline", "outline")
+        self.overlay_style.setToolTip("Fill colors each whole object; Outline colors only its edge.")
+        self.overlay_style.setCurrentIndex(1 if classification_outline() else 0)
+        self.overlay_style.activated.connect(lambda _index: self._overlay_style_chosen())
+        style.addWidget(self.overlay_style)
+        style.addStretch(1)
+        advanced.addLayout(style)
         self._show_colors()
         layout.addWidget(self.advanced_toggle)
         layout.addWidget(self.advanced_box)
@@ -4563,6 +4589,8 @@ class ReviewPanel(QWidget):
         box.addWidget(self.strip_mode)
         self.strip_table = QTableWidget(0, 3)
         self.strip_table.setHorizontalHeaderLabels(["Image", "Positive", "%"])
+        self.strip_table.horizontalHeaderItem(1).setToolTip("Positive / counted objects at the cutoff the image uses (* = its own cutoff).")
+        self.strip_table.horizontalHeaderItem(2).setToolTip("Percent positive.")
         self.strip_table.verticalHeader().setVisible(False)
         self.strip_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.strip_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -4640,7 +4668,9 @@ class ReviewPanel(QWidget):
 
     def _strip_open(self, row: int, _column: int) -> None:
         image_id = self.strip_table.item(row, 0).data(Qt.UserRole)
-        if image_id in self.shell._nav_ids and image_id != self._shown_image_id():
+        if image_id not in self.shell._nav_ids:
+            self.shell.message("That image is not in the Previous / Next list now (see Check: All included).")
+        elif image_id != self._shown_image_id():
             self.shell._nav_index = self.shell._nav_ids.index(image_id)
             self.shell.show_current()
 
@@ -4659,42 +4689,44 @@ class ReviewPanel(QWidget):
         shown = self._shown_image_id()
         table = self.strip_table
         table.blockSignals(True)
-        table.setRowCount(len(included))
-        total_positive = total_counted = 0
-        for row, record in enumerate(included):
-            ticked = record.image_id in (self._strip_ticks or set())
-            name = QTableWidgetItem(record.sample_name or record.filename)
-            name.setData(Qt.UserRole, record.image_id)
-            name.setToolTip(record.relative_path or record.filename)
-            if selected:
-                name.setFlags(name.flags() | Qt.ItemIsUserCheckable)
-                name.setCheckState(Qt.Checked if ticked else Qt.Unchecked)
-            else:
-                name.setFlags(name.flags() & ~Qt.ItemIsUserCheckable)
-                name.setData(Qt.CheckStateRole, None)
-            font = name.font()
-            font.setBold(record.image_id == shown)
-            name.setFont(font)
-            own = classification.image_thresholds.get(record.image_id) is not None
-            if record.image_id in counts:
-                positive, counted = counts[record.image_id]
-                count_text = f"{positive} / {counted}"
-                percent_text = f"{100 * positive / counted:.1f}" if counted else "—"
-                if not selected or ticked:
-                    total_positive += positive
-                    total_counted += counted
-            else:
-                count_text, percent_text = "—", "—"
-            cells = (name, QTableWidgetItem(count_text + (" *" if own else "")), QTableWidgetItem(percent_text))
-            for column, cell in enumerate(cells):
-                if column:
-                    cell.setTextAlignment(int(Qt.AlignRight | Qt.AlignVCenter))
-                if selected and not ticked:
-                    cell.setForeground(self.palette().color(QPalette.Disabled, QPalette.Text))
-                table.setItem(row, column, cell)
-        table.resizeColumnToContents(1)
-        table.resizeColumnToContents(2)
-        table.blockSignals(False)
+        try:
+            table.setRowCount(len(included))
+            total_positive = total_counted = 0
+            for row, record in enumerate(included):
+                ticked = record.image_id in (self._strip_ticks or set())
+                name = QTableWidgetItem(record.sample_name or record.filename)
+                name.setData(Qt.UserRole, record.image_id)
+                name.setToolTip(record.relative_path or record.filename)
+                if selected:
+                    name.setFlags(name.flags() | Qt.ItemIsUserCheckable)
+                    name.setCheckState(Qt.Checked if ticked else Qt.Unchecked)
+                else:
+                    name.setFlags(name.flags() & ~Qt.ItemIsUserCheckable)
+                    name.setData(Qt.CheckStateRole, None)
+                font = name.font()
+                font.setBold(record.image_id == shown)
+                name.setFont(font)
+                own = classification.image_thresholds.get(record.image_id) is not None
+                if record.image_id in counts:
+                    positive, counted = counts[record.image_id]
+                    count_text = f"{positive} / {counted}"
+                    percent_text = f"{100 * positive / counted:.1f}" if counted else "—"
+                    if not selected or ticked:
+                        total_positive += positive
+                        total_counted += counted
+                else:
+                    count_text, percent_text = "—", "—"
+                cells = (name, QTableWidgetItem(count_text + (" *" if own else "")), QTableWidgetItem(percent_text))
+                for column, cell in enumerate(cells):
+                    if column:
+                        cell.setTextAlignment(int(Qt.AlignRight | Qt.AlignVCenter))
+                    if selected and not ticked:
+                        cell.setForeground(self.palette().color(QPalette.Disabled, QPalette.Text))
+                    table.setItem(row, column, cell)
+            table.resizeColumnToContents(1)
+            table.resizeColumnToContents(2)
+        finally:
+            table.blockSignals(False)
         overall = f"{100 * total_positive / total_counted:.1f}%" if total_counted else "—"
         scope = "Ticked images" if selected else "All images"
         self.strip_total.setText(f"{scope}: {total_positive} / {total_counted} positive ({overall})")
@@ -4873,6 +4905,7 @@ class ReviewPanel(QWidget):
         self.update_status_line()
         self.counts.setText("Not run yet.")
         self.qc.setText("")
+        self._show_strip()  # the bold row follows the image shown
 
     def show_result(self, result) -> None:
         self.update_status_line()
@@ -4920,6 +4953,7 @@ class ReviewPanel(QWidget):
             return
         classification = next(item for item in self.shell.controller.recipe.classifications if item.id == classification_id)
         if classification.measurement not in result.objects.columns:
+            self._show_strip()  # no value for this marker here: the strip must not keep the last marker's numbers
             return
         image_id = result.provenance["image_id"]
         cutoff = classification.threshold_for(image_id)
@@ -5114,6 +5148,10 @@ class ReviewPanel(QWidget):
     def _reset_colors(self) -> None:
         save_classification_colors(DEFAULT_POSITIVE_COLOR, DEFAULT_NEGATIVE_COLOR)
         self._colors_changed()
+
+    def _overlay_style_chosen(self) -> None:
+        save_classification_style(self.overlay_style.currentData() == "outline")
+        self.shell.apply_classification_colors()
 
     def _colors_changed(self) -> None:
         self._show_colors()
