@@ -643,6 +643,7 @@ class CellQuantWindow:
         self._shown_z: tuple[str | None, int | None] = (None, None)
         self._labels_image_id: str | None = None  # image the Objects layer holds
         self._wanted_image_id: str | None = None
+        self._marker_tries: set[tuple[str, str]] = set()  # (image, settings) whose missing markers were measured once
         self._loader: CallWorker | None = None
         self._preloader: CallWorker | None = None
         self._building = False
@@ -1052,6 +1053,9 @@ class CellQuantWindow:
         record = controller.experiment.image(image_id)
         result = controller.recall(image_id, measure=False) if controller else None
         measuring = result is None and controller.is_pending(image_id) and not self.is_busy()
+        # Run before the markers were set up (step 4 measures only the image shown): measure them now, once.
+        tried = (image_id, controller.recipe.content_hash())
+        markers = result is not None and not self.is_busy() and tried not in self._marker_tries and controller.lacks_markers(image_id)
         self._footer.set_position(self._nav_index, len(self._nav_ids), record.relative_path or record.filename, self._nav_filter)
         self._review_panel.update_status_line()
         self._experiment_panel.set_pixel_size(record.pixel_size_x, record.pixel_size_y, record.pixel_size_z)
@@ -1063,6 +1067,10 @@ class CellQuantWindow:
         if measuring:
             # Loaded objects: measure them first, then show the image once, as it was segmented.
             self._measure_loaded(image_id)
+            return
+        if markers:
+            self._marker_tries.add(tried)
+            self._measure_loaded(image_id, lambda: controller.measure_markers(image_id))
             return
         if self._loader is not None:
             return
@@ -1252,8 +1260,9 @@ class CellQuantWindow:
             return
         self._start_job(lambda: controller.load_results(folder, images=images), self._results_loaded)
 
-    def _measure_loaded(self, image_id: str) -> None:
-        """Measure the markers of loaded objects off the interface thread, then show them."""
+    def _measure_loaded(self, image_id: str, measure=None) -> None:
+        """Measure the markers of loaded objects (or with ``measure``, of saved objects) off the
+        interface thread, then show them."""
 
         controller = self.controller
 
@@ -1272,14 +1281,14 @@ class CellQuantWindow:
 
         if self._batch is not None or self._job is not None:
             return
-        worker = CallWorker(lambda: controller.measure_loaded(image_id), report=True)
+        worker = CallWorker(measure or (lambda: controller.measure_loaded(image_id)), report=True)
         self._job = worker
         worker.succeeded.connect(measured)
         worker.failed.connect(failed)
         worker.step.connect(self._footer.show_step)
         worker.finished.connect(self._clear_job)
         self.set_busy(True)
-        self._footer.message("Measuring markers in the loaded objects...")
+        self._footer.message("Measuring markers in the saved objects..." if measure else "Measuring markers in the loaded objects...")
         worker.start()
 
     def _results_loaded(self, report) -> None:
@@ -5191,6 +5200,9 @@ class ReviewPanel(QWidget):
         controller.save()
         if result is not None:
             self.shell.show_classification(result)
+        kept = len(controller.kept_approvals)
+        if kept:
+            text = f"{text} {kept} approved image{'s keep their' if kept != 1 else ' keeps its'} cutoff.".strip()
         cleared = len(controller.cleared_approvals)
         if cleared:
             text = f"{text} Approval cleared for {cleared} image{'s' if cleared != 1 else ''} whose percent positive changed.".strip()
@@ -5305,7 +5317,7 @@ class ReviewPanel(QWidget):
             return  # the marker shown was removed in step 4
         image_id = self.shell._nav_ids[self.shell._nav_index]
         result = controller.update_thresholds(image_id, {classification_id: value}, this_image_only=self._this_image_only())
-        if controller.cleared_approvals:
+        if controller.cleared_approvals or controller.kept_approvals:
             self._after_cutoff_change(result)
         elif result is not None:
             self.shell.show_classification(result)
