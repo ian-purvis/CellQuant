@@ -136,3 +136,55 @@ def test_crop_log_lines():
     assert crop_log_line([(0, 1, 0, 1)], {"fraction": 0.5, "seconds": 1.0}) == "Crop: 50% of the frame (1 region), 1.0 s to find"
     assert crop_log_line(None, {"fraction": 0.82, "skipped": True}) == "Crop: skipped, regions cover 82% of the frame"
     assert crop_log_line([], {"fraction": 0.0}) == "Crop: no positive region found, whole frame used"
+
+
+def test_overlapping_rectangles_keep_numbers_unique_and_one_object_per_nucleus(tmp_path, monkeypatch):
+    _install(tmp_path, monkeypatch)
+    volume = np.zeros((3, 60, 100), dtype=np.float32)
+    volume[:, 5:15, 5:15] = 1
+    volume[:, 40:50, 70:80] = 1
+    labels = segment_volume(
+        volume, "cellpose", {"diameter_px": 10}, "full_3d", rectangles=[(0, 30, 0, 40), (0, 30, 20, 60)]
+    )
+    assert sorted(np.unique(labels)) == [0, 1]  # the second rectangle finds nothing; no collisions or crashes
+
+
+def test_a_stack_whose_region_is_too_large_is_segmented_in_full(tmp_path, monkeypatch):
+    models = _install(tmp_path, monkeypatch)
+    plane = _image()
+    plane[1] = plane[0]  # every nucleus is reporter-positive
+    path = tmp_path / "wide.tif"
+    tifffile.imwrite(path, np.stack([plane] * SLICES), imagej=True, resolution=(1 / PIXEL, 1 / PIXEL), metadata={"axes": "ZCYX", "unit": "um", "spacing": 1.5})
+    result = process_image(load_image(path, z_mode="full_3d"), {**_recipe("cellpose", CROP), "z_stack": "full_3d"})
+    assert result.provenance["crop_rectangles"] is None and result.provenance["crop"]["skipped"]
+    assert models.CALLS[0]["shape"] == (SLICES, 400, 400)
+
+
+def test_classical_on_a_stack_runs_in_full_and_logs_why(tmp_path):
+    batch_notes()
+    result = process_image(load_image(_stack_file(tmp_path), z_mode="full_3d"), {**_recipe("classical", CROP), "z_stack": "full_3d"})
+    assert result.provenance["crop_rectangles"] is None
+    assert any("needs Cellpose" in warning for warning in result.qc.warnings)
+    lines = [line for line in batch_notes() if line.startswith("Crop:")]
+    assert len(lines) == 1 and "needs Cellpose" in lines[0]
+
+
+def test_an_approval_made_before_stacks_were_cropped_is_cleared_on_rerun(tmp_path, monkeypatch):
+    from cellquant.controller import AnalysisController
+
+    _install(tmp_path, monkeypatch)
+    (tmp_path / "data").mkdir()
+    path = _stack_file(tmp_path / "data")
+    controller = AnalysisController.create(tmp_path / "results", "crop", input_directory=path.parent)
+    controller.add_image_paths([path])
+    controller.set_recipe({**_recipe("cellpose", CROP), "z_stack": "full_3d"})
+    image_id = controller.experiment.images[0].image_id
+    controller.run_image(image_id)
+    controller.set_status(image_id, "approved")
+    record = controller.experiment.image(image_id)
+    assert record.approved_settings_sha256.endswith(":stack-crop")
+    old = record.approved_settings_sha256.removesuffix(":stack-crop")  # approved when stacks were not cropped
+    assert old != controller._approval_fingerprint(image_id)
+    record.approved_settings_sha256 = old
+    controller.run_image(image_id)
+    assert record.processing_status != "approved" and record.approved_settings_sha256 == ""
