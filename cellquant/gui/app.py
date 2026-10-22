@@ -236,7 +236,7 @@ DEFAULT_MIN_AREA_UM2 = 5.0
 
 
 # Dropdown wording: the saved value first, then the plain words shown for it.
-METHOD_OPTIONS = (("classical", "Classical (fast, no GPU)"), ("cellpose", "Cellpose (AI model)"))
+METHOD_OPTIONS = (("cellpose", "Cellpose (AI model)"), ("classical", "Classical (fast, no GPU)"))
 THRESHOLD_OPTIONS = (("otsu", "Automatic (Otsu)"), ("manual", "Manual threshold"))
 AREA_UNIT_OPTIONS = (("px", "pixels"), ("um2", "µm²"))
 REGION_OPTIONS = (
@@ -3191,6 +3191,8 @@ class ObjectsPanel(QWidget):
         cellpose = self.method.currentData() == "cellpose"
         self.engine_choice_label.setVisible(cellpose)
         self.engine_choice.setVisible(cellpose)
+        _show_row(self._form, self.nucleus_diameter_um, cellpose)
+        _show_row(self._form, self.size_hint, cellpose)
         _show_row(self._form, self.threshold_method, not cellpose)
         _show_row(self._form, self.threshold, not cellpose and self.threshold_method.currentData() == "manual")
         _show_row(self._form, self.sigma, not cellpose)
