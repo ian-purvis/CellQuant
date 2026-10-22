@@ -180,7 +180,7 @@ HELP = {
     ("_review_panel", "auto_percent"): "Top N %: this percent of the brightest objects are called positive.",
     ("_review_panel", "apply_to"): "All images: one cutoff shared by every image without its own. This image only: a cutoff for this image alone; other images keep the shared one.",
     ("_review_panel", "reset_cutoff"): "Back to the automatic cutoff (Auto method): from every included image (or the ticked ones, with Selected images) for All images, or from this image's objects for This image only. Clears the approval of images whose percent positive changes.",
-    ("_review_panel", "strip"): "Percent positive in each image at the cutoff it uses (* = its own cutoff), updated as you move the cutoff. Double-click an image to show it. Selected images: tick the images to count; Auto and Reset cutoff (All images) then use only those.",
+    ("_review_panel", "strip"): "Percent positive in each image at the cutoff it uses (* = its own cutoff), updated as you move the cutoff. Double-click an image to show it. Selected images: tick the images to count; Auto and Reset cutoff (All images) then use only those. Each marker is counted on its own; the export leaves out an object unmeasured for any marker, so with several markers its counts can be a little lower.",
     ("_review_panel", "strip_mode"): "All images: every included image. Selected images: only the ticked ones, here and for the automatic cutoff.",
     ("_review_panel", "min_percent"): "A cell is positive when at least this percent of its pixels are at or above the pixel level.",
     ("_review_panel", "pixel_level"): "A pixel passes when its value is at or above this level (same units as the image). Click Apply pixel level to measure again.",
