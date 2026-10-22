@@ -79,3 +79,13 @@ def test_export_is_the_same_with_masks_out_of_memory(tmp_path: Path, monkeypatch
     for name in ("objects.csv", "image_summary.csv", "settings_index.csv"):
         pd.testing.assert_frame_equal(pd.read_csv(kept / name), pd.read_csv(spilled / name))
     assert all(result.labels.size == 0 for result in controller._results_for_export())
+
+
+def test_export_after_a_cutoff_and_count_area_change_keeps_few_masks_in_memory(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(result_cache, "LABELS_IN_MEMORY_BYTES", 0)
+    controller, ids = _runs(tmp_path)
+    controller.update_thresholds(ids[0], {"class_a": 10})  # a shared cutoff: every image is reclassified on export
+    controller.set_count_area(ids, [[[0.0, 0.0], [0.0, 60.0], [60.0, 60.0], [60.0, 0.0]]])
+    controller.export(tmp_path / "out")
+    in_memory = [result for result in controller.last_results.values() if labels_in_memory(result)]
+    assert len(in_memory) <= result_cache.LABELS_ALWAYS_KEPT
