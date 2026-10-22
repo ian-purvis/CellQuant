@@ -187,6 +187,28 @@ def channel_colormaps(loaded) -> list:
     return maps
 
 
+def _set_layer(layer, **values) -> None:
+    """Set napari layer properties, skipping those that already have the value: napari redraws on
+    every set (showing a layer that is already shown rebuilds its overlays)."""
+
+    for name, value in values.items():
+        if getattr(layer, name) != value:
+            setattr(layer, name, value)
+
+
+def _initial_contrast(layer) -> None:
+    """The contrast napari gives a newly added image layer of the same pixels."""
+
+    if not isinstance(layer.data, np.ndarray):
+        layer.reset_contrast_limits_range()
+        layer.reset_contrast_limits()
+        return
+    layer.contrast_limits_range = layer._calc_data_range()
+    layer.contrast_limits = tuple(layer.contrast_limits_range)
+    low, high = layer.contrast_limits_range
+    layer.iso_threshold = low + (high - low) / 2
+
+
 def drawn_polygons(layer) -> list[list[list[float]]]:
     """Closed shapes in a napari Shapes layer as (row, column) polygons. Lines and paths have no area."""
 
@@ -637,6 +659,9 @@ class CellQuantWindow:
         self.controller: AnalysisController | None = None
         self._folder_lock = None  # this window's hold on the open experiment folder
         self._managed: set[str] = set()
+        self._contrast_hooks: dict[str, object] = {}  # channel layer name -> its contrast callback
+        self._ids_image_id: str | None = None  # image whose object numbers the Object IDs layer shows
+        self._mask_colors_set: dict[str, tuple] = {}  # object layer name -> (colors, layer, colormap) last set
         self._nav_ids: list[str] = []
         self._nav_index = 0
         self._batch: BatchWorker | None = None
@@ -1837,28 +1862,69 @@ class CellQuantWindow:
     def _has_image_layers(self) -> bool:
         return any(name in self.viewer.layers for name in self._managed if name not in _OBJECT_LAYERS)
 
+    def _reusable_channel_layers(self, names: list[str], loaded) -> list | None:
+        """The channel layers shown now, when the next image fits them (same channel names and size); else None."""
+
+        layers = self.viewer.layers
+        if self._view_box._stacks or len(set(names)) != len(names) or loaded.data.shape[0] != len(names):
+            return None  # the view's max projection holds the old stacks, or channels the names cannot tell apart
+        shown = [name for name in self._managed if name not in _OBJECT_LAYERS and name in layers and layers[name]._type_string == "image"]
+        if sorted(shown) != sorted(names):
+            return None
+        found = [layers[name] for name in names]
+        if any(tuple(layer.data.shape) != tuple(loaded.data.shape[1:]) for layer in found):
+            return None
+        return found
+
+    def _refill_channel_layers(self, layers, loaded, colormaps, shown: list[bool]) -> None:
+        """Give kept channel layers the next image's pixels, looking as newly added layers would
+        (``shown``: which channels end up visible, so none is shown only to be hidden again)."""
+
+        fresh = len(self.viewer.layers) == len([name for name in self._managed if name in self.viewer.layers])
+        for layer, data, colormap, visible in zip(layers, loaded.data, colormaps, shown, strict=True):
+            layer.data = data
+            if getattr(colormap, "name", colormap) != layer.colormap.name:
+                layer.colormap = colormap
+            _set_layer(layer, blending="additive", opacity=1.0, gamma=1.0, visible=visible)
+            _initial_contrast(layer)
+        if fresh:
+            # Only CellQuant's layers are open: napari would fit a first new layer to the window.
+            self.viewer.reset_view()
+            self.viewer.dims._go_to_center_step()
+
     def _show_loaded(self, loaded, record, result) -> None:
         self._edit_panel.keep_drawing()
         self._labels_image_id = None
-        self._clear_managed()
+        file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
+        names = format_channel_labels(file_names, loaded.n_channels)
+        # Removing and adding napari layers is most of the time a switch takes: when the next image
+        # has the same channels and size (the usual case), its layers are kept and given the new pixels.
+        layers = self._reusable_channel_layers(names, loaded)
+        kept = layers is not None
+        self._clear_managed(keep=(*names, *_OBJECT_LAYERS) if kept else ())
         self._shown_image_id = record.image_id
         self._shown_z = display_z(result)
         self._edit_panel.clear_selection()
-        file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
-        names = format_channel_labels(file_names, loaded.n_channels)
         # Contrast is remembered per experiment channel, matched by the names stored in the file.
         by_index = {channel.channel_index: channel for channel in self.controller.experiment.channels}
         owners = self.controller.display_channels(record, loaded.n_channels)
         colormaps = channel_colormaps(loaded)
         self.set_pixel_scale(record)
-        added = self.viewer.add_image(
-            loaded.data,
-            channel_axis=0,
-            name=names,
-            colormap=colormaps,
-            blending="additive",
-        )
-        layers = added if isinstance(added, list) else [added]
+        if layers is None:
+            added = self.viewer.add_image(
+                loaded.data,
+                channel_axis=0,
+                name=names,
+                colormap=colormaps,
+                blending="additive",
+            )
+            layers = added if isinstance(added, list) else [added]
+        else:
+            for layer in layers:
+                hook = self._contrast_hooks.pop(layer.name, None)
+                if hook is not None:
+                    layer.events.contrast_limits.disconnect(hook)  # the new pixels' contrast is not a choice to remember
+            self._refill_channel_layers(layers, loaded, colormaps, self._channels_shown(record.image_id, len(layers), result))
         for layer, owner in zip(layers, owners, strict=False):
             self._managed.add(layer.name)
             channel = by_index.get(owner) if owner is not None else None
@@ -1867,9 +1933,10 @@ class CellQuantWindow:
             limits = channel.display_settings.get("contrast_limits")
             if limits:
                 layer.contrast_limits = tuple(limits)
-            layer.events.contrast_limits.connect(
+            hook = self._contrast_hooks[layer.name] = (
                 lambda event, index=channel.channel_index, layer=layer: self._store_contrast(index, layer)
             )
+            layer.events.contrast_limits.connect(hook)
         self._view_box.reset()
         if result is not None:
             self._show_segmented_channel_only(record.image_id, layers)
@@ -1880,10 +1947,29 @@ class CellQuantWindow:
             self.viewer.dims.set_current_step(0, int(slice_index))
         labels = result.labels if result is not None else None
         self._set_labels(labels, result)
+        if kept:
+            self._reset_object_layers()
         self.show_count_area(record)
         self._measure_dock.bring_back(record.image_id)
         self._release_window_later()
         self._experiment_panel.show_channel_order(record)
+
+    def _reset_object_layers(self) -> None:
+        """Object layers kept from the last image start as newly added ones would: no undo into the
+        last image's objects, napari's pan tool, default opacity, and the usual layers shown."""
+
+        layers = self.viewer.layers
+        for name, opacity in (("Object fills", 0.35), ("Objects", 1.0), ("Classification", 0.85)):
+            if name not in layers:
+                continue
+            layer = layers[name]
+            if hasattr(layer, "_reset_history"):
+                layer._reset_history()
+            _set_layer(layer, mode="pan_zoom", selected_label=1, show_selected_label=False, opacity=opacity)
+        if "Objects" in layers and "Object fills" in layers:
+            _set_layer(layers["Objects"], contour=2)
+            self._review_panel.bind_labels(layers["Objects"], layers["Object fills"])
+            self._edit_panel.bind_labels(layers["Objects"])
 
     def _show_segmented_channel_only(self, image_id: str, layers) -> None:
         """Review starts on the channel that was segmented; the others stay in the layer list, hidden."""
@@ -1893,7 +1979,15 @@ class CellQuantWindow:
         segmented = self.controller.segmentation_channel_for(image_id)[0]
         if 0 <= segmented < len(layers):
             for position, layer in enumerate(layers):
-                layer.visible = position == segmented
+                _set_layer(layer, visible=position == segmented)
+
+    def _channels_shown(self, image_id: str, count: int, result) -> list[bool]:
+        """Which of an image's channel layers are visible once it is shown (see ``_show_segmented_channel_only``)."""
+
+        if result is None or count < 2 or show_all_channels_preferred():
+            return [True] * count
+        segmented = self.controller.segmentation_channel_for(image_id)[0]
+        return [position == segmented for position in range(count)] if 0 <= segmented < count else [True] * count
 
     def _store_contrast(self, index: int, layer) -> None:
         if self.controller is None:
@@ -1956,7 +2050,11 @@ class CellQuantWindow:
         colors = mask_colors()
         for name in ("Object fills", "Objects"):
             if name in self.viewer.layers:
-                self.viewer.layers[name].colormap = mask_colormap(colors)
+                layer = self.viewer.layers[name]
+                if self._mask_colors_set.get(name) == (colors, id(layer), id(layer.colormap)):
+                    continue  # already these colors (setting them again redraws the layer)
+                layer.colormap = mask_colormap(colors)
+                self._mask_colors_set[name] = (colors, id(layer), id(layer.colormap))
 
     def _set_crop_regions(self, result, shape) -> None:
         """Outline the rectangles this image was segmented in (when the analysis crops)."""
@@ -2054,8 +2152,12 @@ class CellQuantWindow:
         frame = result.objects
         if "excluded" in frame.columns:
             frame = frame.loc[~frame["excluded"].astype(bool)]
+        image_id = result.provenance.get("image_id")
         if frame.empty:
+            if self._ids_image_id != image_id:
+                self._drop("Object IDs")  # kept from the last image: its numbers are not this image's
             return
+        self._ids_image_id = image_id
         coords = np.column_stack([frame["centroid_y"].to_numpy(), frame["centroid_x"].to_numpy()])
         if result.spatial_unit == "um":
             record = self.controller.experiment.image(result.provenance["image_id"])
@@ -2065,9 +2167,21 @@ class CellQuantWindow:
             # Show each number on the object's middle slice.
             middle = (frame["z_first"].to_numpy(dtype=float) + frame["z_last"].to_numpy(dtype=float)) / 2 - 1
             coords = np.column_stack([np.round(middle), coords])
+        features = {"object_id": [str(value) for value in frame["object_id"].tolist()]}
         visible = False
         if "Object IDs" in self.viewer.layers:
-            visible = self.viewer.layers["Object IDs"].visible
+            existing = self.viewer.layers["Object IDs"]
+            if existing.ndim == coords.shape[1]:
+                # New numbers in the same layer: adding a layer of text takes far longer.
+                existing.selected_data = set()
+                existing.data = coords
+                existing.features = features
+                existing.face_color = "transparent"
+                existing.border_color = "white"
+                existing.size = 8
+                existing.text = {"string": "{object_id}", "size": 10, "color": "white"}
+                return
+            visible = existing.visible
             self._drop("Object IDs")
         points = self.viewer.add_points(
             coords,
@@ -2075,7 +2189,8 @@ class CellQuantWindow:
             size=8,
             face_color="transparent",
             border_color="white",
-            text={"string": [str(value) for value in frame["object_id"].tolist()], "size": 10, "color": "white"},
+            features=features,
+            text={"string": "{object_id}", "size": 10, "color": "white"},
             visible=visible,
         )
         self._managed.add(points.name)
@@ -2089,11 +2204,13 @@ class CellQuantWindow:
         if name in self.viewer.layers:
             self.viewer.layers.remove(name)
         self._managed.discard(name)
+        self._contrast_hooks.pop(name, None)
 
-    def _clear_managed(self) -> None:
+    def _clear_managed(self, keep=()) -> None:
         self._measure_dock.keep()  # what is drawn to measure stays with its image
         for name in list(self._managed):
-            self._drop(name)
+            if name not in keep:
+                self._drop(name)
 
 
 class ViewBox(QWidget):
@@ -5137,7 +5254,7 @@ class ReviewPanel(QWidget):
         # Boundaries start shown, fills and IDs hidden; after that the layer eye icons decide.
         for name, visible in (("Objects", True), ("Object fills", False), ("Object IDs", False)):
             if name in viewer.layers:
-                viewer.layers[name].visible = visible
+                _set_layer(viewer.layers[name], visible=visible)
 
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
