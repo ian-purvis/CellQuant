@@ -259,10 +259,13 @@ def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
         details["crop_info"] = {key: crop_info[key] for key in ("fraction", "skipped", "seconds", "note") if key in crop_info}
     if cropping and crop_info and crop_info.get("warning"):
         details["crop_warning"] = crop_info["warning"]
-    elif cropping and loaded.is_3d:
-        details["crop_warning"] = "Cropping applies to 2D analyses only; this Z-stack was analyzed in full."
     elif cropping and rectangles == []:
         details["crop_warning"] = "No region of positive cells was found for cropping, so the full image was segmented."
+    if cropping:
+        from cellquant.crop import crop_log_line
+        from cellquant.hardware import add_log_note
+
+        add_log_note(crop_log_line(rectangles, crop_info or {}))
     if rectangles and not loaded.is_3d:
         return segment_regions(
             channel,
@@ -286,6 +289,7 @@ def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
             pixel_size_z=loaded.pixel_size_z,
             min_slices=recipe.z_min_slices,
             details=details,
+            rectangles=rectangles or None,
         )
     return segment_objects(
         channel,
