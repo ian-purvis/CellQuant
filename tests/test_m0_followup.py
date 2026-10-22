@@ -342,6 +342,57 @@ def test_positive_counts_and_a_pool_for_the_automatic_cutoff(tmp_path: Path):
     assert used == 1
 
 
+def test_positive_counts_leave_out_deleted_and_unmeasured_objects_and_images_not_run(tmp_path: Path):
+    controller, ids = _three_runs(tmp_path)
+    extra = tmp_path / "not_run.tif"
+    _write_squares(extra)
+    controller.add_image_paths([extra])  # listed, never run
+    not_run = controller.experiment.images[-1].image_id
+    first, second, third = ids
+    controller.last_results[first].objects.loc[0, "marker_a_mean"] = float("nan")  # no value: not counted
+    controller.last_results[second].objects["excluded"] = True  # every object deleted
+    counts = controller.positive_counts("class_a", [*ids, not_run])
+    assert counts == {first: (0, 1), second: (0, 0), third: (1, 2)}
+    controller.update_thresholds(third, {"class_a": 10}, this_image_only=True)
+    assert controller.positive_counts("class_a", [third]) == {third: (2, 2)}
+
+
+def test_automatic_cutoff_from_ticked_images_says_what_is_missing(tmp_path: Path):
+    from cellquant.errors import CellQuantError
+
+    controller, ids = _three_runs(tmp_path)
+    extra = tmp_path / "not_run.tif"
+    _write_squares(extra)
+    controller.add_image_paths([extra])
+    not_run = controller.experiment.images[-1].image_id
+    with pytest.raises(CellQuantError, match="No image is ticked"):
+        controller.auto_cutoff("class_a", ids[0], this_image_only=False, pool=[])
+    with pytest.raises(CellQuantError, match="None of the ticked images"):
+        controller.auto_cutoff("class_a", ids[0], this_image_only=False, pool=[not_run])
+    # Only images that have counted objects are counted as used (every object of one deleted).
+    import dataclasses
+
+    result = controller.last_results[ids[1]]
+    controller.last_results[ids[1]] = dataclasses.replace(result, objects=result.objects.assign(excluded=True))
+    _value, used = controller.auto_cutoff("class_a", ids[0], this_image_only=False, pool=ids)
+    assert used == 2
+
+
+def test_saved_tables_follow_a_count_area_drawn_later(tmp_path: Path):
+    controller, ids = _three_runs(tmp_path)
+    controller.save()
+    reopened = AnalysisController.open(controller.directory)
+    assert not reopened.last_results
+    # An area around the first square only (rows and columns 5-25): the 800 object.
+    reopened.set_count_area(ids, [[[5.0, 5.0], [5.0, 25.0], [25.0, 25.0], [25.0, 5.0]]])
+    assert reopened.positive_counts("class_a", ids) == {image_id: (1, 1) for image_id in ids}
+    assert reopened.positive_counts("class_a", ids) == {
+        image_id: (int(counted.sum()), int(counted.size))
+        for image_id in ids
+        for counted in [reopened.recall(image_id).objects.query("in_count_area")["class_a"].astype(bool)]
+    }
+
+
 def test_automatic_cutoff_methods():
     from cellquant.quicksetup import auto_threshold
 
