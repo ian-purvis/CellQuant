@@ -5813,6 +5813,13 @@ class Footer(QWidget):
         self.time_left.setText(text)
         self.time_left.setToolTip(self._clock.detail())
         self._show_step_text()
+        self._log_batch_notes()
+
+    def _log_batch_notes(self) -> None:
+        from cellquant.hardware import batch_notes
+
+        for note in batch_notes():
+            self.log.append(note)
 
     def _show_step_text(self) -> None:
         """The step line, with how long a step of unknown length (a whole 3D volume) has run so far."""
@@ -5858,6 +5865,7 @@ class Footer(QWidget):
         self._clock_timer.stop()
         self._clock = None
         self._show_time_left()
+        self._log_batch_notes()
         # A step line left over from the finished work would read as still running.
         if self.status.text() and self.status.text() == getattr(self, "_step_text", None):
             self.status.setText("")
