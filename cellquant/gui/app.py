@@ -342,10 +342,12 @@ def mask_colors() -> list[str]:
     """Colors the object masks cycle through as #rrggbb; empty = every object its own color."""
 
     try:
-        saved = str(_settings().value("view/mask_colors", ""))
+        saved = _settings().value("view/mask_colors", "")
     except Exception:  # noqa: BLE001 - settings unreadable: use the default
         return []
-    return [value for value in saved.split(",") if value in MASK_PALETTE]
+    # Some QSettings backends hand a comma-containing string back as a list; saved with ";" to avoid that.
+    items = [str(item) for item in saved] if isinstance(saved, (list, tuple)) else str(saved).replace(",", ";").split(";")
+    return [value for value in items if value in MASK_PALETTE]
 
 
 def mask_colormap(colors: list[str]):
@@ -3979,7 +3981,7 @@ class EditPanel(QWidget):
 
     def _set_mask_colors(self, colors: list[str]) -> None:
         try:
-            _settings().setValue("view/mask_colors", ",".join(colors))
+            _settings().setValue("view/mask_colors", ";".join(colors))
         except Exception:  # noqa: BLE001 - not remembered, still applied
             pass
         self._show_mask_colors()
