@@ -325,12 +325,12 @@ def classification_colors() -> tuple[str, str]:
 
 
 def classification_outline() -> bool:
-    """Whether the positive/negative overlay shows object outlines only (default: filled objects)."""
+    """Whether the positive/negative overlay shows object outlines only (default) or filled objects."""
 
     try:
-        return str(_settings().value("review/classification_style", "fill")) == "outline"
+        return str(_settings().value("review/classification_style", "outline")) != "fill"
     except Exception:  # noqa: BLE001 - settings unreadable: use the default
-        return False
+        return True
 
 
 def save_classification_style(outline: bool) -> None:

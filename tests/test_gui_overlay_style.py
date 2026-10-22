@@ -24,14 +24,14 @@ def isolated_settings(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(app, "_settings", lambda: QSettings(path, QSettings.Format.IniFormat))
 
 
-def test_default_is_fill_and_saved_choice_is_read():
+def test_default_is_outline_and_saved_choice_is_read():
     from cellquant.gui.app import classification_outline, save_classification_style
 
-    assert classification_outline() is False
-    save_classification_style(True)
     assert classification_outline() is True
     save_classification_style(False)
     assert classification_outline() is False
+    save_classification_style(True)
+    assert classification_outline() is True
 
 
 def test_overlay_style_applies_and_persists(tmp_path: Path, monkeypatch):
@@ -54,24 +54,24 @@ def test_overlay_style_applies_and_persists(tmp_path: Path, monkeypatch):
         _wait(shell)
         panel = shell._review_panel
         assert "Classification" in viewer.layers
-        assert panel.overlay_style.currentData() == "fill"
-        assert viewer.layers["Classification"].contour == 0
-
-        panel.overlay_style.setCurrentIndex(panel.overlay_style.findData("outline"))
-        panel._overlay_style_chosen()
-        assert viewer.layers["Classification"].contour > 0
-        assert classification_outline()
-
-        # Showing the image again (a fresh layer) keeps the chosen style.
-        viewer.layers.remove("Classification")
-        shell.show_current()
-        _wait(shell)
+        assert panel.overlay_style.currentData() == "outline"
         assert viewer.layers["Classification"].contour > 0
 
         panel.overlay_style.setCurrentIndex(panel.overlay_style.findData("fill"))
         panel._overlay_style_chosen()
         assert viewer.layers["Classification"].contour == 0
         assert not classification_outline()
+
+        # Showing the image again (a fresh layer) keeps the chosen style.
+        viewer.layers.remove("Classification")
+        shell.show_current()
+        _wait(shell)
+        assert viewer.layers["Classification"].contour == 0
+
+        panel.overlay_style.setCurrentIndex(panel.overlay_style.findData("outline"))
+        panel._overlay_style_chosen()
+        assert viewer.layers["Classification"].contour > 0
+        assert classification_outline()
         _wait(shell)
     finally:
         viewer.close()
