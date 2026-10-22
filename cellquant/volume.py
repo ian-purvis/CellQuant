@@ -124,6 +124,68 @@ def _iou(current: np.ndarray, n_current: int, previous: np.ndarray, n_previous: 
     return iou[1:, 1:]
 
 
+def _segment_whole(volume, algorithm, backend, parameters, mode, scale, ratio, info) -> np.ndarray:
+    """Raw labels for one stack: the method's own 3D routine, or its 2D routine on every slice."""
+
+    volume_method = getattr(backend, "segment_volume", None)
+    if volume_method is not None:
+        raw, engine_details = volume_method(
+            volume,
+            parameters,
+            mode=mode,
+            scale=scale,
+            anisotropy=ratio or 1.0,
+        )
+        if "timings" in engine_details:
+            info["timings"] = engine_details.pop("timings")
+        info["engine"] = engine_details
+        return raw
+    if mode == "stitch_slices":
+        planes = []
+        for index, plane in enumerate(volume):
+            progress.update(f"Finding objects: slice {index + 1} of {len(volume)}", index, len(volume))
+            planes.append(np.asarray(backend.segment(plane, parameters)))
+        return np.stack(planes)
+    raise SegmentationError(f"The '{algorithm}' method has no full 3D mode. Choose 'Link slices' instead.")
+
+
+def _segment_regions_3d(volume, algorithm, backend, parameters, mode, scale, ratio, rectangles, info) -> np.ndarray:
+    """Raw labels from segmenting only inside the rectangles (all slices); object numbers are unique
+    across rectangles (and, for linked slices, still numbered per slice, linked by the caller).
+
+    Brightness is scaled once on the whole stack, and a classic Cellpose size is estimated once on the
+    largest rectangle, so a region is segmented the way it would be inside the whole stack.
+    """
+
+    if algorithm != "cellpose":
+        raise SegmentationError("Cropping a Z-stack needs Cellpose; use the whole image for the classical method.")
+    source = scale_brightness(volume, "stack" if mode == "full_3d" else scale)
+    region_parameters = {**parameters, "prescaled_volume": True}
+    if region_parameters.get("diameter_px") in (None, 0) and hasattr(backend, "estimate_diameter"):
+        y0, y1, x0, x1 = max(rectangles, key=lambda box: (box[1] - box[0]) * (box[3] - box[2]))
+        estimate = backend.estimate_diameter(np.ascontiguousarray(source[:, y0:y1, x0:x1].max(axis=0)), region_parameters)
+        if estimate:
+            region_parameters["diameter_px"] = estimate
+    full = np.zeros(volume.shape, dtype=np.int32)
+    offset = 0
+    timings: dict[str, float] = {}
+    for y0, y1, x0, x1 in rectangles:
+        part = np.ascontiguousarray(source[:, y0:y1, x0:x1])
+        part_info: dict[str, Any] = {}
+        raw = np.asarray(_segment_whole(part, algorithm, backend, region_parameters, mode, scale, ratio, part_info))
+        info["engine"] = part_info.get("engine", info.get("engine"))
+        for key, seconds in part_info.get("timings", {}).items():
+            timings[key] = timings.get(key, 0.0) + seconds
+        if raw.shape != part.shape:
+            raise SegmentationError("Segmentation labels do not match the image shape.")
+        inside = raw > 0
+        full[:, y0:y1, x0:x1][inside] = raw[inside] + offset
+        offset += int(raw.max()) if raw.size else 0
+    if timings:
+        info["timings"] = timings
+    return full
+
+
 def segment_volume(
     stack: np.ndarray,
     algorithm: str,
@@ -137,12 +199,14 @@ def segment_volume(
     pixel_size_z: float | None = None,
     min_slices: int = 1,
     details: dict[str, Any] | None = None,
+    rectangles: list[tuple[int, int, int, int]] | None = None,
 ) -> np.ndarray:
     """Segment one channel of a Z-stack, ``(z, y, x)``, into 3D objects.
 
     Size limits are applied to each object's largest cross-section, so they
     mean the same as in 2D. Objects in fewer than ``min_slices`` slices are
-    removed.
+    removed. With ``rectangles`` (y0, y1, x0, x1; all slices) only those parts of the
+    stack are segmented (Cellpose only) and the labels come back in the full frame.
     """
 
     from cellquant.regions import isotropic_pixel_size
@@ -168,26 +232,10 @@ def segment_volume(
             "This image has no Z step, so slices were treated as one pixel apart. "
             "Enter the Z step in step 1 for correct 3D shapes."
         )
-    volume_method = getattr(backend, "segment_volume", None)
-    if volume_method is not None:
-        raw, engine_details = volume_method(
-            volume,
-            parameters,
-            mode=mode,
-            scale=scale,
-            anisotropy=ratio or 1.0,
-        )
-        if "timings" in engine_details:
-            info["timings"] = engine_details.pop("timings")
-        info["engine"] = engine_details
-    elif mode == "stitch_slices":
-        planes = []
-        for index, plane in enumerate(volume):
-            progress.update(f"Finding objects: slice {index + 1} of {len(volume)}", index, len(volume))
-            planes.append(np.asarray(backend.segment(plane, parameters)))
-        raw = np.stack(planes)
+    if rectangles:
+        raw = _segment_regions_3d(volume, algorithm, backend, parameters, mode, scale, ratio, rectangles, info)
     else:
-        raise SegmentationError(f"The '{algorithm}' method has no full 3D mode. Choose 'Link slices' instead.")
+        raw = _segment_whole(volume, algorithm, backend, parameters, mode, scale, ratio, info)
     labels = np.asarray(raw)
     if labels.shape != volume.shape:
         raise SegmentationError("Segmentation labels do not match the image shape.")
@@ -211,6 +259,11 @@ def segment_volume(
         details["n_before_filter"] = n_before
         details["n_after_filter"] = n_after
         details["percent_excluded_by_size"] = float("nan") if n_before == 0 else 100.0 * (n_before - n_after) / n_before
+        if rectangles:
+            from cellquant.crop import objects_at_crop_edges
+
+            details["crop_rectangles"] = [list(map(int, box)) for box in rectangles]
+            details["crop_edge_objects"] = objects_at_crop_edges(filtered, rectangles)
     return filtered
 
 
