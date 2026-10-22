@@ -292,6 +292,9 @@ class CellposeBackend:
             "min_size": int(parameters.get("min_size", 15)),
             "normalize": False,
         }
+        if parameters.get("augment"):
+            options["augment"] = True  # only passed when ticked, so other settings run exactly as before
+            details["augment"] = True
         if classic:
             options["channels"] = [0, 0]
         try:
@@ -357,6 +360,9 @@ class CellposeBackend:
         cellprob_threshold = float(parameters.get("cellprob_threshold", 0.0))
         min_size = int(parameters.get("min_size", 15))
         seed = parameters.get("random_seed")
+        augment = {"augment": True} if parameters.get("augment") else {}
+        if augment:
+            details["augment"] = True
         # False when the image was already scaled (a crop scaled like the whole image).
         normalize = bool(parameters.get("normalize", True))
         try:
@@ -387,6 +393,7 @@ class CellposeBackend:
                     cellprob_threshold=cellprob_threshold,
                     min_size=min_size,
                     normalize=normalize,
+                    **augment,
                 )
             else:
                 output = _eval(
@@ -399,6 +406,7 @@ class CellposeBackend:
                     cellprob_threshold=cellprob_threshold,
                     min_size=min_size,
                     normalize=normalize,
+                    **augment,
                 )
             device = getattr(model, "device", None)
         except (SegmentationError, progress.AnalysisCancelled):
