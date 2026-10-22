@@ -4044,6 +4044,7 @@ class EditPanel(QWidget):
             layout.addWidget(holder)
             self._rows.append((holder, names))
         self.undo_button = self._buttons["Undo"]
+        self._buttons["Delete objects"].setCheckable(True)
         for text, button in self._buttons.items():
             if text in guide.BUTTON_HELP:
                 button.setToolTip(guide.BUTTON_HELP[text])
@@ -4085,7 +4086,7 @@ class EditPanel(QWidget):
 
     _MODE_BUTTONS = {
         "home": ("Delete objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"),
-        "delete": ("Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"),
+        "delete": ("Delete objects", "Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"),
         "add": ("Draw new object", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"),
     }
     _MODE_HINT = {
@@ -4131,6 +4132,7 @@ class EditPanel(QWidget):
         self._mode = mode
         self._apply_mode()
         self._show_delete_cue(mode == "delete")
+        self._buttons["Delete objects"].setChecked(mode == "delete")
 
     def leave_delete(self) -> None:
         if self._mode == "delete":
@@ -4159,7 +4161,8 @@ class EditPanel(QWidget):
             self.shell.viewer.cursor.style = "cross"
 
     def _enter_delete(self) -> None:
-        self.set_mode("delete")
+        # Pressing it again leaves delete mode.
+        self.set_mode("home" if self._mode == "delete" else "delete")
 
     def _enter_add(self) -> None:
         self.set_mode("add")
@@ -4260,6 +4263,9 @@ class EditPanel(QWidget):
             return
         if self.shell._tabs.currentWidget() is not self.shell._step_pages[2]:
             return
+        active = viewer.layers.selection.active
+        if active is not None and getattr(active, "mode", "pan_zoom") not in ("pan_zoom", "transform"):
+            return  # drawing an area, painting or picking: the click belongs to that tool
         try:
             value = self._labels.get_value(start, view_direction=event.view_direction, dims_displayed=event.dims_displayed, world=True)
         except Exception:  # noqa: BLE001 - a click outside the image deletes nothing
