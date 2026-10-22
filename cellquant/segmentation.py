@@ -282,6 +282,10 @@ class CellposeBackend:
             # Estimate the size once, from the projection, so every slice uses the same diameter.
             diameter = _estimate_classic_diameter(model, scaled.max(axis=0))
             details["estimated_diameter_px"] = diameter
+        resize = resizes_to_diameter(parameters, classic)
+        details["resized_to_diameter"] = resize
+        # Without resizing, Cellpose-SAM sees the image at its own size; the diameter still sizes the 3D cutoff.
+        cellpose_diameter = diameter if resize else None
         options = {
             "flow_threshold": float(parameters.get("flow_threshold", 0.4)),
             "cellprob_threshold": float(parameters.get("cellprob_threshold", 0.0)),
@@ -295,7 +299,7 @@ class CellposeBackend:
                 planes = []
                 for index, plane in enumerate(scaled):
                     progress.update(f"Finding objects with Cellpose: slice {index + 1} of {len(scaled)}", index, len(scaled))
-                    output = _eval(model, details, plane, diameter=diameter, do_3D=False, **options)
+                    output = _eval(model, details, plane, diameter=cellpose_diameter, do_3D=False, **options)
                     planes.append(np.asarray(output[0] if isinstance(output, (tuple, list)) else output))
                 labels = np.stack(planes)
             else:
@@ -309,7 +313,7 @@ class CellposeBackend:
                     model,
                     details,
                     scaled,
-                    diameter=diameter,
+                    diameter=cellpose_diameter,
                     do_3D=True,
                     z_axis=0,
                     anisotropy=float(anisotropy),
@@ -360,6 +364,8 @@ class CellposeBackend:
                     timings["size_estimate_network"] = _STAGE_TIMES["network"] - network_before
                 if diameter is not None:
                     details["estimated_diameter_px"] = diameter
+            resize = resizes_to_diameter(parameters, details["engine"] == CELLPOSE_CLASSIC)
+            details["resized_to_diameter"] = resize
             if details["engine"] == CELLPOSE_CLASSIC:
                 output = _eval(
                     model,
@@ -378,7 +384,7 @@ class CellposeBackend:
                     model,
                     details,
                     np.asarray(image),
-                    diameter=diameter,
+                    diameter=diameter if resize else None,
                     do_3D=False,
                     flow_threshold=flow_threshold,
                     cellprob_threshold=cellprob_threshold,
@@ -400,6 +406,17 @@ class CellposeBackend:
                 "Check that an NVIDIA GPU is present and that Install CellQuant.bat installed GPU support."
             )
         return np.asarray(masks, dtype=np.int32), details
+
+
+def resizes_to_diameter(parameters: dict[str, Any], classic: bool) -> bool:
+    """Whether Cellpose rescales the image so objects match its training size, from the diameter.
+
+    ``resize_to_diameter: False`` lets Cellpose-SAM see the image at its own size (much faster
+    for small nuclei; the step 2 default since 2026-10). Settings saved without the key resize,
+    as every earlier version did. Classic Cellpose always uses its diameter.
+    """
+
+    return classic or bool(parameters.get("resize_to_diameter", True))
 
 
 # Full 3D settings from the Cellpose-SAM paper (Pachitariu, Rariden & Stringer 2025, bioRxiv

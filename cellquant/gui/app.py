@@ -2601,7 +2601,8 @@ class ObjectsPanel(QWidget):
         self.nucleus_diameter_um.setValue(DEFAULT_NUCLEUS_DIAMETER_UM)
         self.nucleus_diameter_um.setToolTip(
             "Typical nucleus diameter in micrometres. Most nuclei are about 5–7 µm across. "
-            "Used as Cellpose's size hint when pixel size is known, and to suggest a debris floor in µm²."
+            "Sizes the 3D smallest-object cutoff, Cellpose's resizing when Resize to nucleus size is on, "
+            "and the suggested debris floor in µm²."
         )
         guide.add_range_tip(self.nucleus_diameter_um, "µm")
         self.size_hint = QLabel("")
@@ -2799,6 +2800,15 @@ class ObjectsPanel(QWidget):
             "with each image's own pixel size, or to let Cellpose decide when pixel size is unknown."
         )
         guide.add_range_tip(self.diameter, "px")
+        # Off by default: Cellpose-SAM sees the image at its own size (settings saved before keep resizing).
+        self.resize_to_diameter = QCheckBox("Resize to nucleus size")
+        self.resize_to_diameter.setToolTip(
+            "Off: Cellpose-SAM sees each image at its own size. Fast, and good for most nuclei.\n"
+            "On: the image is first enlarged or shrunk so nuclei are about 30 px across, Cellpose-SAM's "
+            "training size, using Nucleus diameter. Can help with very small or very large nuclei, but "
+            "small nuclei make it much slower (10 px nuclei: about 9 times the work in 2D, more in 3D).\n"
+            "Classic Cellpose always resizes."
+        )
         self.flow = QDoubleSpinBox()
         self.flow.setValue(0.4)
         self.cellprob = QDoubleSpinBox()
@@ -2830,6 +2840,7 @@ class ObjectsPanel(QWidget):
         advanced.addRow("Watershed minimum distance", self.watershed_distance)
         advanced.addRow("Watershed compactness", self.compactness)
         advanced.addRow("Cellpose model", self.cellpose_model)
+        advanced.addRow(self.resize_to_diameter)
         advanced.addRow("Cellpose diameter (px)", self.diameter)
         advanced.addRow("Flow threshold", self.flow)
         advanced.addRow("Cell probability threshold", self.cellprob)
@@ -2903,6 +2914,9 @@ class ObjectsPanel(QWidget):
             self.diameter.setValue(float(parameters["diameter_px"]))
         else:
             self.diameter.setValue(0)
+        # Cellpose settings saved without the key resized; a new Cellpose setup starts without resizing.
+        cellpose_settings = recipe.object_set.algorithm == "cellpose"
+        self.resize_to_diameter.setChecked(cellpose_settings and bool(parameters.get("resize_to_diameter", True)))
         self.flow.setValue(float(parameters.get("flow_threshold", 0.4)))
         self.cellprob.setValue(float(parameters.get("cellprob_threshold", 0)))
         self.niter_3d.setValue(int(parameters.get("niter_3d") or FULL_3D_NITER))
@@ -3155,6 +3169,10 @@ class ObjectsPanel(QWidget):
             _show_row(advanced, widget, not cellpose and self.watershed.isChecked())
         for widget in (self.cellpose_model, self.diameter, self.flow, self.cellprob):
             _show_row(advanced, widget, cellpose)
+        from cellquant.engines import CELLPOSE_CLASSIC
+
+        # Classic Cellpose always resizes to its diameter.
+        _show_row(advanced, self.resize_to_diameter, cellpose and self.engine.key != CELLPOSE_CLASSIC)
         self._show_3d_rows()
         self._refresh_gpu_banner()
 
@@ -3451,6 +3469,9 @@ class ObjectsPanel(QWidget):
                 "gpu": self.use_gpu() if local else bool(previous.get("gpu", False)),
                 **size_filters,
             }
+            if not self.resize_to_diameter.isChecked():
+                # Only written when off, so settings that resize stay as every earlier version saved them.
+                parameters["resize_to_diameter"] = False
             if self.z_stack.currentData() == "full_3d":
                 # Only for full 3D, so the settings (and saved results) of the other modes do not change.
                 parameters["niter_3d"] = self.niter_3d.value()
