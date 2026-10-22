@@ -906,6 +906,7 @@ class CellQuantWindow:
             controller.save()
             self._measurements_panel.refresh()
             self._marker_setup.refresh()
+            self._experiment_panel.refresh_status()  # measuring new markers can clear an approval
             self.show_result(updated)
             self.go_to_step(4)
             first = controller.recipe.classifications[0].id if controller.recipe.classifications else None
@@ -1099,6 +1100,8 @@ class CellQuantWindow:
                 self._results_summary.show_result(result, controller.recipe)
             else:
                 self._review_panel.show_no_result()
+                self._results_panel.show_no_result()
+                self._results_summary.show_result(None, controller.recipe)
             unit = (
                 f"µm ({record.pixel_size_x:.3f} µm/pixel)"
                 if record.pixel_size_x and record.pixel_size_y
@@ -1787,6 +1790,20 @@ class CellQuantWindow:
 
         QTimer.singleShot(0, release)
 
+    def markers_changed(self) -> None:
+        """After step 4 added, removed or edited a marker: step 6's lists and the image on screen follow."""
+
+        controller = self.controller
+        if controller is None:
+            return
+        self._results_panel._fill_report_choices(controller)
+        image_id = self._shown_image_id
+        if self.is_busy() or image_id is None or image_id != self._labels_image_id:
+            return
+        result = controller.recall(image_id, measure=False)
+        if result is not None:
+            self.show_classification(result)
+
     def show_classification(self, result) -> None:
         """After a threshold change: recolor objects and update counts. Nothing is reloaded."""
 
@@ -2370,12 +2387,7 @@ class ExperimentPanel(QWidget):
             first_meta = 3 + len(details)
             for offset, column in enumerate(controller.experiment.metadata_columns):
                 self.table.setItem(row, first_meta + offset, QTableWidgetItem(str(record.user_metadata.get(column, ""))))
-            status = _status_text(record)
-            if record.last_message and record.last_result == "Failure":
-                status = f"{status}: {record.last_message}"
-            status_item = _read_only(status)
-            status_item.setToolTip(record.last_message or status)
-            self.table.setItem(row, len(columns) - 1, status_item)
+            self.table.setItem(row, len(columns) - 1, _status_item(record))
         header = self.table.horizontalHeader()
         for column in range(self.table.columnCount()):
             if self.table.columnWidth(column) > 220:
@@ -2386,6 +2398,27 @@ class ExperimentPanel(QWidget):
         self._update_included_label()
         self._update_calibration_visibility()
         self.shell._release_window_later()
+
+    def refresh_status(self) -> None:
+        """Rewrite only the Status column, after a change elsewhere (an edit, Include) changed an image's state."""
+
+        controller = self.shell.controller
+        if controller is None or not self.table.columnCount():
+            return
+        column = self.table.columnCount() - 1
+        self.table.blockSignals(True)
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, 0)
+                if item is None:
+                    continue
+                try:
+                    record = controller.experiment.image(item.data(Qt.UserRole))
+                except KeyError:
+                    continue
+                self.table.setItem(row, column, _status_item(record))
+        finally:
+            self.table.blockSignals(False)
 
     @staticmethod
     def _lacks_size(record) -> bool:
@@ -2464,6 +2497,11 @@ class ExperimentPanel(QWidget):
             return
         record.sample_name = controller.experiment.image(image_id).sample_name
         self.shell._autosave()
+        if header == "Include":
+            self.refresh_status()
+            self.shell._review_panel.update_status_line()
+        if header in ("Include", "Sample name"):
+            self.shell._review_panel._show_strip()  # step 5 lists the included images by sample name
 
     def paste_into(self, row: int, column: int, text: str) -> None:
         controller = self.shell.controller
@@ -2481,6 +2519,7 @@ class ExperimentPanel(QWidget):
                     name = f"Metadata {target_column - 2}"
                     controller.add_metadata_column(name)
                     self.refresh_table()
+                    self.shell._results_panel._fill_summary_options(controller)
                     headers = [self.table.horizontalHeaderItem(index).text() for index in range(self.table.columnCount())]
                 item = self.table.item(target_row, target_column)
                 if item is not None and headers[target_column] not in {"Image", "Slices", "Channels", "µm/pixel", "Objective", "Status"}:
@@ -2555,8 +2594,10 @@ class ExperimentPanel(QWidget):
                 controller.set_pixel_size(target, x, y, z)
         self.refresh_table()
         self.shell._objects_panel.update_recommendation()
+        self.shell._objects_panel._update_size_hint()
         if self.shell._shown_image_id in targets:
             self.shell.set_pixel_scale(controller.experiment.image(self.shell._shown_image_id))
+            self.shell._measure_dock.refresh()
         self.shell._footer.set_units("µm" if x and y else "pixels — no pixel size in this image", keep_detail=True)
         self.shell.message(f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.")
         self.shell._autosave()
@@ -2641,6 +2682,15 @@ def _status_text(record) -> str:
     return STATUS_WORDS.get(record.processing_status, record.processing_status.replace("_", " ").capitalize())
 
 
+def _status_item(record) -> QTableWidgetItem:
+    status = _status_text(record)
+    if record.last_message and record.last_result == "Failure":
+        status = f"{status}: {record.last_message}"
+    item = _read_only(status)
+    item.setToolTip(record.last_message or status)
+    return item
+
+
 def _expression_cell(item: QTableWidgetItem | None) -> str:
     """The saved expression behind a result-row cell (its text for rows typed by older versions)."""
 
@@ -2693,6 +2743,7 @@ class ObjectsPanel(QWidget):
         self._form = form
         self.object_name = QLineEdit("Objects")
         self.channel = QComboBox()
+        self.channel.currentIndexChanged.connect(lambda _index: self._update_channel_counts())
         self.method = QComboBox()
         _fill_options(self.method, METHOD_OPTIONS)
         self.threshold_method = QComboBox()
@@ -3201,11 +3252,24 @@ class ObjectsPanel(QWidget):
             item.setExpanded(first_fill or parts in expanded)
         tree.blockSignals(False)
         self._image_selection_changed()
+        self._update_channel_counts()
+
+    def _update_channel_counts(self) -> None:
+        """How many images use each channel; Default names the channel chosen above, saved or not."""
+
+        controller = self.shell.controller
+        if controller is None:
+            self.image_channel_counts.setText("")
+            return
         counts: dict[str, int] = {}
-        for record in records:
-            text = self._image_channel_text(controller, [record.image_id])
-            counts[text] = counts.get(text, 0) + 1
-        default = channel_label(controller.recipe.object_set.segmentation_channel, controller._channel_name(controller.recipe.object_set.segmentation_channel))
+        for record in controller.experiment.images:
+            if record.include:
+                text = self._image_channel_text(controller, [record.image_id])
+                counts[text] = counts.get(text, 0) + 1
+        index = self.channel.currentData()
+        if index is None:
+            index = controller.recipe.object_set.segmentation_channel
+        default = channel_label(index, controller._channel_name(index))
         self.image_channel_counts.setText(
             " · ".join(f"{name}: {count}" for name, count in counts.items()).replace("Default:", f"Default ({default.split(' = ')[-1]}):")
         )
@@ -3885,8 +3949,18 @@ class MeasurementsPanel(QWidget):
                 }
             )
             classifications.append(entry)
+        before = [item.model_dump(mode="json") for item in controller.recipe.classifications]
         data["classifications"] = classifications
         controller.set_recipe(data)
+        if [item.model_dump(mode="json") for item in controller.recipe.classifications] != before:
+
+            def follow() -> None:
+                try:
+                    self.shell.markers_changed()
+                except RuntimeError:
+                    pass  # the window was closed before this ran
+
+            QTimer.singleShot(0, follow)  # not while the settings are being read
 
     def _add(self) -> None:
         controller = self.shell.require_controller()
@@ -4006,6 +4080,7 @@ class MeasurementsPanel(QWidget):
         self.refresh()
         self.shell._results_panel.refresh()
         self.shell._marker_setup.refresh()
+        self.shell.markers_changed()
         self.shell.message(f"Removed the marker {removed['name']}.")
 
 
@@ -4334,6 +4409,13 @@ class EditPanel(QWidget):
         if isinstance(value, (int, np.integer)) and int(value) > 0:
             self.delete_object(int(value))
 
+    def _edited(self, result) -> None:
+        """After an edit: show it, and step 1's Status, since an edit clears an approval."""
+
+        self.shell._experiment_panel.refresh_status()
+        if result is not None:
+            self.shell.show_result(result)
+
     def delete_object(self, object_id: int) -> None:
         """Delete the clicked object at once; Undo brings it back."""
 
@@ -4348,7 +4430,7 @@ class EditPanel(QWidget):
             # The clicked number belongs to the objects on screen, not to an image still loading.
             self.shell.message("Wait for the image to finish loading, then click the object again.")
             return
-        self.shell._start_job(lambda: controller.delete_object(image_id, object_id), self.shell.show_result)
+        self.shell._start_job(lambda: controller.delete_object(image_id, object_id), self._edited)
 
     def _draw_area(self) -> None:
         if self.shell.require_controller() is None or not self.shell._nav_ids:
@@ -4380,7 +4462,7 @@ class EditPanel(QWidget):
             if result is None:
                 self.shell.message("Run step 2 on this image first.")
                 return
-            self.shell.show_result(result)
+            self._edited(result)
             if keep:
                 self.shell.message(f"Deleted {count} object{'s' if count != 1 else ''} outside the area." if count else "Every object touches the area.")
             else:
@@ -4394,7 +4476,7 @@ class EditPanel(QWidget):
         if controller is None or not self.shell._nav_ids:
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
-        self.shell._start_job(lambda: controller.undo(image_id), lambda result: self.shell.show_result(result) if result is not None else None)
+        self.shell._start_job(lambda: controller.undo(image_id), self._edited)
 
     def _discard_drawing(self, image_id: str) -> None:
         """Forget drawing not recorded yet; on screen, the Objects layer goes back to what it was given."""
@@ -4437,8 +4519,7 @@ class EditPanel(QWidget):
         self._show_pending()
 
         def finish(result) -> None:
-            if result is not None:
-                self.shell.show_result(result)
+            self._edited(result)
             self._say("Reset to the objects found in step 2.")
 
         self._say("")
@@ -4487,8 +4568,7 @@ class EditPanel(QWidget):
             return on_screen
 
         def finish(on_screen) -> None:
-            if on_screen is not None:
-                self.shell.show_result(on_screen)
+            self._edited(on_screen)
             self._say(f"Reset {len(images)} image{'s' if len(images) != 1 else ''} to the objects found in step 2.")
 
         self._say("")
@@ -4520,7 +4600,7 @@ class EditPanel(QWidget):
 
         def finish(result) -> None:
             self._pending.pop(self._key(image_id), None)
-            self.shell.show_result(result)
+            self._edited(result)
             self._show_pending()
             self._say("Recorded.")
 
@@ -4562,8 +4642,7 @@ class EditPanel(QWidget):
             recorded, skipped, on_screen = outcome
             for image_id in recorded + skipped:
                 self._pending.pop((analysis, image_id), None)
-            if on_screen is not None:
-                self.shell.show_result(on_screen)
+            self._edited(on_screen)
             self._show_pending()
             text = f"Recorded {len(recorded)} image{'s' if len(recorded) != 1 else ''}."
             if skipped:
@@ -5589,6 +5668,9 @@ class ResultsPanel(QWidget):
             self.phenotypes.setItem(row_index, 0, QTableWidgetItem(str(row.phenotype)))
             self.phenotypes.setItem(row_index, 1, QTableWidgetItem(str(row.count)))
             self.phenotypes.setItem(row_index, 2, QTableWidgetItem(f"{row.percent_of_objects:.1f}"))
+
+    def show_no_result(self) -> None:
+        self.phenotypes.setRowCount(0)
 
     def show_queue(self, report) -> None:
         self.queue.setText(f"Last run, {len(report.jobs)} images: {run_outcome(report.completed, report.warnings, report.failed)}.")
