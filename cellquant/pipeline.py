@@ -407,7 +407,9 @@ def assemble_result(
         "z_scale_brightness": parsed.z_scale_brightness if loaded.is_3d else None,
         "z_min_slices": parsed.z_min_slices if loaded.is_3d else None,
         "anisotropy": details.get("anisotropy"),
-        "diameter_px_used": details.get("diameter_px_used") if details.get("diameter_px_used") is not None else engine.get("estimated_diameter_px"),
+        "diameter_px_used": None
+        if engine.get("resized_to_diameter") is False
+        else details.get("diameter_px_used") if details.get("diameter_px_used") is not None else engine.get("estimated_diameter_px"),
         "crop_rectangles": details.get("crop_rectangles"),
         "crop": details.get("crop_info"),
         "segmentation_timings": details.get("timings"),
