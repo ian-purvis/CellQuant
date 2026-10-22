@@ -111,7 +111,7 @@ def test_step3_modes_and_draw_new_object(tmp_path: Path, open_window):  # noqa: 
 
     assert shown() == {"Delete objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"}
     panel._buttons["Delete objects"].click()
-    assert shown() == {"Draw area", "Delete in area", "Undo", "Undo all", "Back"}
+    assert shown() == {"Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"}
     panel._buttons["Back"].click()
     panel._buttons["Add new objects"].click()
     assert shown() == {"Draw new object", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"}
@@ -132,3 +132,36 @@ def test_step3_modes_and_draw_new_object(tmp_path: Path, open_window):  # noqa: 
 
     panel.show_all.setChecked(True)
     assert "Back" not in shown() and len(shown()) == len(panel._buttons) - 1
+
+
+def test_keep_only_deletes_what_does_not_touch_the_area(tmp_path: Path, open_window):  # noqa: F811
+    from cellquant.controller import AnalysisController
+    from cellquant.gui.app import DELETE_AREA_LAYER
+
+    image = tmp_path / "a.tif"
+    _write_squares(image)
+    controller = AnalysisController.create(tmp_path / "experiment", "Keep only")
+    controller.add_image_paths([image])
+    controller.set_recipe(_recipe())
+    controller.save()
+    shell = open_window(controller.directory)
+    shell.run_current()
+    assert _wait(shell, 120)
+    image_id = shell.controller.experiment.images[0].image_id
+    panel = shell._edit_panel
+    start = int((~shell.controller.last_results[image_id].objects["excluded"].astype(bool)).sum())
+    assert start >= 2
+
+    panel._draw_area()
+    layer = shell.viewer.layers[DELETE_AREA_LAYER]
+    layer.add(np.array([[0.0, 0.0], [0.0, 20.0], [20.0, 20.0], [20.0, 0.0]]), shape_type="polygon")  # touches the object at (15, 15)
+    panel._keep_only()
+    assert _wait(shell)
+    _events(0.2)
+    objects = shell.controller.last_results[image_id].objects
+    assert int((~objects["excluded"].astype(bool)).sum()) == 1
+    assert int(np.asarray(shell.viewer.layers["Objects"].data)[15, 15]) != 0
+
+    panel._undo()  # one Undo for the whole keep-only
+    assert _wait(shell)
+    assert int((~shell.controller.last_results[image_id].objects["excluded"].astype(bool)).sum()) == start
