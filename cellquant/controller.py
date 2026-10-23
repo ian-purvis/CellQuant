@@ -140,6 +140,18 @@ class LoadReport:
 SEGMENTED_ELSEWHERE = ("loaded", "hpc")
 
 
+def _files_by_name(root: Path, names: set[str]) -> dict[str, list[Path]]:
+    """Every file under ``root`` whose lower-case name is in ``names``, by name."""
+
+    found: dict[str, list[Path]] = {}
+    for folder, folders, files in os.walk(root):
+        folders[:] = [item for item in folders if not item.startswith(".")]
+        for file in files:
+            if file.lower() in names:
+                found.setdefault(file.lower(), []).append(Path(folder) / file)
+    return found
+
+
 class AnalysisController:
     def __init__(self, experiment: Experiment):
         self.experiment = experiment
@@ -193,8 +205,6 @@ class AnalysisController:
         Returns how many images were found.
         """
 
-        from cellquant.results_folder import find_image_files
-
         root = Path(root)
         if not root.is_dir():
             return 0
@@ -208,8 +218,9 @@ class AnalysisController:
             candidate = root.joinpath(*[part for part in relative.split("/") if part]) if relative else None
             if candidate is None or not candidate.is_file():
                 if by_name is None:
-                    by_name = find_image_files(root, names={r.filename.lower() for r in missing})
-                candidate = by_name.get(record.filename.lower())
+                    by_name = _files_by_name(root, {r.filename.lower() for r in missing})
+                options = by_name.get(record.filename.lower(), [])
+                candidate = options[0] if len(options) == 1 else None  # two files with that name: not guessed
             if candidate is not None and candidate.is_file():
                 record.source_path = str(candidate.resolve())
                 found += 1
