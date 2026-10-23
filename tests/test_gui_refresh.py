@@ -206,3 +206,35 @@ def test_pasted_column_reaches_step_6_group_by(tmp_path: Path):
         assert added and added[0] in _texts(shell._results_panel.group_by)
     finally:
         viewer.close()
+
+
+def test_pasted_sample_names_refresh_step_5_strip_once(tmp_path: Path):
+    viewer, shell = _open(tmp_path)
+    try:
+        _show_marker(shell)
+        panel, review = shell._experiment_panel, shell._review_panel
+        calls = []
+        original = review._show_strip
+        review._show_strip = lambda: (calls.append(1), original())
+        names = [f"Pasted {row}" for row in range(panel.table.rowCount())]
+        panel.paste_into(0, _column(panel.table, "Sample name"), "\n".join(names))
+        _settle()
+        assert len(calls) == 1
+        assert set(names) <= set(_strip_names(review))
+    finally:
+        viewer.close()
+
+
+def test_marker_change_keeps_step_6_choices(tmp_path: Path):
+    viewer, shell = _open(tmp_path)
+    try:
+        results, markers = shell._results_panel, shell._measurements_panel
+        results.report_count.setCurrentIndex(1)
+        results.report_among.setCurrentIndex(2)
+        chosen = (results.report_count.currentData(), results.report_among.currentData())
+        markers.classes.item(0, 2).setText(str(float(markers.classes.item(0, 2).text()) + 1))
+        shell._panels_to_recipe()
+        _settle()
+        assert (results.report_count.currentData(), results.report_among.currentData()) == chosen
+    finally:
+        viewer.close()
