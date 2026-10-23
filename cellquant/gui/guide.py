@@ -688,9 +688,11 @@ def _readable(expression: str, names: dict[str, str]) -> str:
 
 
 class GuideDialog(QDialog):
-    def __init__(self, parent, text: str):
+    def __init__(self, parent, text: str, title: str = "CellQuant: step-by-step guide", modal: bool = True):
         super().__init__(parent)
-        self.setWindowTitle("CellQuant: step-by-step guide")
+        self.setModal(modal)
+        self.setAttribute(Qt.WA_DeleteOnClose, not modal)
+        self.setWindowTitle(title)
         self.resize(760, 820)
         layout = QVBoxLayout(self)
         browser = QTextBrowser()
@@ -708,6 +710,14 @@ def guide_text() -> str:
         return path.read_text(encoding="utf-8")
     except OSError:
         return "The guide file is missing. See docs/START_HERE.md in the CellQuant folder."
+
+
+def glossary_text() -> str:
+    path = Path(__file__).with_name("OUTPUT_GLOSSARY.md")
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return "The glossary file is missing. See docs/OUTPUT_GLOSSARY.md in the CellQuant folder."
 
 
 def apply_help(window) -> None:
