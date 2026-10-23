@@ -1046,8 +1046,34 @@ class CellQuantWindow:
         self.controller = controller
         self._exported_to = None
         self._measure_dock.forget()
+        self._find_moved_images(controller)
         self._refresh_all()
         self.go_to_start()
+
+    def _find_moved_images(self, controller: AnalysisController) -> None:
+        """An experiment made on another computer or folder: find its images here, or ask where they are."""
+
+        missing = controller.missing_images()
+        if not missing:
+            return
+        recorded = controller.experiment.input_directory or ""
+        parts = recorded.replace("\\", "/").split("/")
+        guesses = []
+        if len(parts) > 3 and parts[1].lower() == "users":  # same folders under another Windows user
+            guesses.append(str(Path.home().joinpath(*parts[3:])))
+        for guess in guesses:
+            if controller.relocate_images(guess):
+                missing = controller.missing_images()
+                break
+        if not missing:
+            return
+        where = choose_existing_directory(
+            self._tabs,
+            f"{len(missing)} images are not where this experiment saved them. Where are the original images? Subfolders are included.",
+            recorded if Path(recorded).is_dir() else str(Path.home()),
+        )
+        if where:
+            controller.relocate_images(where)
 
     def new_experiment(self) -> None:
         dialog = NewExperimentDialog(self._tabs)

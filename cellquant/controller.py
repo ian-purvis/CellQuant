@@ -140,6 +140,18 @@ class LoadReport:
 SEGMENTED_ELSEWHERE = ("loaded", "hpc")
 
 
+def _files_by_name(root: Path, names: set[str]) -> dict[str, list[Path]]:
+    """Every file under ``root`` whose lower-case name is in ``names``, by name."""
+
+    found: dict[str, list[Path]] = {}
+    for folder, folders, files in os.walk(root):
+        folders[:] = [item for item in folders if not item.startswith(".")]
+        for file in files:
+            if file.lower() in names:
+                found.setdefault(file.lower(), []).append(Path(folder) / file)
+    return found
+
+
 class AnalysisController:
     def __init__(self, experiment: Experiment):
         self.experiment = experiment
@@ -173,6 +185,49 @@ class AnalysisController:
     @classmethod
     def open(cls, directory: str | Path) -> AnalysisController:
         return cls(load_experiment(directory))
+
+    def missing_images(self) -> list:
+        """Image records whose file is not where the experiment recorded it."""
+
+        missing = []
+        for record in self.experiment.images:
+            try:
+                if not self.source_path(record).is_file():
+                    missing.append(record)
+            except (OSError, ValueError, CellQuantError):
+                missing.append(record)
+        return missing
+
+    def relocate_images(self, root: str | Path) -> int:
+        """Look for the missing images under ``root`` (by their folder-relative path, else by file name).
+
+        Found images are re-pointed there, and ``root`` becomes the input folder when it fits.
+        Returns how many images were found.
+        """
+
+        root = Path(root)
+        if not root.is_dir():
+            return 0
+        missing = self.missing_images()
+        if not missing:
+            return 0
+        by_name = None
+        found = 0
+        for record in missing:
+            relative = (record.relative_path or "").replace("\\", "/")
+            candidate = root.joinpath(*[part for part in relative.split("/") if part]) if relative else None
+            if candidate is None or not candidate.is_file():
+                if by_name is None:
+                    by_name = _files_by_name(root, {r.filename.lower() for r in missing})
+                options = by_name.get(record.filename.lower(), [])
+                candidate = options[0] if len(options) == 1 else None  # two files with that name: not guessed
+            if candidate is not None and candidate.is_file():
+                record.source_path = str(candidate.resolve())
+                found += 1
+        if found:
+            self.experiment.input_directory = str(root)
+            self.save()
+        return found
 
     def save(self) -> None:
         if getattr(self, "_unswapped_recipe", None) is not None:
