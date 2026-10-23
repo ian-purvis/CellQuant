@@ -174,6 +174,50 @@ class AnalysisController:
     def open(cls, directory: str | Path) -> AnalysisController:
         return cls(load_experiment(directory))
 
+    def missing_images(self) -> list:
+        """Image records whose file is not where the experiment recorded it."""
+
+        missing = []
+        for record in self.experiment.images:
+            try:
+                if not self.source_path(record).is_file():
+                    missing.append(record)
+            except (OSError, ValueError, CellQuantError):
+                missing.append(record)
+        return missing
+
+    def relocate_images(self, root: str | Path) -> int:
+        """Look for the missing images under ``root`` (by their folder-relative path, else by file name).
+
+        Found images are re-pointed there, and ``root`` becomes the input folder when it fits.
+        Returns how many images were found.
+        """
+
+        from cellquant.results_folder import find_image_files
+
+        root = Path(root)
+        if not root.is_dir():
+            return 0
+        missing = self.missing_images()
+        if not missing:
+            return 0
+        by_name = None
+        found = 0
+        for record in missing:
+            relative = (record.relative_path or "").replace("\\", "/")
+            candidate = root.joinpath(*[part for part in relative.split("/") if part]) if relative else None
+            if candidate is None or not candidate.is_file():
+                if by_name is None:
+                    by_name = find_image_files(root, names={r.filename.lower() for r in missing})
+                candidate = by_name.get(record.filename.lower())
+            if candidate is not None and candidate.is_file():
+                record.source_path = str(candidate.resolve())
+                found += 1
+        if found:
+            self.experiment.input_directory = str(root)
+            self.save()
+        return found
+
     def save(self) -> None:
         if getattr(self, "_unswapped_recipe", None) is not None:
             # Saving while one image is analyzed with its own channels: keep the analysis's settings.
