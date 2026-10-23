@@ -769,6 +769,7 @@ class CellQuantWindow:
         main_window = self.viewer.window._qt_window
         main_window.setDockOptions(main_window.dockOptions() | QMainWindow.DockOption.AllowNestedDocks)
         guide.apply_help(self)
+        self._add_help_entries()
         self._guide_timer = guide.start_refresh_timer(self)
         self._start_gpu_check()
         # Menus and number boxes change with the mouse wheel only after being clicked.
@@ -853,6 +854,26 @@ class CellQuantWindow:
 
     def open_guide(self) -> None:
         guide.GuideDialog(self._tabs, guide.guide_text()).exec()
+
+    def open_output_glossary(self) -> None:
+        guide.GuideDialog(
+            self._tabs, guide.glossary_text(), title="CellQuant: output glossary", modal=False
+        ).show()
+
+    def _add_help_entries(self) -> None:
+        """Put the output glossary in napari's Help menu (the menu bar's Help, if napari has no help_menu)."""
+
+        window = self.viewer.window
+        menu = getattr(window, "help_menu", None)
+        if menu is None:
+            from qtpy.QtWidgets import QMenu
+
+            bar = window._qt_window.menuBar()
+            menu = next((m for m in bar.findChildren(QMenu) if m.title().replace("&", "") == "Help"), None)
+        if menu is None:
+            return
+        self._glossary_action = menu.addAction("Output glossary…")
+        self._glossary_action.triggered.connect(lambda _checked=False: self.open_output_glossary())
 
     def open_experiment_dialog(self) -> None:
         directory = QFileDialog.getExistingDirectory(self._tabs, "Open an experiment folder")

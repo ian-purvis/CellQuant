@@ -25,6 +25,7 @@ CellQuant finds nuclei (or cells) in fluorescence microscope images and counts h
 
 ### For users
 - [docs/START_HERE.md](docs/START_HERE.md) — installation, practice run, end-to-end workflow
+- [docs/OUTPUT_GLOSSARY.md](docs/OUTPUT_GLOSSARY.md) — every output file and column explained (also in the app: Help → Output glossary…)
 - [docs/STATUS.md](docs/STATUS.md) — built/tested features and known limitations
 - [docs/SWEEP.md](docs/SWEEP.md) — comparing segmentation methods and thresholds
 
