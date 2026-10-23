@@ -11,6 +11,7 @@ Run everything with `python -m pytest tests -q`. The window tests (`test_gui_*.p
 | `test_cellpose_engines.py`, `test_hardware.py`, `test_sweep.py` | Cellpose 3 and 4 adapters, GPU and time estimates, sweeps. |
 | `test_instances.py`, `test_gui_instances.py` | Two CellQuant windows at once: one window per experiment folder, settings saves, shared GPU and CPU. |
 | `test_gui_*.py` | The window: display, guided flow, analyses, Plan dock. |
+| `test_result_cache.py`, `test_gui_switch_layers.py` | Large experiments: masks out of memory, saving only what changed, export; switching images keeps napari's layers. |
 | `test_windows_installer.py`, `ps_lint.py` | Installer scripts. |
 
 Run one area, for example: `python -m pytest tests/test_plan.py -q`, or one test with `-k name`.
