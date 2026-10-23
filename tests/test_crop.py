@@ -212,12 +212,15 @@ def test_the_fingerprint_and_cache_key_follow_the_crop(tmp_path):
     cropped = controller.run_image(image_id)
     key = cropped.provenance["segmentation_key"]
     assert cropped.provenance["crop_rectangles"]
+    assert cropped.provenance["crop"]["fraction"] < 0.7
     controller.set_full_image([image_id], True)  # this image: the full frame
     full = controller.run_image(image_id)
     assert full.provenance["crop_rectangles"] is None and full.provenance["segmentation_key"] != key
     assert full.qc.n_objects > cropped.qc.n_objects
     controller.set_full_image([image_id], False)
-    assert controller.run_image(image_id).provenance["segmentation_key"] == key
+    again = controller.run_image(image_id)
+    assert again.provenance["segmentation_key"] == key
+    assert again.provenance["crop"] == cropped.provenance["crop"]  # kept when the saved objects are reused
 
 
 # --- real classic Cellpose (skipped where it is not installed) -------------------------------------------
