@@ -661,6 +661,7 @@ class CellQuantWindow:
     def __init__(self, viewer, experiment_dir: str | Path | None = None):
         self.viewer = viewer
         self.controller: AnalysisController | None = None
+        self._glossary_window = None
         self._folder_lock = None  # this window's hold on the open experiment folder
         self._managed: set[str] = set()
         self._contrast_hooks: dict[str, object] = {}  # channel layer name -> its contrast callback
@@ -856,9 +857,28 @@ class CellQuantWindow:
         guide.GuideDialog(self._tabs, guide.guide_text()).exec()
 
     def open_output_glossary(self) -> None:
-        guide.GuideDialog(
-            self._tabs, guide.glossary_text(), title="CellQuant: output glossary", modal=False
-        ).show()
+        from cellquant.gui.glossary_window import GlossaryWindow
+
+        if self._glossary_window is None:
+            self._glossary_window = GlossaryWindow(self._tabs, guide.glossary_text(), self._glossary_experiment)
+        else:
+            self._glossary_window.refresh_experiment()
+        self._glossary_window.show()
+        self._glossary_window.raise_()
+        self._glossary_window.activateWindow()
+
+    def _glossary_experiment(self):
+        """The open experiment as the glossary reads it (None when no experiment is open)."""
+
+        from cellquant.gui.glossary_window import ExperimentView
+
+        controller = self.controller
+        if controller is None:
+            return None
+        experiment = controller.experiment
+        working = controller.directory / (controller.active_analysis().working_folder if experiment.analyses else "working")
+        images = [(record.image_id, record.sample_name or record.filename) for record in experiment.images]
+        return ExperimentView(controller.directory, working, images, controller.current_image_id)
 
     def _add_help_entries(self) -> None:
         """Put the output glossary in napari's Help menu (the menu bar's Help, if napari has no help_menu)."""
