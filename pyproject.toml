@@ -54,9 +54,9 @@ cellquant = "cellquant.__main__:main"
 [tool.setuptools.packages.find]
 include = ["cellquant*"]
 
-# The in-app guide (a copy of docs/START_HERE.md; a test keeps them identical).
+# The in-app guide and output glossary (copies of docs/START_HERE.md and docs/OUTPUT_GLOSSARY.md; a test keeps them identical).
 [tool.setuptools.package-data]
-"cellquant.gui" = ["START_HERE.md"]
+"cellquant.gui" = ["START_HERE.md", "OUTPUT_GLOSSARY.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
