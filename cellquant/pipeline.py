@@ -63,6 +63,29 @@ class ImageResult:
     spatial_unit: str
 
 
+def _mask_property(name: str) -> property:
+    """A mask of ``ImageResult``. With many images open, older results' masks are kept in a temporary
+    file (``cellquant.result_cache``); reading the mask brings it back."""
+
+    key = f"_{name}"
+
+    def read(self) -> np.ndarray:
+        value = self.__dict__[key]
+        if not isinstance(value, np.ndarray) and hasattr(value, "load"):
+            value = value.load()
+            self.__dict__[key] = value
+        return value
+
+    def write(self, value) -> None:
+        self.__dict__[key] = value
+
+    return property(read, write)
+
+
+ImageResult.labels = _mask_property("labels")
+ImageResult.automated_labels = _mask_property("automated_labels")
+
+
 def process_image(
     image: str | Path | np.ndarray | LoadedImage,
     recipe: Recipe | dict | str | Path,
