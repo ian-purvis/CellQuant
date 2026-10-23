@@ -48,6 +48,7 @@ The settings of an analysis: Z-stack mode, which channel the objects are found i
 
 ### Edits file (edits folder)
 Your manual edits, in the order made. The automated objects are never overwritten; the edits are replayed on top.
+- `image_id`: the image the edit belongs to.
 - `object_id`: the object edited. `operation`: `delete` (object removed), `restore` (deleted object brought back), `erase` (pixels painted out), or `paint` (pixels added to the object). For `erase` and `paint`, `parameters` holds the pixel coordinates.
 - `timestamp`: when. `parameters`: extra detail (empty for delete and restore).
 - `segmentation`: which segmentation the edit was made on. An edit only applies while that segmentation is the current one, so re-running step 2 with new settings does not apply old edits to new objects.
@@ -145,7 +146,8 @@ Everything needed to reproduce one image's result. Main keys:
 - Image: `experiment_id`, `run_id`, `image_id`, `sample_name`, `filename`, `source_path`, `user_metadata`, `n_channels`, `channel_names_in_file`, `channel_axis_source`, `position`, `objective`, `image_shape_yx`, `pixel_size_x_um`, `pixel_size_y_um`, `pixel_size_z_um`, `spatial_unit` (`um` or `px`).
 - Z-stack: `z_planes_in_file`, `z_handling` (the Z-stack mode), `z_index`, `z_description` (plain-words summary), `analysis_dimensions` (2 or 3), `z_stitch_threshold`, `z_scale_brightness`, `z_min_slices` (the last three only matter for the modes that use them, otherwise `null`), `anisotropy` (3D Z-to-XY scale used, when recorded).
 - Finding objects: `segmentation_algorithm`, `segmentation_engine` (what ran, for example the model or threshold used; `null` when reused from saved results), `segmentation_parameters`, `segmentation_channel`, `segmentation_seconds` and `segmentation_timings` (when recorded), `diameter_px_used`, `segmentation_key` (links to `.cache` and to your edits).
-- Crop: `crop_rectangles` (the boxes searched as `[row start, row end, column start, column end]` in pixels; `null` = whole frame) and `crop` (statistics when recorded: `fraction` of the frame covered, `skipped` if the box covered too much and the full frame was used instead, `seconds` spent finding the boxes, `note` in words). `crop` can be `null` even when `crop_rectangles` is filled.
+- Crop: `crop_rectangles` (the boxes searched as `[row start, row end, column start, column end]` in pixels; `null` = whole frame) and `crop` (statistics when recorded: `fraction` of the frame covered, `skipped` if the box covered too much and the full frame was used instead, `seconds` spent finding the boxes, `note` in words).
+- Loaded objects: only when the objects were loaded from label files instead of found by CellQuant. `segmentation_origin` (`loaded`), `segmentation_source` (the file), `segmentation_settings` (the finding settings in force when loaded), `segmentation_input_sha256` (fingerprint of the image they were loaded for), `segmentation_calibration` (pixel sizes x, y, z at that time).
 - Count area: `count_area` (polygons, row/column pixels) and `count_area_size`, present only if one is drawn.
 - Result: `warnings`, `manual_edits` (edits applied), `excluded_object_ids` (deleted objects).
 
@@ -172,7 +174,7 @@ Into the folder you choose:
 
 **Unit columns:** `n_images`, then `<report>_unit_pooled_count`, `_unit_pooled_denominator`, `_unit_pooled_percent`, `_unit_n_images`.
 
-**Equal-unit columns:** `n_units`, `<report>_n_units`, `<report>_equal_unit_mean_percent`, `<report>_equal_unit_sd_percent`.
+**Equal-unit columns:** the group column, `n_units`, `summary_note`, `<report>_n_units`, `<report>_equal_unit_mean_percent`, `<report>_equal_unit_sd_percent`.
 
 **Export all analyses** makes one subfolder per analysis (the same files as above), plus in the main folder:
 - `all_analyses_image_summary.csv`: every analysis's image summary, with `analysis` and `segmentation_channel` added in front.

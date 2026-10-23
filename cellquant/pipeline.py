@@ -570,6 +570,8 @@ def segmentation_details_of(result: ImageResult) -> dict:
         if "at_crop_edge" in result.objects.columns:
             flags = result.objects["at_crop_edge"].fillna(False).astype(bool)
             details["crop_edge_objects"] = [int(value) for value in result.objects.loc[flags, "object_id"]]
+    if result.provenance.get("crop"):
+        details["crop_info"] = result.provenance["crop"]
     crop_warning = next((text for text in result.qc.warnings if "crop" in text and text.startswith(("Cropping", "No region"))), None)
     if crop_warning:
         details["crop_warning"] = crop_warning
