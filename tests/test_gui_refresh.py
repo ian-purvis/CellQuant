@@ -135,6 +135,48 @@ def test_removed_marker_leaves_step_5(tmp_path: Path):
         viewer.close()
 
 
+def test_removed_marker_leaves_step_6_counts(tmp_path: Path):
+    from qtpy.QtWidgets import QMessageBox
+
+    viewer, shell = _open(tmp_path)
+    try:
+        markers, results = shell._measurements_panel, shell._results_panel
+        name = markers.classes.item(0, 0).text()
+        kinds = lambda: [results.phenotypes.item(r, 0).text() for r in range(results.phenotypes.rowCount())]  # noqa: E731
+        assert any(name in kind for kind in kinds())
+        markers.classes.setCurrentCell(0, 0)
+        original = QMessageBox.question
+        QMessageBox.question = staticmethod(lambda *args, **kwargs: QMessageBox.Yes)
+        try:
+            markers._remove_class()
+        finally:
+            QMessageBox.question = original
+        _settle()
+        assert kinds() and not any(name in kind for kind in kinds())
+    finally:
+        viewer.close()
+
+
+def test_step_3_undo_shows_lost_approval_in_step_1(tmp_path: Path):
+    viewer, shell = _open(tmp_path)
+    try:
+        controller, table = shell.controller, shell._experiment_panel.table
+        image_id = shell._nav_ids[shell._nav_index]
+        labels = controller.recall(image_id).labels
+        shell._edit_panel.delete_object(int(np.unique(labels[labels > 0])[0]))
+        _wait(shell)
+        controller.set_status(image_id, "approved")
+        shell._experiment_panel.refresh_table()
+        row = next(r for r in range(table.rowCount()) if table.item(r, 0).data(256) == image_id)
+        assert table.item(row, _column(table, "Status")).text() == "Approved"
+        shell._edit_panel._undo()
+        _wait(shell)
+        assert controller.experiment.image(image_id).processing_status != "approved"
+        assert table.item(row, _column(table, "Status")).text() != "Approved"
+    finally:
+        viewer.close()
+
+
 def test_cutoff_typed_in_step_4_reaches_step_5(tmp_path: Path):
     viewer, shell = _open(tmp_path)
     try:

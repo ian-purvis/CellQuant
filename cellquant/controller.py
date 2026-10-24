@@ -278,8 +278,8 @@ class AnalysisController:
 
     def _at_current_cutoffs(self, image_id: str, result: ImageResult) -> ImageResult:
         """The result classified at the cutoffs this image uses now (a cutoff set for all images
-        reaches each saved image here). Only cutoffs are brought up to date: a result whose markers
-        differ in anything else stays as it was saved. Nothing is measured again."""
+        reaches each saved image here). Only cutoffs and removed markers are brought up to date: a
+        result whose markers differ in anything else stays as it was saved. Nothing is measured again."""
 
         if getattr(self, "_unswapped_recipe", None) is not None:
             return result  # in the middle of analyzing an image: it is classified there
@@ -291,7 +291,7 @@ class AnalysisController:
             recipe = self.recipe
         wanted = [item.model_dump(mode="json") for item in recipe.classifications]
         stored = result.provenance.get("classification_definitions")
-        if stored == wanted or not _same_but_cutoffs(stored, wanted):
+        if stored == wanted or not _kept_but_cutoffs(stored, wanted):
             return result
         if any(item.measurement not in result.objects.columns for item in recipe.classifications):
             return result
@@ -1037,7 +1037,15 @@ class AnalysisController:
             if any(edits[index] is item for item in undone):
                 del edits[index]
         save_edits(self.directory, image_id, edits)
+        before = _counted_numbers(self.last_results.get(image_id))
         self._remeasure_cached(image_id)
+        record = self.experiment.image(image_id)
+        if record.processing_status == "approved":
+            # Approval vouches for the counted results: only a change in them clears it.
+            if _counted_numbers(self.last_results.get(image_id)) != before:
+                self._clear_approvals([image_id], "Approval was cleared because an edit was undone.")
+            else:
+                record.approved_settings_sha256 = self._approval_fingerprint(image_id)
         return self.last_results.get(image_id)
 
     def edit_count(self, image_id: str) -> int:
@@ -2561,15 +2569,30 @@ def _file_stamp(folder: Path, image_id: str) -> tuple | None:
     return tuple(stamps)
 
 
-def _same_but_cutoffs(stored, wanted: list[dict]) -> bool:
-    """Whether two lists of marker definitions differ in their cutoffs at most."""
+def _kept_but_cutoffs(stored, wanted: list[dict]) -> bool:
+    """Whether the wanted marker definitions are the stored ones, in order, with some removed and
+    cutoffs changed at most. Removing a marker only re-sorts the objects; nothing is measured."""
 
     if stored is None:
         return True  # saved before marker definitions were recorded: its table has the same markers
-    if not isinstance(stored, list) or len(stored) != len(wanted):
+    if not isinstance(stored, list) or len(wanted) > len(stored):
         return False
     strip = lambda items: [{key: value for key, value in item.items() if key not in _CUTOFF_KEYS} for item in items]  # noqa: E731
-    return strip(stored) == strip(wanted)
+    remaining = iter(strip(stored))
+    return all(any(item == old for old in remaining) for item in strip(wanted))
+
+
+def _counted_numbers(result: ImageResult | None) -> tuple | None:
+    """Counted objects and each marker's positive count: what an approval vouches for."""
+
+    if result is None:
+        return None
+    table = result.objects
+    if "excluded" in table.columns:
+        table = table.loc[~table["excluded"].astype(str).str.lower().isin(["true", "1"])]
+    table = table.loc[~outside(table)]
+    markers = [item.get("id") for item in result.provenance.get("classification_definitions") or []]
+    return len(table), tuple(int((table[marker] == True).sum()) for marker in markers if marker in table.columns)  # noqa: E712
 
 
 def _positive_calls(values: np.ndarray, cutoff: float, comparison: str) -> np.ndarray:
