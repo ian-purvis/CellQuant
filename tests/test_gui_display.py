@@ -807,7 +807,7 @@ def test_full_3d_cellpose_settings_show_only_for_full_3d(tmp_path: Path):
         panel.engine = CellposeEngine(True, "4.2.0", "cellpose4", ("cpsam",), "cpsam")
         panel.advanced_toggle.setChecked(True)
         panel.method.setCurrentIndex(panel.method.findData("cellpose"))
-        rows = (panel.niter_3d, panel.flow3d_smooth, panel.min_voxels_3d)
+        rows = (panel.niter_3d, panel.flow3d_smooth, panel.min_voxels_3d, panel.tile_overlap_3d)
         panel.z_stack.setCurrentIndex(panel.z_stack.findData("stitch_slices"))
         assert not any(row.isVisibleTo(panel) for row in rows)
         panel.write_recipe()
@@ -820,6 +820,10 @@ def test_full_3d_cellpose_settings_show_only_for_full_3d(tmp_path: Path):
         panel.write_recipe()
         parameters = shell.controller.recipe.object_set.parameters
         assert (parameters["niter_3d"], parameters["flow3D_smooth"], parameters["min_voxels_3d"]) == (500, 2.0, 40)
+        assert "tile_overlap_3d" not in parameters  # written only when changed
+        panel.tile_overlap_3d.setValue(0.05)
+        panel.write_recipe()
+        assert shell.controller.recipe.object_set.parameters["tile_overlap_3d"] == 0.05
         panel.method.setCurrentIndex(panel.method.findData("classical"))
         assert not any(row.isVisibleTo(panel) for row in rows)
     finally:
