@@ -206,12 +206,14 @@ class ClassificationSpec(BaseModel):
     auto_percent: float = Field(default=10.0, gt=0.0, lt=100.0)
     # Cutoffs for single images (image id -> cutoff); every other image uses ``threshold``.
     image_thresholds: dict[str, float] = Field(default_factory=dict)
+    # How the cutoff is set in step 5: the slider, or examples clicked positive or negative.
+    cutoff_by: Literal["slider", "examples"] = "slider"
 
     @model_serializer(mode="wrap")
     def _drop_unused(self, handler):
         return _without_defaults(
             handler(self),
-            {"comparison": "above", "auto_method": "otsu", "auto_percent": 10.0, "image_thresholds": {}},
+            {"comparison": "above", "auto_method": "otsu", "auto_percent": 10.0, "image_thresholds": {}, "cutoff_by": "slider"},
         )
 
     def threshold_for(self, image_id: str | None) -> float:
@@ -380,7 +382,7 @@ class Recipe(BaseModel):
 
 
 # Classification fields that only choose or hold cutoffs; the cutoff an image uses is in "threshold".
-_CUTOFF_CHOICES = ("auto_method", "auto_percent", "image_thresholds")
+_CUTOFF_CHOICES = ("auto_method", "auto_percent", "image_thresholds", "cutoff_by")
 
 
 def load_recipe(source: Recipe | dict[str, Any] | str | Path) -> Recipe:
