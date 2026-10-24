@@ -303,7 +303,7 @@ An experiment can hold several analyses (different settings on the same images, 
 
 For example `1187e06c…:1`.
 
-**Good to know:** An approval is also cleared by editing an object, by loading new objects, and by running the image again with different settings. Running again with the same settings keeps it.
+**Good to know:** An approval is also cleared by editing an object, by loading new objects, and by running the image again with different settings. Running again with the same settings keeps it. **Undo** in step 3 clears it only if the number of counted objects, or of any marker's positive objects, changes; when the approval stays, the edit count in the fingerprint is updated.
 
 **For experts:** `controller._approval_fingerprint`. For a 3D stack cropped to its region `:stack-crop` is added, so approvals made before stacks could be cropped no longer match. `controller._clear_changed_approvals` compares the positive count at the old and new cutoff (`>` or `≥` as the marker uses); other values are not compared.
 
