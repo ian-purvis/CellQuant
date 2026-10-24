@@ -506,6 +506,14 @@ For `integrated` the background is multiplied by the number of pixels in the reg
 
 **For experts:** `Recipe.for_image` puts an image's cutoff into `threshold` and clears this list, so a provenance file shows the cutoff that image actually used.
 
+##### `cutoff_by`
+
+**In short:** How this marker's cutoff is set in step 5: `slider` (the default) or `examples`.
+
+**What it means:** Chosen per marker under **Set cutoff by** in step 4. With `examples` you click objects you call positive or negative in step 5, and the image's cutoff moves between them. It only chooses the tools; it does not change results and is not part of `recipe_sha256`.
+
+**Related:** `cutoff_examples/<image>.json`
+
 #### `reports`
 
 **In short:** The percentages to calculate, each as a numerator and a denominator.
@@ -610,6 +618,7 @@ Each press of **Run** that starts a new batch creates a run folder, `runs/run_xx
 | `qc/<image>.json` | Quality summary |
 | `tables/<image>.json` | Column types of the CSVs above (so they reload correctly; not for people) |
 | `edits/<image>.json` | Your edits as they were when this was saved |
+| `cutoff_examples/<image>.json` | Objects you marked positive or negative in step 5 (`working/` only) |
 | `logs/run.log` | Warnings and notes. Only exists if something was logged |
 | `logs/developer.log` | Technical error details. Only exists if an error occurred |
 
@@ -1618,6 +1627,21 @@ These keys are only present if a count area is drawn.
 **What it means:** The edits that applied to this result: those made on these found objects and in this analysis. The file in the results folder's `edits/` folder holds all of them. The fields are the same.
 
 **Related:** `operation`, `segmentation`
+
+#### `cutoff_examples/<image>.json`
+
+**In short:** The objects you marked positive or negative for each marker in this image (Examples mode in step 5). Only in `working/`.
+
+**What it means:** One entry per marker id, then one per object number: `positive` (true or false) and the object's `x` and `y` center when it was marked. A mark whose object is gone, or whose number now belongs to an object elsewhere (after the image is run again), is ignored. The cutoff itself is saved in the settings (`image_thresholds`), so deleting this file keeps the cutoff.
+
+**How it's calculated:**
+
+    suggested cutoff = halfway across the widest gap between neighbouring example values
+                       among the gaps that call the most examples right
+
+**For experts:** `cutoff_examples.suggest_cutoff`, `AnalysisController.mark_example`. A mark is kept when the object's center is within half its radius (`0.5 × √(area / π)`) of where it was.
+
+**Related:** `cutoff_by`, `image_thresholds`
 
 #### `logs/run.log`
 <!-- data: log run/logs/run.log -->
