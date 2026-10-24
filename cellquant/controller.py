@@ -968,6 +968,86 @@ class AnalysisController:
         self.kept_approvals = sorted(kept)
         self.cleared_approvals = self._clear_changed_approvals(before)
 
+    def set_cutoff_by(self, classification_id: str, mode: str) -> None:
+        """Set this marker's cutoff with the slider ("slider") or with clicked examples ("examples")."""
+
+        data = self.recipe.model_dump(mode="json")
+        stored = next(entry for entry in data["classifications"] if entry["id"] == classification_id)
+        stored["cutoff_by"] = mode
+        self.set_recipe(data)
+
+    def cutoff_examples(self, classification_id: str, image_id: str) -> dict[int, bool]:
+        """Objects of this image marked positive (True) or negative (False) for this marker."""
+
+        from cellquant.cutoff_examples import current_examples, load_examples
+
+        result = self.last_results.get(image_id) or self.recall(image_id)
+        if result is None:
+            return {}
+        marks = load_examples(self._working_dir(), image_id).get(classification_id, {})
+        return current_examples(marks, result.objects)
+
+    def mark_example(self, classification_id: str, image_id: str, object_id: int, positive: bool) -> ImageResult | None:
+        """Mark an object positive or negative (the same mark again removes it), then give this image
+        the cutoff the examples suggest. ``cleared_approvals`` as for a slider move."""
+
+        from cellquant.cutoff_examples import current_examples, load_examples, mark, save_examples
+
+        result = self.last_results.get(image_id) or self.recall(image_id)
+        if result is None:
+            raise CellQuantError("Run this image first.")
+        rows = result.objects.set_index("object_id")
+        if object_id not in rows.index:
+            raise CellQuantError(f"Object {object_id} is not in this image's results.")
+        examples = load_examples(self._working_dir(), image_id)
+        marks = {str(key): value for key, value in examples.get(classification_id, {}).items()}
+        kept = current_examples(marks, result.objects)
+        marks = {key: value for key, value in marks.items() if int(key) in kept}  # marks on objects gone are dropped
+        if kept.get(object_id) is positive:
+            marks.pop(str(object_id))
+        else:
+            marks[str(object_id)] = mark(rows.loc[object_id], positive)
+        examples[classification_id] = marks
+        save_examples(self._working_dir(), image_id, examples)
+        return self._follow_examples(classification_id, image_id)
+
+    def clear_examples(self, classification_id: str, image_id: str) -> None:
+        """Forget this image's examples for this marker. The cutoff stays."""
+
+        from cellquant.cutoff_examples import load_examples, save_examples
+
+        examples = load_examples(self._working_dir(), image_id)
+        if examples.pop(classification_id, None) is not None:
+            save_examples(self._working_dir(), image_id, examples)
+
+    def example_cutoff(self, classification_id: str, image_id: str) -> tuple[float | None, list[int]]:
+        """The cutoff this image's examples suggest (None: not enough examples), and the marked
+        objects this image's current cutoff calls the other way."""
+
+        from cellquant.cutoff_examples import disagreeing, suggest_cutoff
+
+        classification = next(item for item in self.recipe.classifications if item.id == classification_id)
+        result = self.last_results.get(image_id) or self.recall(image_id)
+        examples = self.cutoff_examples(classification_id, image_id)
+        if result is None or not examples or classification.measurement not in result.objects.columns:
+            return None, []
+        column = result.objects.set_index("object_id")[classification.measurement]
+        values = {object_id: float(column.get(object_id, np.nan)) for object_id in examples}
+        suggested = suggest_cutoff(
+            [values[key] for key, positive in examples.items() if positive],
+            [values[key] for key, positive in examples.items() if not positive],
+            classification.comparison,
+        )
+        return suggested, disagreeing(examples, values, classification.threshold_for(image_id), classification.comparison)
+
+    def _follow_examples(self, classification_id: str, image_id: str) -> ImageResult | None:
+        suggested, _disagree = self.example_cutoff(classification_id, image_id)
+        classification = next(item for item in self.recipe.classifications if item.id == classification_id)
+        if suggested is None or suggested == classification.threshold_for(image_id):
+            self.cleared_approvals, self.kept_approvals = [], []
+            return self.classified_now(image_id)
+        return self.update_thresholds(image_id, {classification_id: suggested}, this_image_only=True)
+
     def use_shared_cutoff(self, classification_id: str, image_id: str) -> None:
         """This image drops its own cutoff and uses the shared one again."""
 
@@ -2540,7 +2620,7 @@ def process_experiment(
 
 
 # Marker fields that only set or choose cutoffs.
-_CUTOFF_KEYS = ("threshold", "auto_method", "auto_percent", "image_thresholds")
+_CUTOFF_KEYS = ("threshold", "auto_method", "auto_percent", "image_thresholds", "cutoff_by")
 
 
 _NO_MASK = np.zeros((0, 0), dtype=np.int32)  # in place of the masks of a result given only for its tables
