@@ -446,19 +446,25 @@ def resizes_to_diameter(parameters: dict[str, Any], classic: bool) -> bool:
 FULL_3D_NITER = 200
 FULL_3D_FLOW_SMOOTH = 2.0
 FULL_3D_MIN_VOXELS = 1000
+# Cellpose's own tile overlap (fraction of a 256 px tile); Cellpose keeps it within 0.05-0.5.
+FULL_3D_TILE_OVERLAP = 0.1
+TILE_OVERLAP_RANGE = (0.05, 0.5)
 _PAPER_DIAMETER_PX = 30.0
 
 
 def full_3d_settings(diameter_px: float | None, anisotropy: float, parameters: dict[str, Any]) -> dict[str, Any]:
-    """``niter``, ``flow3D_smooth`` and ``min_size`` (voxels) for Cellpose's full 3D mode.
+    """``niter``, ``flow3D_smooth``, ``min_size`` (voxels) and ``tile_overlap`` for Cellpose's full 3D mode.
 
-    ``niter_3d``, ``flow3D_smooth`` and ``min_voxels_3d`` (step 2, Advanced) replace the
-    defaults; ``min_voxels_3d`` of 0 or missing keeps the scaled cutoff. ``min_size`` in the
-    parameters also replaces it.
+    ``niter_3d``, ``flow3D_smooth``, ``min_voxels_3d`` and ``tile_overlap_3d`` (step 2, Advanced)
+    replace the defaults; ``min_voxels_3d`` of 0 or missing keeps the scaled cutoff. ``min_size`` in
+    the parameters also replaces it. The tile overlap is kept within the range Cellpose uses, so
+    what is recorded is what ran.
     """
 
     niter = int(parameters.get("niter_3d") or FULL_3D_NITER)
     smooth = float(parameters.get("flow3D_smooth", FULL_3D_FLOW_SMOOTH))
+    low, high = TILE_OVERLAP_RANGE
+    overlap = min(high, max(low, float(parameters.get("tile_overlap_3d") or FULL_3D_TILE_OVERLAP)))
     if parameters.get("min_voxels_3d"):
         min_size = int(parameters["min_voxels_3d"])
     elif "min_size" in parameters:
@@ -467,7 +473,7 @@ def full_3d_settings(diameter_px: float | None, anisotropy: float, parameters: d
         diameter = float(diameter_px) if diameter_px else _PAPER_DIAMETER_PX
         ratio = float(anisotropy) if anisotropy and anisotropy > 0 else 1.0
         min_size = max(1, round(FULL_3D_MIN_VOXELS * (diameter / _PAPER_DIAMETER_PX) ** 3 / ratio))
-    return {"niter": niter, "flow3D_smooth": smooth, "min_size": min_size}
+    return {"niter": niter, "flow3D_smooth": smooth, "min_size": min_size, "tile_overlap": overlap}
 
 
 # --- reusing Cellpose models and network output -----------------------------------------------------
