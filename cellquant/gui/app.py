@@ -159,6 +159,8 @@ def launch(experiment_dir: str | Path | None = None) -> None:
 _OBJECT_LAYERS = ("Object fills", "Objects", "Classification", "Object IDs")
 # Polygons drawn in step 5; only objects whose center is inside them are counted.
 COUNT_AREA_LAYER = "Count area"
+# Step 5 examples mode: the objects marked positive or negative.
+EXAMPLES_LAYER = "Examples"
 # Polygons drawn in step 3; objects entirely inside them are deleted.
 DELETE_AREA_LAYER = "Delete area"
 
@@ -743,6 +745,7 @@ class CellQuantWindow:
         self._footer = Footer(self)
         self._tabs.currentChanged.connect(lambda _index: self._markers_page_shown())
         self._tabs.currentChanged.connect(lambda _index: self._edit_panel.leave_delete())
+        self._tabs.currentChanged.connect(lambda _index: self._review_panel.leave_marking())
         main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
 
@@ -1465,6 +1468,7 @@ class CellQuantWindow:
             "Load settings…", "Add measurement", "Remove measurement",
             "Add marker", "Remove marker", "Add result row", "Remove result row", "Apply pixel level",
             "Run all images (this analysis)", "Set sizes (µm)", "Reset cutoff", "Apply to all images",
+            "Mark +", "Mark −", "Clear examples",
         }
     )
 
@@ -1911,6 +1915,56 @@ class CellQuantWindow:
         self._results_summary.show_result(result, self.controller.recipe)
         # The Markers table is read back into the settings before every run; keep its cutoffs current.
         self._measurements_panel.refresh()
+
+    def cutoff_mode_changed(self) -> None:
+        """Step 4's "Set cutoff by" changed: step 5 shows the slider or the example tools."""
+
+        if self.controller is None or not self._nav_ids:
+            return
+        result = self.controller.last_results.get(self._nav_ids[self._nav_index])
+        if result is not None:
+            self.show_classification(result)
+
+    def show_examples(self, result, examples: dict[int, bool], disagree: list[int]) -> None:
+        """The marked objects: a + or − at each one's center; ones the cutoff calls the other way ringed in red."""
+
+        frame = result.objects
+        frame = frame.loc[frame["object_id"].isin(list(examples))] if examples and "object_id" in frame.columns else frame.iloc[0:0]
+        if frame.empty:
+            self._drop(EXAMPLES_LAYER)
+            return
+        ids = [int(value) for value in frame["object_id"].tolist()]
+        centers = np.column_stack([frame["centroid_y"].to_numpy(dtype=float), frame["centroid_x"].to_numpy(dtype=float)])
+        if result.spatial_unit == "um":
+            record = self.controller.experiment.image(result.provenance["image_id"])
+            if record.pixel_size_x and record.pixel_size_y:
+                centers = centers / np.array([record.pixel_size_y, record.pixel_size_x])
+        if np.asarray(result.labels).ndim == 3 and "z_first" in frame.columns:
+            # On the object's middle slice, like its number.
+            middle = (frame["z_first"].to_numpy(dtype=float) + frame["z_last"].to_numpy(dtype=float)) / 2 - 1
+            centers = np.column_stack([np.round(middle), centers])
+        positive, negative = classification_colors()
+        properties = dict(
+            symbol=["cross" if examples[object_id] else "hbar" for object_id in ids],
+            face_color=[positive if examples[object_id] else negative for object_id in ids],
+            border_color=["#e0533d" if object_id in disagree else "white" for object_id in ids],
+            border_width=[0.25 if object_id in disagree else 0.08 for object_id in ids],
+        )
+        if EXAMPLES_LAYER in self.viewer.layers and self.viewer.layers[EXAMPLES_LAYER].ndim == centers.shape[1]:
+            layer = self.viewer.layers[EXAMPLES_LAYER]
+            layer.selected_data = set()
+            layer.data = centers
+        else:
+            self._drop(EXAMPLES_LAYER)
+            active = self.viewer.layers.selection.active
+            layer = self.viewer.add_points(centers, name=EXAMPLES_LAYER, size=7)
+            self._managed.add(layer.name)
+            if active is not None and active in self.viewer.layers:
+                self.viewer.layers.selection.active = active  # marking goes on in the layer chosen before
+        layer.symbol = properties["symbol"]
+        layer.face_color = properties["face_color"]
+        layer.border_color = properties["border_color"]
+        layer.border_width = properties["border_width"]
 
     def set_pixel_scale(self, record) -> None:
         """Give every layer the shown image's pixel size, so napari's scale bar reads in µm (px when unknown)."""
@@ -4874,6 +4928,18 @@ class CutoffHistogram(QWidget):
         self._low, self._high = 0.0, 1.0
         self._cutoff = 0.0
         self._at_least = False
+        self._examples: tuple[np.ndarray, np.ndarray] = (np.zeros(0), np.zeros(0))
+        self.draggable = True
+
+    def set_examples(self, positive, negative) -> None:
+        """Values of the objects marked positive and negative: short ticks along the top."""
+
+        self._examples = (np.asarray(positive, dtype=float), np.asarray(negative, dtype=float))
+        self.update()
+
+    def set_draggable(self, on: bool) -> None:
+        self.draggable = on
+        self.setCursor(Qt.SizeHorCursor if on else Qt.ArrowCursor)
 
     def set_data(self, values: np.ndarray, low: float, high: float, cutoff: float, comparison: str) -> None:
         values = np.asarray(values, dtype=float)
@@ -4924,6 +4990,13 @@ class CutoffHistogram(QWidget):
         painter.setPen(pen)
         x = int(self._x(self._cutoff))
         painter.drawLine(x, top, x, top + height)
+        for values, color in zip(self._examples, classification_colors()):
+            pen = QPen(QColor(color))
+            pen.setWidth(3)
+            painter.setPen(pen)
+            for value in values[np.isfinite(values)]:
+                tick = int(self._x(min(max(float(value), self._low), self._high)))
+                painter.drawLine(tick, top, tick, top + 10)
         painter.end()
 
     def _drag(self, event) -> None:
@@ -4933,11 +5006,11 @@ class CutoffHistogram(QWidget):
         self.cutoff_dragged.emit(value)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt name
-        if self._values.size:
+        if self._values.size and self.draggable:
             self._drag(event)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt name
-        if self._values.size and event.buttons() & Qt.LeftButton:
+        if self._values.size and self.draggable and event.buttons() & Qt.LeftButton:
             self._drag(event)
 
 
@@ -4988,6 +5061,7 @@ class ReviewPanel(QWidget):
         self.reset_cutoff.clicked.connect(self._reset_cutoff)
         tools.addRow(self.reset_cutoff)
         layout.addWidget(self.cutoff_tools)
+        layout.addWidget(self._examples_box())
         # Recolor at most every 40 ms while dragging, with the latest value.
         self._pending_cutoff: float | None = None
         self._cutoff_timer = QTimer(self)
@@ -5057,6 +5131,160 @@ class ReviewPanel(QWidget):
         self.apply_all = QPushButton("Apply to all images")
         self.apply_all.clicked.connect(self._apply_to_all)
         layout.addWidget(self.apply_all)
+
+    def _examples_box(self) -> QWidget:
+        """Examples mode (chosen per marker in step 4): click objects positive or negative."""
+
+        self.examples_box = QWidget()
+        rows = QVBoxLayout(self.examples_box)
+        rows.setContentsMargins(0, 0, 0, 0)
+        line = QHBoxLayout()
+        self.mark_positive = QPushButton("Mark +")
+        self.mark_negative = QPushButton("Mark −")
+        self.clear_examples = QPushButton("Clear examples")
+        self.mark_positive.setToolTip("Then click objects you call positive. Click one again to unmark it. Press again or Esc to stop.")
+        self.mark_negative.setToolTip("Then click objects you call negative. Click one again to unmark it. Press again or Esc to stop.")
+        self.clear_examples.setToolTip("Unmark every example of this marker in this image. The cutoff stays.")
+        for button, positive in ((self.mark_positive, True), (self.mark_negative, False)):
+            button.setCheckable(True)
+            button.clicked.connect(lambda _checked=False, positive=positive: self._toggle_marking(positive))
+            line.addWidget(button)
+        self.clear_examples.clicked.connect(self._clear_examples)
+        line.addWidget(self.clear_examples)
+        rows.addLayout(line)
+        self.examples_note = QLabel("")
+        self.examples_note.setWordWrap(True)
+        rows.addWidget(self.examples_note)
+        self.examples_box.setVisible(False)
+        self._marking: bool | None = None  # True: marking positive, False: negative, None: off
+        self._marking_cue = False
+        self._click_bound = False
+        return self.examples_box
+
+    def _examples_mode(self) -> bool:
+        classification = self._current_classification()
+        return classification is not None and classification.cutoff_by == "examples"
+
+    def _show_step_hint(self, examples: bool) -> None:
+        pages = getattr(self.shell, "_step_pages", None)
+        card = getattr(pages[4], "todo_card", None) if pages else None
+        if card is not None:
+            hint = "<b>Mark +</b> and <b>Mark −</b> a few objects, then <b>Approve</b>." if examples else guide.STEPS[4].short
+            card.setText(f"{hint} ⓘ")
+
+    def _toggle_marking(self, positive: bool) -> None:
+        self.set_marking(None if self._marking is positive else positive)
+
+    def set_marking(self, positive: bool | None) -> None:
+        """Click-to-mark on (positive or negative) or off: button pressed, cross cursor and a hint."""
+
+        if positive is not None and not self._examples_mode():
+            positive = None
+        self._marking = positive
+        self.mark_positive.setChecked(positive is True)
+        self.mark_negative.setChecked(positive is False)
+        viewer = self.shell.viewer
+        on = positive is not None
+        if on and self._labels is not None and self._labels in viewer.layers and self._labels.mode != "pan_zoom":
+            self._labels.mode = "pan_zoom"  # a paint tool would paint on the click
+        if on != self._marking_cue:
+            if on:
+                viewer.layers.selection.events.active.connect(self._cross_cursor)
+            else:
+                viewer.layers.selection.events.active.disconnect(self._cross_cursor)
+            self._marking_cue = on
+        if on:
+            viewer.cursor.style = "cross"
+            self.shell.message(f"Click objects you call {'positive' if positive else 'negative'}. Press the button again or Esc to stop.")
+        else:
+            active = viewer.layers.selection.active
+            viewer.cursor.style = getattr(active, "cursor", "standard") if active is not None else "standard"
+
+    def leave_marking(self) -> None:
+        if self._marking is not None:
+            self.set_marking(None)
+
+    def _cross_cursor(self, _event=None) -> None:
+        if self._marking is not None:
+            self.shell.viewer.cursor.style = "cross"
+
+    def _on_click(self, viewer, event):
+        if self._marking is None:
+            return
+        start = tuple(event.position)
+        dragged = False
+        yield
+        while event.type == "mouse_move":
+            dragged = True
+            yield
+        if dragged or self._marking is None or self._labels is None or self._labels not in viewer.layers:
+            return
+        if self.shell._tabs.currentWidget() is not self.shell._step_pages[4]:
+            return
+        active = viewer.layers.selection.active
+        if active is not None and getattr(active, "mode", "pan_zoom") not in ("pan_zoom", "transform"):
+            return  # drawing a count area or measuring: the click belongs to that tool
+        try:
+            value = self._labels.get_value(start, view_direction=event.view_direction, dims_displayed=event.dims_displayed, world=True)
+        except Exception:  # noqa: BLE001 - a click outside the image marks nothing
+            value = None
+        if isinstance(value, (int, np.integer)) and int(value) > 0:
+            self.mark_object(int(value), self._marking)
+
+    def mark_object(self, object_id: int, positive: bool) -> None:
+        """Mark (or unmark) the clicked object and move this image's cutoff between the examples."""
+
+        controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
+        if classification is None or image_id is None:
+            return
+        if self.shell.is_busy():
+            self.shell.message("Wait for the current analysis to finish, then click the object again.")
+            return
+        if self.shell._labels_image_id != image_id:
+            self.shell.message("Wait for the image to finish loading, then click the object again.")
+            return
+        old = classification.threshold_for(image_id)
+        try:
+            result = controller.mark_example(classification.id, image_id, object_id, positive)
+        except CellQuantError as exc:
+            self.shell.message(str(exc))
+            return
+        new = self._current_classification().threshold_for(image_id)
+        text = f"{classification.name} cutoff from the examples: {old:g} → {new:g}." if new != old else ""
+        self._after_cutoff_change(result, text)
+
+    def _clear_examples(self, _checked: bool = False) -> None:
+        controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
+        if classification is None or image_id is None:
+            return
+        controller.clear_examples(classification.id, image_id)
+        self.shell.show_classification(controller.classified_now(image_id))
+        self.shell.message("Examples cleared. The cutoff stays.")
+
+    def _show_examples(self, classification, image_id: str, result) -> None:
+        """Examples mode: the counts of marks, where they sit on the histogram, and any the cutoff calls the other way."""
+
+        controller = self.shell.controller
+        examples = controller.cutoff_examples(classification.id, image_id)
+        column = result.objects.set_index("object_id")[classification.measurement] if "object_id" in result.objects.columns else None
+        value = lambda object_id: float(column.get(object_id, np.nan)) if column is not None else np.nan  # noqa: E731
+        self.histogram.set_examples(
+            [value(key) for key, positive in examples.items() if positive],
+            [value(key) for key, positive in examples.items() if not positive],
+        )
+        positives = sum(examples.values())
+        negatives = len(examples) - positives
+        suggested, disagree = controller.example_cutoff(classification.id, image_id)
+        lines = [f"Examples: {positives} +, {negatives} −"]
+        if not positives or not negatives:
+            lines.append("Mark at least one positive and one negative object.")
+        elif suggested is not None and suggested != classification.threshold_for(image_id):
+            lines.append(f"The examples suggest {suggested:g}; mark another object to use it.")
+        if disagree:
+            shown = ", ".join(str(item) for item in disagree[:8]) + (" …" if len(disagree) > 8 else "")
+            lines.append(f"<span style='color:#e0533d'>Called the other way: object{'s' if len(disagree) != 1 else ''} {shown}</span>")
+        self.examples_note.setText("<br>".join(lines))
+        self.shell.show_examples(result, examples, disagree)
 
     def _strip_box(self) -> QGroupBox:
         """Percent positive in every image (or the ticked ones) at the current cutoffs."""
@@ -5419,6 +5647,10 @@ class ReviewPanel(QWidget):
     def bind_labels(self, boundaries, fills) -> None:
         self._labels = boundaries
         self._fills = fills
+        if not self._click_bound:
+            # While Mark + or Mark − is pressed, a plain click on an object marks it, whichever layer is active.
+            self.shell.viewer.mouse_drag_callbacks.append(self._on_click)
+            self._click_bound = True
         viewer = self.shell.viewer
         # Boundaries start shown, fills and IDs hidden; after that the layer eye icons decide.
         for name, visible in (("Objects", True), ("Object fills", False), ("Object IDs", False)):
@@ -5428,12 +5660,23 @@ class ReviewPanel(QWidget):
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
         classification_id = self.classification_id()
-        for widget in (self.cutoff_label, self.histogram, self.threshold_slider, self.cutoff_tools, self.strip, self.apply_all):
+        examples = self._examples_mode()
+        for widget in (self.cutoff_label, self.histogram, self.strip, self.apply_all):
             widget.setVisible(bool(classification_id))
+        for widget in (self.threshold_slider, self.cutoff_tools):
+            widget.setVisible(bool(classification_id) and not examples)
+        self.examples_box.setVisible(bool(classification_id) and examples)
+        self.histogram.set_draggable(not examples)
+        self.histogram.set_examples([], [])
+        self._show_step_hint(examples)
+        if not examples:
+            self.leave_marking()
         if not classification_id:
+            self.shell.show_examples(result, {}, [])
             return
         classification = next(item for item in self.shell.controller.recipe.classifications if item.id == classification_id)
         if classification.measurement not in result.objects.columns:
+            self.shell.show_examples(result, {}, [])
             self._show_strip()  # no value for this marker here: the strip must not keep the last marker's numbers
             return
         image_id = result.provenance["image_id"]
@@ -5444,6 +5687,10 @@ class ReviewPanel(QWidget):
         slider = self.threshold_slider
         self.histogram.set_data(values, slider.minimum(), slider.maximum(), cutoff, classification.comparison)
         self._show_cutoff_tools(classification, image_id, percent_rule)
+        if examples:
+            self._show_examples(classification, image_id, result)
+        else:
+            self.shell.show_examples(result, {}, [])
         counts = self.shell.controller.histogram(image_id, classification.measurement, cutoff, classification.comparison)
         percent = counts["percent_positive"]
         percent_text = "—" if percent != percent else f"{percent:.1f}%"
@@ -6220,6 +6467,7 @@ class Footer(QWidget):
         # Esc leaves click-to-delete in step 3.
         stop_delete = QShortcut(QKeySequence("Esc"), shell.viewer.window._qt_window)
         stop_delete.activated.connect(shell._edit_panel.leave_delete)
+        stop_delete.activated.connect(shell._review_panel.leave_marking)
         self.failed_files: list[str] = []
         self.pause.setEnabled(False)
         self.resume.setEnabled(False)
