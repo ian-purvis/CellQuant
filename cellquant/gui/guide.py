@@ -133,7 +133,8 @@ STEPS = (
         "Objects glow <span style='color:#26bf59'><b>green</b></span> when positive and "
         "<span style='color:#d43fd4'><b>magenta</b></span> when negative (change the colors under the slider). "
         "Drag the <b>Cutoff</b> slider, or type a number beside it, to move the cutoff (one cutoff for "
-        "every image). For the percent-of-cell rule the slider is the minimum percent; change the "
+        "every image). If you chose <b>Examples</b> in step 4, click <b>Mark +</b> or <b>Mark −</b> and click "
+        "objects instead: the cutoff goes halfway between them. For the percent-of-cell rule the slider is the minimum percent; change the "
         "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> when it looks right; it then opens the next image to check (key <b>A</b>). "
         "Hover over a button to see what it does.",
         "The green objects are the ones you would call positive by eye.",
@@ -503,11 +504,26 @@ class MarkerSetup(QGroupBox):
         self.current = QLabel("")
         self.current.setWordWrap(True)
         self.layout_.addWidget(self.current)
+        # Per marker: set the cutoff in step 5 with the slider, or by clicking example objects.
+        self.modes = QWidget()
+        self.modes_form = QFormLayout(self.modes)
+        self.modes_form.setContentsMargins(0, 0, 0, 0)
+        self.modes_title = QLabel("Set cutoff by ⓘ")
+        self.modes_title.setToolTip(
+            "Slider: drag the cutoff in step 5 (or pick an automatic method).\n"
+            "Examples: in step 5 click a few objects you call positive and a few you call negative;\n"
+            "the cutoff goes halfway between them. Change this any time: Back from step 5."
+        )
+        self.modes_form.addRow(self.modes_title)
+        self.mode_boxes: list[QComboBox] = []
+        self.modes.setVisible(False)
+        self.layout_.addWidget(self.modes)
 
     def refresh(self) -> None:
         for box in self.boxes:
             box.setParent(None)
         self.boxes = []
+        self._show_modes()
         controller = self.window.controller
         self.button.setEnabled(controller is not None)
         if controller is None:
@@ -542,6 +558,38 @@ class MarkerSetup(QGroupBox):
                 self.min_percent.setValue(float(percent[0].threshold))
             self.rule.blockSignals(False)
             self._rule_changed()
+
+    def _show_modes(self) -> None:
+        """One "Set cutoff by" choice per marker."""
+
+        while self.modes_form.rowCount() > 1:
+            self.modes_form.removeRow(1)
+        self.mode_boxes = []
+        controller = self.window.controller
+        markers = controller.recipe.classifications if controller is not None else []
+        for item in markers:
+            box = QComboBox()
+            box.addItem("Slider", "slider")
+            box.addItem("Examples", "examples")
+            box.setItemData(0, "Drag the cutoff in step 5.", Qt.ToolTipRole)
+            box.setItemData(1, "Click positive and negative objects in step 5; the cutoff goes between them.", Qt.ToolTipRole)
+            box.setCurrentIndex(max(0, box.findData(item.cutoff_by)))
+            box.setProperty("classification_id", item.id)
+            box.activated.connect(lambda _index, box=box: self._mode_chosen(box))
+            self.modes_form.addRow(item.name, box)
+            self.mode_boxes.append(box)
+        self.modes.setVisible(bool(markers))
+
+    def _mode_chosen(self, box: QComboBox) -> None:
+        controller = self.window.controller
+        if controller is None:
+            return
+        classification_id, mode = str(box.property("classification_id")), str(box.currentData())
+        if not any(item.id == classification_id and item.cutoff_by != mode for item in controller.recipe.classifications):
+            return
+        controller.set_cutoff_by(classification_id, mode)
+        controller.save()
+        self.window.cutoff_mode_changed()
 
     def _rule_changed(self) -> None:
         self.min_percent.setEnabled(self.rule.currentData() == RULE_PERCENT)
