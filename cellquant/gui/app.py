@@ -60,7 +60,7 @@ from cellquant.controller import AnalysisController, display_z
 from cellquant.count_area import outside
 from cellquant.errors import CellQuantError, RecipeValidationError
 from cellquant.gui import guide
-from cellquant.segmentation import FULL_3D_FLOW_SMOOTH, FULL_3D_NITER
+from cellquant.segmentation import FULL_3D_FLOW_SMOOTH, FULL_3D_NITER, FULL_3D_TILE_OVERLAP, TILE_OVERLAP_RANGE
 from napari.utils.colormaps import DirectLabelColormap
 
 
@@ -3203,6 +3203,12 @@ class ObjectsPanel(QWidget):
         self.flow3d_smooth.setSingleStep(0.5)
         self.flow3d_smooth.setValue(FULL_3D_FLOW_SMOOTH)
         guide.add_range_tip(self.flow3d_smooth)
+        self.tile_overlap_3d = QDoubleSpinBox()
+        self.tile_overlap_3d.setRange(*TILE_OVERLAP_RANGE)
+        self.tile_overlap_3d.setDecimals(2)
+        self.tile_overlap_3d.setSingleStep(0.05)
+        self.tile_overlap_3d.setValue(FULL_3D_TILE_OVERLAP)
+        guide.add_range_tip(self.tile_overlap_3d)
         # 2D and stitching only; in true 3D the 3D smallest object replaces it.
         self.min_size_px = QSpinBox()
         self.min_size_px.setRange(0, 1000000)
@@ -3233,6 +3239,7 @@ class ObjectsPanel(QWidget):
         advanced.addRow("3D iterations", self.niter_3d)
         advanced.addRow("3D flow smoothing", self.flow3d_smooth)
         advanced.addRow("3D smallest object (voxels)", self.min_voxels_3d)
+        advanced.addRow("3D tile overlap", self.tile_overlap_3d)
         layout.addWidget(self.advanced_toggle)
         layout.addWidget(self.advanced_box)
         actions = QHBoxLayout()
@@ -3310,6 +3317,7 @@ class ObjectsPanel(QWidget):
         self.niter_3d.setValue(int(parameters.get("niter_3d") or FULL_3D_NITER))
         self.flow3d_smooth.setValue(float(parameters.get("flow3D_smooth", FULL_3D_FLOW_SMOOTH)))
         self.min_voxels_3d.setValue(int(parameters.get("min_voxels_3d") or 0))
+        self.tile_overlap_3d.setValue(float(parameters.get("tile_overlap_3d") or FULL_3D_TILE_OVERLAP))
         self.min_size_px.setValue(int(parameters.get("min_size", DEFAULT_CELLPOSE_MIN_SIZE)))
         self.augment.setChecked(bool(parameters.get("augment", False)))
         has_calibration = pixel is not None
@@ -3594,7 +3602,7 @@ class ObjectsPanel(QWidget):
         cellpose = self.method.currentData() == "cellpose"
         mode = self.z_stack.currentData()
         full_3d = cellpose and mode == "full_3d"
-        for widget in (self.niter_3d, self.flow3d_smooth, self.min_voxels_3d):
+        for widget in (self.niter_3d, self.flow3d_smooth, self.min_voxels_3d, self.tile_overlap_3d):
             _show_row(self._advanced_form, widget, full_3d)
         # Cellpose ignores the flow threshold when it segments the whole volume.
         _show_row(self._advanced_form, self.flow, cellpose and mode != "full_3d")
@@ -3918,6 +3926,9 @@ class ObjectsPanel(QWidget):
                 parameters["flow3D_smooth"] = self.flow3d_smooth.value()
                 if self.min_voxels_3d.value():
                     parameters["min_voxels_3d"] = self.min_voxels_3d.value()
+                # Written only when changed, so full 3D settings saved before keep their content (and cached objects).
+                if round(self.tile_overlap_3d.value(), 2) != FULL_3D_TILE_OVERLAP:
+                    parameters["tile_overlap_3d"] = round(self.tile_overlap_3d.value(), 2)
         data["z_stack"] = self.z_stack.currentData() or "max_projection"
         data["z_index"] = None if self.z_stack.currentData() != "single_plane" or self.z_slice.value() == 0 else self.z_slice.value() - 1
         data["z_stitch_threshold"] = round(self.z_link.value(), 3)
