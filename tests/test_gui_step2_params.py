@@ -97,3 +97,20 @@ def test_an_old_recipe_keeps_its_content_hash_after_a_save(tmp_path: Path, open_
     panel.write_recipe()
     assert shell.controller.recipe.content_hash() == before
     assert "min_size" not in shell.controller.recipe.object_set.parameters
+
+
+def test_an_unavailable_saved_model_is_replaced_and_logged_once(tmp_path: Path, monkeypatch, open_window):
+    from cellquant import engines
+
+    classic = engines.CellposeEngine(True, "3.1.0", engines.CELLPOSE_CLASSIC, engines.CLASSIC_MODELS, "nuclei")
+    monkeypatch.setattr(engines, "cellpose_engine", lambda: classic)
+    saved = {"engine": "cellpose3", "model": "cpsam_v2"}
+    shell = open_window(_experiment(tmp_path, "cellpose", saved).directory)
+    panel = shell._objects_panel
+    assert panel.cellpose_model.currentText() == "nuclei"
+    log = shell._footer.log.toPlainText()
+    assert "Saved Cellpose model 'cpsam_v2' is not available in Classic Cellpose (Cellpose 3); using 'nuclei' instead." in log
+    panel.refresh()
+    assert shell._footer.log.toPlainText().count("cpsam_v2") == 1
+    panel.write_recipe()
+    assert shell.controller.recipe.object_set.parameters["model"] == "nuclei"

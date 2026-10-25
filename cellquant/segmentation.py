@@ -140,19 +140,9 @@ class CellposeBackend:
                 f"CellQuant runs {engine.label}. Close CellQuant and open it again with "
                 f"{ENGINE_LABELS.get(wanted, wanted)}, or choose a model for {ENGINE_LABELS[engine.key]}."
             )
-        model = parameters.get("model") or engine.default_model
-        if engine.key == CELLPOSE_CLASSIC:
-            if model not in engine.models and not _is_model_file(model):
-                raise SegmentationError(
-                    f"Classic Cellpose has no model named '{model}'. "
-                    f"Choose one of: {', '.join(engine.models)}."
-                )
-        elif model in _CLASSIC_ONLY_MODELS or (model not in engine.models and not _is_model_file(model)):
-            raise SegmentationError(
-                f"Cellpose-SAM has no model named '{model}'"
-                + (" (that is a classic Cellpose model)" if model in _CLASSIC_ONLY_MODELS else "")
-                + f". Choose one of: {', '.join(engine.models)}, or open CellQuant with classic Cellpose."
-            )
+        # A saved model the installed engine does not know (e.g. "cpsam_v2" under classic Cellpose) falls back
+        # to the engine's default, so it cannot block a run; the interface also reports the swap in the run log.
+        model = engine_model(engine, parameters.get("model"))
         described = {
             "engine": engine.key,
             "engine_label": ENGINE_LABELS[engine.key],
@@ -671,6 +661,26 @@ def _estimate_classic_diameter(model, image: np.ndarray, normalize: bool = False
 
 
 _CLASSIC_ONLY_MODELS = frozenset({"nuclei", "cyto", "cyto2", "cyto3", "cyto2_cp3", "tissuenet_cp3", "livecell_cp3"})
+
+
+def model_is_valid(engine: Any, model: object) -> bool:
+    """Whether ``model`` can run on the installed ``engine``: a built-in name for it, or a model file."""
+
+    from cellquant.engines import CELLPOSE_CLASSIC
+
+    if not model:
+        return False
+    if engine.key != CELLPOSE_CLASSIC and model in _CLASSIC_ONLY_MODELS:
+        return False
+    return model in engine.models or _is_model_file(model)
+
+
+def engine_model(engine: Any, model: object) -> str | None:
+    """``model`` when the installed ``engine`` can run it, otherwise the engine's default model."""
+
+    if not model:
+        return engine.default_model
+    return str(model) if model_is_valid(engine, model) else engine.default_model
 
 
 def _is_model_file(model: object) -> bool:
