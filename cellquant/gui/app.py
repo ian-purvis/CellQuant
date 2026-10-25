@@ -2999,6 +2999,7 @@ class ObjectsPanel(QWidget):
     def __init__(self, shell: CellQuantWindow):
         super().__init__()
         self.shell = shell
+        self._noted_model_swaps: set[str] = set()
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self._form = form
@@ -3317,6 +3318,20 @@ class ObjectsPanel(QWidget):
         self._update_size_hint()
         self._method_changed()
 
+    def _note_model_swap(self, saved: str, used: str) -> None:
+        """Say in the run log, once per saved name, that a saved model is not available in this engine."""
+
+        from cellquant.engines import ENGINE_LABELS
+
+        if saved in self._noted_model_swaps:
+            return
+        self._noted_model_swaps.add(saved)
+        footer = getattr(self.shell, "_footer", None)
+        if footer is not None:
+            footer.log.append(
+                f"Saved Cellpose model '{saved}' is not available in {ENGINE_LABELS[self.engine.key]}; using '{used}' instead."
+            )
+
     def refresh(self) -> None:
         controller = self.shell.controller
         self.channel.clear()
@@ -3347,7 +3362,15 @@ class ObjectsPanel(QWidget):
         self.watershed.setChecked(bool(parameters.get("use_watershed", False)))
         self.watershed_distance.setValue(float(parameters.get("watershed_min_distance_px", 5)))
         self.compactness.setValue(float(parameters.get("watershed_compactness", 0)))
-        self.cellpose_model.setCurrentText(str(parameters.get("model") or self.engine.default_model or ""))
+        saved_model = parameters.get("model")
+        model = saved_model or self.engine.default_model
+        if saved_model and self.engine.installed and self.engine.key is not None:
+            from cellquant.segmentation import engine_model
+
+            model = engine_model(self.engine, saved_model)
+            if model != saved_model:
+                self._note_model_swap(str(saved_model), str(model))
+        self.cellpose_model.setCurrentText(str(model or ""))
         self._refresh_crop(controller)
         pixel = self._pixel_size_um()
         if parameters.get("diameter_um") is not None:
