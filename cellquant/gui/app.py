@@ -2999,6 +2999,7 @@ class ObjectsPanel(QWidget):
     def __init__(self, shell: CellQuantWindow):
         super().__init__()
         self.shell = shell
+        self._noted_model_swaps: set[str] = set()
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self._form = form
@@ -3322,10 +3323,9 @@ class ObjectsPanel(QWidget):
 
         from cellquant.engines import ENGINE_LABELS
 
-        noted = self.__dict__.setdefault("_noted_model_swaps", set())
-        if saved in noted:
+        if saved in self._noted_model_swaps:
             return
-        noted.add(saved)
+        self._noted_model_swaps.add(saved)
         footer = getattr(self.shell, "_footer", None)
         if footer is not None:
             footer.log.append(
