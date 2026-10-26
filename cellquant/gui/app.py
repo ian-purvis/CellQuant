@@ -2416,7 +2416,6 @@ class ViewBox(QWidget):
         self.shell = shell
         self._stacks: dict[str, tuple] = {}  # layer name -> (full stack, contrast limits)
         self._step = None
-        self._angles: dict[str, int] = {}  # image id -> view rotation in whole degrees
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
         rotate_row = QHBoxLayout()
@@ -2428,10 +2427,14 @@ class ViewBox(QWidget):
         self.rotation.setToolTip(
             "Turn the picture clockwise, any whole degree from 0 to 360. This changes only what you see: "
             "the image, the objects and everything saved stay as they are, and drawing and clicking work as usual. "
-            "Each image keeps its own angle."
+            "Each image keeps its own angle, saved with the experiment."
         )
         self.rotation.valueChanged.connect(self._rotated)
         rotate_row.addWidget(self.rotation)
+        self.reset_rotation = QPushButton("Reset")
+        self.reset_rotation.setToolTip("Turn the picture back to how it was saved (0°).")
+        self.reset_rotation.clicked.connect(lambda: self.rotation.setValue(0))
+        rotate_row.addWidget(self.reset_rotation)
         rotate_row.addStretch(1)
         layout.addLayout(rotate_row)
         self.max_projection = QCheckBox("Max projection ⓘ")
@@ -2469,7 +2472,9 @@ class ViewBox(QWidget):
         self.max_projection.setChecked(False)
         self.max_projection.blockSignals(False)
         controller = self.shell.controller
-        angle = self._angles.get(controller.current_image_id, 0) if controller else 0
+        angle = 0
+        if controller and controller.current_image_id:
+            angle = controller.experiment.image(controller.current_image_id).view_angle
         self.rotation.blockSignals(True)
         self.rotation.setValue(angle)
         self.rotation.blockSignals(False)
@@ -2481,7 +2486,7 @@ class ViewBox(QWidget):
     def _rotated(self, degrees: int) -> None:
         controller = self.shell.controller
         if controller and controller.current_image_id:
-            self._angles[controller.current_image_id] = degrees
+            controller.set_view_angle(controller.current_image_id, degrees % 360)
         self.apply_rotation()
         try:
             self.shell.viewer.reset_view()  # a turned picture no longer fits the window it was zoomed to

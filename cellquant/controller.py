@@ -344,6 +344,14 @@ class AnalysisController:
                 self.last_results[image_id] = apply_count_area(result, record.count_area)
         self.save()
 
+    def set_view_angle(self, image_id: str, degrees: int) -> None:
+        """Remember how this image is turned in the viewer. Display only: nothing is measured again."""
+
+        record = self.experiment.image(image_id)
+        if record.view_angle != degrees:
+            record.view_angle = degrees
+            self.save()
+
     def _result_folders(self) -> list[Path]:
         """Where saved results are looked for: open work, the latest run, then earlier runs, newest first.
 
