@@ -409,6 +409,8 @@ class StartPage(QWidget):
             ("Try practice images", "Makes a small practice experiment with a known answer. The best first step.", window.start_practice),
             ("New experiment…", "Choose the folder with your images and a separate folder for the results.", window.new_experiment),
             ("Open experiment…", "Open a folder you used before. Your settings and results are kept.", window.open_experiment_dialog),
+            ("Analyze a results folder…", "Statistics and graphs of saved results (a results or export folder) in QuantAnalysis, "
+             "without going through the steps.", window.analyze_results_folder),
         ):
             button = QPushButton(text)
             button.setToolTip(tip)
@@ -644,7 +646,16 @@ class ResultsSummary(QGroupBox):
         export.setMinimumHeight(32)
         export.setToolTip("Save objects.csv, image_summary.csv and the settings to a folder you choose.")
         export.clicked.connect(window.export_dialog)
-        layout.addWidget(export)
+        analyze = QPushButton("Analyze…")
+        analyze.setMinimumHeight(32)
+        analyze.setToolTip("Statistics and graphs of these results in QuantAnalysis: t tests, rank tests, SuperPlots.\n"
+                           "It follows this experiment: change a cutoff or an approval and its tables update.")
+        analyze.clicked.connect(lambda: window.open_quantanalysis())
+        self.analyze = analyze
+        row = QHBoxLayout()
+        row.addWidget(export, 1)
+        row.addWidget(analyze)
+        layout.addLayout(row)
         # Shown when the experiment has more than one analysis (the list at the top of the panel).
         self.export_analyses = QPushButton("Export all analyses…")
         self.export_analyses.setToolTip(
