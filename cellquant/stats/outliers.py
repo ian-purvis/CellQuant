@@ -13,7 +13,8 @@ constant, K = 1 parameter):
 2. Outlier test. Each residual gives t = |x - μ|/RSDR and a two-tailed P from the t distribution
    with N - K df. The Benjamini-Hochberg step-up rule is applied at the desired FDR Q (Prism's
    default Q = 1%): with P sorted ascending, the j most extreme values are outliers for the largest
-   j with P(j) ≤ j·Q/N.
+   j with P(j) ≤ j·Q/N, with j at most 30% of N (at least 1), as Prism allows up to 30% outliers.
+   Prism fits Y = M, M a robust mean, and needs n ≥ 3; so does this engine.
 
 Limits of this implementation: it follows the published description, not Prism's code. The
 percentile uses linear interpolation; the paper's further details (for example how far it iterates
@@ -67,6 +68,16 @@ def _cauchy_location(x: np.ndarray, scale: float) -> float:
     return float(grid[best])
 
 
+MAX_OUTLIER_FRACTION = 0.30
+
+
+def max_outliers(n: int) -> int:
+    """Most values ROUT may flag: 30% of n (Prism: "up to 30% of the values can be outliers"),
+    rounded down, but at least 1 so that a column of 3 can still have one."""
+
+    return max(1, int(math.floor(MAX_OUTLIER_FRACTION * n + 1e-9)))
+
+
 def rout_fit(values, q: float = 0.01) -> dict:
     """ROUT on one column (see the module docstring). Returns the robust centre, RSDR, each value's
     t and P, and a boolean mask of outliers (blanks are never outliers)."""
@@ -104,7 +115,9 @@ def rout_fit(values, q: float = 0.01) -> dict:
     t = np.abs(x - mu) / scale
     p = 2 * stats.t.sf(t, n - 1)
     order = np.argsort(p, kind="mergesort")
+    cap = max_outliers(n)
     passing = np.nonzero(p[order] <= q * np.arange(1, n + 1) / n)[0]
+    passing = passing[passing < cap]
     flagged = np.zeros(n, bool)
     if passing.size:
         flagged[order[: passing.max() + 1]] = True

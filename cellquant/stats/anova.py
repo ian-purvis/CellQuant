@@ -146,7 +146,10 @@ def _trend(result: AnalysisResult, est: Estimates, alpha: float, style: str, ss_
     """Post-test for linear trend: the contrast c_i = n_i (x_i - x̄_w) with x_i = 1..k (column order)
     and x̄_w the n-weighted mean position. Slope = Σ c_i ȳ_i / Σ n_i (x_i - x̄_w)² (the least-squares
     slope of the values on column number); F = (Σ c_i ȳ_i)² / (c'Vc), df (1, error df);
-    R² for trend = SS_trend / SS_total, SS_trend = (Σ c_i ȳ_i)² / Σ n_i (x_i - x̄_w)²."""
+    SS_trend = (Σ c_i ȳ_i)² / Σ n_i (x_i - x̄_w)². Two R² values, as Prism reports them:
+    effect-size R² = SS_trend / SS_total (the fraction of all variation explained by the trend) and
+    alerting R² = SS_trend / SS_between-means, with SS_between-means = Σ n_i (ȳ_i - ȳ_w)² (the
+    fraction of the variation among the group means explained by the trend; always the larger)."""
 
     k = len(est.names)
     if k < 3:
@@ -167,10 +170,14 @@ def _trend(result: AnalysisResult, est: Estimates, alpha: float, style: str, ss_
     section = result.section("Test for linear trend")
     section.add("Slope (change per column)", slope)
     r2 = ss_trend / ss_total if ss_total else np.nan
-    section.add("R squared (SS trend / SS total)", r2)
+    weighted = float(np.sum(n * est.estimates) / n.sum())
+    ss_means = float(np.sum(n * (est.estimates - weighted) ** 2))
+    alerting = ss_trend / ss_means if ss_means > 0 else np.nan
+    section.add("R squared (effect size: SS trend / SS total)", r2)
+    section.add("R squared (alerting: SS trend / SS between means)", alerting)
     section.add("F, DFn, DFd", (f, 1, est.df), f"{fmt(f)}, 1, {fmt(est.df)}")
     p_rows(section, p, alpha, style, label="Is linear trend significant")
-    result.values.update(trend_slope=slope, trend_r_squared=r2, trend_f=f, trend_df=est.df, trend_p=p, trend_ss=ss_trend)
+    result.values.update(trend_slope=slope, trend_r_squared=r2, trend_alerting_r_squared=alerting, trend_ss_between_means=ss_means, trend_f=f, trend_df=est.df, trend_p=p, trend_ss=ss_trend)
     if ss_between is not None and k > 2 and est.kind == "pooled":
         ms_error = var / sxx  # c'Vc = MSE · Σ n_i (x_i - x̄)² for a pooled error term
         dev_f = (ss_between - ss_trend) / (k - 2) / ms_error if ms_error > 0 else np.nan
@@ -444,16 +451,17 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     (k - 1, (n - 1)(k - 1)) df. Geisser-Greenhouse epsilon (see ``geisser_greenhouse_epsilon``) is
     always reported; with ``geisser_greenhouse=True`` (Prism's recommended choice) both df are
     multiplied by ε. "Was the matching effective?": F = MS_subjects / MS_residual.
-    R squared is SS_treatment / (SS_treatment + SS_residual) (partial eta squared), so with two
-    columns it equals the paired t test's R².
+    Treatment R² = SS_treatment / (SS_treatment + SS_residual) (Prism, after Keppel: subjects left
+    out; with two columns it equals the paired t test's R²). Matching R² = SS_subjects / SS_total.
 
     Rows with a blank: ``missing="mixed"`` (default, as Prism) fits ``mixed_effects_anova``
     instead; ``missing="exclude"`` drops those rows.
 
     Multiple comparisons use ``rm_error``: "pooled" (MS_residual with (n-1)(k-1) df, which
     assumes sphericity) or "separate" (each comparison uses only its two columns: SE = SD of the
-    differences/√n, df = n - 1). The default is pooled when sphericity is assumed and separate with
-    the Geisser-Greenhouse correction."""
+    differences/√n, df = n - 1, essentially a paired t test; Maxwell and Delaney pp. 552-555). The
+    default follows Prism: pooled when sphericity is assumed, separate with the Geisser-Greenhouse
+    correction (which is then applied only to the main P)."""
 
     _check_alpha(alpha, ci)
     if missing not in ("mixed", "exclude"):
@@ -463,8 +471,8 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     Y = Y[present.any(axis=1)]
     complete = np.isfinite(Y).all(axis=1)
     if not complete.all() and missing == "mixed":
-        result = mixed_effects_anova(table, groups=groups, comparisons=comparisons, method=method, control=control, pairs=pairs, family=family,
-                                     trend=trend, alpha=alpha, ci=ci, style=style)
+        result = mixed_effects_anova(table, groups=groups, geisser_greenhouse=geisser_greenhouse, comparisons=comparisons, method=method,
+                                     control=control, pairs=pairs, family=family, trend=trend, alpha=alpha, ci=ci, style=style)
         result.warnings.insert(0, f"{int((~complete).sum())} row(s) have a blank, so a mixed-effects model was fitted instead of repeated-measures ANOVA (as Prism does).")
         return result
     dropped = int((~complete).sum())
@@ -478,6 +486,7 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     dfn, dfd = core["df_treatment"] * scale, core["df_residual"] * scale
     p = float(stats.f.sf(core["f"], dfn, dfd)) if np.isfinite(core["f"]) else np.nan
     r2 = core["ss_treatment"] / (core["ss_treatment"] + core["ss_residual"]) if core["ss_treatment"] + core["ss_residual"] > 0 else np.nan
+    r2_matching = core["ss_subjects"] / core["ss_total"] if core["ss_total"] > 0 else np.nan
     result = _start("Repeated measures one-way ANOVA", table, names, {"alpha": alpha, "ci": ci, "style": style, "geisser_greenhouse": geisser_greenhouse,
                                                                       "comparisons": comparisons, "method": method, "control": control, "family": family,
                                                                       "rm_error": rm_error, "trend": trend})
@@ -489,10 +498,11 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     sig = bool(p < alpha) if np.isfinite(p) else None
     summary.add(_sig_label("Statistically significant", alpha), sig, "" if sig is None else ("Yes" if sig else "No"))
     summary.add("Geisser-Greenhouse's epsilon", eps)
-    summary.add("R squared (partial eta squared)", r2)
+    summary.add("R squared", r2)
     match = result.section("Was the matching effective?")
     match.add("F (DFn, DFd)", (core["f_subjects"], core["df_subjects"], core["df_residual"]), f"{fmt(core['f_subjects'])} ({core['df_subjects']}, {core['df_residual']})")
     p_rows(match, core["p_subjects"], alpha, style, label="Is there significant matching")
+    match.add("R squared", r2_matching)
     _anova_table(result, [("Treatment (between columns)", core["ss_treatment"], dfn, core["ms_treatment"], core["f"], p),
                           ("Individual (between rows)", core["ss_subjects"], core["df_subjects"], core["ms_subjects"], core["f_subjects"], core["p_subjects"]),
                           ("Residual (random)", core["ss_residual"], dfd, core["ms_residual"], None, None),
@@ -505,7 +515,7 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
                          dfn_uncorrected=core["df_treatment"], dfd_uncorrected=core["df_residual"],
                          p_uncorrected=float(stats.f.sf(core["f"], core["df_treatment"], core["df_residual"])) if np.isfinite(core["f"]) else np.nan,
                          p_geisser_greenhouse=float(stats.f.sf(core["f"], core["df_treatment"] * eps, core["df_residual"] * eps)) if np.isfinite(core["f"]) else np.nan,
-                         r_squared=r2, **{key: core[key] for key in ("ss_treatment", "ss_subjects", "ss_residual", "ss_total", "ms_treatment", "ms_subjects",
+                         r_squared=r2, r_squared_matching=r2_matching, **{key: core[key] for key in ("ss_treatment", "ss_subjects", "ss_residual", "ss_total", "ms_treatment", "ms_subjects",
                                                                      "ms_residual", "f_subjects", "p_subjects")})
     if not table.paired:
         result.warnings.append("The table is not marked as paired; repeated-measures ANOVA assumes row i of each column is the same subject.")
@@ -553,7 +563,7 @@ def _gls_covariance(long: pd.DataFrame, k: int, var_subject: float, var_resid: f
     return np.linalg.inv(info)
 
 
-def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None, control=None,
+def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, geisser_greenhouse: bool = True, comparisons=None, method: str | None = None, control=None,
                         pairs=None, family: str = "per_reference", trend: bool = False, alpha: float = 0.05, ci: float = 0.95,
                         style: str = "GP") -> AnalysisResult:
     """Mixed-effects model for repeated measures with missing values: value = group mean + subject
@@ -570,9 +580,17 @@ def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = No
     - Multiple comparisons use the fitted group means, their covariance (X'V⁻¹X)⁻¹ at the REML
       variance estimates, and the same df.
 
-    Prism fits the same kind of model but its documentation does not say which denominator df it
-    uses, and it can also apply a Geisser-Greenhouse correction to the mixed model; this engine
-    assumes compound symmetry (sphericity) and does not correct for its absence."""
+    - Geisser-Greenhouse (``geisser_greenhouse=True``, the default as for repeated-measures ANOVA):
+      ε is computed from the covariance matrix of the columns, each entry from the rows where both
+      columns have values (pairwise complete; with no blanks this is the RM ANOVA ε), and DFn and
+      DFd are both multiplied by it. Prism offers this correction for its mixed model too, but does
+      not document how it estimates ε with missing values, so this is this engine's choice.
+
+    Prism fits the same model (subjects random, columns fixed, no choice of covariance structure)
+    and it equals repeated-measures ANOVA when nothing is missing. Its guide does not say which
+    denominator df it uses; this engine uses the between-within df above. The multiple comparisons
+    stay model-based (they do not switch to two-column comparisons under Geisser-Greenhouse).
+    """
 
     _check_alpha(alpha, ci)
     smf, MixedLMParams = _statsmodels_mixedlm()
@@ -601,16 +619,34 @@ def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = No
     L[np.arange(k - 1), np.arange(1, k)] = -1
     Lb = L @ beta
     f = float(Lb @ np.linalg.solve(L @ V @ L.T, Lb) / (k - 1))
-    p = float(stats.f.sf(f, k - 1, dfd))
+    p_uncorrected = float(stats.f.sf(f, k - 1, dfd))
+    eps = np.nan
+    if k > 2:
+        S = pd.DataFrame(Y).cov(min_periods=2).to_numpy()
+        if np.isfinite(S).all():
+            C = np.eye(k) - np.ones((k, k)) / k
+            Sc = C @ S @ C
+            denom = (k - 1) * np.trace(Sc @ Sc)
+            if denom > 0:
+                eps = float(min(1.0, max(1 / (k - 1), np.trace(Sc) ** 2 / denom)))
+    else:
+        eps = 1.0
+    gg_on = geisser_greenhouse and np.isfinite(eps)
+    scale = eps if gg_on else 1.0
+    dfn_used, dfd_used = (k - 1) * scale, dfd * scale
+    p = float(stats.f.sf(f, dfn_used, dfd_used))
     null = MixedLMParams.from_components(fe_params=beta, cov_re=np.array([[1e-10]]))
     llf0 = float(model.loglike(null, profile_fe=True))
     lr = max(0.0, 2 * (float(fit.llf) - llf0))
     p_match = float(stats.chi2.sf(lr, 1))
-    result = _start("Mixed-effects model (REML)", table, names, {"alpha": alpha, "ci": ci, "style": style, "comparisons": comparisons, "method": method,
+    result = _start("Mixed-effects model (REML)", table, names, {"alpha": alpha, "ci": ci, "style": style, "geisser_greenhouse": geisser_greenhouse,
+                                                                 "comparisons": comparisons, "method": method,
                                                                  "control": control, "family": family, "trend": trend})
     fixed = result.section("Fixed effects (type III)")
-    fixed.add("Treatment: F (DFn, DFd)", (f, k - 1, dfd), f"{fmt(f)} ({k - 1}, {dfd})")
+    fixed.add("Assume sphericity (equal variability of differences)?", not geisser_greenhouse, "No" if geisser_greenhouse else "Yes")
+    fixed.add("Treatment: F (DFn, DFd)", (f, dfn_used, dfd_used), f"{fmt(f)} ({fmt(dfn_used)}, {fmt(dfd_used)})")
     p_rows(fixed, p, alpha, style, label="Statistically significant")
+    fixed.add("Geisser-Greenhouse's epsilon", eps)
     random = result.section("Random effects")
     random.add("Subject: SD", math.sqrt(max(var_subject, 0.0)))
     random.add("Subject: variance", var_subject)
@@ -627,24 +663,125 @@ def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = No
     means_section = result.section("Fitted means")
     for name, b, s in zip(names, beta, np.sqrt(np.diag(V))):
         means_section.add(name, {"mean": float(b), "se": float(s)}, f"{fmt(float(b))} ± {fmt(float(s))} (SE)")
-    result.values.update(names=names, means=beta.tolist(), se_means=np.sqrt(np.diag(V)).tolist(), f=f, dfn=k - 1, dfd=dfd, p=p,
-                         var_subject=var_subject, var_residual=var_resid, lr_matching=lr, p_matching=p_match, n_subjects=subjects, n_values=n_obs,
+    result.values.update(names=names, means=beta.tolist(), se_means=np.sqrt(np.diag(V)).tolist(), f=f, dfn=dfn_used, dfd=dfd_used, p=p, dfn_uncorrected=k - 1, dfd_uncorrected=dfd,
+                         p_uncorrected=p_uncorrected, epsilon=eps, var_subject=var_subject, var_residual=var_resid, lr_matching=lr, p_matching=p_match, n_subjects=subjects, n_values=n_obs,
                          llf=float(fit.llf), converged=bool(getattr(fit, "converged", True)))
     if var_subject <= 1e-8 * max(var_resid, 1e-300):
         result.warnings.append("The subject variance was estimated as zero (the matching explains nothing), so the model is the same as ordinary ANOVA.")
     if any("converge" in str(w.message).lower() for w in caught) or not getattr(fit, "converged", True):
         result.warnings.append("The mixed model fit reported convergence problems; check the result.")
-    result.warnings.append("Mixed-effects model: P uses a Wald F test with between-within df; Prism's df method and its optional "
-                           "Geisser-Greenhouse correction for mixed models are not reproduced (this model assumes sphericity).")
+    result.warnings.append("Mixed-effects model: P uses a Wald F test with between-within df. Prism does not document its df method"
+                           + (" or how it estimates Geisser-Greenhouse epsilon with missing values (here: pairwise-complete covariances)" if gg_on else "")
+                           + ", so P may differ slightly from Prism's.")
+    if geisser_greenhouse and not gg_on:
+        result.warnings.append("Geisser-Greenhouse epsilon could not be estimated (a pair of columns has fewer than 2 rows with both values), so P is uncorrected.")
     if not table.paired:
         result.warnings.append("The table is not marked as paired; a mixed-effects model for repeated measures assumes row i of each column is the same subject.")
     counts_arr = counts.to_numpy().astype(float)
-    est = Estimates(names, beta, counts_arr, V, float(dfd), "pooled", error_label="mixed-model SEs")
+    est = Estimates(names, beta, counts_arr, V, float(dfd), "pooled", error_label="mixed-model SEs, between-within df")
     ss_total = float(np.sum((long["value"] - long["value"].mean()) ** 2))
     more = _follow_up(result, est, comparisons, method, control, pairs, family, trend, alpha, ci, style, ss_total, None)
     result.methods = (f"Mixed-effects model (REML; random intercept per subject; {k} treatments, {subjects} subjects, {n_obs} values), "
-                      f"Wald F test with between-within df (alpha = {alpha:g}).{more}")
+                      f"Wald F test with between-within df{f', Geisser-Greenhouse corrected (epsilon = {eps:.3f})' if gg_on else ''} (alpha = {alpha:g}).{more}")
     return result
+
+
+# ---------------------------------------------------------------------------------------------
+# Exact permutation P values for the rank tests
+# ---------------------------------------------------------------------------------------------
+
+KW_EXACT_MAX_PARTITIONS = 2_000_000
+FRIEDMAN_EXACT_MAX = 1e9
+
+
+def kw_partitions(sizes: Sequence[int]) -> int:
+    """Number of distinct ways to split N values into groups of these sizes, counting groups of
+    equal size as interchangeable (the Kruskal-Wallis statistic does not change when they swap):
+    N! / (Π n_i! · Π m_s!), with m_s the number of groups of size s."""
+
+    sizes = [int(n) for n in sizes]
+    total = math.factorial(sum(sizes))
+    for n in sizes:
+        total //= math.factorial(n)
+    for s in set(sizes):
+        total //= math.factorial(sizes.count(s))
+    return total
+
+
+def kw_exact_p(samples, max_partitions: int = KW_EXACT_MAX_PARTITIONS) -> float | None:
+    """Exact permutation P of the Kruskal-Wallis test, ties included: the share of all ways of
+    splitting the observed (mid)ranks into groups of the observed sizes whose Σ R_i²/n_i is at
+    least the observed one (H is a fixed increasing function of it, with or without the tie
+    correction). Groups of equal size are enumerated once (by increasing smallest member), which
+    leaves every share unchanged. Returns None when there are more than ``max_partitions`` splits."""
+
+    sizes = [len(s) for s in samples]
+    if kw_partitions(sizes) > max_partitions:
+        return None
+    pooled = np.concatenate([np.asarray(s, float) for s in samples])
+    ranks = stats.rankdata(pooled)
+    N = ranks.size
+    start = np.cumsum([0] + sizes[:-1])
+    observed = sum(ranks[a:a + n].sum() ** 2 / n for a, n in zip(start, sizes))
+    order = sorted(sizes)
+    tol = 1e-9 * max(1.0, observed)
+    hits = 0
+    total = 0
+
+    def expand(used: np.ndarray, partial: np.ndarray, last_min: np.ndarray, level: int) -> None:
+        nonlocal hits, total
+        n = order[level]
+        remaining = N - int(used[0].sum())
+        rem = np.argsort(used, axis=1, kind="stable")[:, :remaining].astype(np.int16)
+        if level == len(order) - 1:
+            final = partial + ranks[rem].sum(axis=1) ** 2 / n
+            hits += int(np.sum(final >= observed - tol))
+            total += final.size
+            return
+        combos = np.array(list(itertools.combinations(range(remaining), n)), dtype=np.int16)
+        same = level > 0 and order[level - 1] == n
+        step = max(1, 200_000 // len(combos))
+        for a in range(0, used.shape[0], step):
+            chosen = rem[a:a + step][:, combos]  # rows × combos × n
+            keep = chosen[:, :, 0] > last_min[a:a + step, None] if same else np.ones(chosen.shape[:2], bool)
+            r_idx, c_idx = np.nonzero(keep)
+            if r_idx.size == 0:
+                continue
+            picked = chosen[r_idx, c_idx]
+            new_used = used[a:a + step][r_idx].copy()
+            np.put_along_axis(new_used, picked.astype(np.intp), True, axis=1)
+            new_partial = partial[a:a + step][r_idx] + ranks[picked].sum(axis=1) ** 2 / n
+            expand(new_used, new_partial, picked[:, 0].astype(np.int32), level + 1)
+
+    expand(np.zeros((1, N), bool), np.zeros(1), np.full(1, -1, np.int32), 0)
+    return hits / total
+
+
+def friedman_exact_p(Y: np.ndarray, limit: float = FRIEDMAN_EXACT_MAX) -> float | None:
+    """Exact permutation P of the Friedman test, ties included: under the null hypothesis each row's
+    ranks are in a random order (all k! orders equally likely, independently across rows). The
+    distribution of the column rank sums is built row by row; since every order is applied, a state
+    can be kept sorted. P is the probability that Σ R_j² is at least the observed value (Q is an
+    increasing function of it for fixed ties). Returns None when (k!)^n > ``limit`` (Prism's rule
+    is exact unless (T!)^S > 10⁹)."""
+
+    n, k = Y.shape
+    if n * math.lgamma(k + 1) > math.log(limit):
+        return None
+    doubled = np.rint(2 * np.apply_along_axis(stats.rankdata, 1, Y)).astype(np.int64)
+    observed = int(np.sum(doubled.sum(axis=0) ** 2))
+    perms = np.array(list(itertools.permutations(range(k))), dtype=np.intp)
+    states = np.zeros((1, k), np.int64)
+    probs = np.ones(1)
+    for row in doubled:
+        options = row[perms]  # k! × k
+        new = (states[:, None, :] + options[None, :, :]).reshape(-1, k)
+        new.sort(axis=1)
+        weights = np.repeat(probs / len(perms), len(perms))
+        states, inverse = np.unique(new, axis=0, return_inverse=True)
+        probs = np.bincount(inverse.ravel(), weights=weights)
+    statistic = np.sum(states**2, axis=1)
+    return float(min(1.0, probs[statistic >= observed].sum()))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -679,11 +816,16 @@ def _kw_min_p(sizes: list[int]) -> float:
 
 
 def kruskal_wallis(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None, control=None,
-                   pairs=None, family: str = "per_reference", alpha: float = 0.05, style: str = "GP") -> AnalysisResult:
+                   pairs=None, family: str = "per_reference", exact: bool | None = None, alpha: float = 0.05, style: str = "GP") -> AnalysisResult:
     """Kruskal-Wallis test. All values are ranked together (ties get the average rank).
-    H = [12 / (N(N+1)) · Σ R_i²/n_i - 3(N+1)] / [1 - Σ(t³ - t)/(N³ - N)] (tie-corrected), and P is
-    from the chi-square distribution with k - 1 df (an approximation; it is not exact for small
-    samples). Multiple comparisons: Dunn's test on the mean ranks."""
+    H = [12 / (N(N+1)) · Σ R_i²/n_i - 3(N+1)] / [1 - Σ(t³ - t)/(N³ - N)] (tie-corrected).
+
+    P is exact (permutation, ties included, as Prism 6+) when there are at most
+    KW_EXACT_MAX_PARTITIONS distinct ways to split the values into the groups (``kw_partitions``;
+    for example 5 groups of 3 or 4 groups of 4, a few seconds at most); otherwise it is the
+    chi-square approximation with k - 1 df. Prism does not state its cutoff. ``exact=False`` forces
+    chi-square, ``exact=True`` refuses when enumeration is too large. Multiple comparisons: Dunn's
+    test on the mean ranks."""
 
     _check_alpha(alpha, 0.95)
     names, samples, dropped = _independent(table, groups, "The Kruskal-Wallis test")
@@ -701,12 +843,16 @@ def kruskal_wallis(table: ColumnTable, *, groups: Sequence[str] | None = None, c
     if not correction > 0:
         raise StatisticsError("Every value is the same, so the Kruskal-Wallis test is undefined.")
     h = float(h_raw / correction)
-    p = float(stats.chi2.sf(h, k - 1))
+    p_chi2 = float(stats.chi2.sf(h, k - 1))
+    p_exact = kw_exact_p(samples) if exact is not False else None
+    if exact is True and p_exact is None:
+        raise StatisticsError(f"An exact Kruskal-Wallis P needs at most {KW_EXACT_MAX_PARTITIONS:,} ways to split the values; these group sizes have more.")
+    p = p_exact if p_exact is not None else p_chi2
     result = _start("Kruskal-Wallis test", table, names, {"alpha": alpha, "style": style, "comparisons": comparisons, "method": method,
                                                           "control": control, "family": family})
     section = result.section("Kruskal-Wallis test")
     section.add("P value", p, format_p(p, style=style))
-    section.add("Exact or approximate P value?", False, f"Approximate (chi-square, {k - 1} df)")
+    section.add("Exact or approximate P value?", p_exact is not None, "Exact" if p_exact is not None else f"Approximate (chi-square, {k - 1} df)")
     section.add("P value summary", p_summary(p, style), p_summary(p, style))
     sig = bool(p < alpha)
     section.add(_sig_label("Do the medians vary signif.", alpha), sig)
@@ -719,9 +865,9 @@ def kruskal_wallis(table: ColumnTable, *, groups: Sequence[str] | None = None, c
     for name, s, r in zip(names, samples, split):
         groups_section.add(name, {"n": int(s.size), "median": float(np.median(s)), "rank_sum": float(r.sum()), "mean_rank": float(r.mean())},
                            f"n = {s.size}; median = {fmt(float(np.median(s)))}; sum of ranks = {fmt(float(r.sum()))}; mean rank = {fmt(float(r.mean()))}")
-    result.values.update(names=names, n=sizes, h=h, h_uncorrected=float(h_raw), df=k - 1, p=p, rank_sums=sums.tolist(), mean_ranks=(sums / n).tolist(),
+    result.values.update(names=names, n=sizes, h=h, h_uncorrected=float(h_raw), df=k - 1, p=p, p_chi2=p_chi2, exact=p_exact is not None, rank_sums=sums.tolist(), mean_ranks=(sums / n).tolist(),
                          medians=[float(np.median(s)) for s in samples])
-    if min(sizes) < 5:
+    if p_exact is None and min(sizes) < 5:
         result.warnings.append("A group has fewer than 5 values; the chi-square approximation behind the Kruskal-Wallis P can be inaccurate with such small groups.")
     floor = _kw_min_p(sizes)
     if floor >= alpha:
@@ -734,7 +880,8 @@ def kruskal_wallis(table: ColumnTable, *, groups: Sequence[str] | None = None, c
     est = Estimates(names, sums / n, n, variance * np.diag(1 / n), np.inf, "rank", error_label="mean ranks, ties corrected")
     plan = plan_from(comparisons, method, control, pairs, family)
     more = _rank_follow_up(result, est, plan, alpha, style, lambda i, j: (N - (n[i] + n[j]) / 2) / math.sqrt(N * (N + 1) / 12 * (1 / n[i] + 1 / n[j])))
-    result.methods = f"Kruskal-Wallis test ({k} groups, {N} values; tie-corrected H, approximate P from chi-square with {k - 1} df; alpha = {alpha:g}).{more}"
+    how = "exact permutation P" if p_exact is not None else f"approximate P from chi-square with {k - 1} df"
+    result.methods = f"Kruskal-Wallis test ({k} groups, {N} values; tie-corrected H, {how}; alpha = {alpha:g}).{more}"
     return result
 
 
@@ -755,11 +902,12 @@ def _rank_follow_up(result, est, plan, alpha, style, max_z) -> str:
 
 
 def friedman(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None, control=None,
-             pairs=None, family: str = "per_reference", alpha: float = 0.05, style: str = "GP") -> AnalysisResult:
+             pairs=None, family: str = "per_reference", exact: bool | None = None, alpha: float = 0.05, style: str = "GP") -> AnalysisResult:
     """Friedman test for matched rows. Values are ranked within each row (ties get the average
     rank); R_j is the rank sum of column j. With tie correction (as R's friedman.test):
-    Q = 12 Σ (R_j - n(k+1)/2)² / [n k (k+1) - Σ(t³ - t)/(k - 1)], P from chi-square with k - 1 df
-    (approximate). Rows with a blank are left out. Multiple comparisons: Dunn's test on the mean
+    Q = 12 Σ (R_j - n(k+1)/2)² / [n k (k+1) - Σ(t³ - t)/(k - 1)]. P is exact (permutation of the
+    ranks within rows, ties included) unless (k!)^n > 10⁹, Prism's rule; then it is the chi-square
+    approximation with k - 1 df. ``exact=False`` forces chi-square. Rows with a blank are left out. Multiple comparisons: Dunn's test on the mean
     ranks R_j/n with SE √(k(k+1)/(6n)) (no tie correction)."""
 
     _check_alpha(alpha, 0.95)
@@ -778,12 +926,16 @@ def friedman(table: ColumnTable, *, groups: Sequence[str] | None = None, compari
     if not denom > 0:
         raise StatisticsError("Every row has all values tied, so the Friedman test is undefined.")
     q = float(12 * np.sum((sums - n * (k + 1) / 2) ** 2) / denom)
-    p = float(stats.chi2.sf(q, k - 1))
+    p_chi2 = float(stats.chi2.sf(q, k - 1))
+    p_exact = friedman_exact_p(Y) if exact is not False else None
+    if exact is True and p_exact is None:
+        raise StatisticsError("An exact Friedman P is computed only when (k!)^n ≤ 10⁹, as in Prism.")
+    p = p_exact if p_exact is not None else p_chi2
     result = _start("Friedman test", table, names, {"alpha": alpha, "style": style, "comparisons": comparisons, "method": method,
                                                     "control": control, "family": family})
     section = result.section("Friedman test")
     section.add("P value", p, format_p(p, style=style))
-    section.add("Exact or approximate P value?", False, f"Approximate (chi-square, {k - 1} df)")
+    section.add("Exact or approximate P value?", p_exact is not None, "Exact" if p_exact is not None else f"Approximate (chi-square, {k - 1} df)")
     section.add("P value summary", p_summary(p, style), p_summary(p, style))
     section.add(_sig_label("Are the medians signif. different", alpha), bool(p < alpha))
     section.add("Number of groups", k)
@@ -794,13 +946,13 @@ def friedman(table: ColumnTable, *, groups: Sequence[str] | None = None, compari
     groups_section = result.section("Group summary")
     for j, name in enumerate(names):
         groups_section.add(name, {"median": float(np.median(Y[:, j])), "rank_sum": float(sums[j])}, f"median = {fmt(float(np.median(Y[:, j])))}; sum of ranks = {fmt(float(sums[j]))}")
-    result.values.update(names=names, n_subjects=n, statistic=q, df=k - 1, p=p, rank_sums=sums.tolist(), mean_ranks=(sums / n).tolist())
+    result.values.update(names=names, n_subjects=n, statistic=q, df=k - 1, p=p, p_chi2=p_chi2, exact=p_exact is not None, rank_sums=sums.tolist(), mean_ranks=(sums / n).tolist())
     floor = float(math.exp((1 - n) * math.lgamma(k + 1)))
     result.values["min_exact_p"] = floor
     if floor >= alpha:
         result.warnings.append(f"With {n} subjects and {k} groups, the smallest exact P the Friedman test can give is {format_p(floor, style=style)} "
                                f"(= (k!)^(1-n)), not below alpha = {alpha:g}: it cannot find a significant difference whatever the data.")
-    elif n < 10:
+    elif n < 10 and p_exact is None:
         result.warnings.append("With fewer than 10 subjects the chi-square approximation behind the Friedman P can be inaccurate.")
     if dropped:
         result.warnings.append(f"{dropped} row(s) with a blank left out (the Friedman test needs complete rows).")
@@ -809,7 +961,8 @@ def friedman(table: ColumnTable, *, groups: Sequence[str] | None = None, compari
     est = Estimates(names, sums / n, np.full(k, n), k * (k + 1) / (12 * n) * np.eye(k), np.inf, "rank", error_label="mean ranks within rows")
     plan = plan_from(comparisons, method, control, pairs, family)
     more = _rank_follow_up(result, est, plan, alpha, style, lambda i, j: (k - 1) / math.sqrt(k * (k + 1) / (6 * n)))
-    result.methods = f"Friedman test ({k} treatments, {n} subjects; approximate P from chi-square with {k - 1} df; alpha = {alpha:g}).{more}"
+    how = "exact permutation P" if p_exact is not None else f"approximate P from chi-square with {k - 1} df"
+    result.methods = f"Friedman test ({k} treatments, {n} subjects; {how}; alpha = {alpha:g}).{more}"
     return result
 
 
