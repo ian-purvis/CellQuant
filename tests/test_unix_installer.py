@@ -33,6 +33,33 @@ def test_entry_points_start_scripts_that_exist():
             assert (ROOT / relative).is_file(), relative
 
 
+def test_installer_installs_the_statistics_extra_like_windows():
+    unix = (UNIX / "install_unix.sh").read_text()
+    windows = (ROOT / "packaging" / "windows" / "install_windows.ps1").read_text(encoding="ascii")
+    assert 'requirement="${PROJECT_ROOT}[gui,stats,$extra]"' in unix
+    assert '"${ProjectRoot}[gui,stats,$Extra]"' in windows
+    common = (UNIX / "common.sh").read_text()
+    launcher = (UNIX / "launch_cellquant.sh").read_text()
+    assert "CQ_STATS_PACKAGES='statsmodels matplotlib'" in common
+    assert launcher.index('cq_install_stats_packages "$CQ_CONDA" "$PREFIX"') < launcher.index('exec "$CQ_CONDA" run')
+
+
+def test_stats_packages_are_added_only_when_missing(tmp_path: Path):
+    """The launcher's check: exit 3 means a library is missing, and only then is pip run."""
+
+    conda = tmp_path / "conda"
+    calls = tmp_path / "calls"
+    conda.write_text(f"#!/usr/bin/env bash\necho \"$@\" >> {calls}\ncase \"$*\" in *find_spec*) exit ${{CHECK:-0}};; esac\n")
+    conda.chmod(0o755)
+    script = f'. "{UNIX / "common.sh"}"; cq_install_stats_packages "{conda}" /env'
+    for check, pip in (("0", False), ("3", True)):
+        calls.write_text("")
+        result = subprocess.run(["bash", "-c", script], env={**os.environ, "CHECK": check}, capture_output=True, text=True)
+        assert result.returncode == 0
+        assert ("pip install" in calls.read_text()) is pip
+        assert ("statsmodels matplotlib" in calls.read_text()) is pip
+
+
 def test_miniforge_is_pinned_like_windows():
     common = (UNIX / "common.sh").read_text()
     windows = (ROOT / "packaging" / "windows" / "resolve_conda.ps1").read_text()
