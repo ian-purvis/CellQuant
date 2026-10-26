@@ -664,6 +664,7 @@ class CellQuantWindow:
         self.viewer = viewer
         self.controller: AnalysisController | None = None
         self._glossary_window = None
+        self._quantanalysis = None  # the QuantAnalysis statistics window, made on first use
         self._folder_lock = None  # this window's hold on the open experiment folder
         self._managed: set[str] = set()
         self._contrast_hooks: dict[str, object] = {}  # channel layer name -> its contrast callback
@@ -869,6 +870,32 @@ class CellQuantWindow:
         self._glossary_window.show()
         self._glossary_window.raise_()
         self._glossary_window.activateWindow()
+
+    def open_quantanalysis(self, experiment: bool = True):
+        """QuantAnalysis, the statistics window (one, reused). From step 6 it imports the open experiment."""
+
+        try:
+            from cellquant.gui.quantanalysis import open_window
+
+            window = open_window(self.viewer.window._qt_window, lambda: self.controller, self.is_busy, self._quantanalysis)
+        except ImportError as exc:
+            self.show_error(f"QuantAnalysis could not start: {exc}. Install its libraries with: pip install \"cellquant[stats]\"")
+            return None
+        self._quantanalysis = window
+        if experiment and self.controller is not None:
+            # Opened again: the tables already imported from this experiment follow it; import only the first time.
+            if any(sheet.origin == "experiment" for sheet in window.project.data.values()):
+                window.refresh_imports(force=True)
+            else:
+                window.import_experiment()
+        return window
+
+    def analyze_results_folder(self) -> None:
+        """QuantAnalysis on a saved results or export folder, without opening it as the experiment."""
+
+        window = self.open_quantanalysis(experiment=False)
+        if window is not None:
+            window.open_folder_dialog()
 
     def _glossary_experiment(self):
         """The open experiment as the glossary reads it (None when no experiment is open)."""
@@ -2451,8 +2478,15 @@ class ExperimentPanel(QWidget):
             "With no experiment open, you are asked where to save a new one.\n"
             "Markers are measured when an image is opened."
         )
+        analyze = QPushButton("Analyze a results folder…")
+        analyze.setToolTip(
+            "Statistics and graphs of a saved CellQuant results folder or export folder, in QuantAnalysis.\n"
+            "Nothing is added to this experiment."
+        )
+        analyze.clicked.connect(shell.analyze_results_folder)
         loading = QHBoxLayout()
         loading.addWidget(load)
+        loading.addWidget(analyze)
         loading.addStretch(1)
         layout.addLayout(loading)
         self.notices = QLabel("")
