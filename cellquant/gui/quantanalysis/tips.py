@@ -223,3 +223,113 @@ LETTERS = (
 )
 GRAPH_COMPARISON = "The comparison whose P values the brackets show, and whose difference the estimation plot draws. A two-column test or an ANOVA with multiple comparisons."
 LETTER_STYLE = "How the letters are written: A B C (the default), a b c, or numbers 1 2 3. Groups that share one are not significantly different."
+
+# --- Formatting graphs (Format graph, Format axes, styles) -----------------------------------------------------------
+
+FORMAT_GRAPH = "Open the Format graph dialog: every data set's symbols, bars, error bars and lines, the title, legend, text boxes and significance marks."
+FORMAT_AXES = "Open the Format axes dialog: the frame, each axis's range, scale, ticks, numbering, breaks and title."
+SELECT = "Click any part of the graph (a data set, an axis, the title, the legend or a text box) to edit it here; double-click opens its dialog."
+FORMAT = {
+    # The graph
+    "font_family": "The font of every text on the graph. Journals often ask for Arial or Helvetica; a font that is not installed shows as the default sans-serif.",
+    "font_size": "Font size of every label, in points at the exported size. 7 to 9 pt suits most journals. Each text can override it.",
+    # Data sets
+    "dataset": "The data set (column) to format. Click a data set on the graph to pick it here.",
+    "dataset_color": "The data set's colour. Symbols, bars, boxes and borders left on Auto use it.",
+    "visible": "Untick to leave this data set off the graph; it stays in the table and in every analysis.",
+    "axis": "Draw this data set against the left or the right Y axis, for example a measure on another scale.",
+    "show_symbols": "Draw each value as a symbol. Keep them on bars and boxes so readers see the data, not only the summary.",
+    "symbol": "The shape of the symbols. Different shapes keep data sets apart in black and white.",
+    "symbol_size": "Symbol area in points². Auto picks a size from the number of values.",
+    "symbol_fill": "Fill colour of the symbols. Auto uses the data set's colour.",
+    "symbol_border": "Border colour of the symbols. Auto uses the data set's colour; white separates overlapping symbols.",
+    "symbol_border_width": "Border thickness of the symbols, in points. 0 for no border.",
+    "symbol_alpha": "Opacity of the symbols, 100% is solid. Lower it when many values overlap. Auto is 90% (60% with 200 values or more).",
+    "hollow": "Open symbols: only the border, in the fill colour. Useful for a second data set in black and white.",
+    "show_bar": "Draw the bar at the mean (or median). Untick to keep only the symbols and error bars.",
+    "bar_fill": "Fill colour of the bar. Auto uses the data set's colour.",
+    "bar_alpha": "Opacity of the bar fill. Lighter bars let the symbols on top stand out; 100% for solid bars.",
+    "hatch": "A fill pattern drawn in the border colour. Tells bars apart in black and white or for colour-blind readers.",
+    "bar_border": "Border colour of the bar, also used for its pattern. Auto uses the data set's colour.",
+    "bar_border_width": "Border thickness of the bar, in points.",
+    "bar_width": "Bar width as a share of the space for each column; the gap between bars is the rest (0.6: bars 60%, gaps 40%).",
+    "box_fill": "Fill colour of the box or violin. Auto uses the data set's colour.",
+    "box_alpha": "Opacity of the box or violin fill.",
+    "box_line": "Outline colour of the box or violin. Auto uses the data set's colour.",
+    "box_line_width": "Outline thickness of the box or violin, in points.",
+    "box_width": "Width of the box or violin as a share of the space for each column. Auto: 0.5 for a box, 0.75 for a violin.",
+    "show_center": "Draw the line at the mean (or the median with median and interquartile range, and on boxes and violins).",
+    "center_color": "Colour of the mean or median line.",
+    "center_width": "Thickness of the mean or median line, in points.",
+    "center_length": "Length of the mean or median line, as a share of the space for each column.",
+    "show_error": "Draw the error bars (on boxes: the whiskers).",
+    "error_direction": "Both: the bar goes above and below the mean. Above only: the usual choice on bar graphs, where the bar hides the lower half.",
+    "error_color": "Colour of the error bars.",
+    "error_width": "Thickness of the error bars, in points.",
+    "error_cap": "Width of the caps at the ends of the error bars, as a share of the space for each column. 0 for no caps.",
+    "apply_all": "Give every data set this one's format (symbols, bars, lines and error bars). Their colours stay their own.",
+    "reset_dataset": "Back to the graph's default format for this data set.",
+    "pair_lines": "Before-after graphs: the line joining each row's values (one replicate across the conditions).",
+    "connect_means": "A line joining the means (or medians) of the columns, for example to show a trend across ordered conditions.",
+    "connect_style": "Solid, dashed or dotted.",
+    # Axes
+    "frame": "How the axis lines meet. Offset X and Y axes is the default: the axes stand slightly apart. Box draws all four sides.",
+    "frame_offset": "How far the offset axes stand from the data area, in points.",
+    "axis_width": "Thickness of the axis lines and ticks, in points.",
+    "axis_color": "Colour of the axis lines and ticks.",
+    "which_axis": "The axis to format. Click an axis on the graph to pick it here.",
+    "axis_visible": "Untick to hide the axis line, ticks and numbers, for example when a scale bar replaces them.",
+    "right_axis": "Add a Y axis on the right. With no data set on it, it repeats the left scale; set a data set's axis to Right to give it its own.",
+    "axis_title": "The axis title. Markup: \\alpha for α (and other Greek names), ^{2} for superscript, _{2} for subscript.",
+    "range": "Leave blank for automatic. The Y axis starts at 0 when the data are near it.",
+    "reverse": "Turn the axis upside down, with the largest values at the bottom.",
+    "scale": "Linear, or a log scale for values that span several powers of ten. Values ≤ 0 cannot be shown on a log axis.",
+    "major": "The interval between numbered ticks, for example 20 for 0, 20, 40. Blank for automatic. On a log axis, a number of powers (2: every 100-fold).",
+    "minor": "Unnumbered ticks between two numbered ticks. On a log axis, any value above 0 shows the usual 2 to 9 ticks.",
+    "tick_direction": "Ticks pointing out of the data area (the usual choice), in, across the axis line, or none.",
+    "tick_length": "Length of the numbered ticks, in points; minor ticks are about half.",
+    "decimals": "Decimal places of the axis numbers. Auto uses enough to tell the ticks apart.",
+    "thousands": "Write 12,000 rather than 12000.",
+    "notation": "Decimal (1500), scientific (1.5×10³) or, on a log axis, powers of the base (10³).",
+    "percent": "Write a % sign after each number, for example for % of target. The numbers are not multiplied by 100.",
+    "prefix": "Text written before every axis number.",
+    "suffix": "Text written after every axis number, for example a unit.",
+    "breaks": "Split the Y axis to leave out an empty range, for example when one group is much higher than the others. "
+              "From and to are the values left out; a second break makes three segments.",
+    "segments": "Height of each segment as a share of the axis, bottom first. Auto sizes them by the range each one shows.",
+    "label_angle": "Turn the column labels, for example 45° when long group names overlap.",
+    "label_wrap": "Wrap column labels after this many characters. 0 keeps each on one line.",
+    "hide_labels": "Hide the column labels, for example when a legend names the data sets.",
+    # Text and legend
+    "title": "A title above the graph. Journals usually put it in the figure legend instead. Markup as for axis titles.",
+    "title_loc": "Where the title sits above the graph.",
+    "legend_show": "A legend naming each data set with its symbol or bar.",
+    "legend_position": "Inside a corner, outside on the right, or a master legend: one row above the graph, the same on every graph that uses the style. Drag the legend to place it anywhere.",
+    "legend_frame": "A box around the legend.",
+    "legend_order": "Drag the names to set the legend order.",
+    "text_style": "Font, size (0: the graph's), bold, italic and colour of this text.",
+    # Annotations
+    "add_text": "Add a text box. Drag it on the graph to move it; double-click to edit.",
+    "add_arrow": "Add an arrow, with optional text at its tail, for example to point at one value.",
+    "add_line": "Add a straight line.",
+    "add_bracket": "Add a bracket with text above it, for example to group conditions or mark a comparison by hand.",
+    "annotation_text": "The text. Markup: \\alpha for α, ^{2} superscript, _{2} subscript.",
+    "annotation_position": "Position as a share of the data area: 0 is the left or bottom edge, 1 the right or top. Dragging on the graph sets it too.",
+    "annotation_box": "Draw a box around the text.",
+    "delete_annotation": "Remove the selected text box, line, arrow or bracket.",
+    # Significance
+    "bracket_width": "Thickness of the significance brackets, in points.",
+    "bracket_gap": "Space between the highest value and the bracket, as a share of the axis.",
+    "bracket_tip": "Length of the bracket's downward ends, as a share of the axis.",
+    "star_size": "Font size of the stars, P values and letters, in points. 0 uses the graph's font size.",
+    # Styles
+    "style": "Built-in and saved styles. Apply copies the style's look (colours, symbols, axes, fonts, legend) onto this graph; the data and titles stay.",
+    "apply_style": "Apply the chosen style to this graph.",
+    "save_style": "Save this graph's look as a named style, to apply to other graphs. Saved styles are kept for your user account on this computer.",
+    "delete_style": "Delete the chosen saved style. Built-in styles cannot be deleted.",
+    "magic": "Make this graph look like another graph or a style, choosing what to copy.",
+    "copy_format": "Copy this graph's format (everything but the titles and text boxes) to paste onto another graph.",
+    "paste_format": "Paste the format copied from another graph onto this one.",
+}
+MAGIC_SOURCE = "The graph or style to copy the look from."
+MAGIC_TARGETS = "Other graphs that should take the same look at once."
