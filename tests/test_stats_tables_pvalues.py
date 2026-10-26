@@ -47,23 +47,22 @@ def test_a_long_table_becomes_one_column_per_group_and_lines_up_subjects_when_pa
 @pytest.mark.parametrize(
     "p, stars",
     [
-        (0.5, "ns"), (0.1234, "ns"), (0.0333, "ns"), (0.0332, "*"), (0.0331, "*"), (0.0022, "*"), (0.0021, "**"), (0.0003, "**"),
-        (0.0002, "***"), (0.00015, "***"), (0.0001, "***"), (0.00009999, "****"), (0.0, "****"),
+        (0.5, "ns"), (0.0332, "*"), (0.05000001, "ns"), (0.05, "*"), (0.0100001, "*"), (0.01, "**"), (0.0010001, "**"), (0.001, "***"),
+        (0.00010001, "***"), (0.0001, "****"), (0.0, "****"),
     ],
 )
-def test_gp_style_stars_at_its_boundaries(p, stars):
+def test_gp_style_stars_use_less_or_equal_on_the_unrounded_p(p, stars):
     assert p_summary(p, "GP") == stars
 
 
 @pytest.mark.parametrize(
     "style, p, stars",
     [
-        ("older", 0.0501, "ns"), ("older", 0.05, "*"), ("older", 0.0100001, "*"), ("older", 0.01, "**"), ("older", 0.001, "***"), ("older", 0.0001, "****"),
-        ("APA", 0.05, "ns"), ("APA", 0.0499, "*"), ("APA", 0.01, "*"), ("APA", 0.0099, "**"), ("APA", 0.001, "**"), ("APA", 0.00099, "***"), ("APA", 1e-9, "***"),
-        ("NEJM", 0.05, "ns"), ("NEJM", 0.0499, "*"), ("NEJM", 0.0009, "***"),
+        ("APA", 0.05000001, "ns"), ("APA", 0.05, "*"), ("APA", 0.01, "**"), ("APA", 0.001, "***"), ("APA", 1e-9, "***"),
+        ("NEJM", 0.0500001, "ns"), ("NEJM", 0.05, "*"), ("NEJM", 0.0099, "**"), ("NEJM", 0.0001, "***"),
     ],
 )
-def test_other_star_styles(style, p, stars):
+def test_apa_and_nejm_stop_at_three_stars(style, p, stars):
     assert p_summary(p, style) == stars
 
 
@@ -79,7 +78,8 @@ def test_p_values_are_written_with_the_styles_digits_and_a_less_than_floor():
     assert format_p(np.nan) == "" and p_summary(np.nan) == ""
     assert p_text(0.00001) == "P < 0.0001" and p_text(0.0123) == "P = 0.0123" and p_text(0.2, "APA") == "p = .200"
     with pytest.raises(ValueError, match="Unknown P value style"):
-        p_summary(0.1, "a commercial package 5")
+        p_summary(0.1, "older")  # a commercial package's older scheme is the GP scheme
+    assert format_p(0.05000001) == "0.0500" and p_summary(0.05000001) == "ns"  # stars use the unrounded P
 
 
 def test_a_result_lists_its_sections_rows_warnings_and_methods_for_export():

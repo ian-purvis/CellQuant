@@ -102,13 +102,16 @@ def test_one_tailed_p_depends_on_the_predicted_direction():
 
 
 def test_wilcoxon_signed_rank_matches_r_on_the_sleep_differences():
-    # R: wilcox.test(SLEEP_DIFF) (one zero difference, ties): V = 45, p-value = 0.009091 (normal approximation,
-    # zero dropped, tie and continuity corrections).
-    result = wilcoxon_signed_rank(SLEEP_DIFF, 0.0)
+    # R: wilcox.test(SLEEP_DIFF) (one zero difference, ties): V = 45, p-value = 0.009091 (Gaussian approximation,
+    # zero dropped, tie and continuity corrections). Asked for the same way here:
+    result = wilcoxon_signed_rank(SLEEP_DIFF, 0.0, exact=False, continuity=True)
     v = result.values
     assert v["sum_positive"] == 45 and v["sum_negative"] == 0 and v["w"] == 45
     assert v["p"] == pytest.approx(0.009091, abs=5e-7) and not v["exact"] and v["n_zero"] == 1
-    assert any("tied" in text for text in result.warnings)
+    # By default (fewer than 200 values) P is exact even with ties: all 9 nonzero differences positive
+    # gives 2 / 2^9 whatever the ranks are.
+    exact = wilcoxon_signed_rank(SLEEP_DIFF, 0.0).values
+    assert exact["exact"] and exact["p"] == pytest.approx(2 / 2**9)
 
 
 def test_column_statistics_with_a_hypothetical_value_adds_both_one_sample_tests():
@@ -116,7 +119,7 @@ def test_column_statistics_with_a_hypothetical_value_adds_both_one_sample_tests(
     titles = [section.title for section in result.sections]
     assert "One sample t test" in titles and "Wilcoxon Signed Rank Test" in titles
     assert result.values["t_test_p"] == pytest.approx(0.002833, abs=5e-7)
-    assert result.values["wilcoxon_p"] == pytest.approx(0.009091, abs=5e-7)
+    assert result.values["wilcoxon_p"] == pytest.approx(2 / 2**9)
 
 
 def test_a_whole_table_side_by_side():
