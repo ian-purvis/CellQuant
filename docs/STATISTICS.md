@@ -26,12 +26,15 @@ The **P value** is the probability of a difference at least this large if the nu
 - **Two-tailed** P (the default) counts differences in either direction. **One-tailed** P (`alternative="greater"` for B > A, or `"less"`) is valid only if you chose the direction before you saw the data. When the data go the predicted way, the one-tailed P is half the two-tailed P. When they go the other way, it is 1 − P/2.
 - Confidence intervals are always two-sided.
 
+Stars are decided on the unrounded P, with ≤ at every cutoff, as Prism does. For example, P = 0.05000001 shows as 0.0500 but is ns.
+
 | Style | ns | * | ** | *** | **** | P shown as |
 |---|---|---|---|---|---|---|
-| `GP` (Prism's default) | > 0.0332 | ≤ 0.0332 | ≤ 0.0021 | ≤ 0.0002 | < 0.0001 | 0.0123, <0.0001 |
-| `older` (Prism's earlier style) | > 0.05 | ≤ 0.05 | ≤ 0.01 | ≤ 0.001 | ≤ 0.0001 | 0.0123, <0.0001 |
-| `APA` | ≥ .05 | < .05 | < .01 | < .001 | — | .012, <.001 |
-| `NEJM` | ≥ 0.05 | < 0.05 | < 0.01 | < 0.001 | — | 0.012, <0.001 |
+| `GP` (Prism's default; also its only style before Prism 7) | > 0.05 | ≤ 0.05 | ≤ 0.01 | ≤ 0.001 | ≤ 0.0001 | 0.0123, <0.0001 |
+| `APA` | > 0.05 | ≤ 0.05 | ≤ 0.01 | ≤ 0.001 | — | .012, <.001 |
+| `NEJM` | > 0.05 | ≤ 0.05 | ≤ 0.01 | ≤ 0.001 | — | 0.012, <0.001 |
+
+The "0.1234 / 0.0332 / 0.0021 / 0.0002" numbers seen in an old Prism dialog only showed how P values can be formatted. They are not star cutoffs.
 
 `format_p(p, digits=4)` prints P to the given number of decimals. A value below that precision prints as "<0.0001", and P = 1 prints as ">0.9999".
 
@@ -44,7 +47,7 @@ The **P value** is the probability of a difference at least this large if the nu
 | SEM | s / √n, how precisely the mean is known | n ≥ 2 |
 | CI of the mean | x̄ ± t(1 − α/2, n − 1) · SEM | n ≥ 2 |
 | CV | 100 · s / x̄ (%) | n ≥ 2 |
-| Percentiles | The value at rank (n + 1)p of the sorted data, interpolated between neighbouring ranks and clamped to the min and max. This is the method Prism documents (Hyndman-Fan type 6, Excel PERCENTILE.EXC). | n ≥ 1 |
+| Percentiles | The value at rank (n + 1)p of the sorted data, interpolated between neighbouring ranks. If the rank falls outside 1…n, the min or max is used. This is Prism's documented method (Hyndman-Fan type 6). | n ≥ 1 |
 | Median, quartiles | The 50th, 25th and 75th percentiles; 10th and 90th as well | n ≥ 1 |
 | Geometric mean | exp(mean of ln x). Geometric SD factor: exp(SD of ln x). CI: exp(mean ln x ± t · SEM of ln x) | all x > 0 |
 | Harmonic mean | n / Σ(1/x) | all x > 0 |
@@ -57,7 +60,7 @@ Skewness and kurtosis are the sample-adjusted versions that Prism and Excel repo
 With `hypothetical=μ₀`, two tests compare the column with μ₀:
 
 - **One-sample t test** (n ≥ 2). t = (x̄ − μ₀) / SEM, with df = n − 1. Use it for roughly Gaussian data. It also reports R² = t² / (t² + df).
-- **Wilcoxon signed-rank test** (n ≥ 1). It ranks |x − μ₀| and reports W = (sum of ranks above μ₀) − (sum of ranks below). It does not assume a Gaussian distribution. See the Wilcoxon matched-pairs section below for how P is calculated.
+- **Wilcoxon signed-rank test** (n ≥ 1). It ranks |x − μ₀| and reports W = (sum of ranks above μ₀) − (sum of ranks below). It does not assume a Gaussian distribution. P is calculated the same way as for the Wilcoxon matched-pairs test (below).
 
 ## Normality tests (`normality`, `lognormality`)
 
@@ -89,7 +92,7 @@ Blank cells are left out. Unpaired tests drop blanks column by column. Paired te
 
 ### t tests
 
-- **Unpaired (pooled).** s_p² = ((n_A − 1)s_A² + (n_B − 1)s_B²) / (n_A + n_B − 2). SE = s_p √(1/n_A + 1/n_B). t = (x̄_B − x̄_A) / SE, with df = n_A + n_B − 2. The result also includes an **F test** of equal variances. F = larger s² / smaller s², and P = 2 · P(F′ > F). A small P suggests using Welch's test.
+- **Unpaired (pooled).** s_p² = ((n_A − 1)s_A² + (n_B − 1)s_B²) / (n_A + n_B − 2). SE = s_p √(1/n_A + 1/n_B). t = (x̄_B − x̄_A) / SE, with df = n_A + n_B − 2. The result also includes an **F test** of equal variances. F = larger s² / smaller s², and P = 2 · P(F′ > F). A small P suggests using Welch's test. Prism also puts the larger variance on top.
 - **Welch.** SE = √(s_A²/n_A + s_B²/n_B). df = SE⁴ / ((s_A²/n_A)²/(n_A − 1) + (s_B²/n_B)²/(n_B − 1)), which is usually not a whole number.
 - **Paired.** dᵢ = Bᵢ − Aᵢ. t = mean(d) / (SD(d)/√n), with df = n − 1. The result also reports Pearson's r between A and B and a one-tailed P for r > 0, where t = r√(n − 2)/√(1 − r²). A significant r shows that pairing was effective.
 - **Ratio paired.** The paired t test on log₁₀(B/A). The result reports the geometric mean of the ratios, 10^mean(log₁₀ ratio), with its CI.
@@ -110,12 +113,17 @@ Blank cells are left out. Unpaired tests drop blanks column by column. Paired te
 
 Rank tests replace the values with their ranks. Tied values get the average rank. These tests do not assume a Gaussian distribution, but they answer a slightly different question than the t tests.
 
-- **Mann-Whitney.** U_B = R_B − n_B(n_B + 1)/2, the number of (A, B) pairs where B is larger (a tie counts ½). The result reports U = min(U_A, U_B), the rank sums and the two medians. P is **exact** when there are no ties and each column has fewer than 50 values. Otherwise P comes from the normal approximation. The approximation uses σ² = (n_A n_B / 12)[(N + 1) − Σ(t³ − t)/(N(N − 1))], where t is the size of each group of ties, and a 0.5 continuity correction. The **Hodges-Lehmann** difference is the median of all n_A·n_B differences Bⱼ − Aᵢ. Its CI uses order statistics from the null distribution of U. Its achieved confidence level, for example 95.48%, is shown because exact intervals cannot hit 95% exactly.
+- **Mann-Whitney.** U_B = R_B − n_B(n_B + 1)/2, the number of (A, B) pairs where B is larger (a tie counts ½). The result reports U = min(U_A, U_B), the rank sums and the two medians.
+  - P is **exact**, ties included, when the smaller column has at most 100 values. This is Prism's rule. The exact distribution is counted over every way of splitting the observed ranks, with midranks doubled so they are whole numbers.
+  - This engine also limits exact P to n_A·n_B ≤ 20 000, which takes about 2 s at 100 × 200. Prism would still be exact beyond that.
+  - Otherwise P comes from the Gaussian approximation with σ² = (n_A n_B / 12)[(N + 1) − Σ(t³ − t)/(N(N − 1))], where t is the size of each group of ties. There is no continuity correction; `continuity=True` adds R's 0.5.
+  - The **Hodges-Lehmann** difference is the median of all n_A·n_B differences Bⱼ − Aᵢ. Its CI uses order statistics [d₍k₎, d₍N+1−k₎]. Only some confidence levels can be reached, so k gives the achievable level **nearest** to the one asked for, which can be below it (Sheskin; Klotz). The CI is printed with the level it actually reached.
 - **Wilcoxon matched pairs.** Rank |dᵢ|. W = (sum of positive ranks) − (sum of negative ranks). There are two ways to handle zero differences:
-  - `zero_method="exclude"` drops them. This is Wilcoxon's original method, and R's.
-  - `"pratt"` ranks them and then leaves their ranks out of the sums (Pratt 1959). The null mean and variance are adjusted to match (Cureton 1967).
+  - `zero_method="exclude"` (the default) drops them. This is Wilcoxon's original method.
+  - `"pratt"` ranks them and then leaves their ranks out of the sums (Pratt 1959). Prism offers Pratt as an option from Prism 6 on.
 
-  P is exact for fewer than 50 nonzero differences with no ties. Otherwise P comes from the normal approximation, with σ² = n(n + 1)(2n + 1)/24 − Σ(t³ − t)/48 and a 0.5 continuity correction. The result also reports the median of the differences, the Hodges-Lehmann pseudo-median (the median of all (dᵢ + dⱼ)/2 with i ≤ j) and its CI. Spearman's r_s shows whether pairing was effective.
+  P is exact, ties included, for fewer than 200 pairs. Each nonzero rank gets a random sign. Otherwise P comes from the Gaussian approximation with σ² = n(n + 1)(2n + 1)/24 − Σ(t³ − t)/48, with no continuity correction. The result also reports the median of the differences, and the Hodges-Lehmann pseudo-median (the median of the Walsh averages (dᵢ + dⱼ)/2 with i ≤ j) with its CI at the nearest achievable level. Spearman's r_s with a one-tailed P shows whether pairing was effective, as in Prism.
+- **Very small samples.** With an exact P, a rank test has a smallest possible P. For example, a two-tailed Mann-Whitney test at 3 vs 3 cannot go below 2/C(6, 3) = 0.10, and a Wilcoxon test on 5 pairs cannot go below 2/2⁵ = 0.0625. When this floor is above α, the result warns that the test cannot find a significant difference, and states the floor.
 - **Kolmogorov-Smirnov (two sample).** D = maxₓ |F_A(x) − F_B(x)|, the largest gap between the two cumulative distributions. It detects any difference in shape, not just in location. P is exact for n_A·n_B < 10 000. With ties, this P is conservative.
 
 ## Results
@@ -145,10 +153,19 @@ Brute-force permutation counts for the exact P values.
 
 The tests' published formulas: D'Agostino 1990, Anderson-Darling, Dallal-Wilkinson.
 
+## Prism sources
+
+These are pages in the Prism guide (https://www.graphpad.com/guides/prism/latest/statistics/):
+
+- `stat_decimal_formatting_of_p_values.htm`, and GraphPad's FAQ on asterisks: P styles and stars.
+- `stat_percentiles_and_the_median.htm`: percentiles.
+- `how_the_unpaired_t_test_works2.htm`: the F test.
+- `how_the_mann-whitney_test_works.htm`: Mann-Whitney.
+- `how_the_wilcoxon_matched_pairs_test_works.htm` and `stat_pratt.htm`: Wilcoxon matched pairs and Pratt.
+
 ## Not yet checked against Prism itself
 
-- Whether Prism treats the GP-style cutoffs as ≤ or <.
-- Prism's rules for when to compute an exact P, and whether it applies a continuity correction. This engine uses R's rules.
-- Prism's default for Wilcoxon zero differences.
-- Prism's percentile results when (n + 1)p falls outside 1…n.
-- How Prism builds the Hodges-Lehmann CI when there are ties.
+- Prism's default for Wilcoxon zero differences. The guide implies "exclude".
+- How Prism makes the exact two-tailed P: this engine doubles the smaller tail.
+- The sign of the Hodges-Lehmann difference: this engine uses B − A, and the guide words it as group 1 minus group 2.
+- How Prism computes the CI when there are ties. This engine uses the order-statistic rule for untied data.
