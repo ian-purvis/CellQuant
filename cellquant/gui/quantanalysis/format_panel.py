@@ -1,4 +1,4 @@
-"""The format panel of a graph sheet, and Prism's Format Graph, Format Axes and Magic dialogs.
+"""The format panel of a graph sheet, and the Format graph, Format axes and Make-this-graph-look-like dialogs.
 
 Each part of the format is one section widget (Graph, Data sets, Frame, Axis, Text and legend, Text
 boxes and arrows, Significance, Styles). The side panel stacks them as collapsible sections; the
@@ -471,7 +471,7 @@ class GraphSection(Section):
 class DataSetSection(Section):
     title = "Data sets"
     key = "datasets"
-    tip = "Symbols, bars, boxes, mean lines and error bars of each data set (column), as in Prism's Format Graph dialog."
+    tip = "Symbols, bars, boxes, mean lines and error bars of each data set (column)."
 
     def build(self) -> None:
         form = self.form
@@ -901,7 +901,7 @@ class AxesSection(QWidget):
 
     title = "Axes"
     key = "axes"
-    tip = "Frame and origin, and each axis's range, scale, ticks, numbering, breaks and title (Prism's Format Axes dialog)."
+    tip = "Frame and origin, and each axis's range, scale, ticks, numbering, breaks and title."
 
     def __init__(self, view):
         super().__init__()
@@ -1233,7 +1233,7 @@ SECTIONS = (GraphSection, DataSetSection, AxesSection, TextSection, AnnotationSe
 
 
 class FormatDialog(QDialog):
-    """Prism's Format Graph or Format Axes dialog: the same sections as the side panel, as tabs. Changes show at once;
+    """The Format graph or Format axes dialog: the same sections as the side panel, as tabs. Changes show at once;
     Cancel puts back the format the graph had when the dialog opened."""
 
     def __init__(self, view, which: str = "graph", tab: str | None = None):
@@ -1307,7 +1307,7 @@ class FormatDialog(QDialog):
 
 
 class MagicDialog(QDialog):
-    """Make this graph look like another graph or a style (Prism Magic), choosing which parts of the format to copy."""
+    """Make this graph look like another graph or a style, choosing which parts of the format to copy."""
 
     def __init__(self, view):
         super().__init__(view)

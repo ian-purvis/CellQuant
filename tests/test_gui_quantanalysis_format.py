@@ -566,10 +566,10 @@ def test_annotation_section_adds_edits_and_deletes(window):
 
 def test_builtin_styles(window):
     graph, view = _graph(window)
-    assert set(gf.BUILTIN_STYLES) >= {"Editorial (default)", "Classic Prism",
+    assert set(gf.BUILTIN_STYLES) >= {"Editorial (default)", "Classic",
                                       "Colour-blind safe"}
     graph.format.title = "Kept"
-    view.apply_named_style("Classic Prism")
+    view.apply_named_style("Classic")
     view.flush()
     fmt = graph.format
     assert fmt.frame == "offset" and fmt.title == "Kept" and fmt.y.title_style.bold

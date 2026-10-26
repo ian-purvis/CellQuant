@@ -1,4 +1,4 @@
-"""The format of a graph (Prism's Format Graph and Format Axes dialogs), as plain data, and named styles.
+"""The format of a graph, as plain data, and named styles.
 
 ``GraphFormat`` holds every setting of a graph sheet: the look of each data set (column), the axes, the
 text, the legend, free annotations and the significance marks. It is a dataclass that serializes to a
@@ -6,7 +6,7 @@ JSON-ready dict (``to_dict`` / ``from_dict``), so a project file can save it, an
 from it alone. It also reads and writes the flat keys of the first graph format (``fmt["y_min"]``,
 ``fmt.update(log_y=True)``) so older code and saved dicts keep working.
 
-Styles copy chosen groups of settings from one graph to another (Prism Magic). Saved styles live in
+Styles copy chosen groups of settings from one graph to another. Saved styles live in
 ``graph_styles.json`` beside CellQuant's per-computer settings (%LOCALAPPDATA%\\CellQuant on Windows).
 No Qt and no matplotlib here.
 """
@@ -209,7 +209,7 @@ class GraphFormat:
         self.datasets[name] = value
 
     def apply_to_all(self, name: str) -> None:
-        """Every data set takes this one's format (Prism's "Apply to all data sets"); their colours stay their own."""
+        """Every data set takes this one's format ("Apply to all data sets"); their colours stay their own."""
 
         chosen = self.dataset(name)
         self.dataset_default = copy.deepcopy(chosen)
@@ -451,7 +451,7 @@ def _decimal(value: float, places: int, thousands: bool) -> str:
     return text.replace("-", "−")
 
 
-# --- Styles: Prism Magic ----------------------------------------------------------------------------------------------
+# --- Styles ----------------------------------------------------------------------------------------------------------
 
 # key: (name in the Magic dialog, tooltip, settings copied). "datasets" and "colors" are copied by data set order.
 GROUPS = {
@@ -566,7 +566,7 @@ def _builtin_styles() -> dict[str, dict]:
     classic.legend.text = copy.deepcopy(bold)
     classic.ref_colors = ["#000000", "#000000"]
     classic.bracket_width = 1.0
-    styles["Classic Prism"] = make_style(classic, [], DEFAULT_GROUPS)
+    styles["Classic"] = make_style(classic, [], DEFAULT_GROUPS)
     safe = GraphFormat(palette=list(COLORBLIND_PALETTE))
     safe.ref_colors = ["#000000", "#D55E00"]
     styles["Colour-blind safe"] = make_style(safe, [], DEFAULT_GROUPS)
@@ -576,7 +576,7 @@ def _builtin_styles() -> dict[str, dict]:
 BUILTIN_STYLES = _builtin_styles()
 BUILTIN_TIPS = {
     "Editorial (default)": "CellQuant's look: plain axes, light bars and boxes, coloured dots with a white edge.",
-    "Classic Prism": "Prism's classic look: offset X and Y axes, bold text, black and white.",
+    "Classic": "A classic look: offset X and Y axes, bold text, black and white.",
     "Colour-blind safe": "Okabe and Ito's palette, which stays distinct with every common colour-vision deficiency.",
 }
 

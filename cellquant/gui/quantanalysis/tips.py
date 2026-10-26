@@ -226,8 +226,8 @@ LETTER_STYLE = "How the letters are written: A B C (Prism's default), a b c, or 
 
 # --- Formatting graphs (Format graph, Format axes, styles) -----------------------------------------------------------
 
-FORMAT_GRAPH = "Open Prism's Format Graph dialog: every data set's symbols, bars, error bars and lines, the title, legend, text boxes and significance marks."
-FORMAT_AXES = "Open Prism's Format Axes dialog: the frame, each axis's range, scale, ticks, numbering, breaks and title."
+FORMAT_GRAPH = "Open the Format graph dialog: every data set's symbols, bars, error bars and lines, the title, legend, text boxes and significance marks."
+FORMAT_AXES = "Open the Format axes dialog: the frame, each axis's range, scale, ticks, numbering, breaks and title."
 SELECT = "Click any part of the graph (a data set, an axis, the title, the legend or a text box) to edit it here; double-click opens its dialog."
 FORMAT = {
     # The graph
@@ -273,7 +273,7 @@ FORMAT = {
     "connect_means": "A line joining the means (or medians) of the columns, for example to show a trend across ordered conditions.",
     "connect_style": "Solid, dashed or dotted.",
     # Axes
-    "frame": "How the axis lines meet. Offset X and Y axes is Prism's default: the axes stand slightly apart. Box draws all four sides.",
+    "frame": "How the axis lines meet. Offset X and Y axes is the default: the axes stand slightly apart. Box draws all four sides.",
     "frame_offset": "How far the offset axes stand from the data area, in points.",
     "axis_width": "Thickness of the axis lines and ticks, in points.",
     "axis_color": "Colour of the axis lines and ticks.",
@@ -327,7 +327,7 @@ FORMAT = {
     "apply_style": "Apply the chosen style to this graph.",
     "save_style": "Save this graph's look as a named style, to apply to other graphs. Saved styles are kept for your user account on this computer.",
     "delete_style": "Delete the chosen saved style. Built-in styles cannot be deleted.",
-    "magic": "Make this graph look like another graph or a style, choosing what to copy (Prism Magic).",
+    "magic": "Make this graph look like another graph or a style, choosing what to copy.",
     "copy_format": "Copy this graph's format (everything but the titles and text boxes) to paste onto another graph.",
     "paste_format": "Paste the format copied from another graph onto this one.",
 }
