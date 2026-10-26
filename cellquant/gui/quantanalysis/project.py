@@ -18,6 +18,7 @@ from qtpy.QtCore import QObject, Signal
 from scipy import special
 
 from cellquant.errors import CellQuantError
+from cellquant.gui.quantanalysis.graph_format import GraphFormat, as_format
 from cellquant.stats import (
     AnalysisResult,
     ColumnTable,
@@ -107,9 +108,12 @@ class GraphSheet:
     name: str
     data_id: str
     kind: str                           # a key of graphs.KINDS
-    format: dict = field(default_factory=dict)
+    format: GraphFormat = field(default_factory=GraphFormat)  # every format setting; a plain dict (older code, a file) is read into one
     result_id: str | None = None        # the comparison (two columns or ANOVA) whose P brackets / difference it shows
     id: str = field(default_factory=lambda: next_id("graph"))
+
+    def __post_init__(self):
+        self.format = as_format(self.format)
 
 
 class Project(QObject):
