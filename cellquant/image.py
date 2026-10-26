@@ -584,7 +584,7 @@ def _ome_colors(tif: tifffile.TiffFile) -> list[tuple[float, float, float] | Non
 
 
 def _nd2_color(channel) -> tuple[float, float, float] | None:
-    """The channel's display color in NIS-Elements."""
+    """The channel's display color in the microscope software."""
 
     if channel is None:
         return None

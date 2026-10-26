@@ -12,7 +12,7 @@ Run everything with `python -m pytest tests -q`. The window tests (`test_gui_*.p
 | `test_instances.py`, `test_gui_instances.py` | Two CellQuant windows at once: one window per experiment folder, settings saves, shared GPU and CPU. |
 | `test_gui_*.py` | The window: display, guided flow, analyses, Plan dock. |
 | `test_result_cache.py`, `test_gui_switch_layers.py` | Large experiments: masks out of memory, saving only what changed, export; switching images keeps napari's layers. |
-| `test_stats_*.py` | `cellquant.stats`: column statistics, normality tests, two-column tests, one-way ANOVA and its relatives, multiple comparisons, FDR and outliers, against R, Excel, published tables and independent code. |
+| `test_stats_*.py` | `cellquant.stats`: column statistics, normality tests, two-column tests, one-way ANOVA and its relatives, multiple comparisons, FDR and outliers, against R, published tables and independent code. |
 | `test_windows_installer.py`, `ps_lint.py` | Installer scripts. |
 
 Run one area, for example: `python -m pytest tests/test_plan.py -q`, or one test with `-k name`.

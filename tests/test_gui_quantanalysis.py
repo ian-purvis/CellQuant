@@ -14,7 +14,7 @@ pytest.importorskip("matplotlib")
 from cellquant.stats import sources  # noqa: E402
 from tests.test_stats_import import make_results  # noqa: E402
 
-WELCH = {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided", "ci": 0.95, "alpha": 0.05, "style": "GP"}
+WELCH = {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided", "ci": 0.95, "alpha": 0.05, "style": "classic"}
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def test_import_compare_and_live_links(window, tmp_path):
     assert any("smallest P this test can give" in text for text in result.warnings)  # 2 vs 2: an exact test cannot reach 0.05
     assert view.warnings.isVisible()
     window.change_options(result, WELCH)
-    # Editing the table recomputes its results (Prism's live links) and detaches it from the folder.
+    # Editing the table recomputes its results (live links) and detaches it from the folder.
     window.select(data.id)
     grid = window.stack.currentWidget()
     grid.grid.item(0, 1).setText("95")

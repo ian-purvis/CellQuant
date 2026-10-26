@@ -1,4 +1,4 @@
-"""A results sheet: the analysis laid out like Prism's (section titles, labels and values), its
+"""A results sheet: the analysis laid out in sections (titles, labels and values), its
 warnings above it, and the methods sentence below."""
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def result_frame(sheet: ResultSheet) -> pd.DataFrame:
 
 
 def result_text(sheet: ResultSheet) -> str:
-    """Tab-separated, for pasting into Excel or Prism."""
+    """Tab-separated, for pasting into a spreadsheet."""
 
     headers, rows = result_rows(sheet)
     lines = [sheet.name]
@@ -95,7 +95,7 @@ class ResultSheetView(QWidget):
         self.clean_button.setToolTip(tips.CLEAN)
         self.clean_button.clicked.connect(lambda: window.create_cleaned_table(sheet))
         copy = QPushButton("Copy")
-        copy.setToolTip("Copy the results as tab-separated text, to paste into Excel, Prism or a document.")
+        copy.setToolTip("Copy the results as tab-separated text, to paste into a spreadsheet or a document.")
         copy.clicked.connect(self.copy)
         export = QPushButton("Export results CSV…")
         export.setToolTip("Save this results sheet as a CSV file: section, label, value and the text shown.")

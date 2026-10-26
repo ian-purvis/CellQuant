@@ -1,12 +1,12 @@
-"""One-way analyses of a column table with two or more groups, laid out like Prism's results.
+"""One-way analyses of a column table with two or more groups, laid out as a results sheet.
 
 - ``ordinary_anova``: ordinary one-way ANOVA (equal SDs assumed), with the Brown-Forsythe and
   Bartlett tests of equal variances, R², and the ANOVA table.
 - ``welch_anova``: Welch's ANOVA (W) and Brown-Forsythe ANOVA (F*), each with its own df, for
-  when SDs are not assumed equal. Prism reports both.
+  when SDs are not assumed equal. Both are reported.
 - ``repeated_measures_anova``: one-way repeated-measures ANOVA on matched rows, with or without
   the Geisser-Greenhouse correction (epsilon is always reported). With blanks it fits a
-  mixed-effects model instead, as Prism does.
+  mixed-effects model instead.
 - ``mixed_effects_anova``: a REML mixed model with a random intercept per subject (statsmodels).
 - ``kruskal_wallis`` and ``friedman``: the nonparametric counterparts.
 
@@ -146,7 +146,7 @@ def _trend(result: AnalysisResult, est: Estimates, alpha: float, style: str, ss_
     """Post-test for linear trend: the contrast c_i = n_i (x_i - x̄_w) with x_i = 1..k (column order)
     and x̄_w the n-weighted mean position. Slope = Σ c_i ȳ_i / Σ n_i (x_i - x̄_w)² (the least-squares
     slope of the values on column number); F = (Σ c_i ȳ_i)² / (c'Vc), df (1, error df);
-    SS_trend = (Σ c_i ȳ_i)² / Σ n_i (x_i - x̄_w)². Two R² values, as Prism reports them:
+    SS_trend = (Σ c_i ȳ_i)² / Σ n_i (x_i - x̄_w)². Two R² values:
     effect-size R² = SS_trend / SS_total (the fraction of all variation explained by the trend) and
     alerting R² = SS_trend / SS_between-means, with SS_between-means = Σ n_i (ȳ_i - ȳ_w)² (the
     fraction of the variation among the group means explained by the trend; always the larger)."""
@@ -269,7 +269,7 @@ def _anova_core(samples) -> dict:
 
 def ordinary_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None,
                    control=None, pairs=None, family: str = "per_reference", trend: bool = False, alpha: float = 0.05, ci: float = 0.95,
-                   style: str = "GP") -> AnalysisResult:
+                   style: str = "classic") -> AnalysisResult:
     """Ordinary one-way ANOVA: F = MS_between / MS_within with (k - 1, N - k) df, where
     SS_between = Σ n_i (ȳ_i - ȳ)² and SS_within = Σ Σ (y - ȳ_i)². R² = SS_between / SS_total.
     Also the Brown-Forsythe and Bartlett tests of equal SDs."""
@@ -373,8 +373,8 @@ def welch_anova_core(samples) -> dict:
 
 
 def welch_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None, control=None,
-                pairs=None, family: str = "per_reference", alpha: float = 0.05, ci: float = 0.95, style: str = "GP") -> AnalysisResult:
-    """Brown-Forsythe and Welch ANOVA tests, for groups whose SDs may differ (Prism reports both).
+                pairs=None, family: str = "per_reference", alpha: float = 0.05, ci: float = 0.95, style: str = "classic") -> AnalysisResult:
+    """Brown-Forsythe and Welch ANOVA tests, for groups whose SDs may differ (both are reported).
     ``values["p"]`` is Welch's P. Multiple comparisons default to Games-Howell (all pairs) or
     Dunnett's T3 (other goals); Tamhane's T2 is also available."""
 
@@ -444,23 +444,23 @@ def _rm_core(Y: np.ndarray) -> dict:
 
 def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, geisser_greenhouse: bool = True, missing: str = "mixed",
                             comparisons=None, method: str | None = None, control=None, pairs=None, family: str = "per_reference",
-                            rm_error: str | None = None, trend: bool = False, alpha: float = 0.05, ci: float = 0.95, style: str = "GP") -> AnalysisResult:
+                            rm_error: str | None = None, trend: bool = False, alpha: float = 0.05, ci: float = 0.95, style: str = "classic") -> AnalysisResult:
     """Repeated-measures one-way ANOVA. Each row is one subject (matched across columns).
 
     SS_total = SS_treatment + SS_subjects + SS_residual; F = MS_treatment / MS_residual with
     (k - 1, (n - 1)(k - 1)) df. Geisser-Greenhouse epsilon (see ``geisser_greenhouse_epsilon``) is
-    always reported; with ``geisser_greenhouse=True`` (Prism's recommended choice) both df are
+    always reported; with ``geisser_greenhouse=True`` (the usual recommendation) both df are
     multiplied by ε. "Was the matching effective?": F = MS_subjects / MS_residual.
-    Treatment R² = SS_treatment / (SS_treatment + SS_residual) (Prism, after Keppel: subjects left
+    Treatment R² = SS_treatment / (SS_treatment + SS_residual) (after Keppel: subjects left
     out; with two columns it equals the paired t test's R²). Matching R² = SS_subjects / SS_total.
 
-    Rows with a blank: ``missing="mixed"`` (default, as Prism) fits ``mixed_effects_anova``
+    Rows with a blank: ``missing="mixed"`` (default) fits ``mixed_effects_anova``
     instead; ``missing="exclude"`` drops those rows.
 
     Multiple comparisons use ``rm_error``: "pooled" (MS_residual with (n-1)(k-1) df, which
     assumes sphericity) or "separate" (each comparison uses only its two columns: SE = SD of the
     differences/√n, df = n - 1, essentially a paired t test; Maxwell and Delaney pp. 552-555). The
-    default follows Prism: pooled when sphericity is assumed, separate with the Geisser-Greenhouse
+    default is: pooled when sphericity is assumed, separate with the Geisser-Greenhouse
     correction (which is then applied only to the main P)."""
 
     _check_alpha(alpha, ci)
@@ -473,7 +473,7 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     if not complete.all() and missing == "mixed":
         result = mixed_effects_anova(table, groups=groups, geisser_greenhouse=geisser_greenhouse, comparisons=comparisons, method=method,
                                      control=control, pairs=pairs, family=family, trend=trend, alpha=alpha, ci=ci, style=style)
-        result.warnings.insert(0, f"{int((~complete).sum())} row(s) have a blank, so a mixed-effects model was fitted instead of repeated-measures ANOVA (as Prism does).")
+        result.warnings.insert(0, f"{int((~complete).sum())} row(s) have a blank, so a mixed-effects model was fitted instead of repeated-measures ANOVA.")
         return result
     dropped = int((~complete).sum())
     Y = Y[complete]
@@ -551,7 +551,7 @@ def _statsmodels_mixedlm():
 
 def _gls_covariance(long: pd.DataFrame, k: int, var_subject: float, var_resid: float) -> np.ndarray:
     """(X' V⁻¹ X)⁻¹ for the cell-means design, with V = σ²_e I + σ²_s J within each subject (the
-    usual covariance of the fixed effects, as in SAS PROC MIXED and lme4)."""
+    usual covariance of the fixed effects, as in lme4)."""
 
     info = np.zeros((k, k))
     codes = long["group"].cat.codes.to_numpy()
@@ -565,11 +565,11 @@ def _gls_covariance(long: pd.DataFrame, k: int, var_subject: float, var_resid: f
 
 def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, geisser_greenhouse: bool = True, comparisons=None, method: str | None = None, control=None,
                         pairs=None, family: str = "per_reference", trend: bool = False, alpha: float = 0.05, ci: float = 0.95,
-                        style: str = "GP") -> AnalysisResult:
+                        style: str = "classic") -> AnalysisResult:
     """Mixed-effects model for repeated measures with missing values: value = group mean + subject
     effect + error, with a random intercept per subject (row), fitted by REML (statsmodels MixedLM).
 
-    What this engine reports, and how it differs from Prism:
+    What this engine reports:
 
     - Fixed effect of treatment: a Wald F test that every group mean is equal, with DFn = k - 1 and
       DFd = (number of values) - (number of subjects) - (k - 1) (the "between-within" df). With no
@@ -583,12 +583,12 @@ def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = No
     - Geisser-Greenhouse (``geisser_greenhouse=True``, the default as for repeated-measures ANOVA):
       ε is computed from the covariance matrix of the columns, each entry from the rows where both
       columns have values (pairwise complete; with no blanks this is the RM ANOVA ε), and DFn and
-      DFd are both multiplied by it. Prism offers this correction for its mixed model too, but does
-      not document how it estimates ε with missing values, so this is this engine's choice.
+      DFd are both multiplied by it. There is no standard way to estimate ε with missing values,
+      so this is this engine's choice.
 
-    Prism fits the same model (subjects random, columns fixed, no choice of covariance structure)
-    and it equals repeated-measures ANOVA when nothing is missing. Its guide does not say which
-    denominator df it uses; this engine uses the between-within df above. The multiple comparisons
+    The model has subjects random and columns fixed, with no choice of covariance structure, and
+    it equals repeated-measures ANOVA when nothing is missing. The denominator df is a choice;
+    this engine uses the between-within df above. The multiple comparisons
     stay model-based (they do not switch to two-column comparisons under Geisser-Greenhouse).
     """
 
@@ -670,9 +670,9 @@ def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = No
         result.warnings.append("The subject variance was estimated as zero (the matching explains nothing), so the model is the same as ordinary ANOVA.")
     if any("converge" in str(w.message).lower() for w in caught) or not getattr(fit, "converged", True):
         result.warnings.append("The mixed model fit reported convergence problems; check the result.")
-    result.warnings.append("Mixed-effects model: P uses a Wald F test with between-within df. Prism does not document its df method"
-                           + (" or how it estimates Geisser-Greenhouse epsilon with missing values (here: pairwise-complete covariances)" if gg_on else "")
-                           + ", so P may differ slightly from Prism's.")
+    result.warnings.append("Mixed-effects model: P uses a Wald F test with between-within df. Other denominator-df methods exist"
+                           + (" and there is no standard way to estimate Geisser-Greenhouse epsilon with missing values (here: pairwise-complete covariances)" if gg_on else "")
+                           + ", so P may differ slightly from other packages'.")
     if geisser_greenhouse and not gg_on:
         result.warnings.append("Geisser-Greenhouse epsilon could not be estimated (a pair of columns has fewer than 2 rows with both values), so P is uncorrected.")
     if not table.paired:
@@ -762,7 +762,7 @@ def friedman_exact_p(Y: np.ndarray, limit: float = FRIEDMAN_EXACT_MAX) -> float 
     ranks are in a random order (all k! orders equally likely, independently across rows). The
     distribution of the column rank sums is built row by row; since every order is applied, a state
     can be kept sorted. P is the probability that Σ R_j² is at least the observed value (Q is an
-    increasing function of it for fixed ties). Returns None when (k!)^n > ``limit`` (Prism's rule
+    increasing function of it for fixed ties). Returns None when (k!)^n > ``limit`` (the usual rule
     is exact unless (T!)^S > 10⁹)."""
 
     n, k = Y.shape
@@ -816,14 +816,14 @@ def _kw_min_p(sizes: list[int]) -> float:
 
 
 def kruskal_wallis(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None, control=None,
-                   pairs=None, family: str = "per_reference", exact: bool | None = None, alpha: float = 0.05, style: str = "GP") -> AnalysisResult:
+                   pairs=None, family: str = "per_reference", exact: bool | None = None, alpha: float = 0.05, style: str = "classic") -> AnalysisResult:
     """Kruskal-Wallis test. All values are ranked together (ties get the average rank).
     H = [12 / (N(N+1)) · Σ R_i²/n_i - 3(N+1)] / [1 - Σ(t³ - t)/(N³ - N)] (tie-corrected).
 
-    P is exact (permutation, ties included, as Prism 6+) when there are at most
+    P is exact (permutation, ties included, as usual) when there are at most
     KW_EXACT_MAX_PARTITIONS distinct ways to split the values into the groups (``kw_partitions``;
     for example 5 groups of 3 or 4 groups of 4, a few seconds at most); otherwise it is the
-    chi-square approximation with k - 1 df. Prism does not state its cutoff. ``exact=False`` forces
+    chi-square approximation with k - 1 df. The cutoff is this engine's choice. ``exact=False`` forces
     chi-square, ``exact=True`` refuses when enumeration is too large. Multiple comparisons: Dunn's
     test on the mean ranks."""
 
@@ -902,11 +902,11 @@ def _rank_follow_up(result, est, plan, alpha, style, max_z) -> str:
 
 
 def friedman(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None, control=None,
-             pairs=None, family: str = "per_reference", exact: bool | None = None, alpha: float = 0.05, style: str = "GP") -> AnalysisResult:
+             pairs=None, family: str = "per_reference", exact: bool | None = None, alpha: float = 0.05, style: str = "classic") -> AnalysisResult:
     """Friedman test for matched rows. Values are ranked within each row (ties get the average
     rank); R_j is the rank sum of column j. With tie correction (as R's friedman.test):
     Q = 12 Σ (R_j - n(k+1)/2)² / [n k (k+1) - Σ(t³ - t)/(k - 1)]. P is exact (permutation of the
-    ranks within rows, ties included) unless (k!)^n > 10⁹, Prism's rule; then it is the chi-square
+    ranks within rows, ties included) unless (k!)^n > 10⁹, the usual rule; then it is the chi-square
     approximation with k - 1 df. ``exact=False`` forces chi-square. Rows with a blank are left out. Multiple comparisons: Dunn's test on the mean
     ranks R_j/n with SE √(k(k+1)/(6n)) (no tie correction)."""
 
@@ -929,7 +929,7 @@ def friedman(table: ColumnTable, *, groups: Sequence[str] | None = None, compari
     p_chi2 = float(stats.chi2.sf(q, k - 1))
     p_exact = friedman_exact_p(Y) if exact is not False else None
     if exact is True and p_exact is None:
-        raise StatisticsError("An exact Friedman P is computed only when (k!)^n ≤ 10⁹, as in Prism.")
+        raise StatisticsError("An exact Friedman P is computed only when (k!)^n ≤ 10⁹.")
     p = p_exact if p_exact is not None else p_chi2
     result = _start("Friedman test", table, names, {"alpha": alpha, "style": style, "comparisons": comparisons, "method": method,
                                                     "control": control, "family": family})

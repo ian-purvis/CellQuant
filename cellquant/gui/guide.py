@@ -148,7 +148,7 @@ STEPS = (
         "Then click <b>Export results</b> and choose a folder. With several analyses in the list at the top, "
         "<b>Run all analyses</b> and <b>Export all analyses</b> do the same for each of them.",
         "The export folder has <i>objects.csv</i> (one row per object) and <i>image_summary.csv</i> "
-        "(one row per image, with the percentages). Both open in Excel, Prism, or R.",
+        "(one row per image, with the percentages). Both open in a spreadsheet or R.",
         "<b>Run all images</b>, then <b>Export results</b>.",
     ),
 )
@@ -191,7 +191,7 @@ HELP = {
     ("_review_panel", "pixel_level"): "A pixel passes when its value is at or above this level (same units as the image). Click Apply pixel level to measure again.",
     ("_review_panel", "counts"): "Counts for this image at the current cutoff. Unmeasured objects are left out of all counts.",
     ("_experiment_panel", "filter_box"): "Show only images whose file or sample name contains this text.",
-    ("_experiment_panel", "table"): "Image: where the file is inside the folder you added (hover for the full path). Untick Include to leave an image out without deleting it. Sample names and Folder columns can be edited or pasted from Excel; results can be grouped by them.",
+    ("_experiment_panel", "table"): "Image: where the file is inside the folder you added (hover for the full path). Untick Include to leave an image out without deleting it. Sample names and Folder columns can be edited or pasted from a spreadsheet; results can be grouped by them.",
     ("_objects_panel", "z_stack"): (
         "2D: one slice — only that plane.\n"
         "2D: max projection — brightest value through all slices (nuclei at different depths can merge).\n"

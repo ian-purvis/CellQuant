@@ -1,7 +1,7 @@
 """Comparing two columns: t tests and their nonparametric counterparts.
 
 Every test compares the second column (B) with the first (A), so differences are B - A and
-ratios B/A, as in Prism's results. ``alternative`` is "two-sided", "greater" (B > A predicted)
+ratios B/A, as in the usual results. ``alternative`` is "two-sided", "greater" (B > A predicted)
 or "less" (B < A predicted). A one-tailed P is computed in the predicted direction, so it is half
 the two-tailed P when the data go that way and 1 - P/2 when they go the other way. Confidence
 intervals are always two-sided, at level ``ci``.
@@ -120,8 +120,8 @@ def _check_unpaired(a: np.ndarray, b: np.ndarray, welch: bool, what: str) -> Non
 
 
 def _variance_f_test(result: AnalysisResult, a: np.ndarray, b: np.ndarray, alpha: float, style: str, names: tuple[str, str]) -> None:
-    """F = larger variance / smaller variance (always ≥ 1, as Prism); two-tailed P = 2·P(F' > F), at most 1.
-    https://www.graphpad.com/guides/prism/latest/statistics/how_the_unpaired_t_test_works2.htm"""
+    """F = larger variance / smaller variance (always ≥ 1); two-tailed P = 2·P(F' > F), at most 1.
+    """
 
     section = result.section("F test to compare variances")
     if a.size < 2 or b.size < 2:
@@ -145,7 +145,7 @@ def _variance_f_test(result: AnalysisResult, a: np.ndarray, b: np.ndarray, alpha
 
 
 def unpaired_t(a, b, *, welch: bool = False, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95,
-               alpha: float = 0.05, style: str = "GP", table_title: str = "") -> AnalysisResult:
+               alpha: float = 0.05, style: str = "classic", table_title: str = "") -> AnalysisResult:
     """Unpaired t test.
 
     Pooled (Student): s_p² as above, SE = s_p·√(1/n_A + 1/n_B), df = n_A + n_B - 2.
@@ -201,7 +201,7 @@ def _difference_rows(result: AnalysisResult, core: dict, names: tuple[str, str],
 
 
 def lognormal_unpaired_t(a, b, *, welch: bool = False, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95,
-                         alpha: float = 0.05, style: str = "GP", table_title: str = "") -> AnalysisResult:
+                         alpha: float = 0.05, style: str = "classic", table_title: str = "") -> AnalysisResult:
     """Unpaired t test on log values, for lognormal data. Reports the geometric means and the ratio
     of geometric means B/A = 10^(mean log10 B - mean log10 A) with its CI (the antilog of the CI of
     the difference of logs). Needs every value > 0."""
@@ -282,7 +282,7 @@ def _pairing_rows(result: AnalysisResult, a: np.ndarray, b: np.ndarray, alpha: f
 
 
 def paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95, alpha: float = 0.05,
-             style: str = "GP", table_title: str = "") -> AnalysisResult:
+             style: str = "classic", table_title: str = "") -> AnalysisResult:
     """Paired t test on the differences d = B - A: t = mean(d) / (SD(d)/√n), df = n - 1 pairs.
     R² (partial eta squared) = t²/(t² + df). Also reports the Pearson correlation between the
     columns, whether pairing was effective, and the paired effect sizes."""
@@ -319,7 +319,7 @@ def paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "t
 
 
 def ratio_paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95, alpha: float = 0.05,
-                   style: str = "GP", table_title: str = "") -> AnalysisResult:
+                   style: str = "classic", table_title: str = "") -> AnalysisResult:
     """Ratio paired t test: a paired t test on log10(B) - log10(A) = log10(B/A). Reports the
     geometric mean of the ratios B/A = 10^mean(log10 ratio) and its CI. Needs every value > 0."""
 
@@ -355,17 +355,17 @@ def ratio_paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: st
 
 
 def mann_whitney(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95, alpha: float = 0.05,
-                 style: str = "GP", exact: bool | None = None, continuity: bool = False, table_title: str = "") -> AnalysisResult:
+                 style: str = "classic", exact: bool | None = None, continuity: bool = False, table_title: str = "") -> AnalysisResult:
     """Mann-Whitney U test (Wilcoxon rank-sum).
 
     All values are ranked together (ties get the average rank). U_B = R_B - n_B(n_B+1)/2 counts
     pairs with the B value larger (a tie counts 1/2); U_A = n_A·n_B - U_B; the reported U is the
-    smaller. P is exact, ties included, when the smaller column has at most 100 values (Prism's
+    smaller. P is exact, ties included, when the smaller column has at most 100 values (the usual
     rule) and n_A·n_B ≤ 20 000 (this engine's limit on run time); otherwise it comes from the
     Gaussian approximation with σ² = n_A n_B/12 · ((N+1) - Σ(t³-t)/(N(N-1))) and no continuity
     correction (``continuity=True`` adds R's 0.5). The Hodges-Lehmann difference is the median of
     all B_j - A_i; its CI is at the achievable level nearest to ``ci``, which is reported.
-    https://www.graphpad.com/guides/prism/latest/statistics/how_the_mann-whitney_test_works.htm"""
+    """
 
     alternative = check_options(alternative, ci, alpha)
     a, dropped_a = finite(a)
@@ -422,7 +422,7 @@ def _minimum_p_warning(result: AnalysisResult, min_p: float, alpha: float, style
                                f"which is above alpha = {alpha:g}: it cannot find a significant difference whatever the data.")
 
 
-def kolmogorov_smirnov(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", alpha: float = 0.05, style: str = "GP",
+def kolmogorov_smirnov(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", alpha: float = 0.05, style: str = "classic",
                        exact: bool | None = None, table_title: str = "") -> AnalysisResult:
     """Two-sample Kolmogorov-Smirnov test: D = the largest vertical distance between the two
     cumulative distributions. One-tailed "greater" (B larger) uses D⁺ = max(F_A - F_B). P is exact
@@ -464,20 +464,19 @@ def kolmogorov_smirnov(a, b, *, names: tuple[str, str] = ("A", "B"), alternative
 
 
 def wilcoxon_matched_pairs(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95, alpha: float = 0.05,
-                           style: str = "GP", zero_method: str = "exclude", exact: bool | None = None, continuity: bool = False,
+                           style: str = "classic", zero_method: str = "exclude", exact: bool | None = None, continuity: bool = False,
                            table_title: str = "") -> AnalysisResult:
     """Wilcoxon matched-pairs signed-rank test on d = B - A.
 
     ``zero_method``: "exclude" (the default) drops rows with d = 0 before ranking, Wilcoxon's
     original method; "pratt" ranks them and then leaves their ranks out of the sums (Pratt 1959).
-    Pratt is an option, from Prism 6 on.
-    https://www.graphpad.com/guides/prism/latest/statistics/stat_pratt.htm
+    Pratt is an option.
     W = sum of signed ranks. P is exact, ties included, for fewer than 200 pairs, otherwise
     Gaussian with tie correction and no continuity correction. Also reports the median of the
     differences, the Hodges-Lehmann pseudo-median with its CI (at the achievable level nearest to
     ``ci``), and Spearman's rs between the columns with a one-tailed P, which tells whether pairing
-    was effective, as Prism does.
-    https://www.graphpad.com/guides/prism/latest/statistics/how_the_wilcoxon_matched_pairs_test_works.htm"""
+    was effective.
+    """
 
     alternative = check_options(alternative, ci, alpha)
     a, b, dropped = pairs(a, b, names)

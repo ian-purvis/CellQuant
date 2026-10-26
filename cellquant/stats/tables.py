@@ -1,4 +1,4 @@
-"""Column tables: one column of numbers per group, like a Prism "Column" data table.
+"""Column tables: one column of numbers per group, like a "column" data table.
 
 A blank cell is NaN. Columns may have different lengths. In a paired table, row i of every column
 belongs to the same subject (the same animal, image or experiment), so columns are compared row

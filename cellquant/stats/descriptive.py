@@ -1,11 +1,10 @@
-"""Column statistics (Prism's "Descriptive statistics" for one column) and one-sample tests.
+"""Column statistics (descriptive statistics for one column) and one-sample tests.
 
 Percentiles use the (n+1)p rule: the p-th percentile is the value at rank (n+1)p of the sorted
 data, interpolated linearly between neighbouring ranks and clamped to the minimum and maximum
 when (n+1)p falls outside 1..n. This is Hyndman and Fan's type 6 (``numpy`` method
-``"weibull"``, Excel's PERCENTILE.EXC inside its range), and it matches the method Prism documents
-for its percentiles, quartiles and median:
-https://www.graphpad.com/guides/prism/latest/statistics/stat_percentiles_and_the_median.htm
+``"weibull"``, the "exclusive" percentile of spreadsheets inside its range), the method most statistics
+packages use for percentiles, quartiles and the median.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ _PERCENTILES = (10, 25, 50, 75, 90)
 
 
 def percentiles(values, q) -> np.ndarray:
-    """Percentiles (0-100) by the (n+1)p rule (Hyndman-Fan type 6), as Prism computes them."""
+    """Percentiles (0-100) by the (n+1)p rule (Hyndman-Fan type 6)."""
 
     x, _ = finite(values)
     if not x.size:
@@ -33,7 +32,7 @@ def percentiles(values, q) -> np.ndarray:
 
 
 def skewness(x: np.ndarray) -> float:
-    """Sample-adjusted skewness G1 = n / ((n-1)(n-2)) · Σ((x - x̄)/s)³, s the SD with n-1 (Excel SKEW)."""
+    """Sample-adjusted skewness G1 = n / ((n-1)(n-2)) · Σ((x - x̄)/s)³, s the SD with n-1 (the usual spreadsheet SKEW)."""
 
     n = x.size
     s = np.std(x, ddof=1) if n > 1 else np.nan
@@ -44,7 +43,7 @@ def skewness(x: np.ndarray) -> float:
 
 def kurtosis(x: np.ndarray) -> float:
     """Sample-adjusted excess kurtosis G2 = n(n+1)/((n-1)(n-2)(n-3)) · Σ((x - x̄)/s)⁴ - 3(n-1)²/((n-2)(n-3))
-    (Excel KURT; 0 for a normal distribution)."""
+    (the usual spreadsheet KURT; 0 for a normal distribution)."""
 
     n = x.size
     s = np.std(x, ddof=1) if n > 1 else np.nan
@@ -102,10 +101,10 @@ def column_statistics(
     table_title: str = "",
     alternative: str = "two-sided",
     alpha: float = 0.05,
-    style: str = "GP",
+    style: str = "classic",
     zero_method: str = "exclude",
 ) -> AnalysisResult:
-    """Prism's column statistics for one column, plus (with ``hypothetical``) a one-sample t test and
+    """Column statistics for one column, plus (with ``hypothetical``) a one-sample t test and
     a Wilcoxon signed-rank test against that value.
 
     Statistics: n; minimum, 10th, 25th, 50th (median), 75th and 90th percentiles, maximum, range;
@@ -159,7 +158,7 @@ def column_statistics(
     return result
 
 
-def one_sample_t(values, hypothetical: float = 0.0, *, ci: float = 0.95, alternative: str = "two-sided", alpha: float = 0.05, style: str = "GP", table_title: str = "") -> AnalysisResult:
+def one_sample_t(values, hypothetical: float = 0.0, *, ci: float = 0.95, alternative: str = "two-sided", alpha: float = 0.05, style: str = "classic", table_title: str = "") -> AnalysisResult:
     """One-sample t test: t = (x̄ - μ0) / (s/√n), df = n - 1. "greater" predicts x̄ > μ0.
 
     R squared (partial eta squared) = t² / (t² + df)."""
@@ -211,7 +210,7 @@ def wilcoxon_signed_rank(
     ci: float = 0.95,
     alternative: str = "two-sided",
     alpha: float = 0.05,
-    style: str = "GP",
+    style: str = "classic",
     zero_method: str = "exclude",
     exact: bool | None = None,
     continuity: bool = False,
@@ -275,7 +274,7 @@ def signed_rank_rows(result: AnalysisResult, section, d: np.ndarray, ci: float, 
 
 def column_statistics_table(table: ColumnTable, ci: float = 0.95, hypothetical: float | None = None, **options) -> pd.DataFrame:
     """Every column's statistics side by side (rows are statistics, columns are the table's columns),
-    the way Prism lays out its column statistics sheet. Cells hold display text."""
+    the way a column statistics sheet is usually laid out. Cells hold display text."""
 
     out = {}
     for column in table.columns:
