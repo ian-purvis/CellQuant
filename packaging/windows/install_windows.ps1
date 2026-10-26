@@ -216,7 +216,7 @@ function Install-CellQuantEngine {
 
     # 3. CellQuant, napari and this engine's Cellpose.
     Write-CellQuantStep "  Installing CellQuant, napari and $Label..."
-    $Requirement = "${ProjectRoot}[gui,$Extra]"
+    $Requirement = "${ProjectRoot}[gui,stats,$Extra]"
     if ($Dev) {
         Invoke-EnvPython -Prefix $Prefix -FailureMessage 'Could not install CellQuant' -PythonArgs @(
             '-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', '--editable', $Requirement

@@ -94,6 +94,8 @@ if [ "$(uname -s)" = 'Linux' ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPL
     exit 1
 fi
 
+cq_install_stats_packages "$CQ_CONDA" "$PREFIX"
+
 echo
 echo "Starting CellQuant with $(cq_engine_label "$ENGINE")..."
 echo "  Environment: $PREFIX"
