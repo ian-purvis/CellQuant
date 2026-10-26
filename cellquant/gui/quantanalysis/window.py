@@ -1,0 +1,691 @@
+"""The QuantAnalysis window: a navigator of data tables, results and graphs, and the open sheet.
+
+Its own top-level window, separate from the image pipeline. Tables imported from the open
+experiment follow it: when approvals, cutoffs or results change there, those tables are marked
+out of date at once and imported again (with the same choices) when this window is next
+activated, or with Refresh; their results and graphs follow.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import logging
+from pathlib import Path
+from typing import Callable
+
+import pandas as pd
+from qtpy.QtCore import QEvent, Qt, QTimer
+from qtpy.QtGui import QFont
+from qtpy.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QStackedWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from cellquant.errors import CellQuantError
+from cellquant.gui.quantanalysis import graphs
+from cellquant.gui.quantanalysis.datagrid import DataSheetView
+from cellquant.gui.quantanalysis.dialogs import DEFAULT_OPTIONS, ChooseTestDialog, CompareDialog, ImportCsvDialog, ImportDialog
+from cellquant.gui.quantanalysis.project import COMPARE_TESTS, LOG, DataSheet, GraphSheet, Project, ResultSheet
+from cellquant.gui.quantanalysis.results_view import ResultSheetView
+from cellquant.stats import ColumnTable, sources
+
+INSTALL = 'pip install "cellquant[stats]"'
+SHEET_ROLE = Qt.UserRole + 1
+FALLBACK_STYLE = """
+QWidget { background-color: #262930; color: #f0f1f2; }
+QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QTableWidget, QTreeWidget, QListWidget, QTextBrowser, QPlainTextEdit {
+    background-color: #3b3f46; border: 1px solid #414851; }
+QPushButton { background-color: #414851; border-radius: 2px; padding: 4px 10px; }
+QPushButton:hover { background-color: #5a626c; }
+QHeaderView::section { background-color: #3b3f46; padding: 3px; border: none; }
+"""
+
+
+def dark_stylesheet() -> str:
+    """napari's dark theme stylesheet (napari 0.5/0.6), or a close copy when it cannot be loaded."""
+
+    try:
+        from qtpy.QtCore import QDir
+
+        if not QDir.searchPaths("theme_dark"):  # napari's own window registers its icons; a window without it does here
+            from napari._qt.qt_event_loop import _theme_path
+
+            QDir.addSearchPath("theme_dark", str(_theme_path("dark")))
+    except Exception:  # noqa: BLE001 - icons are optional
+        pass
+    try:
+        from napari.qt import get_stylesheet
+
+        return get_stylesheet("dark")
+    except Exception:  # noqa: BLE001 - any napari version without it
+        pass
+    try:
+        from napari._qt.qt_resources import get_stylesheet
+
+        return get_stylesheet("dark")
+    except Exception:  # noqa: BLE001
+        return FALLBACK_STYLE
+
+
+def missing_packages() -> list[str]:
+    return [name for name in ("matplotlib", "statsmodels") if importlib.util.find_spec(name) is None]
+
+
+class _LogBuffer(logging.Handler):
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self.lines: list[str] = []
+        self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
+
+    def emit(self, record) -> None:
+        self.lines.append(self.format(record))
+        del self.lines[:-2000]
+
+
+class QuantAnalysisWindow(QMainWindow):
+    """``experiment`` returns the open experiment's controller (or None); ``busy`` says when it is running."""
+
+    def __init__(self, parent=None, experiment: Callable[[], object] = lambda: None, busy: Callable[[], bool] = lambda: False):
+        super().__init__(parent)
+        self.setWindowFlag(Qt.Window, True)
+        self.setWindowTitle("QuantAnalysis")
+        self.setObjectName("QuantAnalysis")
+        self.resize(1320, 820)
+        self.setStyleSheet(dark_stylesheet())
+        self._experiment = experiment
+        self._busy = busy
+        self._signature: str | None = None
+        self._folder_sources: dict[str, sources.Source] = {}
+        self.project = Project()
+        self.project.changed.connect(self._project_changed)
+        self.views: dict[str, QWidget] = {}
+        self._log = _LogBuffer()
+        LOG.addHandler(self._log)
+        LOG.setLevel(logging.INFO)
+
+        central = QWidget()
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.banner = QLabel()
+        self.banner.setWordWrap(True)
+        self.banner.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.banner.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.22); padding: 8px; }")
+        missing = missing_packages()
+        self.banner.setText(
+            f"{' and '.join(missing)} {'is' if len(missing) == 1 else 'are'} not installed: "
+            + ("graphs cannot be drawn" if "matplotlib" in missing else "")
+            + (" and " if len(missing) == 2 else "")
+            + ("the Anderson-Darling and Kolmogorov-Smirnov normality tests are left out" if "statsmodels" in missing else "")
+            + f". Install with:  {INSTALL}"
+        )
+        self.banner.setVisible(bool(missing))
+        outer.addWidget(self.banner)
+        split = QSplitter()
+        self.navigator = QTreeWidget()
+        self.navigator.setHeaderHidden(True)
+        self.navigator.setMinimumWidth(220)
+        self.navigator.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.navigator.customContextMenuRequested.connect(self._navigator_menu)
+        self.navigator.currentItemChanged.connect(lambda current, _previous: self._show(current))
+        self.navigator.itemDoubleClicked.connect(lambda item, _column: self._rename(item))
+        self.folders = {}
+        for key, title, tip in (
+            ("data", "Data tables", "Your numbers: one column per group. Edit them and every linked result and graph updates."),
+            ("results", "Results", "Analyses of a data table. Each one follows its table."),
+            ("graphs", "Graphs", "Graphs of a data table, and of a comparison for the P bracket."),
+        ):
+            folder = QTreeWidgetItem([title])
+            folder.setToolTip(0, tip)
+            font = QFont()
+            font.setBold(True)
+            folder.setFont(0, font)
+            folder.setFlags(folder.flags() & ~Qt.ItemIsSelectable)
+            self.navigator.addTopLevelItem(folder)
+            folder.setExpanded(True)
+            self.folders[key] = folder
+        split.addWidget(self.navigator)
+        self.stack = QStackedWidget()
+        self.empty = self._welcome()
+        self.stack.addWidget(self.empty)
+        split.addWidget(self.stack)
+        split.setStretchFactor(1, 1)
+        split.setSizes([260, 1060])
+        outer.addWidget(split, 1)
+        self.setCentralWidget(central)
+        self._menus()
+        self._watch = QTimer(self)
+        self._watch.setInterval(1500)
+        self._watch.timeout.connect(self._check_experiment)
+        self._watch.start()
+
+    # --- Building the window ---------------------------------------------------------------------------------------
+
+    def _welcome(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignCenter)
+        title = QLabel("<h2>QuantAnalysis</h2>")
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+        text = QLabel("Analyse and graph CellQuant results the way GraphPad Prism does: a data table with one column per group, "
+                      "then statistics and graphs that follow it.")
+        text.setWordWrap(True)
+        text.setAlignment(Qt.AlignCenter)
+        text.setMaximumWidth(560)
+        layout.addWidget(text, 0, Qt.AlignCenter)
+        for label, tip, slot in (
+            ("Import from the open experiment…", "Choose a measure, what a dot is, and the groups, from the experiment open in CellQuant.", self.import_experiment),
+            ("Open CellQuant results folder…", "A results folder (with experiment.json) or an export folder (with image_summary.csv).", self.open_folder_dialog),
+            ("New column table", "An empty table to type or paste values into.", self.new_table),
+        ):
+            button = QPushButton(label)
+            button.setToolTip(tip)
+            button.setMinimumWidth(300)
+            button.setMinimumHeight(32)
+            button.clicked.connect(lambda _checked=False, slot=slot: slot())
+            layout.addWidget(button, 0, Qt.AlignCenter)
+        return page
+
+    def _menus(self) -> None:
+        bar = self.menuBar()
+        file = bar.addMenu("&File")
+        self._action(file, "New column table", self.new_table, "An empty table: one column per group.")
+        self._action(file, "Import CSV…", self.import_csv_dialog, "A CSV file, wide (one column per group) or long (value and group columns).")
+        file.addSeparator()
+        self._action(file, "Import from the open experiment…", self.import_experiment, "The experiment open in CellQuant, at its current cutoffs.")
+        self._action(file, "Open CellQuant results folder…", self.open_folder_dialog,
+                     "A results folder (experiment.json, summaries/) or an export folder (image_summary.csv, objects.csv).")
+        file.addSeparator()
+        self._action(file, "Close", self.close)
+        analyze = bar.addMenu("&Analyze")
+        self._action(analyze, "Column statistics", lambda: self.analyze("colstats"), "n, mean, SD, SEM, CI, median and percentiles of every column.")
+        self._action(analyze, "Normality and lognormality tests", lambda: self.analyze("normality"),
+                     "D'Agostino-Pearson, Shapiro-Wilk, Anderson-Darling and Kolmogorov-Smirnov, on the values and on their logs.")
+        self._action(analyze, "Compare two columns…", lambda: self.analyze("compare"), "t tests and rank tests (Prism's t test dialog).")
+        analyze.addSeparator()
+        self._action(analyze, "Help me choose…", self.help_choose, "Answer a few questions; the guide recommends a test and fills the Compare dialog.")
+        graph = bar.addMenu("&Graph")
+        for key, (name, tip) in graphs.KINDS.items():
+            self._action(graph, name, lambda key=key: self.new_graph(key), tip)
+        export = bar.addMenu("&Export")
+        self._action(export, "Export graph…", self.export_graph, "The graph shown, as SVG, PDF, EPS, PNG, TIFF or JPEG.")
+        self._action(export, "Export results CSV…", self.export_results, "The results sheet shown, as a CSV file.")
+        self._action(export, "Copy results", self.copy_results, "The results sheet shown, as tab-separated text.")
+        help_menu = bar.addMenu("&Help")
+        self._action(help_menu, "Statistics guide…", self.statistics_guide, "Definitions, equations and when to use each test.")
+        self._action(help_menu, "Help me choose…", self.help_choose)
+        self._action(help_menu, "Log…", self.show_log, "What QuantAnalysis did: imports, analyses, exports and any errors.")
+        for menu in (file, analyze, graph, export, help_menu):
+            menu.setToolTipsVisible(True)
+
+    def _action(self, menu: QMenu, text: str, slot, tip: str = ""):
+        action = menu.addAction(text)
+        action.triggered.connect(lambda _checked=False: slot())
+        if tip:
+            action.setToolTip(tip)
+        return action
+
+    def status(self, text: str) -> None:
+        self.statusBar().showMessage(text, 8000)
+        LOG.info("%s", text)
+
+    def log(self, text: str) -> None:
+        LOG.info("%s", text)
+
+    # --- Navigator --------------------------------------------------------------------------------------------------
+
+    def _project_changed(self, sheet_id: str) -> None:
+        if not sheet_id:
+            self._rebuild_navigator()
+            return
+        view = self.views.get(sheet_id)
+        if view is not None:
+            view.fill()
+
+    def _rebuild_navigator(self) -> None:
+        current = self.current_id()
+        self.navigator.blockSignals(True)
+        for key, sheets in (("data", self.project.data), ("results", self.project.results), ("graphs", self.project.graphs)):
+            folder = self.folders[key]
+            folder.takeChildren()
+            for sheet in sheets.values():
+                item = QTreeWidgetItem([sheet.name])
+                item.setData(0, SHEET_ROLE, sheet.id)
+                if key == "data":
+                    item.setToolTip(0, sheet.description or "Double-click to rename.")
+                else:
+                    data = self.project.data.get(sheet.data_id)
+                    item.setToolTip(0, f"From data table: {data.name if data else '?'}")
+                folder.addChild(item)
+        for sheet_id in list(self.views):
+            if self.project.sheet(sheet_id) is None:
+                view = self.views.pop(sheet_id)
+                self.stack.removeWidget(view)
+                view.deleteLater()
+        self.navigator.blockSignals(False)
+        self.select(current)
+
+    def item_of(self, sheet_id: str | None):
+        if sheet_id is None:
+            return None
+        for folder in self.folders.values():
+            for index in range(folder.childCount()):
+                if folder.child(index).data(0, SHEET_ROLE) == sheet_id:
+                    return folder.child(index)
+        return None
+
+    def select(self, sheet_id: str | None) -> None:
+        item = self.item_of(sheet_id)
+        if item is not None:
+            self.navigator.setCurrentItem(item)
+        else:
+            self._show(None)
+
+    def current_id(self) -> str | None:
+        item = self.navigator.currentItem()
+        return item.data(0, SHEET_ROLE) if item is not None else None
+
+    def _show(self, item) -> None:
+        sheet_id = item.data(0, SHEET_ROLE) if item is not None else None
+        sheet = self.project.sheet(sheet_id) if sheet_id else None
+        self._mark_linked(sheet)
+        if sheet is None:
+            self.stack.setCurrentWidget(self.empty)
+            return
+        view = self.views.get(sheet_id)
+        if view is None:
+            from cellquant.gui.quantanalysis.graph_view import GraphSheetView
+
+            kind = DataSheetView if isinstance(sheet, DataSheet) else ResultSheetView if isinstance(sheet, ResultSheet) else GraphSheetView
+            view = kind(self, self.project, sheet)
+            self.views[sheet_id] = view
+            self.stack.addWidget(view)
+        self.stack.setCurrentWidget(view)
+
+    def _mark_linked(self, sheet) -> None:
+        """Underline the sheets of the selected one's family: its data table, results and graphs."""
+
+        data_id = sheet.id if isinstance(sheet, DataSheet) else getattr(sheet, "data_id", None)
+        for folder in self.folders.values():
+            for index in range(folder.childCount()):
+                child = folder.child(index)
+                other = self.project.sheet(child.data(0, SHEET_ROLE))
+                family = other is not None and data_id is not None and (other.id == data_id or getattr(other, "data_id", None) == data_id)
+                font = child.font(0)
+                font.setUnderline(bool(family))
+                child.setFont(0, font)
+
+    def _navigator_menu(self, position) -> None:
+        item = self.navigator.itemAt(position)
+        sheet_id = item.data(0, SHEET_ROLE) if item is not None else None
+        if not sheet_id:
+            return
+        menu = QMenu(self)
+        menu.addAction("Rename…").triggered.connect(lambda: self._rename(item))
+        menu.addAction("Delete").triggered.connect(lambda: self._delete(sheet_id))
+        menu.exec(self.navigator.viewport().mapToGlobal(position))
+
+    def _rename(self, item) -> None:
+        sheet = self.project.sheet(item.data(0, SHEET_ROLE)) if item is not None else None
+        if sheet is None:
+            return
+        name, ok = QInputDialog.getText(self, "Rename", "Name", text=sheet.name)
+        if ok and name.strip():
+            sheet.name = name.strip()
+            self.sheet_renamed(sheet)
+
+    def sheet_renamed(self, sheet) -> None:
+        item = self.item_of(sheet.id)
+        if item is not None and item.text(0) != sheet.name:
+            item.setText(0, sheet.name)
+
+    def _delete(self, sheet_id: str) -> None:
+        sheet = self.project.sheet(sheet_id)
+        if isinstance(sheet, DataSheet):
+            results, graph_sheets = self.project.linked(sheet_id)
+            if results or graph_sheets:
+                answer = QMessageBox.question(self, "Delete data table",
+                                              f"Delete {sheet.name} and its {len(results)} result(s) and {len(graph_sheets)} graph(s)?")
+                if answer != QMessageBox.Yes:
+                    return
+        self.project.remove(sheet_id)
+
+    # --- Data tables ------------------------------------------------------------------------------------------------
+
+    def current_data(self) -> DataSheet | None:
+        sheet = self.project.sheet(self.current_id()) if self.current_id() else None
+        if isinstance(sheet, DataSheet):
+            return sheet
+        if sheet is not None:
+            return self.project.data.get(sheet.data_id)
+        return next(reversed(self.project.data.values()), None) if len(self.project.data) == 1 else None
+
+    def new_table(self) -> DataSheet:
+        table = ColumnTable.from_columns({"Group A": [], "Group B": []}, title="")
+        sheet = self.project.add_data(DataSheet(f"Data {len(self.project.data) + 1}", table))
+        self.select(sheet.id)
+        return sheet
+
+    def import_csv_dialog(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import CSV", str(Path.home()), "CSV files (*.csv *.txt);;All files (*)")
+        if path:
+            self.import_csv(path)
+
+    def import_csv(self, path: str, shape: str | None = None, value: str | None = None, group: str | None = None) -> DataSheet | None:
+        try:
+            frame = pd.read_csv(path, sep=None, engine="python")
+        except (OSError, ValueError) as exc:
+            self.status(f"{Path(path).name} could not be read: {exc}")
+            return None
+        dialog = ImportCsvDialog(self, frame, Path(path).name)
+        if shape is not None:
+            from cellquant.gui.quantanalysis.dialogs import _check
+
+            _check(dialog.shape, shape)
+            if value is not None:
+                dialog.value.setCurrentIndex(dialog.value.findData(value))
+            if group is not None:
+                dialog.group.setCurrentIndex(dialog.group.findData(group))
+        elif not dialog.exec():
+            return None
+        try:
+            table = dialog.table(Path(path).stem)
+        except CellQuantError as exc:
+            self.status(str(exc))
+            return None
+        sheet = self.project.add_data(DataSheet(Path(path).stem, table, description=f"From {path}"))
+        self.select(sheet.id)
+        return sheet
+
+    def controller(self):
+        try:
+            return self._experiment()
+        except Exception:  # noqa: BLE001 - the experiment window was closed
+            return None
+
+    def import_experiment(self, spec: sources.ImportSpec | None = None, accept: bool = False) -> DataSheet | None:
+        """Import from the open experiment. ``accept`` (with ``spec``) skips the dialog, for scripts and tests."""
+
+        controller = self.controller()
+        if controller is None:
+            self.status("No experiment is open in CellQuant. Open one there, or use File → Open CellQuant results folder….")
+            return None
+        try:
+            source = sources.from_controller(controller)
+        except CellQuantError as exc:
+            self.status(str(exc))
+            return None
+        self._signature = sources.controller_signature(controller)
+        return self._import(source, "experiment", spec, accept)
+
+    def open_folder_dialog(self) -> None:
+        from cellquant.gui.app import choose_existing_directory
+
+        folder = choose_existing_directory(self, "Open a CellQuant results or export folder")
+        if folder:
+            self.open_folder(folder)
+
+    def open_folder(self, folder: str | Path, spec: sources.ImportSpec | None = None, accept: bool = False) -> DataSheet | None:
+        try:
+            source = sources.read_results_folder(folder)
+        except (CellQuantError, OSError, ValueError) as exc:
+            self.status(str(exc))
+            QMessageBox.warning(self, "QuantAnalysis", str(exc)) if not accept else None
+            return None
+        self._folder_sources[str(folder)] = source
+        return self._import(source, str(folder), spec, accept)
+
+    def import_dialog(self, source: sources.Source, spec: sources.ImportSpec | None = None) -> ImportDialog:
+        return ImportDialog(self, source, spec)
+
+    def _import(self, source: sources.Source, origin: str, spec, accept: bool) -> DataSheet | None:
+        dialog = self.import_dialog(source, spec)
+        suggested = False
+        if accept:
+            if spec is None:
+                dialog._use_suggested()
+                suggested = True
+            dialog._preview()
+        elif not dialog.exec():
+            return None
+        else:
+            suggested = dialog.suggested
+        imported = dialog.imported
+        if imported is None:
+            self.status("Nothing to import with these choices.")
+            return None
+        sheet = DataSheet(imported.table.title or "Imported", imported.table)
+        self._apply_import(sheet, imported, dialog.spec(), origin)
+        self.project.add_data(sheet)
+        self.select(sheet.id)
+        self.log(f"imported {sheet.name} from {source.label}: {imported.description}")
+        if suggested:
+            self.suggested_analysis(sheet)
+        return sheet
+
+    def _apply_import(self, sheet: DataSheet, imported: sources.Imported, spec, origin: str) -> None:
+        sheet.table, sheet.row_labels = imported.table, imported.row_labels
+        sheet.images, sheet.units = imported.images, imported.units
+        sheet.notes, sheet.warnings = imported.notes, imported.warnings
+        sheet.pseudoreplicated, sheet.description = imported.pseudoreplicated, imported.description
+        sheet.spec, sheet.origin, sheet.stale = spec, origin, False
+
+    def suggested_analysis(self, sheet: DataSheet) -> None:
+        """The image-data preset: a SuperPlot (mean ± SD) and, for two groups, Welch's t test with an estimation plot."""
+
+        result = None
+        if len(sheet.table) == 2:
+            result = self.project.add_result(ResultSheet(f"Welch's t test: {sheet.name}", sheet.id, "compare",
+                                                         {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided",
+                                                          "ci": 0.95, "alpha": 0.05, "style": "GP"}))
+        kind = "superplot" if sheet.units is not None else "scatter"
+        self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {sheet.name}", sheet.id, kind, {"error": "sd"},
+                                          result.id if result else None))
+        if result is not None:
+            self.project.add_graph(GraphSheet(f"Estimation plot: {sheet.name}", sheet.id, "estimation", {"error": "sd"}, result.id))
+        if len(sheet.table) > 2:
+            self.status("Three or more groups: Kruskal-Wallis with Dunn's tests is coming in the next update. The SuperPlot is drawn.")
+
+    # --- Following the open experiment ---------------------------------------------------------------------------
+
+    def _check_experiment(self) -> None:
+        linked = [sheet for sheet in self.project.data.values() if sheet.origin == "experiment" and sheet.spec is not None]
+        controller = self.controller()
+        if not linked or controller is None or self._busy():
+            return
+        try:
+            signature = sources.controller_signature(controller)
+        except Exception:  # noqa: BLE001 - mid-change; try again on the next tick
+            return
+        if self._signature is not None and signature != self._signature:
+            for sheet in linked:
+                if not sheet.stale:
+                    sheet.stale = True
+                    self.project.changed.emit(sheet.id)
+            self.log("the open experiment changed; imported tables are out of date")
+            if self.isActiveWindow():
+                self.refresh_imports()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.ActivationChange and self.isActiveWindow():
+            self._check_experiment()
+            self.refresh_imports()
+
+    def refresh_imports(self, force: bool = False) -> None:
+        """Import the out-of-date tables again with their choices; their results and graphs follow."""
+
+        stale = [sheet for sheet in self.project.data.values() if sheet.spec is not None and (sheet.stale or force)
+                 and sheet.origin == "experiment"]
+        if force:
+            stale += [sheet for sheet in self.project.data.values() if sheet.spec is not None and sheet.origin not in ("", "experiment")]
+        if not stale or self._busy():
+            return
+        cache: dict[str, sources.Source] = {}
+        for sheet in stale:
+            try:
+                if sheet.origin == "experiment":
+                    controller = self.controller()
+                    if controller is None:
+                        continue
+                    if "experiment" not in cache:
+                        cache["experiment"] = sources.from_controller(controller)
+                        self._signature = sources.controller_signature(controller)
+                else:
+                    cache.setdefault(sheet.origin, sources.read_results_folder(sheet.origin))
+                imported = sources.build(cache[sheet.origin], sheet.spec)
+            except CellQuantError as exc:
+                sheet.warnings = [f"Could not import again: {exc}"]
+                sheet.stale = False
+                self.project.data_changed(sheet.id)
+                continue
+            self._apply_import(sheet, imported, sheet.spec, sheet.origin)
+            self.project.data_changed(sheet.id)
+            self.log(f"{sheet.name} imported again: {imported.description}")
+        self.status("Imported tables are up to date with the experiment.")
+
+    # --- Analyses and graphs ----------------------------------------------------------------------------------------
+
+    def analyze(self, kind: str, options: dict | None = None) -> ResultSheet | None:
+        data = self.current_data()
+        if data is None:
+            self.status("Select a data table first (or import one: File → Open CellQuant results folder…).")
+            return None
+        if kind == "compare":
+            if len(data.table) < 2:
+                self.status("Comparing needs at least two columns.")
+                return None
+            if options is None:
+                dialog = CompareDialog(self, data.table)
+                if not dialog.exec():
+                    return None
+                options = dialog.options()
+            name = f"{COMPARE_TESTS[options['test']][0]}: {data.name}"
+        else:
+            name = {"colstats": "Column statistics", "normality": "Normality tests"}[kind] + f": {data.name}"
+            options = options or {}
+        sheet = self.project.add_result(ResultSheet(name, data.id, kind, options))
+        if kind == "compare":
+            for graph in self.project.graphs.values():
+                if graph.data_id == data.id and graph.result_id is None:
+                    graph.result_id = sheet.id
+                    self.project.changed.emit(graph.id)
+        self.select(sheet.id)
+        self.log(f"{name}: {'error: ' + sheet.error if sheet.error else 'done'}")
+        return sheet
+
+    def change_options(self, sheet: ResultSheet, options: dict | None = None) -> None:
+        data = self.project.data.get(sheet.data_id)
+        if data is None:
+            return
+        if options is None:
+            dialog = CompareDialog(self, data.table, sheet.options)
+            if not dialog.exec():
+                return
+            options = dialog.options()
+        sheet.options = options
+        sheet.name = f"{COMPARE_TESTS[options['test']][0]}: {data.name}"
+        self.sheet_renamed(sheet)
+        self.project.rerun(sheet)
+
+    def help_choose(self) -> None:
+        dialog = ChooseTestDialog(self)
+        if dialog.exec() and dialog.choice():
+            data = self.current_data()
+            if data is None or len(data.table) < 2:
+                self.status("Select a data table with two columns, then run the recommended test.")
+                return
+            compare = CompareDialog(self, data.table, {**DEFAULT_OPTIONS, **dialog.choice()})
+            if compare.exec():
+                self.analyze("compare", compare.options())
+
+    def new_graph(self, kind: str) -> GraphSheet | None:
+        data = self.current_data()
+        if data is None:
+            self.status("Select a data table first.")
+            return None
+        result = next((item for item in reversed(list(self.project.results.values()))
+                       if item.data_id == data.id and item.kind == "compare"), None)
+        sheet = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {data.name}", data.id, kind, {},
+                                                  result.id if result else None))
+        self.select(sheet.id)
+        return sheet
+
+    def export_graph(self) -> None:
+        view = self.stack.currentWidget()
+        if hasattr(view, "export_dialog"):
+            view.export_dialog()
+        else:
+            self.status("Select a graph first.")
+
+    def export_results(self) -> None:
+        view = self.stack.currentWidget()
+        if isinstance(view, ResultSheetView):
+            view.export_csv()
+        else:
+            self.status("Select a results sheet first.")
+
+    def copy_results(self) -> None:
+        view = self.stack.currentWidget()
+        if isinstance(view, ResultSheetView):
+            view.copy()
+        else:
+            self.status("Select a results sheet first.")
+
+    # --- Help -------------------------------------------------------------------------------------------------------
+
+    def statistics_guide(self) -> QDialog:
+        from cellquant.gui.guide import GuideDialog
+
+        dialog = GuideDialog(self, statistics_text(), title="QuantAnalysis: statistics guide", modal=False)
+        dialog.show()
+        return dialog
+
+    def show_log(self) -> QDialog:
+        dialog = QDialog(self)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.setWindowTitle("QuantAnalysis log")
+        dialog.resize(760, 480)
+        layout = QVBoxLayout(dialog)
+        text = QPlainTextEdit("\n".join(self._log.lines) or "Nothing logged yet.")
+        text.setReadOnly(True)
+        layout.addWidget(text)
+        row = QHBoxLayout()
+        copy = QPushButton("Copy")
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(text.toPlainText()))
+        row.addStretch(1)
+        row.addWidget(copy)
+        layout.addLayout(row)
+        dialog.show()
+        return dialog
+
+    def closeEvent(self, event) -> None:
+        self._watch.stop()
+        super().closeEvent(event)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._watch.start()
+
+
+def statistics_text() -> str:
+    path = Path(__file__).resolve().parents[1] / "STATISTICS.md"
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return "The statistics guide is missing. See docs/STATISTICS.md in the CellQuant folder."

@@ -74,6 +74,8 @@ Write-Host "Starting CellQuant with $(Get-CellQuantEngineLabel -Engine $Engine).
 Write-Host "  Environment: $Prefix"
 Write-Host '  The napari window can take a minute to appear. Keep this window open while you work.'
 
+Install-CellQuantStatsPackages -CondaExe $CondaExe -Prefix $Prefix
+
 $Arguments = @('run', '--no-capture-output', '--prefix', $Prefix, 'python', '-m', 'cellquant')
 if ($Experiment) {
     $Arguments += $Experiment

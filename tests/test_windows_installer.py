@@ -85,6 +85,20 @@ def test_the_checker_catches_planted_mistakes(tmp_path: Path):
     assert "undefined function Get-CellQuantMissing" in text
 
 
+def test_stats_extra_is_installed_and_added_at_launch():
+    env_script = (WINDOWS / "cellquant_env.ps1").read_text(encoding="ascii")
+    launcher = (WINDOWS / "launch_cellquant.ps1").read_text(encoding="ascii")
+    installer = (WINDOWS / "install_windows.ps1").read_text(encoding="ascii")
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    stats = project["project"]["optional-dependencies"]["stats"]
+    assert '"${ProjectRoot}[gui,stats,$Extra]"' in installer  # fresh installs and [U] Update
+    packages = re.search(r"\$script:CellQuantStatsPackages = @\(([^)]*)\)", env_script).group(1)
+    assert sorted(re.findall(r"'([^']+)'", packages)) == sorted(stats)
+    # An environment made before the stats extra gets it on its next launch, before CellQuant starts.
+    assert launcher.index("Install-CellQuantStatsPackages -CondaExe $CondaExe -Prefix $Prefix") < launcher.index("$Arguments = @('run'")
+    assert "if ($LASTEXITCODE -ne 3)" in env_script and "else 3)" in env_script
+
+
 def test_engine_keys_and_extras_match_python_and_pyproject():
     env_script = (WINDOWS / "cellquant_env.ps1").read_text(encoding="ascii")
     extras = dict(re.findall(r"(cellpose[34]) = '(cellpose-v[34])'", env_script))
@@ -110,7 +124,7 @@ def test_cuda_wheel_table_matches_cellquant_v1():
 def test_installer_installs_gpu_pytorch_before_cellpose():
     text = (WINDOWS / "install_windows.ps1").read_text(encoding="ascii")
     body = text[text.index("function Install-CellQuantEngine") :]
-    assert body.index("--index-url', $IndexUrl") < body.index('"${ProjectRoot}[gui,$Extra]"')
+    assert body.index("--index-url', $IndexUrl") < body.index('"${ProjectRoot}[gui,stats,$Extra]"')
     assert "'torch', 'torchvision'" in body  # Cellpose 4 needs a matching torchvision
     assert "--override-channels', '--channel', 'conda-forge'" in body
 
