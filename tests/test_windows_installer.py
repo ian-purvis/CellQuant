@@ -6,6 +6,7 @@ tests/ps_lint.py) and run the Python helpers the installer calls.
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import subprocess
 import sys
@@ -96,7 +97,33 @@ def test_stats_extra_is_installed_and_added_at_launch():
     assert sorted(re.findall(r"'([^']+)'", packages)) == sorted(stats)
     # An environment made before the stats extra gets it on its next launch, before CellQuant starts.
     assert launcher.index("Install-CellQuantStatsPackages -CondaExe $CondaExe -Prefix $Prefix") < launcher.index("$Arguments = @('run'")
-    assert "if ($LASTEXITCODE -ne 3)" in env_script and "else 3)" in env_script
+    assert "if ($LASTEXITCODE -ne 3)" in env_script
+
+
+def test_stats_check_is_a_module_not_a_python_c_string():
+    """``conda run ... python -c "<code>"`` can split or mangle code with quotes, parentheses and semicolons (PowerShell
+    quotes it, then conda's batch wrapper re-parses it), which makes the check exit 1 instead of 3 and silently skips the
+    install. The check is ``python -m cellquant.stats._deps_check``, whose arguments have nothing to mangle."""
+
+    for path in SCRIPTS:
+        text = path.read_text(encoding="ascii")
+        assert not re.search(r"python\s+-c\b", text), f"{path.name} passes code to python -c"
+        assert "find_spec" not in text, path.name
+    env_script = (WINDOWS / "cellquant_env.ps1").read_text(encoding="ascii")
+    call = re.search(r"& \$CondaExe run --prefix \$Prefix python (-m \S+)\r?\n", env_script).group(1)
+    assert call == "-m cellquant.stats._deps_check"
+    assert not set(call) & set("();\"'&|^%")
+
+
+def test_stats_check_exits_0_when_installed_and_3_when_missing():
+    code = "import sys, runpy; sys.modules[{name!r}] = None; runpy.run_module('cellquant.stats._deps_check', run_name='__main__')"
+    here = [sys.executable, "-m", "cellquant.stats._deps_check"]
+    present = all(importlib.util.find_spec(name) is not None for name in ("matplotlib", "statsmodels"))
+    assert subprocess.run(here, cwd=ROOT, capture_output=True).returncode == (0 if present else 3)
+    for name in ("matplotlib", "statsmodels"):
+        done = subprocess.run([sys.executable, "-c", code.format(name=name)], cwd=ROOT, capture_output=True)
+        assert done.returncode == 3, (name, done.stderr)
+        assert done.stdout == b""
 
 
 def test_engine_keys_and_extras_match_python_and_pyproject():
