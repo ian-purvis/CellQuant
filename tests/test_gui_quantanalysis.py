@@ -165,7 +165,7 @@ def test_dialogs_teach_and_prefill(qtbot):
     _check(guide.paired, True)
     assert guide.choice()["test"] == "wilcoxon"
     _check(guide.groups, 3)
-    assert guide.choice() is None and "next update" in guide.answer.toPlainText()
+    assert guide.choice()["kind"] == "anova" and "next update" not in guide.answer.toPlainText()  # three or more groups: see test_gui_quantanalysis_anova.py
     table = ColumnTable.from_columns({"A": [1, 2, 3], "B": [4, 5, 6]})
     dialog = CompareDialog(None, table)
     qtbot.addWidget(dialog)

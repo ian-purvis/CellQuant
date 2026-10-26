@@ -19,12 +19,11 @@ cq_miniforge_sha256() {
 # The "stats" extra (QuantAnalysis). Every install and update installs it; the launcher adds
 # these to an environment made before it existed (cq_install_stats_packages).
 CQ_STATS_PACKAGES='statsmodels matplotlib'
-CQ_STATS_CHECK="import importlib.util as u, sys; sys.exit(0 if all(u.find_spec(n) for n in ('matplotlib', 'statsmodels')) else 3)"
 
 # Add the statistics libraries to an environment (prefix $2, conda $1) that lacks them. Never stops
 # CellQuant from starting: without them, QuantAnalysis says what is missing and how to install it.
 cq_install_stats_packages() {
-    "$1" run --prefix "$2" python -c "$CQ_STATS_CHECK" >/dev/null 2>&1
+    "$1" run --prefix "$2" python -m cellquant.stats._deps_check >/dev/null 2>&1
     [ $? -eq 3 ] || return 0
     echo '  Adding the statistics libraries (matplotlib, statsmodels) for QuantAnalysis...'
     # shellcheck disable=SC2086 # one word per package

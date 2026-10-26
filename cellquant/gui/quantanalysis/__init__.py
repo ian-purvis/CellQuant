@@ -10,11 +10,19 @@ from __future__ import annotations
 
 
 def open_window(parent=None, experiment=lambda: None, busy=lambda: False, existing=None):
-    """Show ``existing`` (a QuantAnalysisWindow) or a new one, raised and active."""
+    """Show ``existing`` (a QuantAnalysisWindow) or a new one, raised and active. A window whose C++ object is gone
+    (its parent was deleted) is replaced."""
 
     from cellquant.gui.quantanalysis.window import QuantAnalysisWindow
 
-    window = existing if existing is not None else QuantAnalysisWindow(parent, experiment, busy)
+    window = existing
+    try:
+        if window is not None:
+            window.isVisible()
+    except RuntimeError:
+        window = None
+    if window is None:
+        window = QuantAnalysisWindow(parent, experiment, busy)
     window.show()
     window.raise_()
     window.activateWindow()
