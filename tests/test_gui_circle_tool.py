@@ -26,7 +26,7 @@ class _Press:
         self.dims_displayed = (0, 1)
 
 
-def _circle_click(shell, position, drag_to=None):
+def _circle_click(shell, position, drag_to=None, wait=True):
     event = _Press(position)
     gen = shell._edit_panel._on_circle(shell.viewer, event)
     next(gen, None)
@@ -38,9 +38,10 @@ def _circle_click(shell, position, drag_to=None):
         next(gen)
     except StopIteration:
         pass
-    _events(0.2)
-    assert _wait(shell)
-    _events(0.2)
+    if wait:
+        _events(0.2)
+        assert _wait(shell)
+        _events(0.2)
 
 
 def test_circle_tool_adds_recorded_objects(tmp_path: Path, open_window):  # noqa: F811
@@ -64,7 +65,7 @@ def test_circle_tool_adds_recorded_objects(tmp_path: Path, open_window):  # noqa
     objects = len(found.objects)
     free = np.asarray(layer.data) == 0
     spots = [(y, x) for y in range(12, free.shape[0] - 12, 24) for x in range(12, free.shape[1] - 12, 24) if free[y - 10 : y + 11, x - 10 : x + 11].all()]
-    assert len(spots) >= 3
+    assert len(spots) >= 4
 
     # Off: a click does nothing.
     _circle_click(shell, spots[0])
@@ -121,6 +122,22 @@ def test_circle_tool_adds_recorded_objects(tmp_path: Path, open_window):  # noqa
     panel._buttons["Circle"].click()
     panel._buttons["Back"].click()
     assert panel._circle is None
+
+    # Circles placed while the last one is still being recorded are all recorded.
+    panel._buttons["Add new objects"].click()
+    panel._buttons["Circle"].click()
+    count = len(shell.controller.last_results[image_id].objects)
+    _circle_click(shell, spots[2], wait=False)
+    _circle_click(shell, spots[3], wait=False)
+    for _ in range(3):
+        _events(0.3)
+        assert _wait(shell)
+    _events(0.3)
+    assert len(shell.controller.last_results[image_id].objects) == count + 2
+
+    # Moving to another step puts the circle down.
+    shell._tabs.setCurrentWidget(shell._step_pages[3])
+    assert panel._circle is None and not panel._buttons["Circle"].isChecked()
 
 
 def test_delete_circle_removes_objects_inside_and_undo_restores(tmp_path: Path, open_window):  # noqa: F811

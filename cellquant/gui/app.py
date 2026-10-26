@@ -769,6 +769,7 @@ class CellQuantWindow:
         self._footer = Footer(self)
         self._tabs.currentChanged.connect(lambda _index: self._markers_page_shown())
         self._tabs.currentChanged.connect(lambda _index: self._edit_panel.leave_delete())
+        self._tabs.currentChanged.connect(lambda _index: self._edit_panel._set_circle(None))
         self._tabs.currentChanged.connect(lambda _index: self._review_panel.leave_marking())
         main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
@@ -4946,9 +4947,10 @@ class EditPanel(QWidget):
 
         layer = self._labels
         data = np.asarray(layer.data)
-        if self.shell.is_busy() or self.shell.image_loading():
-            self.shell.message("Wait for the current analysis to finish, then place the circle again.")
+        if self.shell.image_loading():
+            self.shell.message("Wait for the image to load, then place the circle again.")
             return
+        # While a job runs (such as recording the last circle) the circle is recorded after it.
         cy, cx = float(center[-2]), float(center[-1])
         top, left = max(int(np.floor(cy - radius)), 0), max(int(np.floor(cx - radius)), 0)
         bottom, right = min(int(np.ceil(cy + radius)) + 1, data.shape[-2]), min(int(np.ceil(cx + radius)) + 1, data.shape[-1])
@@ -5036,6 +5038,9 @@ class EditPanel(QWidget):
         image_id, closed = self._closed
         layer = self._labels
         if controller is None or not closed or image_id is None or layer is None or layer not in self.shell.viewer.layers:
+            return
+        if self.shell._job is not None and self.shell._batch is None and self.shell._labels_image_id == image_id:
+            QTimer.singleShot(100, self._record_closed)  # recorded once the current job ends
             return
         if self.shell.is_busy() or self.shell.image_loading() or self.shell._labels_image_id != image_id:
             return  # recorded after the current job, or with Record drawn edits
