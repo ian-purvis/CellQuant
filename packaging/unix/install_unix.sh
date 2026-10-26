@@ -389,7 +389,7 @@ install_engine() {
 
     # 3. CellQuant, napari and this engine's Cellpose.
     step "  Installing CellQuant, napari and $label..."
-    requirement="${PROJECT_ROOT}[gui,$extra]"
+    requirement="${PROJECT_ROOT}[gui,stats,$extra]"
     # Intel Macs: the last PyTorch for them was built for NumPy 1 and stops with
     # "Numpy is not available" under NumPy 2.
     pins=''
