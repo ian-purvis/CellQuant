@@ -120,3 +120,13 @@ def test_identify_outliers_returns_flags_and_a_cleaned_copy():
     paired = ColumnTable.from_columns({"A": CLEAN + [14.5], "B": CLEAN + [10.0]}, paired=True)
     assert identify_outliers(paired).values["cleaned"].paired
     assert math.isnan(identify_outliers(paired).values["cleaned"]["A"].values[-1])
+
+
+def test_rout_flags_at_most_30_percent_of_the_values():
+    from cellquant.stats.outliers import max_outliers
+    assert [max_outliers(n) for n in (3, 4, 9, 10, 20)] == [1, 1, 2, 3, 6]
+    # Ten values, four of them far out: at most three (30%) can be flagged.
+    x = [10.0, 10.1, 9.9, 10.05, 9.95, 10.02, 50.0, 51.0, 52.0, 53.0]
+    fit = rout_fit(x, q=0.2)
+    assert fit["mask"].sum() <= 3
+    assert identify_outliers(ColumnTable.from_columns({"A": [1.0, 1.1, 30.0]})).values["n_outliers"] <= 1

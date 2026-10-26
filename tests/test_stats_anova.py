@@ -233,6 +233,9 @@ def test_repeated_measures_with_two_columns_is_the_paired_t_test():
     assert rm["epsilon"] == 1.0
     assert rm["f"] == pytest.approx(t["t"] ** 2) and rm["p"] == pytest.approx(t["p"])
     assert rm["r_squared"] == pytest.approx(t["r_squared"])
+    # a commercial package's two R² values: treatment SS_trt/(SS_trt + SS_resid), matching SS_subjects/SS_total.
+    assert rm["r_squared"] == pytest.approx(rm["ss_treatment"] / (rm["ss_treatment"] + rm["ss_residual"]))
+    assert rm["r_squared_matching"] == pytest.approx(rm["ss_subjects"] / rm["ss_total"])
 
 
 def test_geisser_greenhouse_epsilon_is_one_under_compound_symmetry_and_bounded():
@@ -266,7 +269,7 @@ def test_mixed_model_without_blanks_reproduces_repeated_measures_anova():
     pytest.importorskip("statsmodels")
     Y, table = _rm_table()
     rm = repeated_measures_anova(table, geisser_greenhouse=False, comparisons="all").values
-    mixed = mixed_effects_anova(table, comparisons="all").values
+    mixed = mixed_effects_anova(table, geisser_greenhouse=False, comparisons="all").values
     assert mixed["dfd"] == rm["dfd"] and mixed["dfn"] == rm["dfn"]
     assert mixed["f"] == pytest.approx(rm["f"], rel=1e-4) and mixed["p"] == pytest.approx(rm["p"], rel=1e-3)
     assert mixed["means"] == pytest.approx(rm["means"], rel=1e-8)
@@ -307,7 +310,7 @@ def test_mixed_model_with_blanks_matches_a_direct_reml_fit():
     Y, _ = _rm_table(seed=11, n=8)
     Y[1, 2] = Y[4, 0] = Y[6, 3] = np.nan
     table = ColumnTable.from_columns({f"T{j + 1}": Y[:, j] for j in range(Y.shape[1])}, paired=True)
-    result = mixed_effects_anova(table, comparisons="control", control="T1")
+    result = mixed_effects_anova(table, geisser_greenhouse=False, comparisons="control", control="T1")
     v = result.values
     rows, cols = np.nonzero(np.isfinite(Y))
     y, X = Y[rows, cols], np.eye(Y.shape[1])[cols]
@@ -323,6 +326,23 @@ def test_mixed_model_with_blanks_matches_a_direct_reml_fit():
     assert v["n_values"] == y.size and result.row("Data summary", "Number of missing values").value == 3
     assert [r["reference"] for r in v["comparisons"]] == ["T1"] * 3
     assert any("a commercial package" in w for w in result.warnings)
+    # Geisser-Greenhouse (the default): epsilon from pairwise-complete column covariances scales both df.
+    import pandas as pd
+    S = pd.DataFrame(Y).cov(min_periods=2).to_numpy()
+    C = np.eye(k) - np.ones((k, k)) / k
+    eps = np.trace(C @ S @ C) ** 2 / ((k - 1) * np.trace(C @ S @ C @ C @ S @ C))
+    gg = mixed_effects_anova(table).values
+    assert gg["epsilon"] == pytest.approx(eps) and gg["dfn"] == pytest.approx(eps * (k - 1)) and gg["dfd"] == pytest.approx(eps * dfd)
+    assert gg["p"] == pytest.approx(stats.f.sf(gg["f"], eps * (k - 1), eps * dfd)) and gg["p_uncorrected"] == pytest.approx(v["p"])
+
+
+def test_mixed_model_geisser_greenhouse_without_blanks_equals_rm_anova():
+    pytest.importorskip("statsmodels")
+    _, table = _rm_table()
+    rm = repeated_measures_anova(table).values
+    mixed = mixed_effects_anova(table).values
+    assert mixed["epsilon"] == pytest.approx(rm["epsilon"], rel=1e-10)
+    assert mixed["dfd"] == pytest.approx(rm["dfd"]) and mixed["p"] == pytest.approx(rm["p"], rel=1e-3)
 
 
 # ------------------------------------------------------------------------------------------- nonparametric
@@ -340,10 +360,80 @@ def test_kruskal_wallis_matches_r():
     assert v["h"] > v["h_uncorrected"]
     # R's ?kruskal.test: Hollander and Wolfe (1973) p. 116, mucociliary efficiency: chi-squared = 0.77143, df = 2, p-value = 0.68.
     hw = ColumnTable.from_columns({"normal": [2.9, 3.0, 2.5, 2.6, 3.2], "obstructive": [3.8, 2.7, 4.0, 2.4], "asbestosis": [2.8, 3.4, 3.7, 2.2, 2.0]})
-    result = kruskal_wallis(hw)
+    result = kruskal_wallis(hw, exact=False)
     assert result.values["h"] == pytest.approx(0.77143, abs=5e-6) and result.values["p"] == pytest.approx(0.68, abs=5e-3)
     assert any("fewer than 5" in w for w in result.warnings)
+    # By default these sizes (126 126 splits) get an exact P, which R's chi-square value does not give.
+    exact = kruskal_wallis(hw)
+    assert exact.values["exact"] and exact.values["p_chi2"] == pytest.approx(0.68, abs=5e-3)
+    assert exact.row("Kruskal-Wallis test", "Exact or approximate P value?").formatted == "Exact"
+    assert not kruskal_wallis(plant()).values["exact"]
     assert kruskal_wallis(plant()).values["p"] == pytest.approx(stats.kruskal(*PLANT.values()).pvalue)
+
+
+def _brute_kw(samples):
+    """Every labelled split of the pooled midranks into groups of the observed sizes."""
+
+    r = stats.rankdata(np.concatenate(samples))
+    sizes = [len(x) for x in samples]
+    starts = np.cumsum([0] + sizes[:-1])
+    observed = sum(r[a:a + n].sum() ** 2 / n for a, n in zip(starts, sizes))
+    values = []
+
+    def split(avail, level, acc):
+        if level == len(sizes) - 1:
+            values.append(acc + r[avail].sum() ** 2 / sizes[level])
+            return
+        for chosen in itertools.combinations(avail, sizes[level]):
+            split([a for a in avail if a not in chosen], level + 1, acc + r[list(chosen)].sum() ** 2 / sizes[level])
+
+    split(list(range(r.size)), 0, 0.0)
+    values = np.array(values)
+    return np.mean(values >= observed - 1e-9)
+
+
+@pytest.mark.parametrize("samples", [
+    [[1, 2, 2], [3, 3], [4, 5, 2]],          # ties, unequal sizes
+    [[1, 1], [2, 3], [3, 4]],                # ties, equal sizes (interchangeable groups)
+    [[1, 2, 3], [2, 3, 4], [5, 5, 6], [1, 9, 4]],
+    [[0.3, 1.9, 2.2, 5.0], [2.0, 2.0, 7.1], [6.0, 1.1, 3.3, 3.3]],
+])
+def test_exact_kruskal_wallis_matches_brute_force_permutation(samples):
+    samples = [np.array(x, float) for x in samples]
+    table = ColumnTable.from_columns({f"G{i}": x for i, x in enumerate(samples)})
+    result = kruskal_wallis(table)
+    assert result.values["exact"] and result.values["p"] == pytest.approx(_brute_kw(samples), abs=1e-12)
+
+
+def _brute_friedman(Y):
+    n, k = Y.shape
+    R = np.apply_along_axis(stats.rankdata, 1, Y)
+    observed = np.sum(R.sum(axis=0) ** 2)
+    hits = total = 0
+    for orders in itertools.product(list(itertools.permutations(range(k))), repeat=n):
+        sums = sum(R[i][list(o)] for i, o in enumerate(orders))
+        hits += np.sum(sums**2) >= observed - 1e-9
+        total += 1
+    return hits / total
+
+
+@pytest.mark.parametrize("Y", [
+    [[1, 2, 3], [2, 2, 5], [3, 1, 4], [5, 6, 6]],
+    [[1, 2, 3, 4], [2, 2, 5, 1], [3, 1, 4, 4]],
+    [[5.1, 4.0, 3.2], [6.0, 4.4, 4.1], [5.5, 5.6, 3.9], [4.9, 4.2, 4.0], [5.0, 3.1, 3.3]],
+])
+def test_exact_friedman_matches_brute_force_permutation(Y):
+    Y = np.array(Y, float)
+    result = friedman(ColumnTable.from_columns({f"T{j}": Y[:, j] for j in range(Y.shape[1])}, paired=True))
+    assert result.values["exact"] and result.values["p"] == pytest.approx(_brute_friedman(Y), abs=1e-12)
+
+
+def test_friedman_exact_cutoff_is_prisms():
+    # Exact unless (k!)^n > 10⁹: 3 treatments are exact up to 11 subjects (6^11 ≈ 3.6e8), not at 12 (2.2e9).
+    rng = np.random.default_rng(0)
+    for n, exact in ((11, True), (12, False)):
+        Y = rng.normal(size=(n, 3))
+        assert friedman(ColumnTable.from_columns({f"T{j}": Y[:, j] for j in range(3)}, paired=True)).values["exact"] is exact
 
 
 def test_kruskal_wallis_smallest_possible_p_matches_full_enumeration():
