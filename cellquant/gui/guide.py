@@ -107,6 +107,7 @@ STEPS = (
         "3 Edit objects",
         "Fix the objects",
         "Click <b>Delete objects</b>, then click each object to remove (debris, a bad outline); <b>Back</b> or Esc stops. "
+        "<b>Select objects</b> picks several (Shift+click adds) to delete or restore together. "
         "To redraw outlines, select the <i>Objects</i> layer, paint or erase with napari's tools, then click "
         "<b>Record drawn edits</b>. <b>Undo</b> takes back the last edit, <b>Undo all</b> every edit on this image. "
         "The objects found in step 2 are kept; edits are saved as a list applied on top. "
@@ -211,6 +212,10 @@ BUTTON_HELP = {
     "Undo": "Undo the last edit. (Ctrl+Z)",
     "Undo all": "Remove every edit on this image, recorded or not, and go back to the objects found in step 2. Clears its approval. Cannot be undone.",
     "Delete objects": "Then click objects in the image to delete them. Undo brings the last one back. Back or Esc stops.",
+    "Select objects": "Then click an object to select it (Shift+click adds more). Deleted objects can be selected where they were. Back or Esc stops.",
+    "Delete selected": "Delete the selected objects that are still present. Undo brings them all back together.",
+    "Restore selected": "Bring back the selected objects that were deleted. Undo takes them away again.",
+    "Clear selection": "Unselect every object.",
     "Add new objects": "Show the buttons for drawing new objects.",
     "Draw new object": "Select the Objects layer with an unused number and napari's brush. Outline a cell: when the outline closes, its inside is filled, it is recorded as a new object, and the next cell gets a new number.",
     "Back": "Return to the task choice.",
