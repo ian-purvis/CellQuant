@@ -4,7 +4,8 @@ Percentiles use the (n+1)p rule: the p-th percentile is the value at rank (n+1)p
 data, interpolated linearly between neighbouring ranks and clamped to the minimum and maximum
 when (n+1)p falls outside 1..n. This is Hyndman and Fan's type 6 (``numpy`` method
 ``"weibull"``, Excel's PERCENTILE.EXC inside its range), and it matches the method Prism documents
-for its percentiles, quartiles and median.
+for its percentiles, quartiles and median:
+https://www.graphpad.com/guides/prism/latest/statistics/stat_percentiles_and_the_median.htm
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import pandas as pd
 from cellquant.errors import StatisticsError
 from cellquant.stats._common import check_options, finite, p_rows, t_critical, t_p, tails_text
 from cellquant.stats._rank import hodges_lehmann_one_sample, signed_rank_test
+from cellquant.stats.pvalues import format_p
 from cellquant.stats.results import AnalysisResult, fmt, fmt_ci
 from cellquant.stats.tables import ColumnTable
 
@@ -212,15 +214,15 @@ def wilcoxon_signed_rank(
     style: str = "GP",
     zero_method: str = "exclude",
     exact: bool | None = None,
-    continuity: bool = True,
+    continuity: bool = False,
     table_title: str = "",
 ) -> AnalysisResult:
     """Wilcoxon signed-rank test of whether the median differs from ``hypothetical``.
 
     Differences d = x - hypothetical are ranked by |d| (ties get the average rank). W = Σ signed
-    ranks = (sum of positive ranks) - (sum of negative ranks). P is exact for fewer than 50
-    nonzero, untied differences, otherwise from the normal approximation with tie correction (and
-    a 0.5 continuity correction unless ``continuity=False``). See ``_rank.signed_rank_test`` for
+    ranks = (sum of positive ranks) - (sum of negative ranks). P is exact, ties included, for fewer
+    than 200 nonzero differences, otherwise Gaussian with tie correction and no continuity
+    correction (``continuity=True`` adds R's 0.5). See ``_rank.signed_rank_test`` for
     ``zero_method``."""
 
     alternative = check_options(alternative, ci, alpha)
@@ -253,19 +255,21 @@ def signed_rank_rows(result: AnalysisResult, section, d: np.ndarray, ci: float, 
     section.add("Sum of positive ranks", test.positive)
     section.add("Sum of negative ranks", test.negative)
     p_rows(section, test.p, alpha, style, alternative, names)
-    section.add("Exact or estimate?", test.exact, "Exact" if test.exact else "Estimate (normal approximation)")
+    section.add("Exact or estimate?", test.exact, "Exact" if test.exact else "Estimate (Gaussian approximation)")
     section.add("Zero differences", test.n_zero, f"{test.n_zero} ({'excluded' if zero_method == 'exclude' else 'ranked, Pratt'})")
-    shift = hodges_lehmann_one_sample(d, ci, exact=test.exact and test.n_zero == 0)
+    shift = hodges_lehmann_one_sample(d, ci, exact=test.exact)
     size = result.section("Median of differences" if names else "Hodges-Lehmann estimate")
     size.add("Hodges-Lehmann pseudo-median", shift.estimate)
     size.add(f"{100 * shift.confidence:.2f}% CI", (shift.low, shift.high), fmt_ci(shift.low, shift.high))
-    if test.ties and not test.exact:
-        result.warnings.append("There are tied differences, so P comes from the normal approximation with tie correction.")
+    if np.isfinite(test.min_p) and test.min_p > alpha:
+        what = f"{test.n_used} nonzero difference(s)"
+        result.warnings.append(f"With {what}, the smallest P this test can give is {format_p(test.min_p, style=style)}, "
+                               f"which is above alpha = {alpha:g}: it cannot find a significant difference whatever the data.")
     if test.n_used == 0:
         result.warnings.append("Every difference is zero, so the test has no information.")
-    if shift.confidence < ci - 1e-9:
-        result.warnings.append(f"Too few values for a {100 * ci:g}% CI; the widest possible interval ({100 * shift.confidence:.2f}%) is shown.")
-    result.values.update(w=w, sum_positive=test.positive, sum_negative=test.negative, p=test.p, z=test.z, exact=test.exact, n_used=test.n_used,
+    if abs(shift.confidence - ci) > 0.005:
+        result.warnings.append(f"The nearest confidence level these values allow is {100 * shift.confidence:.2f}%, not {100 * ci:g}%.")
+    result.values.update(w=w, sum_positive=test.positive, sum_negative=test.negative, p=test.p, z=test.z, exact=test.exact, min_p=test.min_p, n_used=test.n_used,
                          n_zero=test.n_zero, hodges_lehmann=shift.estimate, ci_low=shift.low, ci_high=shift.high, ci_achieved=shift.confidence, n=int(d.size))
 
 
