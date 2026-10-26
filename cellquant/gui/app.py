@@ -163,6 +163,7 @@ COUNT_AREA_LAYER = "Count area"
 EXAMPLES_LAYER = "Examples"
 # Polygons drawn in step 3; objects entirely inside them are deleted.
 DELETE_AREA_LAYER = "Delete area"
+SELECTED_LAYER = "Selected objects"
 
 # How a classification compares a value with its threshold (shown text, recipe value).
 COMPARISONS = (("above the cutoff (>)", "above"), ("at least the cutoff (≥)", "at_least"))
@@ -4485,6 +4486,9 @@ class EditPanel(QWidget):
         self._buttons: dict[str, QPushButton] = {}
         rows = (
             ("Delete objects", self._enter_delete, "Add new objects", self._enter_add),
+            ("Select objects", self._enter_select, None, None),
+            ("Delete selected", self._delete_selected, "Restore selected", self._restore_selected),
+            ("Clear selection", self.clear_picked, None, None),
             ("Draw area", self._draw_area, "Delete in area", self._delete_in_area),
             ("Keep only", self._keep_only, None, None),
             ("Draw new object", self._draw_new, None, None),
@@ -4510,6 +4514,8 @@ class EditPanel(QWidget):
             self._rows.append((holder, names))
         self.undo_button = self._buttons["Undo"]
         self._buttons["Delete objects"].setCheckable(True)
+        self._buttons["Select objects"].setCheckable(True)
+        self._selected: set[int] = set()
         for text, button in self._buttons.items():
             if text in guide.BUTTON_HELP:
                 button.setToolTip(guide.BUTTON_HELP[text])
@@ -4550,13 +4556,15 @@ class EditPanel(QWidget):
         return
 
     _MODE_BUTTONS = {
-        "home": ("Delete objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"),
+        "home": ("Delete objects", "Select objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"),
         "delete": ("Delete objects", "Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"),
+        "select": ("Select objects", "Delete selected", "Restore selected", "Clear selection", "Undo", "Undo all", "Back"),
         "add": ("Draw new object", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"),
     }
     _MODE_HINT = {
         "home": "Pick a task: delete objects or add new ones.",
         "delete": "Click an object to delete it. <b>Back</b> or Esc to stop.",
+        "select": "Click an object to select it (Shift+click adds more), then <b>Delete selected</b> or <b>Restore selected</b>. <b>Back</b> or Esc stops.",
         "add": "<b>Draw new object</b>, paint it, then <b>Record drawn edits</b>.",
     }
 
@@ -4596,11 +4604,14 @@ class EditPanel(QWidget):
     def set_mode(self, mode: str) -> None:
         self._mode = mode
         self._apply_mode()
-        self._show_delete_cue(mode == "delete")
+        self._show_delete_cue(mode in ("delete", "select"))
         self._buttons["Delete objects"].setChecked(mode == "delete")
+        self._buttons["Select objects"].setChecked(mode == "select")
+        if mode != "select":
+            self.clear_picked()
 
     def leave_delete(self) -> None:
-        if self._mode == "delete":
+        if self._mode in ("delete", "select"):
             self.set_mode("home")
 
     def _show_delete_cue(self, on: bool) -> None:
@@ -4622,12 +4633,15 @@ class EditPanel(QWidget):
             viewer.cursor.style = getattr(active, "cursor", "standard") if active is not None else "standard"
 
     def _cross_cursor(self, _event=None) -> None:
-        if self._mode == "delete":
+        if self._mode in ("delete", "select"):
             self.shell.viewer.cursor.style = "cross"
 
     def _enter_delete(self) -> None:
         # Pressing it again leaves delete mode.
         self.set_mode("home" if self._mode == "delete" else "delete")
+
+    def _enter_select(self) -> None:
+        self.set_mode("home" if self._mode == "select" else "select")
 
     def _enter_add(self) -> None:
         self.set_mode("add")
@@ -4714,11 +4728,68 @@ class EditPanel(QWidget):
 
     def clear_selection(self) -> None:
         self._say("")
+        self.clear_picked()
+
+    def clear_picked(self) -> None:
+        """Forget the objects picked in select mode and remove their highlight."""
+
+        self._selected = set()
+        self.shell._drop(SELECTED_LAYER)
+        if self._mode == "select":
+            self._say("")
+
+    def _pick(self, value: int, add: bool) -> None:
+        """Select the clicked object (Shift+click adds or removes it); show it highlighted."""
+
+        if add:
+            self._selected ^= {value}
+        else:
+            self._selected = {value}
+        self._show_picked()
+
+    def _show_picked(self) -> None:
+        shell = self.shell
+        controller, viewer = shell.controller, shell.viewer
+        current = controller.recall(shell._nav_ids[shell._nav_index]) if controller is not None and shell._nav_ids else None
+        shell._drop(SELECTED_LAYER)
+        if current is None or not self._selected or self._labels is None:
+            self._say("")
+            return
+        chosen = np.fromiter(self._selected, dtype=np.int64)
+        live = np.isin(current.labels, chosen)
+        gone = np.isin(current.automated_labels, chosen) & (np.asarray(current.labels) == 0) if current.automated_labels.shape == current.labels.shape else np.zeros_like(live)
+        mask = np.where(live, 1, np.where(gone, 2, 0)).astype(np.uint8)
+        before = viewer.layers.selection.active
+        layer = viewer.add_labels(
+            mask,
+            name=SELECTED_LAYER,
+            scale=self._labels.scale,
+            translate=self._labels.translate,
+            opacity=0.7,
+            colormap=DirectLabelColormap(color_dict={None: (0, 0, 0, 0), 0: (0, 0, 0, 0), 1: (1.0, 0.9, 0.0, 1.0), 2: (0.0, 0.9, 1.0, 1.0)}),
+        )
+        layer.editable = False
+        shell._managed.add(layer.name)
+        if before is not None and before in viewer.layers:
+            viewer.layers.selection.active = before
+        n_live, n_gone = len(np.unique(current.labels[live])) if live.any() else 0, len(np.unique(current.automated_labels[gone])) if gone.any() else 0
+        self._say(f"{len(self._selected)} selected: {n_live} to delete (yellow), {n_gone} deleted, can be restored (cyan).")
+
+    def _selected_ids(self) -> tuple[list[int], list[int]]:
+        """(picked objects still present, picked objects that were deleted)."""
+
+        shell = self.shell
+        current = shell.controller.recall(shell._nav_ids[shell._nav_index])
+        chosen = np.fromiter(self._selected, dtype=np.int64)
+        present = np.unique(current.labels[np.isin(current.labels, chosen)]) if current is not None else []
+        absent = sorted(self._selected - {int(item) for item in present})
+        return [int(item) for item in present], absent
 
     def _on_click(self, viewer, event):
-        if self._mode != "delete":
+        if self._mode not in ("delete", "select"):
             return
         start = tuple(event.position)
+        shift = "Shift" in getattr(event, "modifiers", ())
         dragged = False
         yield
         while event.type == "mouse_move":
@@ -4735,8 +4806,59 @@ class EditPanel(QWidget):
             value = self._labels.get_value(start, view_direction=event.view_direction, dims_displayed=event.dims_displayed, world=True)
         except Exception:  # noqa: BLE001 - a click outside the image deletes nothing
             value = None
+        if self._mode == "select":
+            value = self._object_under(start, value)
+            if value:
+                self._pick(value, shift)
+            elif not shift:
+                self.clear_picked()
+            return
         if isinstance(value, (int, np.integer)) and int(value) > 0:
             self.delete_object(int(value))
+
+    def _object_under(self, position, value) -> int:
+        """The object at a click: the one shown there, else a deleted one that was found there in step 2."""
+
+        if isinstance(value, (int, np.integer)) and int(value) > 0:
+            return int(value)
+        shell = self.shell
+        controller = shell.controller
+        current = controller.recall(shell._nav_ids[shell._nav_index]) if controller is not None and shell._nav_ids else None
+        if current is None or shell._labels_image_id != shell._nav_ids[shell._nav_index]:
+            return 0
+        index = tuple(int(round(float(item))) for item in self._labels.world_to_data(position))[-current.automated_labels.ndim:]
+        if len(index) != current.automated_labels.ndim or any(i < 0 or i >= n for i, n in zip(index, current.automated_labels.shape)):
+            return 0
+        return int(current.automated_labels[index])
+
+    def _delete_selected(self) -> None:
+        self._act_on_selection(restore=False)
+
+    def _restore_selected(self) -> None:
+        self._act_on_selection(restore=True)
+
+    def _act_on_selection(self, restore: bool) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or not self.shell._nav_ids:
+            return
+        if not self._selected:
+            self._say("Click an object first (Select objects).")
+            return
+        if self.shell.is_busy():
+            self.shell.message("Wait for the current analysis to finish, then try again.")
+            return
+        image_id = self.shell._nav_ids[self.shell._nav_index]
+        if self.shell._labels_image_id != image_id:
+            self.shell.message("Wait for the image to finish loading, then try again.")
+            return
+        present, absent = self._selected_ids()
+        ids = absent if restore else present
+        if not ids:
+            self._say("None of the selected objects is deleted." if restore else "All selected objects are already deleted.")
+            return
+        change = controller.restore_objects if restore else controller.delete_objects
+        self.clear_picked()
+        self.shell._start_job(lambda: change(image_id, ids), self._edited)
 
     def _edited(self, result) -> None:
         """After an edit: show it, and step 1's Status, since an edit clears an approval."""

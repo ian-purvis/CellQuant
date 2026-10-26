@@ -109,7 +109,7 @@ def test_step3_modes_and_draw_new_object(tmp_path: Path, open_window):  # noqa: 
     def shown():
         return {name for name, button in panel._buttons.items() if not button.isHidden()}
 
-    assert shown() == {"Delete objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"}
+    assert shown() == {"Delete objects", "Select objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"}
     panel._buttons["Delete objects"].click()
     assert shown() == {"Delete objects", "Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"}
     panel._buttons["Back"].click()
@@ -231,3 +231,72 @@ def test_keep_only_in_3d(tmp_path: Path):
     labels[1, 18:24, 18:24] = 3  # crosses the edge
     area = [np.array([[0.0, 0.0], [0.0, 20.0], [20.0, 20.0], [20.0, 0.0]])]
     assert objects_outside(labels, area) == [2]
+
+
+def test_select_objects_then_delete_and_restore(tmp_path: Path, open_window):  # noqa: F811
+    from cellquant.controller import AnalysisController
+    from cellquant.gui.app import SELECTED_LAYER
+
+    image = tmp_path / "a.tif"
+    _write_squares(image)
+    controller = AnalysisController.create(tmp_path / "experiment", "Select objects")
+    controller.add_image_paths([image])
+    controller.set_recipe(_recipe())
+    controller.save()
+    shell = open_window(controller.directory)
+    shell.run_current()
+    assert _wait(shell, 120)
+    image_id = shell.controller.experiment.images[0].image_id
+    panel = shell._edit_panel
+    objects = shell.viewer.layers["Objects"]
+    label = int(np.asarray(objects.data)[15, 15])
+    assert label > 0
+
+    class Click:
+        type = "mouse_press"
+        modifiers = ()
+        view_direction = None
+        dims_displayed = [0, 1]
+
+        def __init__(self, y, x):
+            self.position = tuple(objects.data_to_world((y, x)))
+
+    def click(y, x):
+        event = Click(y, x)
+        generator = panel._on_click(shell.viewer, event)
+        next(generator)
+        event.type = "mouse_release"
+        try:
+            next(generator)
+        except StopIteration:
+            pass
+
+    shell._tabs.setCurrentWidget(shell._step_pages[2])
+    panel._buttons["Select objects"].click()
+    assert panel._mode == "select"
+    assert {n for n, b in panel._buttons.items() if not b.isHidden()} == {
+        "Select objects", "Delete selected", "Restore selected", "Clear selection", "Undo", "Undo all", "Back"}
+    click(15, 15)
+    assert panel._selected == {label}
+    assert SELECTED_LAYER in shell.viewer.layers
+    assert int(np.asarray(shell.viewer.layers[SELECTED_LAYER].data)[15, 15]) == 1
+    assert shell.controller.edit_count(image_id) == 0  # selecting changes nothing
+
+    panel._buttons["Delete selected"].click()
+    assert _wait(shell)
+    _events(0.2)
+    assert int(np.asarray(shell.viewer.layers["Objects"].data)[15, 15]) == 0
+    assert SELECTED_LAYER not in shell.viewer.layers
+
+    # The deleted object can be selected where it was, and restored.
+    panel._buttons["Select objects"].click() if panel._mode != "select" else None
+    click(15, 15)
+    assert panel._selected == {label}
+    assert int(np.asarray(shell.viewer.layers[SELECTED_LAYER].data)[15, 15]) == 2
+    panel._buttons["Restore selected"].click()
+    assert _wait(shell)
+    _events(0.2)
+    assert int(np.asarray(shell.viewer.layers["Objects"].data)[15, 15]) == label
+
+    panel._buttons["Back"].click()
+    assert panel._mode == "home" and not panel._selected

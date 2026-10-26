@@ -1075,6 +1075,25 @@ class AnalysisController:
         self._edit_and_remeasure(image_id, EditOperation.create(image_id, int(object_id), "restore"))
         return self.last_results[image_id]
 
+    def delete_objects(self, image_id: str, object_ids) -> ImageResult | None:
+        """Delete the chosen objects as one edit group: one Undo brings them all back."""
+
+        return self._edit_group(image_id, object_ids, "delete")
+
+    def restore_objects(self, image_id: str, object_ids) -> ImageResult | None:
+        """Bring back chosen deleted objects as one edit group."""
+
+        return self._edit_group(image_id, object_ids, "restore")
+
+    def _edit_group(self, image_id: str, object_ids, operation: str) -> ImageResult | None:
+        ids = sorted({int(item) for item in object_ids})
+        if not ids:
+            return self.recall(image_id)
+        group = uuid.uuid4().hex[:12]
+        operations = [EditOperation.create(image_id, object_id, operation, {"area": group}) for object_id in ids]
+        self._edit_and_remeasure(image_id, *operations)
+        return self.last_results[image_id]
+
     def delete_objects_in_area(self, image_id: str, polygons) -> tuple[ImageResult | None, int]:
         """Delete every object lying entirely inside the polygons. Returns the result and how many."""
 
