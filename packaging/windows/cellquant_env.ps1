@@ -22,6 +22,32 @@ $script:CellQuantEngineExtras = @{
     cellpose4 = 'cellpose-v4'
     cellpose3 = 'cellpose-v3'
 }
+# The "stats" extra (QuantAnalysis). Every install and update installs it; the launcher adds
+# these to an environment made before it existed (see Install-CellQuantStatsPackages).
+$script:CellQuantStatsPackages = @('statsmodels', 'matplotlib')
+$script:CellQuantStatsCheck = "import importlib.util as u, sys; sys.exit(0 if all(u.find_spec(n) for n in ('matplotlib', 'statsmodels')) else 3)"
+
+function Install-CellQuantStatsPackages {
+    <#
+    .SYNOPSIS
+    Add the statistics libraries to an environment that lacks them. Never stops CellQuant from starting:
+    without them, QuantAnalysis says what is missing and how to install it.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$CondaExe,
+        [Parameter(Mandatory)][string]$Prefix
+    )
+
+    & $CondaExe run --prefix $Prefix python -c $script:CellQuantStatsCheck
+    if ($LASTEXITCODE -ne 3) {
+        return
+    }
+    Write-Host '  Adding the statistics libraries (matplotlib, statsmodels) for QuantAnalysis...'
+    & $CondaExe run --prefix $Prefix python -m pip install --disable-pip-version-check --quiet $script:CellQuantStatsPackages
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '  They could not be installed now (no internet?). CellQuant starts anyway; QuantAnalysis says what is missing.' -ForegroundColor Yellow
+    }
+}
 
 function Get-CellQuantEngineLabel {
     param([Parameter(Mandatory)][string]$Engine)

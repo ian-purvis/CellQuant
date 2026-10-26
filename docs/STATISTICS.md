@@ -4,14 +4,77 @@
 
 Notation: a column has n values x₁…xₙ; x̄ is the mean and s the standard deviation. When two columns are compared, A is the first column and B the second. Every difference is **B − A** and every ratio is **B/A**, as in Prism.
 
+## QuantAnalysis: the statistics window
+
+QuantAnalysis analyses and graphs CellQuant results the way GraphPad Prism's Column workflow does. It opens as its own window.
+
+**Open it.** In step 6, **Analyze…** (next to **Export results…**) opens it with the open experiment. **Analyze a results folder…** on the Start page and in step 1 opens a saved results folder (with `experiment.json`) or an export folder (with `image_summary.csv`), so earlier results can be analysed without going through the steps. Inside the window, **File → Open CellQuant results folder…** does the same. The window is made once and reused.
+
+**Import.** The **Import CellQuant results** dialog builds a data table:
+
+- **Measure**: a report's percent (`report_N_percent`, shown by its name, for example "% of target" or "% of segmented cells"), `total_objects`, `count_area`, or a per-object value such as `area` or `<marker>_mean`.
+- **Dot =**: what one value is. **Biological replicate (N)** is the default whenever there is a replicate column (the deepest `Folder N`, as for `units_by_<unit>.csv`). An **image** or an **object** is a technical replicate (n).
+- **Group by** a column of step 1 (`Folder 1`, `group`…), or for a per-object measure a marker's +/− call; drag the groups into order.
+- **Approved images only** (on by default; an export folder does not record approvals).
+- **Use suggested setup** sets the suggested analysis for image data (below).
+
+A table imported from the open experiment follows it: change a cutoff or an approval and the table is marked out of date and imported again when you return to the window (or click **Refresh**). Editing a table by hand detaches it.
+
+**Analyse.** **Analyze → Column statistics**, **Normality and lognormality tests**, and **Compare two columns…** (Prism's t test dialog: paired or unpaired, parametric or not, the test, tails, alpha, CI level, P value style). **Help me choose…** asks Prism's questions and fills the dialog. Each analysis is a results sheet with its warnings and a methods sentence; **Copy** and **Export results CSV…** save it. Edit the data table and its results and graphs update.
+
+**Graph.** Column scatter, bar and dots, box and dots, violin and dots, before-after (paired), estimation plot (the difference and its CI on a right axis, from a t test) and SuperPlot. A graph linked to a comparison shows its P summary as a bracket. The format panel sets titles, Y range and log scale, error bars, colours, dot and font size, and the size in mm or inches. **Export graph…** saves SVG, PDF, EPS, PNG, JPEG or LZW-compressed TIFF at 300, 600 or 1200 dpi.
+
+Graphs need matplotlib, and two normality tests need statsmodels: `pip install "cellquant[stats]"`. Without them the window says so and the rest works. **Help → Log…** lists what was done.
+
+### Suggested analysis for image data
+
+- Measure: % of target (marker-positive and target-positive cells over target-positive cells) or % of segmented cells (marker-positive over every segmented object).
+- One value per biological replicate (N), pooled from its images (n): the sum of the replicate's counts over the sum of its denominators.
+- A SuperPlot with the mean ± SD of the replicates.
+- Two groups: Welch's t test with the difference and its 95% CI, and an estimation plot; or Mann-Whitney when a Gaussian distribution cannot be assumed (see small samples below). Three or more groups (coming in the next update): Kruskal-Wallis with Dunn's tests against chosen reference groups.
+
+## Replicates: N and n
+
+A **biological replicate** is an independent sample: one subject, one culture, one independently prepared sample. Its number is **N**. **Technical replicates** are repeated measurements of one sample: its images, fields or cells. Their number is **n**.
+
+A claim about a condition is a claim about biological replicates, so tests compare one value per replicate. Cells or images of one sample share its biology and its handling, so they are not independent. Testing them as if they were (**pseudoreplication**) makes n large and P falsely small: 600 cells from one sample per group is still N = 1 per group. QuantAnalysis marks a table with one dot per object with a red warning, on the table, its results and its graphs.
+
+Pooling a percent over a replicate's images:
+
+    replicate percent = Σ counts ÷ Σ denominators × 100
+
+so an image with more cells weighs more within its replicate. This is not the mean of the images' percents. A per-object value is averaged over every counted object of the replicate.
+
+A **SuperPlot** shows both levels: each image as a small dot shaded by its replicate, each replicate's value as a large outlined marker in the same colour, and the mean ± SD of the replicates. The test uses the replicates.
+
+## Error bars: SD, SEM and CI
+
+- **SD** shows how much the values vary. It does not shrink with more replicates. Use it to show the spread.
+- **SEM** = SD / √N shows how precisely the mean is known. It shrinks as N grows.
+- **95% CI** of the mean = x̄ ± t(0.975, N − 1) · SEM: the range that would contain the true mean in 95% of experiments like this one. For N = 3, t = 4.30, so the CI is more than four SEMs wide on each side.
+- **Median and interquartile range** (25th to 75th percentile): for skewed data, or next to a rank test.
+
+Say in the legend which one is shown and what N is.
+
+## Small samples and rank tests
+
+An exact rank test has a smallest possible P, reached when the groups do not overlap at all:
+
+| Test | Smallest two-tailed P | Example |
+|---|---|---|
+| Mann-Whitney, n_A and n_B | 2 / C(n_A + n_B, n_A) | 3 vs 3: 2/20 = 0.10; 4 vs 4: 2/70 = 0.029 |
+| Wilcoxon matched pairs, n pairs | 2 / 2ⁿ | 5 pairs: 0.0625; 6 pairs: 0.031 |
+
+So at 3 vs 3 a Mann-Whitney test can never reach P < 0.05. QuantAnalysis warns when the chosen test cannot reach α with your n. With so few replicates, a t test (if its assumptions are reasonable) or more replicates is the answer, not a different rank test.
+
 ## Data tables
 
-A column table has one column of numbers per group. A blank cell is missing data, not zero. Columns can have different lengths. In a **paired** table, row i of every column is the same subject (the same animal, image or experiment).
+A column table has one column of numbers per group. A blank cell is missing data, not zero. Columns can have different lengths. In a **paired** table, row i of every column is the same subject (the same biological replicate, image or experiment).
 
 ```python
 from cellquant.stats import ColumnTable, column_statistics, compare
-table = ColumnTable.from_long(objects, value="ki67_mean", group="genotype", order=["WT", "KO"])
-result = compare(table, "welch_t", "WT", "KO")
+table = ColumnTable.from_long(objects, value="marker_mean", group="condition", order=["control", "treated"])
+result = compare(table, "welch_t", "control", "treated")
 result.to_frame().to_csv("welch.csv")      # the results sheet
 result.values["difference"], result.values["ci_low"], result.values["ci_high"]
 ```
