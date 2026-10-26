@@ -1369,10 +1369,9 @@ This may be a post-MVP feature.
 
 MVP should at least produce image-level and object-level outputs suitable for downstream analysis in:
 
-- a spreadsheet,
+- spreadsheets,
 - R,
-- Python,
-- a commercial package.
+- Python.
 
 ---
 
@@ -1612,7 +1611,7 @@ The first usable release should include:
 
 Do not delay the MVP for:
 
-- full commercial 3D image-analysis suites feature parity,
+- full parity with commercial 3D image-analysis suites,
 - 3D rendering,
 - tracking objects through time,
 - complex machine-learning phenotype classifiers,
@@ -1904,7 +1903,7 @@ Implement:
 
 Deliverable:
 
-Outputs can be directly analyzed in R, Python, a spreadsheet, or a commercial package.
+Outputs can be directly analyzed in R, Python or a spreadsheet.
 
 ---
 

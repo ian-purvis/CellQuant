@@ -1,4 +1,4 @@
-"""QuantAnalysis: a commercial package-style column statistics and graphs of CellQuant results.
+"""QuantAnalysis: Column-table statistics and graphs of CellQuant results.
 
 Its own top-level window (``QuantAnalysisWindow``), opened from step 6 (**Analyze…**, the open
 experiment) or from the Start page and step 1 (**Analyze a results folder…**). One window is made

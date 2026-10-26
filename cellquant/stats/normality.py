@@ -27,7 +27,7 @@ from cellquant.stats._common import finite
 from cellquant.stats.pvalues import format_p, p_summary
 from cellquant.stats.results import AnalysisResult
 
-# key: (a commercial package's name, statistic label, minimum n)
+# key: (display name, statistic label, minimum n)
 TESTS = {
     "dagostino": ("D'Agostino & Pearson test", "K2", 8),
     "shapiro": ("Shapiro-Wilk test", "W", 3),
@@ -63,7 +63,7 @@ def _run(key: str, x: np.ndarray) -> tuple[float, float]:
     return float(statistic), float(p)
 
 
-def normality(values, alpha: float = 0.05, tests=None, *, name: str = "", table_title: str = "", style: str = "GP", _log: bool = False) -> AnalysisResult:
+def normality(values, alpha: float = 0.05, tests=None, *, name: str = "", table_title: str = "", style: str = "classic", _log: bool = False) -> AnalysisResult:
     """Run the normality tests (all four unless ``tests`` names some of TESTS' keys).
 
     ``values`` holds, per test key, ``statistic``, ``p``, ``passed`` (P > alpha), ``n`` and
@@ -110,7 +110,7 @@ def normality(values, alpha: float = 0.05, tests=None, *, name: str = "", table_
     return result
 
 
-def lognormality(values, alpha: float = 0.05, tests=None, *, name: str = "", table_title: str = "", style: str = "GP") -> AnalysisResult:
+def lognormality(values, alpha: float = 0.05, tests=None, *, name: str = "", table_title: str = "", style: str = "classic") -> AnalysisResult:
     """The normality tests on ln(values): passing means the data are consistent with a lognormal
     distribution. Refused when any value is ≤ 0. The log base does not change any result."""
 

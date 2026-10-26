@@ -148,7 +148,7 @@ STEPS = (
         "Then click <b>Export results</b> and choose a folder. With several analyses in the list at the top, "
         "<b>Run all analyses</b> and <b>Export all analyses</b> do the same for each of them.",
         "The export folder has <i>objects.csv</i> (one row per object) and <i>image_summary.csv</i> "
-        "(one row per image, with the percentages). Both open in a spreadsheet, a commercial package, or R.",
+        "(one row per image, with the percentages). Both open in a spreadsheet or R.",
         "<b>Run all images</b>, then <b>Export results</b>.",
     ),
 )

@@ -1,6 +1,6 @@
 """Two-column comparisons, against R's documented results and brute-force or hand-written computations.
 
-a commercial package (and this engine) report B - A, the second column minus the first; R's t.test(x, y) reports x - y. So R's
+This engine reports B - A, the second column minus the first; R's t.test(x, y) reports x - y. So R's
 results for x = drug 1, y = drug 2 appear here with the sign flipped and with A = drug 1, B = drug 2.
 """
 
@@ -56,7 +56,7 @@ def test_unpaired_and_welch_t_match_r_on_sleep():
     assert v["ci_low"] == pytest.approx(-0.203874, abs=5e-7) and v["ci_high"] == pytest.approx(3.363874, abs=5e-7)
     assert v["mean_a"] == pytest.approx(0.75) and v["mean_b"] == pytest.approx(2.33)
     # R: var.test(extra ~ group, data = sleep): F = 0.7983, num df = 9, denom df = 9, p-value = 0.7427.
-    # a commercial package puts the larger variance on top, so F = 1/0.7983; the two-tailed P is the same.
+    # The larger variance goes on top, so F = 1/0.7983; the two-tailed P is the same.
     assert v["f"] == pytest.approx(1 / 0.7983, abs=5e-4) and v["f_p"] == pytest.approx(0.7427, abs=5e-5)
     # R: t.test(extra ~ group, data = sleep) (Welch): t = -1.8608, df = 17.776, p-value = 0.07939, CI -3.3654832 to 0.2054832.
     v = welch_t(SLEEP_1, SLEEP_2).values
@@ -77,7 +77,7 @@ def test_welch_t_matches_r_on_mtcars_with_unequal_n():
 def test_rank_tests_match_r_with_ties():
     # R: wilcox.test(extra ~ group, data = sleep, paired = TRUE): V = 0, p-value = 0.009091 (V is the sum of positive
     # ranks of group 1 - group 2; one zero difference dropped; Gaussian approximation with tie and continuity corrections).
-    # a commercial package would give an exact P here; R's approximation is asked for explicitly.
+    # An exact P is possible here; R's approximation is asked for explicitly.
     v = wilcoxon_matched_pairs(SLEEP_1, SLEEP_2, exact=False, continuity=True).values
     assert v["sum_negative"] == 0 and v["sum_positive"] == 45 and v["p"] == pytest.approx(0.009091, abs=5e-7) and not v["exact"]
     # R: wilcox.test(extra ~ group, data = sleep): W = 25.5, p-value = 0.06933.

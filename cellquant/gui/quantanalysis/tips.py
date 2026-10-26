@@ -38,8 +38,8 @@ TAILS = (
 ALPHA = "Alpha is the P value below which a result is called significant. 0.05 is usual; it is the false-positive rate you accept when there is no real difference."
 CI_LEVEL = "The confidence level of the interval around the difference. A 95% CI contains the true difference in 95% of experiments like this one."
 P_STYLE = (
-    "How P values and stars are written. GP: a commercial package's current style (* P ≤ 0.0332, ** ≤ 0.0021, *** ≤ 0.0002, **** < 0.0001). "
-    "Older: * ≤ 0.05, ** ≤ 0.01, *** ≤ 0.001. APA and NEJM: 3 decimals."
+    "How P values and stars are written. classic: four-star P value thresholds (* P ≤ 0.05, ** ≤ 0.01, *** ≤ 0.001, **** ≤ 0.0001). "
+    "APA and NEJM: three stars at most, 3 decimals."
 )
 COLUMNS = "The two columns to compare. Every difference is B − A (the second minus the first), so put the control first."
 
@@ -105,7 +105,7 @@ ANOVA_WELCH = (
 )
 ANOVA_RM = (
     "Repeated-measures ANOVA for matched rows: each row is one biological replicate measured in every condition. "
-    "With a blank cell it fits a mixed-effects model instead, as a commercial package does."
+    "With a blank cell it fits a mixed-effects model instead."
 )
 KRUSKAL = (
     "Kruskal-Wallis ranks all values together and asks whether the groups differ in their typical rank. "
@@ -209,7 +209,7 @@ PSTACK_ALPHA = "For FDR methods, Q is the false discovery rate you accept (5% is
 
 BRACKET_MODE = (
     "Brackets: a bracket joins the two compared columns, one per comparison.\n"
-    "Asterisks above columns: only the stars, over each compared column (a commercial package's “vs control” style); "
+    "Asterisks above columns: only the stars, over each compared column (the “vs control” style); "
     "needs comparisons against a reference group."
 )
 HIDE_NS = "Leave out the comparisons that are not significant (ns), so only the differences found are marked."
@@ -222,4 +222,4 @@ LETTERS = (
     "Needs comparisons of all pairs. Replaces brackets. Example: A, AB and B means A and B differ but neither differs from AB."
 )
 GRAPH_COMPARISON = "The comparison whose P values the brackets show, and whose difference the estimation plot draws. A two-column test or an ANOVA with multiple comparisons."
-LETTER_STYLE = "How the letters are written: A B C (a commercial package's default), a b c, or numbers 1 2 3. Groups that share one are not significantly different."
+LETTER_STYLE = "How the letters are written: A B C (the default), a b c, or numbers 1 2 3. Groups that share one are not significantly different."

@@ -1,11 +1,11 @@
-"""Statistics for column tables, modelled on a commercial package's "Column" analyses.
+"""Statistics for column tables: the standard "column" analyses.
 
 Two columns: t tests and rank tests (``compare``). Three or more: one-way ANOVA in its ordinary,
 Welch/Brown-Forsythe, repeated-measures and mixed-effects forms, Kruskal-Wallis and Friedman
 (``one_way``), each with multiple comparisons. Also P value adjustment for a stack of P values,
 compact letter displays and outlier identification (ROUT, Grubbs).
 
-No viewer is needed. Each analysis returns an ``AnalysisResult`` laid out like a a commercial package results
+No viewer is needed. Each analysis returns an ``AnalysisResult`` laid out like a results
 sheet, with the raw numbers in ``result.values``. See docs/STATISTICS.md for definitions and
 equations. The Anderson-Darling and Kolmogorov-Smirnov normality tests and the mixed-effects model need statsmodels
 (``pip install "cellquant[stats]"``); everything else needs only numpy, scipy and pandas.

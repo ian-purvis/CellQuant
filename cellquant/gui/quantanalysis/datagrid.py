@@ -1,4 +1,4 @@
-"""The column data table sheet: an editable grid, one column per group, like a commercial package's Column table.
+"""The column data table sheet: an editable grid, one column per group, like a column table.
 
 Blank cells are missing values. Paste a block from a spreadsheet (tab-separated) at the selected cell; a
 first line of words becomes the column titles. Double-click a title to rename it. Editing a table
@@ -99,7 +99,7 @@ class DataSheetView(QWidget):
         for text, tip, slot in (
             ("Column statistics", "n, mean, SD, SEM, CI, median and percentiles of every column, on a new results sheet.", lambda: window.analyze("colstats")),
             ("Normality", "Normality and lognormality tests of every column. Look at the graph and the n too: small samples pass easily, large ones fail for tiny departures.", lambda: window.analyze("normality")),
-            ("Compare two columns…", "t test or rank test of two columns (a commercial package's t test dialog).", lambda: window.analyze("compare")),
+            ("Compare two columns…", "t test or rank test of two columns (the t test dialog).", lambda: window.analyze("compare")),
             ("Compare 3+ columns…", "One-way ANOVA, Kruskal-Wallis or Friedman with multiple comparisons, for three or more columns.", lambda: window.analyze("anova")),
             ("Outliers…", "Find outliers in each column with ROUT or Grubbs' test. They are shaded here and hollow on graphs; this table is not changed.", lambda: window.analyze("outliers")),
         ):

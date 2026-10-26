@@ -1,41 +1,39 @@
 """P value text and significance summaries ("ns", "*", ...).
 
-Stars are decided on the unrounded P, with ≤ at every cutoff ("a commercial package has always used the
-less-than-or-equal-to inequality"):
+Stars are decided on the unrounded P, with ≤ at every cutoff.
 
-
-- ``"GP"`` (a commercial package, a commercial package's default and the only scheme before a commercial package 7): ns when P > 0.05,
+- ``"classic"`` (the default; the four-star P value thresholds): ns when P > 0.05,
   * ≤ 0.05, ** ≤ 0.01, *** ≤ 0.001, **** ≤ 0.0001. P has 4 decimals, "<0.0001" below that.
 - ``"APA"``: the same cutoffs, stopping at *** (≤ 0.001). P has 3 decimals and no leading zero (".123", "<.001").
 - ``"NEJM"``: as APA, but P keeps the leading zero ("0.123", "<0.001").
 
-
-(The "0.1234 / 0.0332 / 0.0021 / 0.0002" numbers in an old a commercial package dialog only illustrated P formats.)
 """
 
 from __future__ import annotations
 
 import math
 
-STYLES = ("GP", "APA", "NEJM")
+STYLES = ("classic", "APA", "NEJM")
 
 # (bound, stars): P at or below the bound earns the stars. Tightest first.
 _CUTOFFS = {
-    "GP": [(0.0001, "****"), (0.001, "***"), (0.01, "**"), (0.05, "*")],
+    "classic": [(0.0001, "****"), (0.001, "***"), (0.01, "**"), (0.05, "*")],
     "APA": [(0.001, "***"), (0.01, "**"), (0.05, "*")],
     "NEJM": [(0.001, "***"), (0.01, "**"), (0.05, "*")],
 }
-_DIGITS = {"GP": 4, "APA": 3, "NEJM": 3}
+_DIGITS = {"classic": 4, "APA": 3, "NEJM": 3}
 
 
 def _style(style: str) -> str:
+    if style.lower() == "gp":  # the old key for "classic", still read from saved projects
+        return "classic"
     for name in STYLES:
         if style.lower() == name.lower():
             return name
     raise ValueError(f"Unknown P value style {style!r}; choose one of {', '.join(STYLES)}.")
 
 
-def p_summary(p: float, style: str = "GP") -> str:
+def p_summary(p: float, style: str = "classic") -> str:
     """Stars for a P value ("ns" when not significant, "" when P is missing)."""
 
     if p is None or not math.isfinite(p):
@@ -46,7 +44,7 @@ def p_summary(p: float, style: str = "GP") -> str:
     return "ns"
 
 
-def format_p(p: float, digits: int | None = None, style: str = "GP") -> str:
+def format_p(p: float, digits: int | None = None, style: str = "classic") -> str:
     """P as text: ``digits`` decimals (the style's default when None), and "<0.0001"-style text below
     the smallest value that many decimals can show. P that rounds to 1 shows as ">0.9999"."""
 
@@ -68,7 +66,7 @@ def format_p(p: float, digits: int | None = None, style: str = "GP") -> str:
     return text
 
 
-def p_text(p: float, style: str = "GP", digits: int | None = None) -> str:
+def p_text(p: float, style: str = "classic", digits: int | None = None) -> str:
     """P as it reads in a sentence: "P = 0.0123" or "P < 0.0001" (APA: "p = .012")."""
 
     text = format_p(p, digits, style)
