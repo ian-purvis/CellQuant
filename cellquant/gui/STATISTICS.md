@@ -237,9 +237,9 @@ Each row is one subject measured under every treatment (column).
 
 - SS_total = SS_treatment + SS_subjects + SS_residual, with SS_treatment = n Σⱼ(ȳ.ⱼ − ȳ)² (k − 1 df), SS_subjects = k Σᵢ(ȳᵢ. − ȳ)² (n − 1 df), and SS_residual the rest ((n − 1)(k − 1) df).
 - F = MS_treatment / MS_residual. **Was the matching effective?** F = MS_subjects / MS_residual, with (n − 1, (n − 1)(k − 1)) df.
-- **R²** = SS_treatment / (SS_treatment + SS_residual) (partial eta squared). With two columns this equals the paired t test's R², and F = t².
+- **R²**, as Prism reports them: treatment R² = SS_treatment / (SS_treatment + SS_residual) (after Keppel, leaving the subjects out; with two columns this equals the paired t test's R², and F = t²), and, under "Was the matching effective?", matching R² = SS_subjects / SS_total.
 - **Sphericity** means that the differences between every pair of columns have the same variance. The **Geisser-Greenhouse epsilon** measures departure from it: ε = (tr S\*)² / ((k − 1) tr(S\*²)), where S is the k × k covariance matrix of the columns and S\* = CSC its double-centred form (C = I − J/k). 1/(k − 1) ≤ ε ≤ 1, and ε = 1 means no departure. ε is always reported.
-- `geisser_greenhouse=True` (the default, and Prism's recommended choice) multiplies both df by ε, which makes P larger. `False` assumes sphericity. `values` keeps both P values.
+- `geisser_greenhouse=True` (the default, and Prism's recommended choice) multiplies both df by ε, which makes P larger. `False` assumes sphericity. `values` keeps both P values. The correction applies to the main P only. The multiple comparisons then use only the two columns being compared (see "Error term" below), as Prism does.
 - **Blank cells.** Repeated-measures ANOVA needs complete rows. With `missing="mixed"` (the default, as in Prism) a row with a blank makes the analysis fit the mixed-effects model below. `missing="exclude"` drops those rows.
 
 ### Mixed-effects model (`mixed_effects_anova`)
@@ -248,11 +248,12 @@ value = group mean + subject effect + error, with the subject effect and the err
 
 What this engine reports:
 
-- **Fixed effect of treatment**: a Wald F test that all group means are equal. DFn = k − 1. DFd = (number of values) − (number of subjects) − (k − 1), the "between-within" df. The covariance of the group means is (X′V̂⁻¹X)⁻¹ at the REML variance estimates. With no blanks, F, df and P are those of repeated-measures ANOVA with sphericity assumed (checked in the tests).
+- **Fixed effect of treatment**: a Wald F test that all group means are equal. DFn = k − 1. DFd = (number of values) − (number of subjects) − (k − 1), the "between-within" df. The covariance of the group means is (X′V̂⁻¹X)⁻¹ at the REML variance estimates. With no blanks, F, df and P are those of repeated-measures ANOVA (checked in the tests).
+- **Geisser-Greenhouse** (`geisser_greenhouse=True`, the default, as in repeated-measures ANOVA). Prism offers this for its mixed model too: unchecking sphericity gives non-integer df and reports epsilon. ε uses the formula above, but S is built from pairwise-complete covariances: each entry uses the rows where both columns have values. Both df are multiplied by ε. With no blanks this is the RM ANOVA ε. Prism does not document how it estimates ε when values are missing, so this is this engine's choice. If a pair of columns has fewer than 2 complete rows, ε is undefined and P is left uncorrected, with a warning.
 - **Random effects**: the SD and variance of the subject effect and of the residual.
 - **Was the matching effective?**: a likelihood-ratio test of the subject variance (REML log likelihoods, χ² with 1 df, which is conservative at the boundary).
 
-What Prism does differently, or may: its guide does not state which denominator df it uses for the F test, and Prism can apply a Geisser-Greenhouse correction to the mixed model. This engine assumes compound symmetry (sphericity) for the mixed model and makes no correction. Treat the mixed-model P as close to, but not guaranteed equal to, Prism's.
+Prism's mixed model is the same kind of model: subjects random, columns fixed, and no choice of covariance structure. It equals RM ANOVA when nothing is missing. Its guide does not document the denominator-df method. This engine uses the between-within df and says so in a warning. Treat the mixed-model P as close to, but not guaranteed equal to, Prism's. The multiple comparisons stay model-based (fitted means and their covariance, between-within df), even with the Geisser-Greenhouse correction.
 
 ### Kruskal-Wallis test (`kruskal_wallis`)
 
@@ -260,9 +261,10 @@ All N values are ranked together (ties get the average rank). With Rᵢ the rank
 
 H = [12/(N(N + 1)) Σ Rᵢ²/nᵢ − 3(N + 1)] / [1 − Σ(t³ − t)/(N³ − N)],
 
-where t is the size of each group of ties. P is **approximate**, from χ² with k − 1 df; the result says so. The result also reports the medians, rank sums and mean ranks.
+where t is the size of each group of ties. The result also reports the medians, rank sums and mean ranks, and says whether P is exact or approximate.
 
-- With a group of fewer than 5 values the χ² approximation can be poor, and the result warns.
+- **Exact P** (Prism 6+ computes one for small samples, ties included, but does not state its cutoff). This engine enumerates every way to split the observed midranks into groups of the observed sizes. Groups of equal size are interchangeable, so each split is counted once. P is the share of splits with Σ Rᵢ²/nᵢ at least the observed value (H increases with it). The cutoff is enumeration cost: P is exact when N!/(Πnᵢ! · Πm_s!) ≤ 2 000 000, where m_s is the number of groups of size s (`kw_partitions`). For example, 5 groups of 3 (1.4 million splits, a few seconds) or 4 groups of 4 are exact; 6 groups of 3 are not. Otherwise P comes from χ² with k − 1 df. `exact=False` forces χ²; `exact=True` refuses when the enumeration is too large. The tests check the exact P against brute-force enumeration of labelled splits.
+- With χ² and a group of fewer than 5 values, the approximation can be poor, and the result warns.
 - The smallest P the exact permutation test could give is (number of block orders with the largest H) / (N!/Πnᵢ!), found by trying every order of blocks of consecutive ranks. If it is not below α, the result warns that no data could be significant. For example, three groups of 2 cannot go below 6/90 = 0.067.
 
 ### Friedman test (`friedman`)
@@ -271,7 +273,7 @@ Values are ranked within each row (ties get the average rank), and Rⱼ is the r
 
 Q = 12 Σ(Rⱼ − n(k + 1)/2)² / [nk(k + 1) − Σ(t³ − t)/(k − 1)],
 
-and P is approximate, from χ² with k − 1 df. Rows with a blank are left out. The exact test cannot give a P below (k!)^(1−n) (every row ranking the columns the same way). For example, 2 subjects and 3 treatments cannot go below 1/6. When that floor is not below α, the result warns.
+Rows with a blank are left out. P is **exact** unless (k!)^n > 10⁹, which is Prism's rule (3 treatments: up to 11 subjects; 4: up to 6; 5: up to 4). The exact distribution assumes each row's ranks (ties included) are in a random order. It is built row by row over the column rank sums, keeping each state sorted because every order is applied. P is the probability that ΣRⱼ² is at least the observed value. Above the cutoff, P comes from χ² with k − 1 df. `exact=False` forces χ². The tests check the exact P against brute-force enumeration. The exact test cannot give a P below (k!)^(1−n) (every row ranking the columns the same way). For example, 2 subjects and 3 treatments cannot go below 1/6. When that floor is not below α, the result warns.
 
 ## Multiple comparisons
 
@@ -284,9 +286,14 @@ Every one-way analysis takes:
 
 Every comparison row in `values["comparisons"]` has `label` ("A vs. B"), `group_1`, `group_2`, `reference` (the reference group, or None), `family`, `estimate_1`, `estimate_2`, `difference`, `se`, `df`, `statistic` and `statistic_name`, the unadjusted `p`, `p_adjusted` (or `q` for FDR methods), `ci_low` and `ci_high` (blank where the method has no CI), `significant`, and `summary` (stars from the adjusted P, in the chosen P style). `values["family_alpha"]`, `values["n_families"]` and `values["comparisons_per_family"]` describe the families.
 
-- **Sign.** As in Prism, the row "A vs. B" reports A − B. Against a reference the row is "reference vs. group", so the difference is reference − group.
+- **Sign.** The row "A vs. B" reports A − B. This is inferred from an example in the Prism guide ("Control vs. Organic", mean diff. −3.11, with Control the lowest mean); the prose does not state it. Against a reference the row is "reference vs. group", so the difference is reference − group. This is also *inferred*: the guide's examples list the control first, but the guide does not state the rule.
 - **Significance.** A comparison is significant when its adjusted P < α (the family-wise alpha). For FDR methods it is a "discovery" when q ≤ Q.
-- **Error term.** Ordinary ANOVA uses MS_residual with N − k df: SE = √(MS_residual (1/nᵢ + 1/nⱼ)). Repeated measures with sphericity assumed uses MS_residual with (n − 1)(k − 1) df: SE = √(2 MS_residual/n). With the Geisser-Greenhouse correction, each comparison uses only its two columns: SE = SD of the differences/√n, df = n − 1 (`rm_error="pooled"` or `"separate"` overrides this). The mixed model uses the fitted means, their covariance and its df.
+- **Error term.** Ordinary ANOVA uses MS_residual with N − k df: SE = √(MS_residual (1/nᵢ + 1/nⱼ)). Repeated measures follows Prism:
+  - With sphericity assumed, every comparison uses the pooled MS_residual of all columns, with (n − 1)(k − 1) df: SE = √(2 MS_residual/n).
+  - Without sphericity (Geisser-Greenhouse, the default), each comparison uses only the two columns compared, essentially a paired t test: SE = SD of the differences/√n, df = n − 1 (Maxwell and Delaney, pp. 552–555).
+  - `rm_error="pooled"` or `"separate"` overrides this.
+
+  The mixed model uses the fitted means, their covariance and its df.
 
 | `method` | Use after | Statistic and adjustment | CI |
 |---|---|---|---|
@@ -300,7 +307,7 @@ Every comparison row in `values["comparisons"]` has `label` ("A vs. B"), `group_
 | `games_howell` | Welch; all pairs | SE = √(sᵢ²/nᵢ + sⱼ²/nⱼ), Welch's df per pair, q on the studentized range of k means. | yes |
 | `dunnett_t3` | Welch; any goal | The same t and df, on the studentized maximum modulus of m comparisons. | yes |
 | `tamhane_t2` | Welch; any goal | Welch's t test, Šidák-adjusted. | yes |
-| `dunn` | Kruskal-Wallis, Friedman | z = (R̄ᵢ − R̄ⱼ)/SE; P_adj = min(1, mP). For Kruskal-Wallis SE² = [N(N + 1)/12 − Σ(t³ − t)/(12(N − 1))](1/nᵢ + 1/nⱼ). For Friedman, SE² = k(k + 1)/(6n), with mean ranks within rows. | no |
+| `dunn` | Kruskal-Wallis, Friedman | z = abs(R̄ᵢ − R̄ⱼ)/√[(N(N + 1)/12)(1/nᵢ + 1/nⱼ)], with N(N + 1) replaced by N(N + 1) − Σ(T³ − T)/(N − 1) for ties (Prism's formula). Two-sided P from z; P_adj = P × number of comparisons, capped at 1 (shown as >0.9999). For Friedman, SE = √(k(k + 1)/(6n)), with mean ranks within rows. | no |
 | `dunn_uncorrected` | Kruskal-Wallis, Friedman | The same z, no correction. | no |
 | `bky`, `bh`, `by` | any | q values from the unadjusted P (Fisher's LSD, Welch t, or uncorrected Dunn's), as below. | no |
 
@@ -315,18 +322,24 @@ m is the number of comparisons in the family. The multivariate t probability for
 The groups are taken as equally spaced, in column order xᵢ = 1…k. With x̄_w = Σnᵢxᵢ/N and the contrast cᵢ = nᵢ(xᵢ − x̄_w):
 
 - **Slope** = Σcᵢȳᵢ / Σnᵢ(xᵢ − x̄_w)². This is the least-squares slope of the values on column number.
-- SS_trend = (Σcᵢȳᵢ)² / Σnᵢ(xᵢ − x̄_w)². F = SS_trend/MS_residual with (1, error df), and **R² for trend** = SS_trend/SS_total.
+- SS_trend = (Σcᵢȳᵢ)² / Σnᵢ(xᵢ − x̄_w)². F = MS_trend/MS_residual with (1, error df).
+- Two R² values, as Prism reports them:
+  - **Effect-size R²** = SS_trend/SS_total, the fraction of all the variance explained by the linear trend. This was the only R² in Prism 6.
+  - **Alerting R²** = SS_trend/SS_between-means, with SS_between-means = Σnᵢ(ȳᵢ − ȳ_w)², the fraction of the variance among the group means explained by the trend. It is always the larger.
 - **Nonlinear variation**: F = [(SS_between − SS_trend)/(k − 2)] / MS_residual, with (k − 2, error df). It asks whether the group means depart from a straight line.
 
 It needs 3 or more groups and equal SDs. It also works after repeated measures (with that error term).
 
 ### FDR control and q values (`adjust_p`, and `method="bky"` etc.)
 
-The **false discovery rate** is the expected fraction of "discoveries" that are false. Q is the FDR you accept (`alpha`, default 5%). The **q value** of a comparison is the smallest Q at which it would be a discovery.
+The **false discovery rate** is the expected fraction of "discoveries" that are false. Q is the FDR you accept (`alpha`, default 5%). The **q value** of a comparison is, as Prism defines it, the Q at which that comparison would sit exactly on the border of being a discovery (also called the FDR-adjusted P). A comparison is a discovery when q ≤ Q. All three methods step up from the largest P, with a threshold for each rank i (1 = smallest P):
 
-- **Benjamini-Hochberg** (`bh`, 1995): with P sorted ascending, q₍ᵣ₎ = min over s ≥ r of mP₍ₛ₎/s. Valid for independent or positively dependent tests.
-- **Benjamini-Yekutieli** (`by`, 2001): the BH q times Σᵢ₌₁…ₘ 1/i. Valid under any dependence, and more conservative.
-- **Two-stage step-up of Benjamini, Krieger and Yekutieli** (`bky`, 2006; Prism's default). Stage 1 runs BH at Q′ = Q/(1 + Q) and finds r₁ discoveries. m₀ = m − r₁ estimates the number of true null hypotheses. Stage 2 runs BH at Q′m/m₀. The q values are BH q · (m₀/m) · (1 + Q), with m₀ = m when r₁ is 0 or m. These match statsmodels' `fdr_tsbky`. They depend on Q, and a comparison is a discovery when q ≤ Q.
+- **Benjamini-Hochberg** (`bh`, 1995): thresholds iQ/N, from Q/N up to Q. So q₍ᵣ₎ = min over s ≥ r of NP₍ₛ₎/s. Valid for independent or positively dependent tests.
+- **Benjamini-Yekutieli** (`by`, 2001): thresholds iQ/(N·H), from Q/(N·H) up to Q/H, with H = 1 + 1/2 + … + 1/N. So q is the BH q times H. Valid under any dependence, and more conservative.
+- **Two-stage step-up of Benjamini, Krieger and Yekutieli** (`bky`, 2006; Prism's default). Stage 1 runs BH at Q/(1 + Q) and finds r₁ discoveries: none if r₁ = 0, and all if r₁ = N. Otherwise N_true = N − r₁ estimates the number of true null hypotheses, and stage 2 uses the thresholds iQ/[(1 + Q)·N_true], from Q/[(1 + Q)·N_true] up to [Q/(1 + Q)]·N/N_true.
+  - Because N_true itself changes with Q, the border q is found exactly, interval by interval. r₁ is a step function of Q, and within each step the stage-2 condition can be solved for Q.
+  - Discoveries at any Q match statsmodels' `fdr_tsbky` and the thresholds above written out (tests). At Q = q a comparison is a discovery, and just below it is not.
+  - statsmodels' own corrected values for `fdr_tsbky` are adjusted at one fixed Q, and are not this border q.
 
 After an ANOVA, FDR methods start from the unadjusted P values of Fisher's LSD (Welch's t after Welch's ANOVA, uncorrected Dunn's after a rank test), as Prism does.
 
@@ -336,7 +349,7 @@ Paste a list of P values (blanks are left out). Choose FDR (`bky`, `bh`, `by`, w
 
 ### Compact letter display (`compact_letter_display`)
 
-Letters summarise a set of pairwise comparisons: two groups share a letter exactly when they are **not** significantly different. Pass any result with `values["comparisons"]`, or a list of rows. The insert-absorb algorithm (Piepho 2004) starts with one letter for every group. For each significant pair, it splits every letter that holds both groups into two letters, one without each group. Then it drops letters that are contained in another letter. Letters are given in column order. A pair that was not compared counts as not different. For PlantGrowth with Tukey's test: ctrl "ab", trt1 "a", trt2 "b".
+Letters summarise a set of pairwise comparisons: two groups share a letter exactly when they are **not** significantly different, that is when their adjusted P ≥ α (`alpha=` recomputes this from `p_adjusted`, or from q for FDR rows). Every group gets at least one letter. As in Prism, letters are upper case by default (`style="upper"`: A, B, C). `style="lower"` gives a, b, c, and `style="numbers"` gives 1, 2, 3, joined with commas when a group has several. Pass any result with `values["comparisons"]`, or a list of rows. The insert-absorb algorithm (Piepho 2004) starts with one letter for every group. For each significant pair, it splits every letter that holds both groups into two letters, one without each group. Then it drops letters that are contained in another letter. Letters are given in column order; Prism does not document its ordering rule. A pair that was not compared counts as not different. For PlantGrowth with Tukey's test: ctrl "AB", trt1 "A", trt2 "B".
 
 ## Identifying outliers (`identify_outliers(table, method)`)
 
@@ -345,6 +358,7 @@ Each column is tested separately, and needs at least 3 values. The result lists 
 - **ROUT** (`"rout"`, Q = `q`, default 1%; Motulsky and Brown 2006). It can find several outliers at once.
   1. *Robust fit.* Starting from the median, the centre μ minimizes the Lorentzian (Cauchy) merit function Σ ln(1 + ((x − μ)/RSDR)²). The robust SD of the residuals is RSDR = (68.27th percentile of |x − μ|) × N/(N − 1). μ and RSDR are updated in turn until they stop changing.
   2. *Outliers.* Each value gets t = |x − μ|/RSDR and a two-tailed P from the t distribution with N − 1 df. Then the Benjamini-Hochberg rule is applied at Q: with P sorted ascending, the j most extreme values are outliers for the largest j with P₍ⱼ₎ ≤ jQ/N.
+  3. *At most 30%.* Prism fits Y = M (M a robust mean) and allows up to 30% of the values to be outliers, with n ≥ 3. So j is limited to 30% of N, rounded down, but at least 1 so that a column of 3 can still have one. Q is an input (default 1%). With no outliers in the data, Q behaves like α.
 
   *Limits.* This follows the paper's description, not Prism's code. The percentile is linearly interpolated, and details of Prism's robust fit may differ, so a borderline value can be flagged by one and not the other. Only a constant is fitted (Prism also uses ROUT for curve fits). If more than 68% of the values are identical, RSDR is 0 and nothing is flagged.
 - **Grubbs' test** (`"grubbs"`, two-sided, α = `alpha`): G = max|x − x̄|/s. The value is an outlier when G > ((n − 1)/√n) √(t²/(n − 2 + t²)), where t is the upper α/(2n) point of the t distribution with n − 2 df (Grubbs 1969). The reported P is the matching bound P = min(1, 2n · P(T_{n−2} > t_G)), with t_G = √(n(n − 2)G²/((n − 1)² − nG²)). It finds at most one outlier.
@@ -408,11 +422,8 @@ These are pages in the Prism guide (https://www.graphpad.com/guides/prism/latest
 - How Prism makes the exact two-tailed P: this engine doubles the smaller tail.
 - The sign of the Hodges-Lehmann difference: this engine uses B − A, and the guide words it as group 1 minus group 2.
 - How Prism computes the CI when there are ties. This engine uses the order-statistic rule for untied data.
-- Anything about the ANOVA family below was checked against R, published tables and independent code, not against Prism's output:
-  - The sign and wording of comparison rows ("A vs. B" = A − B; "reference vs. group" against a control).
-  - Whether Prism's multiple comparisons after the Geisser-Greenhouse correction use only the two columns compared (this engine's default) or the pooled error term.
-  - Prism's R² for repeated-measures ANOVA (this engine reports partial eta squared) and for the trend test (SS_trend/SS_total).
-  - The mixed model's denominator df and Prism's Geisser-Greenhouse option for it (see above).
-  - Whether Prism computes an exact P for Kruskal-Wallis or Friedman with small samples (this engine always uses χ²), and whether its Friedman statistic and Dunn's test correct for ties.
-  - How Prism defines q for the two-stage FDR method (this engine matches statsmodels), and whether a discovery is q ≤ Q or q < Q.
+- The ANOVA family was checked against R, published tables and independent code. Section 13 of the Prism guide review settled the error terms, R², exact-P rules, q values, letter styles, ROUT's 30% limit and Dunn's formula. What remains unverified against Prism's own output:
+  - The sign rule. "A vs. B" = A − B is inferred from a guide example, and "reference vs. group" = reference − group is inferred from the examples' ordering.
+  - The mixed model's denominator df (undocumented; this engine uses the between-within df), and how Prism estimates Geisser-Greenhouse epsilon with missing values (this engine uses pairwise-complete covariances).
+  - Prism's size cutoff for the exact Kruskal-Wallis P (undocumented; this engine enumerates up to 2 million splits), and whether its Friedman statistic corrects for ties.
   - The order in which Prism assigns compact letters, and the details of its ROUT fit (see the limits above).
