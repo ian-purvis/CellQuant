@@ -78,6 +78,8 @@ class ImageRecord(BaseModel):
     # Count area: polygons of (row, column) pixel vertices drawn in step 5. Only objects whose
     # centroid is inside are counted; empty counts the whole image. Shared by every analysis.
     count_area: list[list[list[float]]] = Field(default_factory=list)
+    # View rotation in whole degrees (clockwise), set in the View panel. Display only.
+    view_angle: int = 0
 
 
 # Review state of one image that belongs to one analysis (see AnalysisRecord.image_states).

@@ -51,9 +51,12 @@ def test_rotation_turns_every_layer_and_keeps_pixel_coordinates(tmp_path: Path, 
     box.rotation.setValue(360)
     assert np.allclose(labels.affine.affine_matrix, np.eye(labels.ndim + 1))
     # each image keeps its own angle
-    image_id = controller.experiment.images[0].image_id
+    image_id = shell.controller.experiment.images[0].image_id
     box.rotation.setValue(45)
-    assert box._angles[image_id] == 45
+    assert shell.controller.experiment.image(image_id).view_angle == 45
     box.reset()
     assert box.rotation.value() == 45
+    box.reset_rotation.click()
+    assert box.rotation.value() == 0
+    assert shell.controller.experiment.image(image_id).view_angle == 0
     assert (height, width) == labels.data.shape[-2:]
