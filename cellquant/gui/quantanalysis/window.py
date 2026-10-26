@@ -238,6 +238,15 @@ class QuantAnalysisWindow(QMainWindow):
         graph = bar.addMenu("&Graph")
         for key, (name, tip) in graphs.KINDS.items():
             self._action(graph, name, lambda key=key: self.new_graph(key), tip)
+        graph.addSeparator()
+        from cellquant.gui.quantanalysis import tips
+
+        for text, method, tip in (("Format graph…", lambda view: view.format_dialog("graph"), tips.FORMAT_GRAPH),
+                                  ("Format axes…", lambda view: view.format_dialog("axes"), tips.FORMAT_AXES),
+                                  ("Make this graph look like…", lambda view: view.magic_dialog(), tips.FORMAT["magic"]),
+                                  ("Copy format", lambda view: view.copy_format(), tips.FORMAT["copy_format"]),
+                                  ("Paste format", lambda view: view.paste_format(), tips.FORMAT["paste_format"])):
+            self._action(graph, text, lambda method=method: self._on_graph(method), tip)
         export = bar.addMenu("&Export")
         self._action(export, "Export graph…", self.export_graph, "The graph shown, as SVG, PDF, EPS, PNG, TIFF or JPEG.")
         self._action(export, "Export results CSV…", self.export_results, "The results sheet shown, as a CSV file.")
@@ -687,6 +696,13 @@ class QuantAnalysisWindow(QMainWindow):
                                                   result.id if result else None))
         self.select(sheet.id)
         return sheet
+
+    def _on_graph(self, method) -> None:
+        view = self.stack.currentWidget()
+        if hasattr(view, "format_dialog"):
+            method(view)
+        else:
+            self.status("Select a graph first.")
 
     def export_graph(self) -> None:
         view = self.stack.currentWidget()

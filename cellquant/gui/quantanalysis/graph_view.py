@@ -1,4 +1,11 @@
-"""A graph sheet: the figure (white, as it will be exported) and its format panel, and graph export.
+"""A graph sheet: the figure (white, as it will be exported), its format panel, click-to-edit, and graph export.
+
+The format panel is a column of collapsible sections (format_panel.py); Format graph… and Format axes…
+open the same sections as tabbed dialogs. Clicking the graph selects what was clicked: matplotlib pick
+events name the artist, and every artist that ``graphs.draw`` makes clickable carries a tag (a data
+set, an axis, the title, the legend, a text box). The selection is kept as that tag, not as the artist,
+so it survives every redraw; it is outlined on screen only (exports draw a fresh figure). Double-click
+opens the matching dialog tab; dragging a text box, arrow or the legend moves it and saves where.
 
 matplotlib is imported here only, when the first graph is shown, so the window opens without it.
 """
@@ -9,11 +16,7 @@ import html
 from pathlib import Path
 
 from qtpy.QtCore import Qt, QTimer
-from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QAbstractSpinBox,
-    QCheckBox,
-    QColorDialog,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -31,7 +34,8 @@ from qtpy.QtWidgets import (
 )
 
 from cellquant.errors import CellQuantError
-from cellquant.gui.quantanalysis import graphs, tips
+from cellquant.gui.quantanalysis import format_panel, graphs, tips
+from cellquant.gui.quantanalysis import graph_format as gf
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
 from cellquant.gui.quantanalysis.project import PSEUDO_WARNING, GraphSheet, Project
 
@@ -45,6 +49,10 @@ EXPORT_FORMATS = {
     "jpeg": ("JPEG", ".jpg", True),
 }
 DPI_CHOICES = (300, 600, 1200)
+HIGHLIGHT = "#1f8fff"
+# When one click hits several artists, the one in front of the others wins.
+PRIORITY = {"annotation": 6, "legend": 5, "title": 4, "bracket": 3, "dataset": 3, "connect": 2, "axis": 1}
+DRAGGABLE = ("annotation", "legend")
 
 
 def export_figure(data, graph: GraphSheet, result, path: str | Path, kind: str, dpi: int = 300,
@@ -54,7 +62,7 @@ def export_figure(data, graph: GraphSheet, result, path: str | Path, kind: str, 
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
 
-    sized = GraphSheet(graph.name, graph.data_id, graph.kind, {**graph.format}, graph.result_id, id=graph.id)
+    sized = GraphSheet(graph.name, graph.data_id, graph.kind, graph.format.copy(), graph.result_id, id=graph.id)
     for key, value in (("width", width), ("height", height), ("units", units)):
         if value is not None:
             sized.format[key] = value
@@ -71,13 +79,59 @@ def export_figure(data, graph: GraphSheet, result, path: str | Path, kind: str, 
     return path
 
 
+def section_for(target) -> tuple[str, str, str]:
+    """(side-panel section, dialog, dialog tab) that formats ``target``."""
+
+    kind = target[0]
+    if kind in ("dataset", "connect"):
+        return "datasets", "graph", "datasets"
+    if kind == "axis":
+        return "axes", "axes", target[1]
+    if kind in ("title", "legend"):
+        return "text", "graph", "text"
+    if kind == "annotation":
+        return "annotations", "graph", "annotations"
+    return "significance", "graph", "significance"
+
+
+def _extent(artist, renderer):
+    """The screen box of an artist. Collections are measured from their points: matplotlib's own box for them is
+    the whole data area."""
+
+    import numpy as np
+    from matplotlib.collections import Collection, PathCollection
+    from matplotlib.transforms import Bbox
+
+    if isinstance(artist, PathCollection):
+        offsets = np.asarray(artist.get_offsets(), dtype=float)
+        if offsets.size == 0:
+            return None
+        points = artist.get_offset_transform().transform(offsets)
+        sizes = artist.get_sizes()
+        radius = (np.sqrt(float(np.max(sizes))) if len(sizes) else 4.0) * artist.figure.dpi / 72 / 2
+        return Bbox([points.min(axis=0) - radius, points.max(axis=0) + radius])
+    if isinstance(artist, Collection):
+        paths = artist.get_paths()
+        if not paths:
+            return None
+        points = artist.get_transform().transform(np.concatenate([path.vertices for path in paths]))
+        points = points[np.all(np.isfinite(points), axis=1)]
+        return Bbox([points.min(axis=0), points.max(axis=0)]) if len(points) else None
+    return artist.get_window_extent(renderer)
+
+
 class GraphSheetView(QWidget):
     def __init__(self, window, project: Project, sheet: GraphSheet):
         super().__init__()
         self.window = window
         self.project = project
         self.sheet = sheet
-        self._filling = False
+        self.sections: list = []
+        self.dialogs: dict = {}
+        self.selection = None          # the tag of the selected part, e.g. ("dataset", "Control")
+        self._highlights: list = []
+        self._picked = None            # [mouse event, tag, artist] of the front-most artist under the last click
+        self._drag = None
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
         left = QVBoxLayout()
@@ -85,10 +139,14 @@ class GraphSheetView(QWidget):
         self.source = QLabel()
         self.source.setStyleSheet(NOTE_STYLE)
         top.addWidget(self.source, 1)
-        export = QPushButton("Export graph…")
-        export.setToolTip("Save as SVG, PDF, EPS, PNG, TIFF (300 to 1200 dpi, LZW) or JPEG, at a size in mm or inches.")
-        export.clicked.connect(self.export_dialog)
-        top.addWidget(export)
+        for text, tip, slot in (("Format graph…", tips.FORMAT_GRAPH, lambda: self.format_dialog("graph")),
+                                ("Format axes…", tips.FORMAT_AXES, lambda: self.format_dialog("axes")),
+                                ("Export graph…", "Save as SVG, PDF, EPS, PNG, TIFF (300 to 1200 dpi, LZW) or JPEG, at a size in mm or inches.",
+                                 self.export_dialog)):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _checked=False, slot=slot: slot())
+            top.addWidget(button)
         left.addLayout(top)
         self.warning = QLabel()
         self.warning.setWordWrap(True)
@@ -106,6 +164,10 @@ class GraphSheetView(QWidget):
         self.holder_layout.setAlignment(Qt.AlignCenter)
         self.page.setWidget(holder)
         left.addWidget(self.page, 1)
+        self.hint = QLabel(tips.SELECT)
+        self.hint.setStyleSheet(NOTE_STYLE)
+        self.hint.setWordWrap(True)
+        left.addWidget(self.hint)
         layout.addLayout(left, 1)
         self.canvas = None
         self.figure = None
@@ -125,7 +187,13 @@ class GraphSheetView(QWidget):
             self.figure = Figure()
             self.canvas = FigureCanvasQTAgg(self.figure)
             self.canvas.setStyleSheet("background: white;")
+            self.canvas.setFocusPolicy(Qt.ClickFocus)
             self.holder_layout.addWidget(self.canvas)
+            self.canvas.mpl_connect("pick_event", self._on_pick)
+            self.canvas.mpl_connect("button_press_event", self._on_press)
+            self.canvas.mpl_connect("motion_notify_event", self._on_motion)
+            self.canvas.mpl_connect("button_release_event", self._on_release)
+            self.canvas.mpl_connect("key_press_event", self._on_key)
         layout.addWidget(self._format_panel())
         self._redraw = QTimer(self)
         self._redraw.setSingleShot(True)
@@ -139,266 +207,363 @@ class GraphSheetView(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setFixedWidth(350)
+        scroll.setFixedWidth(372)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.panel_scroll = scroll
         panel = QWidget()
-        form = QFormLayout(panel)
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        self.kind = QComboBox()
-        for key, (name, tip) in graphs.KINDS.items():
-            self.kind.addItem(name, key)
-            self.kind.setItemData(self.kind.count() - 1, tip, Qt.ToolTipRole)
-        self.kind.setToolTip("The kind of graph. Hover each choice for when to use it.")
-        self.kind.currentIndexChanged.connect(lambda _index: self._changed())
-        form.addRow("Graph", self.kind)
-        self.error = QComboBox()
-        for key, (name, _tip) in graphs.ERRORS.items():
-            self.error.addItem(name, key)
-            self.error.setItemData(self.error.count() - 1, tips.ERROR[key], Qt.ToolTipRole)
-        self.error.setToolTip("\n\n".join(tips.ERROR[key] for key in ("sd", "sem", "ci", "median_iqr")))
-        self.error.currentIndexChanged.connect(lambda _index: self._changed())
-        form.addRow("Error bars", self.error)
-        self.comparison = QComboBox()
-        self.comparison.setToolTip(tips.GRAPH_COMPARISON)
-        self.comparison.currentIndexChanged.connect(lambda _index: self._changed())
-        form.addRow("Comparison", self.comparison)
-        self.bracket = QComboBox()
-        for text, key in (("Stars (P summary)", "stars"), ("P value", "p"), ("None", "none")):
-            self.bracket.addItem(text, key)
-        self.bracket.setToolTip(tips.BRACKET)
-        self.bracket.currentIndexChanged.connect(lambda _index: self._changed())
-        form.addRow("Bracket", self.bracket)
-        self.bracket_mode = QComboBox()
-        for text, key in (("Brackets", "brackets"), ("Asterisks above columns", "columns")):
-            self.bracket_mode.addItem(text, key)
-        self.bracket_mode.setToolTip(tips.BRACKET_MODE)
-        self.bracket_mode.currentIndexChanged.connect(lambda _index: self._changed())
-        form.addRow("Multiple comparisons", self.bracket_mode)
-        self.hide_ns = QCheckBox("Hide ns")
-        self.hide_ns.setToolTip(tips.HIDE_NS)
-        self.hide_ns.toggled.connect(lambda _on: self._changed())
-        self.letters = QCheckBox("Compact letters")
-        self.letters.setToolTip(tips.LETTERS)
-        self.letters.toggled.connect(lambda _on: self._changed())
-        self.letter_style = QComboBox()
-        for text, key in (("A B C", "upper"), ("a b c", "lower"), ("1 2 3", "numbers")):
-            self.letter_style.addItem(text, key)
-        self.letter_style.setToolTip(tips.LETTER_STYLE)
-        self.letter_style.currentIndexChanged.connect(lambda _index: self._changed())
-        marks = QVBoxLayout()
-        marks.addWidget(self.hide_ns)
-        marks.addWidget(self.letters)
-        marks.addWidget(self.letter_style)
-        form.addRow("", marks)
-        self.ref_colors = QHBoxLayout()
-        ref_title = QLabel("Reference colours")
-        ref_title.setToolTip(tips.REF_COLORS)
-        form.addRow(ref_title, self.ref_colors)
-        self.title = QLineEdit()
-        self.title.setPlaceholderText("none")
-        self.title.setToolTip("A title above the graph. Journals usually put it in the legend instead.")
-        self.y_title = QLineEdit()
-        self.y_title.setToolTip("The Y axis title. Say what a dot is, for example “% of target (per replicate)”.")
-        self.x_title = QLineEdit()
-        self.x_title.setPlaceholderText("none")
-        self.x_title.setToolTip("The X axis title. Often not needed: the column names are the labels.")
-        for widget, label in ((self.title, "Title"), (self.y_title, "Y title"), (self.x_title, "X title")):
-            widget.editingFinished.connect(self._changed)
-            form.addRow(label, widget)
-        self.y_min = QLineEdit()
-        self.y_min.setPlaceholderText("auto")
-        self.y_max = QLineEdit()
-        self.y_max.setPlaceholderText("auto")
-        for widget in (self.y_min, self.y_max):
-            widget.setToolTip("Leave blank for automatic. The axis starts at 0 when the data are near it.")
-            widget.editingFinished.connect(self._changed)
-        y_range = QHBoxLayout()
-        y_range.addWidget(self.y_min)
-        y_range.addWidget(QLabel("to"))
-        y_range.addWidget(self.y_max)
-        form.addRow("Y range", y_range)
-        self.log_y = QCheckBox("Log scale")
-        self.log_y.setToolTip(tips.LOG_Y)
-        self.log_y.toggled.connect(lambda _on: self._changed())
-        form.addRow("Y axis", self.log_y)
-        self.show_outliers = QCheckBox("Outliers hollow")
-        self.show_outliers.setToolTip("Draw the values flagged by Analyze → Identify outliers… as hollow points. The values stay in the table.")
-        self.show_outliers.toggled.connect(lambda _on: self._changed())
-        form.addRow("Outliers", self.show_outliers)
-        self.show_n = QCheckBox("n under columns")
-        self.show_n.setToolTip(tips.SHOW_N)
-        self.show_n.toggled.connect(lambda _on: self._changed())
-        form.addRow("Labels", self.show_n)
-        self.dot_size = QDoubleSpinBox()
-        self.dot_size.setRange(0, 200)
-        self.dot_size.setSpecialValueText("auto")
-        self.dot_size.setToolTip(tips.DOT_SIZE)
-        self.font_size = QDoubleSpinBox()
-        self.font_size.setRange(5, 24)
-        self.font_size.setSingleStep(0.5)
-        self.font_size.setSuffix(" pt")
-        self.font_size.setToolTip("Font size of every label, in points at the exported size. 7 to 9 pt suits most journals.")
-        for widget in (self.dot_size, self.font_size):
-            widget.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        for widget, label in ((self.dot_size, "Dot size"), (self.font_size, "Font")):
-            widget.valueChanged.connect(lambda _value: self._changed())
-            form.addRow(label, widget)
-        self.width = QDoubleSpinBox()
-        self.height = QDoubleSpinBox()
-        for widget in (self.width, self.height):
-            widget.setRange(10, 1000)
-            widget.setDecimals(1)
-            widget.setButtonSymbols(QAbstractSpinBox.NoButtons)
-            widget.setToolTip(tips.GRAPH_SIZE)
-            widget.valueChanged.connect(lambda _value: self._changed())
-        self.units = QComboBox()
-        self.units.addItem("mm", "mm")
-        self.units.addItem("in", "in")
-        self.units.setToolTip(tips.GRAPH_SIZE)
-        self.units.currentIndexChanged.connect(lambda _index: self._units_changed())
-        size = QHBoxLayout()
-        size.addWidget(self.width)
-        size.addWidget(QLabel("×"))
-        size.addWidget(self.height)
-        size.addWidget(self.units)
-        form.addRow("Size", size)
-        self.colors_box = QVBoxLayout()
-        colors_title = QLabel("Colours")
-        colors_title.setToolTip(tips.COLOR)
-        form.addRow(colors_title, self.colors_box)
+        column = QVBoxLayout(panel)
+        column.setContentsMargins(0, 0, 6, 0)
+        column.setSpacing(2)
+        self.panel = {}
+        self.collapsibles = {}
+        for kind in format_panel.SECTIONS:
+            section = kind(self)
+            self.panel[section.key] = section
+            for part in section.sections() if hasattr(section, "sections") else [section]:
+                self.add_section(part)
+            box = format_panel.Collapsible(section.title, section, section.tip, expanded=section.key == "graph")
+            self.collapsibles[section.key] = box
+            column.addWidget(box)
+        column.addStretch(1)
         scroll.setWidget(panel)
+        # The controls the first format panel had, under their old names.
+        graph, significance = self.panel["graph"], self.panel["significance"]
+        for name in ("kind", "error", "comparison", "show_outliers", "dot_size", "font_size"):
+            setattr(self, name, getattr(graph, name))
+        for name in ("bracket", "bracket_mode", "hide_ns", "letters", "letter_style"):
+            setattr(self, name, getattr(significance, name))
+        self.show_n = self.panel["axes"].axis.show_n
         return scroll
 
-    def _fill_colors(self) -> None:
-        while self.colors_box.count():
-            item = self.colors_box.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        data = self.project.data.get(self.sheet.data_id)
-        if data is None:
-            return
-        fmt = {**graphs.DEFAULT_FORMAT, **self.sheet.format}
-        for index, name in enumerate(data.table.names):
-            color = graphs.color_of(fmt, name, index)
-            button = QPushButton(name)
-            button.setToolTip(tips.COLOR)
-            button.setStyleSheet(f"QPushButton {{ text-align: left; border-left: 14px solid {color}; padding-left: 6px; }}")
-            button.clicked.connect(lambda _checked=False, name=name, color=color: self._pick_color(name, color))
-            self.colors_box.addWidget(button)
+    def add_section(self, section) -> None:
+        if section not in self.sections:
+            self.sections.append(section)
 
-    def _fill_ref_colors(self) -> None:
-        while self.ref_colors.count():
-            item = self.ref_colors.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        colors = {**graphs.DEFAULT_FORMAT, **self.sheet.format}["ref_colors"]
-        for number, label in enumerate(("1st", "2nd")):
-            color = colors[number] if number < len(colors) else graphs.DEFAULT_FORMAT["ref_colors"][number]
-            button = QPushButton(label)
-            button.setToolTip(tips.REF_COLORS)
-            button.setStyleSheet(f"QPushButton {{ text-align: left; border-left: 14px solid {color}; padding-left: 6px; }}")
-            button.clicked.connect(lambda _checked=False, number=number, color=color: self._pick_ref_color(number, color))
-            self.ref_colors.addWidget(button)
-
-    def _pick_ref_color(self, number: int, current: str) -> None:
-        color = QColorDialog.getColor(QColor(current), self, f"Colour of comparisons with the {'first' if number == 0 else 'second'} reference group")
-        if color.isValid():
-            self.set_ref_color(number, color.name())
-
-    def set_ref_color(self, number: int, color: str) -> None:
-        colors = list({**graphs.DEFAULT_FORMAT, **self.sheet.format}["ref_colors"])
-        colors[number] = color
-        self.sheet.format["ref_colors"] = colors
-        self._fill_ref_colors()
-        self.draw()
-
-    def _pick_color(self, name: str, current: str) -> None:
-        color = QColorDialog.getColor(QColor(current), self, f"Colour of {name}")
-        if color.isValid():
-            self.sheet.format.setdefault("colors", {})[name] = color.name()
-            self._fill_colors()
-            self.draw()
+    def remove_section(self, section) -> None:
+        if section in self.sections:
+            self.sections.remove(section)
 
     def fill(self) -> None:
-        """Show the sheet's settings in the panel, then draw."""
+        """Show the sheet's settings in the panel (and any open dialog), then draw."""
 
-        sheet = self.sheet
-        fmt = {**graphs.DEFAULT_FORMAT, **sheet.format}
-        data = self.project.data.get(sheet.data_id)
-        self._filling = True
-        self.kind.setCurrentIndex(max(0, self.kind.findData(sheet.kind)))
-        self.error.setCurrentIndex(max(0, self.error.findData(fmt["error"])))
-        self.bracket.setCurrentIndex(max(0, self.bracket.findData(fmt["bracket"])))
-        self.bracket_mode.setCurrentIndex(max(0, self.bracket_mode.findData(fmt["bracket_mode"])))
-        self.hide_ns.setChecked(bool(fmt["hide_ns"]))
-        self.letters.setChecked(bool(fmt["letters"]))
-        self.letter_style.setCurrentIndex(max(0, self.letter_style.findData(fmt["letter_style"])))
-        self.show_outliers.setChecked(bool(fmt["show_outliers"]))
-        self.comparison.clear()
-        self.comparison.addItem("none", None)
-        for result in self.project.results.values():
-            if result.data_id == sheet.data_id and result.kind in ("compare", "anova"):
-                self.comparison.addItem(result.name, result.id)
-        self.comparison.setCurrentIndex(max(0, self.comparison.findData(sheet.result_id)))
-        self.title.setText(fmt["title"])
-        self.x_title.setText(fmt["x_title"])
-        self.y_title.setText(fmt["y_title"] if fmt["y_title"] is not None else (data.table.title if data else ""))
-        self.y_min.setText("" if fmt["y_min"] is None else f"{fmt['y_min']:g}")
-        self.y_max.setText("" if fmt["y_max"] is None else f"{fmt['y_max']:g}")
-        self.log_y.setChecked(bool(fmt["log_y"]))
-        self.show_n.setChecked(bool(fmt["show_n"]))
-        self.dot_size.setValue(float(fmt["dot_size"]))
-        self.font_size.setValue(float(fmt["font_size"]))
-        self.units.setCurrentIndex(max(0, self.units.findData(fmt["units"])))
-        self.width.setValue(float(fmt["width"]))
-        self.height.setValue(float(fmt["height"]))
-        self._filling = False
-        self._fill_colors()
-        self._fill_ref_colors()
+        for section in list(self.sections):
+            section.fill()
         self.draw()
 
-    def _number(self, widget: QLineEdit):
-        text = widget.text().strip()
-        if not text:
-            return None
-        try:
-            return float(text)
-        except ValueError:
-            widget.setText("")
-            return None
+    def format_changed(self, source=None) -> None:
+        """A section changed the format: redraw at once (after a short pause while typing) and refresh the other sections."""
 
-    def _changed(self) -> None:
-        if self._filling:
-            return
-        sheet = self.sheet
-        data = self.project.data.get(sheet.data_id)
-        sheet.kind = self.kind.currentData()
-        y_title = self.y_title.text()
-        sheet.format.update(
-            error=self.error.currentData(), bracket=self.bracket.currentData(), title=self.title.text(), x_title=self.x_title.text(),
-            y_title=None if data is not None and y_title == data.table.title else y_title,
-            y_min=self._number(self.y_min), y_max=self._number(self.y_max), log_y=self.log_y.isChecked(), show_n=self.show_n.isChecked(),
-            dot_size=self.dot_size.value(), font_size=self.font_size.value(), width=self.width.value(), height=self.height.value(),
-            units=self.units.currentData(), bracket_mode=self.bracket_mode.currentData(), hide_ns=self.hide_ns.isChecked(),
-            letters=self.letters.isChecked(), letter_style=self.letter_style.currentData(), show_outliers=self.show_outliers.isChecked(),
-        )
-        sheet.result_id = self.comparison.currentData()
-        self.window.sheet_renamed(sheet)
+        for section in list(self.sections):
+            if section is not source:
+                section.fill()
         self._redraw.start()
 
-    def _units_changed(self) -> None:
-        if self._filling:
+    def flush(self) -> None:
+        """Draw now if a redraw is waiting (tests and exports)."""
+
+        if self._redraw.isActive():
+            self._redraw.stop()
+            self.draw()
+
+    def set_ref_color(self, number: int, color: str) -> None:
+        colors = list(self.sheet.format.ref_colors) + graphs.DEFAULT_FORMAT["ref_colors"][len(self.sheet.format.ref_colors):]
+        colors[number] = color
+        self.sheet.format.ref_colors = colors
+        self.panel["significance"].fill()
+        self.draw()
+
+    def format_dialog(self, which: str = "graph", tab: str | None = None):
+        if self.figure is None:
+            self.window.status('Graphs need matplotlib: pip install "cellquant[stats]"')
+            return None
+        dialog = self.dialogs.get(which)
+        if dialog is None:
+            dialog = format_panel.FormatDialog(self, which, tab)
+            self.dialogs[which] = dialog
+        elif tab:
+            dialog.show_tab(tab)
+        dialog.show()
+        dialog.raise_()
+        return dialog
+
+    # --- Styles ---------------------------------------------------------------------------------------------------
+
+    def names(self) -> list[str]:
+        data = self.project.data.get(self.sheet.data_id)
+        return list(data.table.names) if data is not None else []
+
+    def apply_style(self, style: dict, groups=None, graph_ids=None) -> None:
+        """Copy the chosen groups of ``style`` onto this graph (and the other graphs named)."""
+
+        for graph_id in graph_ids or [self.sheet.id]:
+            graph = self.project.graphs.get(graph_id)
+            if graph is None:
+                continue
+            data = self.project.data.get(graph.data_id)
+            gf.apply_style(graph.format, style, data.table.names if data else [], groups)
+            if graph is not self.sheet:
+                self.project.changed.emit(graph.id)
+        self.format_changed(None)
+
+    def apply_named_style(self, name: str | None) -> None:
+        style = gf.all_styles().get(name or "")
+        if style is None:
             return
-        old = self.sheet.format.get("units", "mm")
-        new = self.units.currentData()
-        if old != new:
-            factor = 1 / graphs.MM_PER_INCH if new == "in" else graphs.MM_PER_INCH
-            self._filling = True
-            for widget in (self.width, self.height):
-                widget.setDecimals(2 if new == "in" else 1)
-                widget.setValue(widget.value() * factor)
-            self._filling = False
-        self._changed()
+        self.apply_style(style, style.get("groups"))
+        for section in self.sections:
+            if isinstance(section, format_panel.StyleSection):
+                section.choice.setCurrentIndex(max(0, section.choice.findData(name)))
+        self.window.log(f"graph {self.sheet.name}: style “{name}” applied")
+        self.window.status(f"Applied the style “{name}”.")
+
+    def save_style(self, name: str) -> dict:
+        style = gf.make_style(self.sheet.format, self.names(), format_panel.SAVED_GROUPS)
+        replaced = name in gf.load_styles()
+        gf.save_style(name, style)
+        for section in self.sections:
+            if isinstance(section, format_panel.StyleSection):
+                section.fill()
+                section.choice.setCurrentIndex(max(0, section.choice.findData(name)))
+        self.window.status(f"{'Replaced' if replaced else 'Saved'} the style “{name}” ({gf.styles_path()}).")
+        return style
+
+    def magic_dialog(self) -> format_panel.MagicDialog:
+        dialog = format_panel.MagicDialog(self)
+        dialog.accepted.connect(lambda: self._magic(dialog))
+        dialog.open()
+        return dialog
+
+    def _magic(self, dialog) -> None:
+        style = dialog.style()
+        if style is not None:
+            self.apply_style(style, dialog.chosen_groups(), dialog.target_ids())
+            self.window.log(f"graph {self.sheet.name}: made to look like {dialog.source.currentText()} ({', '.join(dialog.chosen_groups())})")
+
+    def copy_format(self) -> str:
+        text = gf.to_clipboard(self.sheet.format, self.names())
+        self.window._format_clipboard = text
+        format_panel.clipboard().setText(text)
+        self.window.status("Format copied. Select another graph and click Paste format.")
+        return text
+
+    def paste_format(self) -> bool:
+        style = gf.from_clipboard(format_panel.clipboard().text()) or gf.from_clipboard(getattr(self.window, "_format_clipboard", ""))
+        if style is None:
+            self.window.status("Copy the format of a graph first (Copy format).")
+            return False
+        self.apply_style(style, format_panel.PASTED_GROUPS)
+        self.window.status("Format pasted.")
+        return True
+
+    # --- Selection: click to edit --------------------------------------------------------------------------------
+
+    def artists_of(self, target) -> list:
+        if self.figure is None or target is None:
+            return []
+        return self.figure.findobj(lambda artist: getattr(artist, "_cq_target", None) == target)
+
+    def select(self, target, reveal: bool = True) -> None:
+        """Select a part of the graph (or nothing), outline it, and open its section of the panel."""
+
+        self.selection = tuple(target) if target else None
+        if self.selection and reveal:
+            self._reveal(self.selection)
+        self._highlight()
+
+    def _reveal(self, target) -> None:
+        key, _which, tab = section_for(target)
+        box = self.collapsibles.get(key)
+        if box is not None:
+            box.expand(True)
+        section = self.panel.get(key)
+        sections = [section] + [page for dialog in self.dialogs.values() for page in dialog.pages.values()]
+        for part in sections:
+            if target[0] == "dataset" and isinstance(part, format_panel.DataSetSection):
+                part.show_dataset(target[1])
+            elif target[0] == "axis" and isinstance(part, format_panel.AxesSection):
+                part.axis.show_axis(target[1])
+            elif target[0] == "annotation" and isinstance(part, format_panel.AnnotationSection):
+                part.show_annotation(target[1])
+        for dialog in self.dialogs.values():
+            dialog.show_tab(tab)
+        if box is not None:
+            QTimer.singleShot(0, lambda: self.panel_scroll.ensureWidgetVisible(box, 0, 0))
+
+    def _highlight(self) -> None:
+        """Outline the selected part (on screen only)."""
+
+        if self.figure is None or self._redraw.isActive():
+            return  # the redraw that is waiting outlines it
+        from matplotlib.patches import Rectangle
+        from matplotlib.transforms import Bbox, IdentityTransform
+
+        for artist in self._highlights:
+            try:
+                artist.remove()
+            except (ValueError, NotImplementedError):
+                pass
+        self._highlights = []
+        target = self.selection
+        if target is None:
+            self.canvas.draw_idle()
+            return
+        renderer = self.canvas.get_renderer()
+        boxes = []
+        layout = getattr(self.figure, "_cq_axes", {}) or {}
+        if target[0] == "axis":
+            axes = layout.get("segments", []) if target[1] in ("y", "x") else [layout.get("right")]
+            for ax in axes:
+                if ax is None:
+                    continue
+                axis = ax.xaxis if target[1] == "x" else ax.yaxis
+                if target[1] == "x" and ax is not layout.get("bottom"):
+                    continue
+                try:
+                    boxes.append(axis.get_tightbbox(renderer))
+                except (RuntimeError, ValueError):
+                    pass
+        for artist in self.artists_of(target):
+            if not artist.get_visible():
+                continue
+            try:
+                box = _extent(artist, renderer)
+            except (RuntimeError, ValueError, TypeError, AttributeError):
+                continue
+            axes = getattr(artist, "axes", None)
+            if box is not None and axes is not None and artist.get_clip_on() and target[0] in ("dataset", "connect"):
+                box = Bbox.intersection(box, axes.bbox)  # a bar drawn in every segment of a broken axis shows only in some
+            if box is not None and box.width >= 0 and box.height >= 0 and abs(box.x0) < 1e6:
+                boxes.append(box)
+        boxes = [box for box in boxes if box is not None and box.width + box.height > 0]
+        if not boxes:
+            if not self.artists_of(target) and target[0] not in ("axis",):
+                self.selection = None  # the part is gone (deleted, or a legend turned off)
+            self.canvas.draw_idle()
+            return
+        union = Bbox.union(boxes).padded(3)
+        rect = Rectangle((union.x0, union.y0), union.width, union.height, transform=IdentityTransform(), fill=False, edgecolor=HIGHLIGHT,
+                         linewidth=1.2, linestyle=(0, (4, 2)), zorder=1000)
+        rect._cq_highlight = True
+        self.figure.add_artist(rect)
+        self._highlights.append(rect)
+        self.canvas.draw_idle()
+
+    def _on_pick(self, event) -> None:
+        target = getattr(event.artist, "_cq_target", None)
+        if target is None:
+            return
+        mouse = event.mouseevent
+        if self._picked is None or self._picked[0] is not mouse or PRIORITY.get(target[0], 0) > PRIORITY.get(self._picked[1][0], 0):
+            self._picked = [mouse, target, event.artist]
+            self.select(target, reveal=True)
+
+    def _area_at(self, event):
+        """What lies under a click that hit no artist: the axis numbers, the legend or nothing."""
+
+        layout = getattr(self.figure, "_cq_axes", None) or {}
+        plot = getattr(self.figure, "_cq_plot", None)
+        if plot is None or event.x is None:
+            return None
+        legend = getattr(self.figure, "_cq_legend", None)
+        renderer = self.canvas.get_renderer()
+        if legend is not None and legend.get_window_extent(renderer).contains(event.x, event.y):
+            return ("legend",)
+        (x0, y0), (x1, y1) = plot.transform((0, 0)), plot.transform((1, 1))
+        if y0 <= event.y <= y1 and event.x < x0:
+            return ("axis", "y")
+        if x0 <= event.x <= x1 and event.y < y0:
+            return ("axis", "x")
+        if layout.get("right") is not None and y0 <= event.y <= y1 and event.x > x1:
+            return ("axis", "right")
+        return None
+
+    def _on_press(self, event) -> None:
+        if event.button != 1 or self.figure is None:
+            return
+        picked = self._picked if self._picked is not None and self._picked[0] is event else None
+        self._picked = None
+        target = picked[1] if picked else self._area_at(event)
+        if target != self.selection:
+            self.select(target)
+        if target is None:
+            return
+        if event.dblclick:
+            _key, which, tab = section_for(target)
+            self.format_dialog(which, tab)
+            return
+        if target[0] in DRAGGABLE:
+            self._start_drag(target, event)
+
+    def _start_drag(self, target, event) -> None:
+        plot = getattr(self.figure, "_cq_plot", None)
+        if plot is None:
+            return
+        start = {}
+        for artist in self.artists_of(target):
+            if hasattr(artist, "set_positions"):  # an arrow
+                start[artist] = ("arrow", [tuple(point) for point in artist._posA_posB])
+            elif hasattr(artist, "set_bbox_to_anchor"):  # the legend
+                box = artist.get_window_extent(self.canvas.get_renderer())
+                start[artist] = ("legend", tuple(plot.inverted().transform((box.x0, box.y1))))
+            elif hasattr(artist, "get_xdata"):
+                start[artist] = ("line", (list(artist.get_xdata()), list(artist.get_ydata())))
+            elif hasattr(artist, "get_position"):
+                start[artist] = ("text", tuple(artist.get_position()))
+        self._drag = {"target": target, "origin": (event.x, event.y), "start": start, "delta": (0.0, 0.0)}
+
+    def _delta(self, event) -> tuple[float, float]:
+        plot = self.figure._cq_plot
+        inverse = plot.inverted()
+        (ax, ay), (bx, by) = inverse.transform(self._drag["origin"]), inverse.transform((event.x, event.y))
+        return bx - ax, by - ay
+
+    def _on_motion(self, event) -> None:
+        if self._drag is None or event.x is None:
+            return
+        dx, dy = self._delta(event)
+        self._drag["delta"] = (dx, dy)
+        self._drag["moved"] = self._drag.get("moved") or abs(event.x - self._drag["origin"][0]) + abs(event.y - self._drag["origin"][1]) > 3
+        plot = self.figure._cq_plot
+        for artist, (kind, value) in self._drag["start"].items():
+            if kind == "arrow":
+                (ax, ay), (bx, by) = value
+                artist.set_positions((ax + dx, ay + dy), (bx + dx, by + dy))
+            elif kind == "legend":
+                artist.set_loc("upper left")
+                artist.set_bbox_to_anchor((value[0] + dx, value[1] + dy), transform=plot)
+            elif kind == "line":
+                xs, ys = value
+                artist.set_data([x + dx for x in xs], [y + dy for y in ys])
+            else:
+                artist.set_position((value[0] + dx, value[1] + dy))
+        for artist in self._highlights:
+            artist.set_visible(False)
+        self.canvas.draw_idle()
+
+    def _on_release(self, event) -> None:
+        drag, self._drag = self._drag, None
+        if drag is None or not drag.get("moved"):
+            return
+        dx, dy = drag["delta"]
+        target = drag["target"]
+        fmt = self.sheet.format
+        if target[0] == "annotation":
+            for note in fmt.annotations:
+                if note.id == target[1]:
+                    note.x, note.y, note.x2, note.y2 = note.x + dx, note.y + dy, note.x2 + dx, note.y2 + dy
+        elif target[0] == "legend":
+            start = next((value for kind, value in drag["start"].values() if kind == "legend"), None)
+            if start is not None:
+                fmt.legend.position = "custom"
+                fmt.legend.xy = [round(start[0] + dx, 4), round(start[1] + dy, 4)]
+        self.format_changed(None)
+        self.flush()
+
+    def _on_key(self, event) -> None:
+        if event.key in ("delete", "backspace") and self.selection and self.selection[0] == "annotation":
+            self.sheet.format.annotations = [note for note in self.sheet.format.annotations if note.id != self.selection[1]]
+            self.select(None)
+            self.format_changed(None)
 
     # --- Drawing ------------------------------------------------------------------------------------------------
 
@@ -416,13 +581,16 @@ class GraphSheetView(QWidget):
         if self.figure is None or data is None:
             self.notes.setVisible(False)
             return []
-        width, height = graphs.size_inches({**graphs.DEFAULT_FORMAT, **self.sheet.format})
+        width, height = gf.size_inches(self.sheet.format)
         available = self.page.viewport().size()
         dpi = max(60.0, min(200.0, (available.width() - 30) / width, (available.height() - 30) / height)) if available.width() > 100 else 110.0
         self.figure.set_dpi(dpi)
         self.canvas.setFixedSize(int(width * dpi), int(height * dpi))
+        self._highlights = []
+        self._drag = None
         notes = graphs.draw(self.figure, data, self.sheet, self.linked_result(), self.project.flags(data.id))
         self.figure.set_dpi(dpi)
+        self._highlight()
         self.canvas.draw_idle()
         self.notes.setText("\n".join(notes))
         self.notes.setVisible(bool(notes))
@@ -455,7 +623,7 @@ class GraphExportDialog(QDialog):
     def __init__(self, parent, sheet: GraphSheet):
         super().__init__(parent)
         self.setWindowTitle("Export graph")
-        fmt = {**graphs.DEFAULT_FORMAT, **sheet.format}
+        fmt = sheet.format
         form = QFormLayout(self)
         self.format = QComboBox()
         for key, (name, _suffix, _raster) in EXPORT_FORMATS.items():
@@ -472,15 +640,15 @@ class GraphExportDialog(QDialog):
         form.addRow("Resolution", self.dpi_box)
         self.width = QDoubleSpinBox()
         self.height = QDoubleSpinBox()
-        for widget, value in ((self.width, fmt["width"]), (self.height, fmt["height"])):
+        for widget, value in ((self.width, fmt.width), (self.height, fmt.height)):
             widget.setRange(1, 1000)
             widget.setDecimals(2)
             widget.setValue(float(value))
-            widget.setToolTip(tips.GRAPH_SIZE)
+            widget.setToolTip(tips.GRAPH_SIZE + " The exported graph is the one on screen, drawn at this size: text keeps its point size.")
         self.units = QComboBox()
         self.units.addItem("mm", "mm")
         self.units.addItem("inches", "in")
-        self.units.setCurrentIndex(max(0, self.units.findData(fmt["units"])))
+        self.units.setCurrentIndex(max(0, self.units.findData(fmt.units)))
         self.units.currentIndexChanged.connect(lambda _index: self._units_changed())
         self._units = self.units.currentData()
         size = QHBoxLayout()
@@ -513,7 +681,7 @@ class GraphExportDialog(QDialog):
     def _units_changed(self) -> None:
         new = self.units.currentData()
         if new != self._units:
-            factor = 1 / graphs.MM_PER_INCH if new == "in" else graphs.MM_PER_INCH
+            factor = 1 / gf.MM_PER_INCH if new == "in" else gf.MM_PER_INCH
             for widget in (self.width, self.height):
                 widget.setValue(widget.value() * factor)
             self._units = new
