@@ -61,6 +61,7 @@ from cellquant.count_area import outside
 from cellquant.errors import CellQuantError, RecipeValidationError
 from cellquant.gui import guide
 from cellquant.segmentation import FULL_3D_FLOW_SMOOTH, FULL_3D_NITER, FULL_3D_TILE_OVERLAP, TILE_OVERLAP_RANGE
+from napari import layers as napari_layers
 from napari.utils.colormaps import DirectLabelColormap
 
 
@@ -786,6 +787,7 @@ class CellQuantWindow:
         self.viewer.layers.events.removed.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.inserted.connect(lambda _event: self._view_box.refresh())
         self.viewer.layers.events.inserted.connect(lambda event: self._scale_layer(event.value))
+        self.viewer.layers.events.inserted.connect(lambda _event: self._view_box.apply_rotation())
         self.viewer.layers.events.removed.connect(lambda _event: self._view_box.refresh())
         self._release_window_later()
         self._watch_settings()
@@ -2003,6 +2005,7 @@ class CellQuantWindow:
             self._pixel_scale = None
         for layer in list(self.viewer.layers):
             self._scale_layer(layer)
+        self._view_box.apply_rotation()
         try:
             self.viewer.scale_bar.unit = "µm" if self._pixel_scale else "px"
         except Exception:  # noqa: BLE001 - older napari: the bar keeps its own unit
@@ -2393,8 +2396,24 @@ class ViewBox(QWidget):
         self.shell = shell
         self._stacks: dict[str, tuple] = {}  # layer name -> (full stack, contrast limits)
         self._step = None
+        self._angles: dict[str, int] = {}  # image id -> view rotation in whole degrees
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
+        rotate_row = QHBoxLayout()
+        rotate_row.addWidget(QLabel("Rotate"))
+        self.rotation = QSpinBox()
+        self.rotation.setRange(0, 360)
+        self.rotation.setWrapping(True)
+        self.rotation.setSuffix("°")
+        self.rotation.setToolTip(
+            "Turn the picture clockwise, any whole degree from 0 to 360. This changes only what you see: "
+            "the image, the objects and everything saved stay as they are, and drawing and clicking work as usual. "
+            "Each image keeps its own angle."
+        )
+        self.rotation.valueChanged.connect(self._rotated)
+        rotate_row.addWidget(self.rotation)
+        rotate_row.addStretch(1)
+        layout.addLayout(rotate_row)
         self.max_projection = QCheckBox("Max projection ⓘ")
         self.max_projection.setToolTip(
             "Show the brightest value of every Z slice as one flat image. This changes only what you see: "
@@ -2429,7 +2448,47 @@ class ViewBox(QWidget):
         self.max_projection.blockSignals(True)
         self.max_projection.setChecked(False)
         self.max_projection.blockSignals(False)
+        controller = self.shell.controller
+        angle = self._angles.get(controller.current_image_id, 0) if controller else 0
+        self.rotation.blockSignals(True)
+        self.rotation.setValue(angle)
+        self.rotation.blockSignals(False)
+        self.apply_rotation()
+        if angle:
+            self.shell.viewer.reset_view()
         self.refresh()
+
+    def _rotated(self, degrees: int) -> None:
+        controller = self.shell.controller
+        if controller and controller.current_image_id:
+            self._angles[controller.current_image_id] = degrees
+        self.apply_rotation()
+        try:
+            self.shell.viewer.reset_view()  # a turned picture no longer fits the window it was zoomed to
+        except RuntimeError:
+            pass
+
+    def apply_rotation(self) -> None:
+        """Turn every layer, about the centre of the image, by this image's angle. Only the view turns: data, drawing
+        and clicks stay in the image's own pixel coordinates (napari maps the pointer back through the layer)."""
+
+        layers = list(self.shell.viewer.layers)
+        reference = next((layer for layer in layers if isinstance(layer, (napari_layers.Image, napari_layers.Labels)) and layer.ndim >= 2), None)
+        if reference is None:
+            return
+        degrees = self.rotation.value() % 360
+        turn = np.radians(degrees)
+        cos, sin = np.cos(turn), np.sin(turn)
+        centre = np.asarray(reference.data.shape[-2:], dtype=float) * np.asarray(reference.scale[-2:], dtype=float) / 2
+        for layer in layers:
+            ndim = layer.ndim
+            if ndim < 2:
+                continue
+            matrix = np.eye(ndim + 1)
+            matrix[ndim - 2 : ndim, ndim - 2 : ndim] = [[cos, sin], [-sin, cos]]  # clockwise on screen (y runs down)
+            matrix[ndim - 2 : ndim, ndim] = centre - matrix[ndim - 2 : ndim, ndim - 2 : ndim] @ centre
+            if not np.allclose(layer.affine.affine_matrix, matrix):
+                layer.affine = matrix
 
     def _toggled(self, on: bool) -> None:
         viewer = self.shell.viewer
@@ -2446,6 +2505,7 @@ class ViewBox(QWidget):
                 layer.contrast_limits = limits
         for layer in self._image_layers():
             self.shell._scale_layer(layer)  # swapping 3D and 2D data pads the scale; put the pixel size back
+        self.apply_rotation()
         if not on and self._step is not None and viewer.dims.ndim > 2:
             viewer.dims.set_current_step(0, self._step)
         self.refresh()
