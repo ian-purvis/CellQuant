@@ -16,7 +16,7 @@ result.to_frame().to_csv("welch.csv")      # the results sheet
 result.values["difference"], result.values["ci_low"], result.values["ci_high"]
 ```
 
-`from_long(..., subject="mouse")` lines rows up by subject and makes the table paired.
+`from_long(..., subject="replicate")` lines rows up by subject and makes the table paired.
 
 ## P values and significance
 
