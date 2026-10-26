@@ -23,9 +23,9 @@ $script:CellQuantEngineExtras = @{
     cellpose3 = 'cellpose-v3'
 }
 # The "stats" extra (QuantAnalysis). Every install and update installs it; the launcher adds
-# these to an environment made before it existed (see Install-CellQuantStatsPackages).
+# these to an environment made before it existed (see Install-CellQuantStatsPackages). The check is a module, not a
+# one-line script: conda run on Windows can mangle the quotes, parentheses and semicolons of code passed on its command line.
 $script:CellQuantStatsPackages = @('statsmodels', 'matplotlib')
-$script:CellQuantStatsCheck = "import importlib.util as u, sys; sys.exit(0 if all(u.find_spec(n) for n in ('matplotlib', 'statsmodels')) else 3)"
 
 function Install-CellQuantStatsPackages {
     <#
@@ -38,7 +38,7 @@ function Install-CellQuantStatsPackages {
         [Parameter(Mandatory)][string]$Prefix
     )
 
-    & $CondaExe run --prefix $Prefix python -c $script:CellQuantStatsCheck
+    & $CondaExe run --prefix $Prefix python -m cellquant.stats._deps_check
     if ($LASTEXITCODE -ne 3) {
         return
     }

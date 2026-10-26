@@ -11,7 +11,7 @@ import html
 
 import numpy as np
 from qtpy.QtCore import QEvent, Qt
-from qtpy.QtGui import QKeySequence
+from qtpy.QtGui import QBrush, QColor, QKeySequence
 from qtpy.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -35,6 +35,7 @@ SPARE_ROWS = 12
 WARNING_STYLE = "QLabel { background: rgba(217, 164, 0, 0.20); border-radius: 6px; padding: 6px; }"
 DANGER_STYLE = "QLabel { background: rgba(200, 50, 50, 0.28); border-radius: 6px; padding: 6px; }"
 NOTE_STYLE = "QLabel { color: #a8b0ba; }"
+OUTLIER_BACKGROUND = QColor(200, 60, 60, 120)
 
 
 def parse_cell(text: str) -> float:
@@ -99,6 +100,8 @@ class DataSheetView(QWidget):
             ("Column statistics", "n, mean, SD, SEM, CI, median and percentiles of every column, on a new results sheet.", lambda: window.analyze("colstats")),
             ("Normality", "Normality and lognormality tests of every column. Look at the graph and the n too: small samples pass easily, large ones fail for tiny departures.", lambda: window.analyze("normality")),
             ("Compare two columns…", "t test or rank test of two columns (Prism's t test dialog).", lambda: window.analyze("compare")),
+            ("Compare 3+ columns…", "One-way ANOVA, Kruskal-Wallis or Friedman with multiple comparisons, for three or more columns.", lambda: window.analyze("anova")),
+            ("Outliers…", "Find outliers in each column with ROUT or Grubbs' test. They are shaded here and hollow on graphs; this table is not changed.", lambda: window.analyze("outliers")),
         ):
             button = QPushButton(text)
             button.setToolTip(tip)
@@ -127,6 +130,10 @@ class DataSheetView(QWidget):
         self.grid.itemChanged.connect(self._edited)
         self.grid.installEventFilter(self)
         layout.addWidget(self.grid, 1)
+        self.flagged = QLabel()
+        self.flagged.setWordWrap(True)
+        self.flagged.setStyleSheet(WARNING_STYLE)
+        layout.addWidget(self.flagged)
         self.notes = QLabel()
         self.notes.setWordWrap(True)
         self.notes.setStyleSheet(NOTE_STYLE)
@@ -151,6 +158,18 @@ class DataSheetView(QWidget):
             for row, value in enumerate(column.values):
                 if np.isfinite(value):
                     self.grid.setItem(row, index, QTableWidgetItem(f"{value:.6g}"))
+        flagged = 0
+        for index, column in enumerate(table.columns):
+            mask = self.project.flags(sheet.id).get(column.name)
+            for row in (np.flatnonzero(mask[: column.values.size]) if mask is not None else []):
+                item = self.grid.item(int(row), index)
+                if item is not None:
+                    item.setBackground(QBrush(OUTLIER_BACKGROUND))
+                    item.setToolTip("Flagged as an outlier. The value is still in this table; analyze the cleaned table to leave it out.")
+                    flagged += 1
+        self.flagged.setText(f"{flagged} value{'s' if flagged != 1 else ''} flagged as outliers (shaded). They stay in this table and its analyses; "
+                             "Create cleaned table on the outliers results sheet makes a copy without them." if flagged else "")
+        self.flagged.setVisible(bool(flagged))
         self.paired.blockSignals(True)
         self.paired.setChecked(table.paired)
         self.paired.blockSignals(False)
@@ -198,6 +217,9 @@ class DataSheetView(QWidget):
             self.window.status(str(exc))
             self.fill()
             return
+        if sheet.cleaned_from is not None:
+            sheet.cleaned_from = None
+            sheet.notes = [*sheet.notes, "Edited by hand: no longer follows the table it was cleaned from."]
         if sheet.spec is not None:
             sheet.spec = None
             sheet.images = None

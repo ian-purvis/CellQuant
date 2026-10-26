@@ -30,6 +30,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import graphs, tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
 from cellquant.gui.quantanalysis.project import PSEUDO_WARNING, GraphSheet, Project
@@ -47,7 +48,7 @@ DPI_CHOICES = (300, 600, 1200)
 
 
 def export_figure(data, graph: GraphSheet, result, path: str | Path, kind: str, dpi: int = 300,
-                  width: float | None = None, height: float | None = None, units: str | None = None) -> Path:
+                  width: float | None = None, height: float | None = None, units: str | None = None, outliers=None) -> Path:
     """Draw the graph on a fresh figure at the export size and save it. Returns the path written."""
 
     from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -59,7 +60,7 @@ def export_figure(data, graph: GraphSheet, result, path: str | Path, kind: str, 
             sized.format[key] = value
     figure = Figure()
     FigureCanvasAgg(figure)
-    graphs.draw(figure, data, sized, result)
+    graphs.draw(figure, data, sized, result, outliers)
     path = Path(path)
     options = {"dpi": dpi, "facecolor": "white", "format": kind}
     if kind == "tiff":
@@ -158,7 +159,7 @@ class GraphSheetView(QWidget):
         self.error.currentIndexChanged.connect(lambda _index: self._changed())
         form.addRow("Error bars", self.error)
         self.comparison = QComboBox()
-        self.comparison.setToolTip("The comparison whose P value the bracket shows, and whose difference the estimation plot draws.")
+        self.comparison.setToolTip(tips.GRAPH_COMPARISON)
         self.comparison.currentIndexChanged.connect(lambda _index: self._changed())
         form.addRow("Comparison", self.comparison)
         self.bracket = QComboBox()
@@ -167,6 +168,32 @@ class GraphSheetView(QWidget):
         self.bracket.setToolTip(tips.BRACKET)
         self.bracket.currentIndexChanged.connect(lambda _index: self._changed())
         form.addRow("Bracket", self.bracket)
+        self.bracket_mode = QComboBox()
+        for text, key in (("Brackets", "brackets"), ("Asterisks above columns", "columns")):
+            self.bracket_mode.addItem(text, key)
+        self.bracket_mode.setToolTip(tips.BRACKET_MODE)
+        self.bracket_mode.currentIndexChanged.connect(lambda _index: self._changed())
+        form.addRow("Multiple comparisons", self.bracket_mode)
+        self.hide_ns = QCheckBox("Hide ns")
+        self.hide_ns.setToolTip(tips.HIDE_NS)
+        self.hide_ns.toggled.connect(lambda _on: self._changed())
+        self.letters = QCheckBox("Compact letters")
+        self.letters.setToolTip(tips.LETTERS)
+        self.letters.toggled.connect(lambda _on: self._changed())
+        self.letter_style = QComboBox()
+        for text, key in (("A B C", "upper"), ("a b c", "lower"), ("1 2 3", "numbers")):
+            self.letter_style.addItem(text, key)
+        self.letter_style.setToolTip(tips.LETTER_STYLE)
+        self.letter_style.currentIndexChanged.connect(lambda _index: self._changed())
+        marks = QVBoxLayout()
+        marks.addWidget(self.hide_ns)
+        marks.addWidget(self.letters)
+        marks.addWidget(self.letter_style)
+        form.addRow("", marks)
+        self.ref_colors = QHBoxLayout()
+        ref_title = QLabel("Reference colours")
+        ref_title.setToolTip(tips.REF_COLORS)
+        form.addRow(ref_title, self.ref_colors)
         self.title = QLineEdit()
         self.title.setPlaceholderText("none")
         self.title.setToolTip("A title above the graph. Journals usually put it in the legend instead.")
@@ -194,6 +221,10 @@ class GraphSheetView(QWidget):
         self.log_y.setToolTip(tips.LOG_Y)
         self.log_y.toggled.connect(lambda _on: self._changed())
         form.addRow("Y axis", self.log_y)
+        self.show_outliers = QCheckBox("Outliers hollow")
+        self.show_outliers.setToolTip("Draw the values flagged by Analyze → Identify outliers… as hollow points. The values stay in the table.")
+        self.show_outliers.toggled.connect(lambda _on: self._changed())
+        form.addRow("Outliers", self.show_outliers)
         self.show_n = QCheckBox("n under columns")
         self.show_n.setToolTip(tips.SHOW_N)
         self.show_n.toggled.connect(lambda _on: self._changed())
@@ -255,6 +286,32 @@ class GraphSheetView(QWidget):
             button.clicked.connect(lambda _checked=False, name=name, color=color: self._pick_color(name, color))
             self.colors_box.addWidget(button)
 
+    def _fill_ref_colors(self) -> None:
+        while self.ref_colors.count():
+            item = self.ref_colors.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        colors = {**graphs.DEFAULT_FORMAT, **self.sheet.format}["ref_colors"]
+        for number, label in enumerate(("1st", "2nd")):
+            color = colors[number] if number < len(colors) else graphs.DEFAULT_FORMAT["ref_colors"][number]
+            button = QPushButton(label)
+            button.setToolTip(tips.REF_COLORS)
+            button.setStyleSheet(f"QPushButton {{ text-align: left; border-left: 14px solid {color}; padding-left: 6px; }}")
+            button.clicked.connect(lambda _checked=False, number=number, color=color: self._pick_ref_color(number, color))
+            self.ref_colors.addWidget(button)
+
+    def _pick_ref_color(self, number: int, current: str) -> None:
+        color = QColorDialog.getColor(QColor(current), self, f"Colour of comparisons with the {'first' if number == 0 else 'second'} reference group")
+        if color.isValid():
+            self.set_ref_color(number, color.name())
+
+    def set_ref_color(self, number: int, color: str) -> None:
+        colors = list({**graphs.DEFAULT_FORMAT, **self.sheet.format}["ref_colors"])
+        colors[number] = color
+        self.sheet.format["ref_colors"] = colors
+        self._fill_ref_colors()
+        self.draw()
+
     def _pick_color(self, name: str, current: str) -> None:
         color = QColorDialog.getColor(QColor(current), self, f"Colour of {name}")
         if color.isValid():
@@ -272,10 +329,15 @@ class GraphSheetView(QWidget):
         self.kind.setCurrentIndex(max(0, self.kind.findData(sheet.kind)))
         self.error.setCurrentIndex(max(0, self.error.findData(fmt["error"])))
         self.bracket.setCurrentIndex(max(0, self.bracket.findData(fmt["bracket"])))
+        self.bracket_mode.setCurrentIndex(max(0, self.bracket_mode.findData(fmt["bracket_mode"])))
+        self.hide_ns.setChecked(bool(fmt["hide_ns"]))
+        self.letters.setChecked(bool(fmt["letters"]))
+        self.letter_style.setCurrentIndex(max(0, self.letter_style.findData(fmt["letter_style"])))
+        self.show_outliers.setChecked(bool(fmt["show_outliers"]))
         self.comparison.clear()
         self.comparison.addItem("none", None)
         for result in self.project.results.values():
-            if result.data_id == sheet.data_id and result.kind == "compare":
+            if result.data_id == sheet.data_id and result.kind in ("compare", "anova"):
                 self.comparison.addItem(result.name, result.id)
         self.comparison.setCurrentIndex(max(0, self.comparison.findData(sheet.result_id)))
         self.title.setText(fmt["title"])
@@ -292,6 +354,7 @@ class GraphSheetView(QWidget):
         self.height.setValue(float(fmt["height"]))
         self._filling = False
         self._fill_colors()
+        self._fill_ref_colors()
         self.draw()
 
     def _number(self, widget: QLineEdit):
@@ -316,7 +379,8 @@ class GraphSheetView(QWidget):
             y_title=None if data is not None and y_title == data.table.title else y_title,
             y_min=self._number(self.y_min), y_max=self._number(self.y_max), log_y=self.log_y.isChecked(), show_n=self.show_n.isChecked(),
             dot_size=self.dot_size.value(), font_size=self.font_size.value(), width=self.width.value(), height=self.height.value(),
-            units=self.units.currentData(),
+            units=self.units.currentData(), bracket_mode=self.bracket_mode.currentData(), hide_ns=self.hide_ns.isChecked(),
+            letters=self.letters.isChecked(), letter_style=self.letter_style.currentData(), show_outliers=self.show_outliers.isChecked(),
         )
         sheet.result_id = self.comparison.currentData()
         self.window.sheet_renamed(sheet)
@@ -357,7 +421,7 @@ class GraphSheetView(QWidget):
         dpi = max(60.0, min(200.0, (available.width() - 30) / width, (available.height() - 30) / height)) if available.width() > 100 else 110.0
         self.figure.set_dpi(dpi)
         self.canvas.setFixedSize(int(width * dpi), int(height * dpi))
-        notes = graphs.draw(self.figure, data, self.sheet, self.linked_result())
+        notes = graphs.draw(self.figure, data, self.sheet, self.linked_result(), self.project.flags(data.id))
         self.figure.set_dpi(dpi)
         self.canvas.draw_idle()
         self.notes.setText("\n".join(notes))
@@ -378,8 +442,10 @@ class GraphSheetView(QWidget):
             self.export(dialog.path(), dialog.kind(), dialog.dpi(), *dialog.size())
 
     def export(self, path, kind: str, dpi: int = 300, width=None, height=None, units=None) -> Path:
+        if self.figure is None:
+            raise CellQuantError('Graphs need matplotlib: pip install "cellquant[stats]"')
         data = self.project.data[self.sheet.data_id]
-        written = export_figure(data, self.sheet, self.linked_result(), path, kind, dpi, width, height, units)
+        written = export_figure(data, self.sheet, self.linked_result(), path, kind, dpi, width, height, units, self.project.flags(data.id))
         self.window.status(f"Saved {written}")
         self.window.log(f"graph {self.sheet.name} exported to {written} ({kind}, {dpi} dpi)")
         return written
