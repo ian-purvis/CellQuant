@@ -49,7 +49,7 @@ def test_stats_packages_are_added_only_when_missing(tmp_path: Path):
 
     conda = tmp_path / "conda"
     calls = tmp_path / "calls"
-    conda.write_text(f"#!/usr/bin/env bash\necho \"$@\" >> {calls}\ncase \"$*\" in *find_spec*) exit ${{CHECK:-0}};; esac\n")
+    conda.write_text(f"#!/usr/bin/env bash\necho \"$@\" >> {calls}\ncase \"$*\" in *_deps_check*) exit ${{CHECK:-0}};; esac\n")
     conda.chmod(0o755)
     script = f'. "{UNIX / "common.sh"}"; cq_install_stats_packages "{conda}" /env'
     for check, pip in (("0", False), ("3", True)):
