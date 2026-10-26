@@ -669,6 +669,7 @@ class CellQuantWindow:
         self._managed: set[str] = set()
         self._contrast_hooks: dict[str, object] = {}  # channel layer name -> its contrast callback
         self._ids_image_id: str | None = None  # image whose object numbers the Object IDs layer shows
+        self._channel_defaults: dict[str, object] = {}  # channel layer name -> colormap from the file
         self._mask_colors_set: dict[str, tuple] = {}  # object layer name -> (colors, layer, colormap) last set
         self._nav_ids: list[str] = []
         self._nav_index = 0
@@ -785,6 +786,7 @@ class CellQuantWindow:
         self.viewer.layers.events.inserted.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.removed.connect(lambda _event: self._release_window_later())
         self.viewer.layers.events.inserted.connect(lambda _event: self._view_box.refresh())
+        self.viewer.layers.events.inserted.connect(lambda event: self._view_box.watch_color(event.value))
         self.viewer.layers.events.inserted.connect(lambda event: self._scale_layer(event.value))
         self.viewer.layers.events.removed.connect(lambda _event: self._view_box.refresh())
         self._release_window_later()
@@ -2094,6 +2096,7 @@ class CellQuantWindow:
                 if hook is not None:
                     layer.events.contrast_limits.disconnect(hook)  # the new pixels' contrast is not a choice to remember
             self._refill_channel_layers(layers, loaded, colormaps, self._channels_shown(record.image_id, len(layers), result))
+        self._channel_defaults = {layer.name: colormap for layer, colormap in zip(layers, colormaps, strict=False)}
         for layer, owner in zip(layers, owners, strict=False):
             self._managed.add(layer.name)
             channel = by_index.get(owner) if owner is not None else None
@@ -2402,6 +2405,14 @@ class ViewBox(QWidget):
         )
         self.max_projection.toggled.connect(self._toggled)
         layout.addWidget(self.max_projection)
+        self.reset_color = QPushButton("Reset channel color")
+        self.reset_color.setToolTip(
+            "Select a channel in the layer list, then press this to put its color back to the one saved in the file "
+            "(gray when the file has none). This changes only what you see."
+        )
+        self.reset_color.clicked.connect(self._reset_channel_color)
+        layout.addWidget(self.reset_color)
+        shell.viewer.layers.selection.events.changed.connect(lambda _event: self.refresh())
         self.measure = QPushButton("Measure…")
         self.measure.setToolTip("Open the Measure window: draw lines or shapes on the image to get length, area and volume, and export them to a CSV.")
         self.measure.clicked.connect(lambda: shell.show_measure())
@@ -2415,9 +2426,29 @@ class ViewBox(QWidget):
             if layer.name in names and layer.name not in _OBJECT_LAYERS and hasattr(layer, "contrast_limits")
         ]
 
+    def _selected_channels(self) -> list:
+        selected = self.shell.viewer.layers.selection
+        return [layer for layer in self._image_layers() if layer in selected and layer.name in self.shell._channel_defaults]
+
+    def watch_color(self, layer) -> None:
+        """A color picked in napari's layer controls enables the reset button at once."""
+
+        events = getattr(layer, "events", None)
+        if events is not None and hasattr(events, "colormap"):
+            events.colormap.connect(lambda _event: self.refresh())
+
+    def _reset_channel_color(self) -> None:
+        for layer in self._selected_channels():
+            layer.colormap = self.shell._channel_defaults[layer.name]
+        self.refresh()
+
     def refresh(self) -> None:
         try:
             layers = self._image_layers()
+            self.reset_color.setEnabled(any(
+                getattr(layer.colormap, "name", layer.colormap) != getattr(self.shell._channel_defaults[layer.name], "name", self.shell._channel_defaults[layer.name])
+                for layer in self._selected_channels()
+            ))
             self.max_projection.setEnabled(any(layer.name in self._stacks or layer.data.ndim == 3 for layer in layers))
         except RuntimeError:
             pass  # the window was closed meanwhile
