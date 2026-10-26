@@ -215,6 +215,26 @@ def _initial_contrast(layer) -> None:
     layer.iso_threshold = low + (high - low) / 2
 
 
+def enclosed(labels: np.ndarray, label: int) -> np.ndarray | None:
+    """Pixels enclosed by the pixels numbered ``label``, in each 2D plane; None when it encloses nothing."""
+
+    from scipy import ndimage
+
+    mask = labels == label
+    where = np.nonzero(mask)
+    if not where[0].size:
+        return None
+    inside = np.zeros_like(mask)
+    planes = sorted(set(zip(*where[:-2]))) if labels.ndim > 2 else [()]
+    for plane in planes:
+        drawn = mask[plane]
+        rows, columns = np.nonzero(drawn)
+        box = (slice(rows.min(), rows.max() + 1), slice(columns.min(), columns.max() + 1))
+        holes = ndimage.binary_fill_holes(drawn[box]) & ~drawn[box]
+        inside[plane][box] = holes
+    return inside if inside.any() else None
+
+
 def drawn_polygons(layer) -> list[list[list[float]]]:
     """Closed shapes in a napari Shapes layer as (row, column) polygons. Lines and paths have no area."""
 
@@ -4533,6 +4553,10 @@ class EditPanel(QWidget):
         self._pending: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
         # (image, objects) the Objects layer was last given, before any drawing.
         self._shown: tuple[str, np.ndarray] | None = None
+        # Draw new object: the number being drawn, and closed outlines on the image shown not recorded yet.
+        self._drawing_label: int | None = None
+        self._closed: tuple[str | None, set[int]] = (None, set())
+        self._filling = False
         self.pending_note = QLabel("")
         self.pending_note.setToolTip("Drawing on these images is kept until you record it or close CellQuant.")
         self.pending_note.hide()
@@ -4557,7 +4581,7 @@ class EditPanel(QWidget):
     _MODE_HINT = {
         "home": "Pick a task: delete objects or add new ones.",
         "delete": "Click an object to delete it. <b>Back</b> or Esc to stop.",
-        "add": "<b>Draw new object</b>, paint it, then <b>Record drawn edits</b>.",
+        "add": "<b>Draw new object</b>, then outline each cell: a closed outline is recorded as a new object.",
     }
 
     def _apply_mode(self) -> None:
@@ -4568,7 +4592,7 @@ class EditPanel(QWidget):
                 self._buttons[name].setVisible(name in wanted)
             holder.setVisible(any(name in wanted for name in names))
         self.mask_colors_row.setVisible(everything or self._mode == "home")
-        hint = "Delete: click <b>Delete objects</b>, then click objects. Add: paint and <b>Record drawn edits</b>." if everything else self._MODE_HINT[self._mode]
+        hint = "Delete: click <b>Delete objects</b>, then click objects. Add: outline cells after <b>Draw new object</b>." if everything else self._MODE_HINT[self._mode]
         card = getattr(self.shell, "_step_pages", None)
         card = getattr(card[2], "todo_card", None) if card else None
         if card is not None:
@@ -4645,13 +4669,111 @@ class EditPanel(QWidget):
             self.shell.message("Run step 2 on this image first.")
             return
         layer = self._labels
-        top = int(np.max(layer.data)) if layer.data.size else 0
-        current = controller.recall(self.shell._nav_ids[self.shell._nav_index])
-        if current is not None and current.automated_labels.size:
-            top = max(top, int(np.max(current.automated_labels)))  # numbers of deleted objects stay taken
         self.shell.viewer.layers.selection.active = layer
-        layer.selected_label = top + 1
+        layer.selected_label = self._drawing_label = self._next_label()
         layer.mode = "paint"
+
+    def _next_label(self) -> int:
+        """An object number not used on screen, nor by an object found in step 2 (deleted ones stay taken)."""
+
+        layer = self._labels
+        top = int(np.max(layer.data)) if layer.data.size else 0
+        controller = self.shell.controller
+        image_id = self.shell._labels_image_id
+        current = controller.recall(image_id) if controller is not None and image_id is not None else None
+        if current is not None and current.automated_labels.size:
+            top = max(top, int(np.max(current.automated_labels)))
+        return top + 1
+
+    def _on_paint(self, _event=None) -> None:
+        """After a brush stroke or polygon with the new object's number: check whether it closed an outline."""
+
+        layer = self._labels
+        if self._filling or layer is None or self._drawing_label is None:
+            return
+        label = int(layer.selected_label)
+        if label != self._drawing_label or layer.mode not in ("paint", "polygon"):
+            return
+        polygon = layer.mode == "polygon"
+        # After napari has finished the stroke.
+        QTimer.singleShot(0, lambda: self._close_outline(label, polygon))
+
+    def _close_outline(self, label: int, polygon: bool) -> None:
+        """A closed outline becomes a new object: its inside is filled, it is recorded, and the next one gets a new number."""
+
+        layer = self._labels
+        if layer is None or layer not in self.shell.viewer.layers or label != self._drawing_label:
+            return
+        data = np.asarray(layer.data)
+        inside = enclosed(data, label)
+        if not polygon and inside is None:
+            return  # an open line: drawing this object goes on
+        if inside is not None:
+            inside &= data == 0  # objects inside the outline stay
+        if inside is not None and inside.any():
+            self._filling = True
+            try:
+                layer.data_setitem(np.nonzero(inside), label)
+            finally:
+                self._filling = False
+        image_id = self.shell._labels_image_id
+        owner, closed = self._closed
+        self._closed = (image_id, (closed if owner == image_id else set()) | {label})
+        layer.selected_label = self._drawing_label = self._next_label()
+        self._record_closed()
+
+    def _record_closed(self) -> None:
+        """Record the closed outlines of the image shown. Other painting waits for Record drawn edits."""
+
+        controller = self.shell.controller
+        image_id, closed = self._closed
+        layer = self._labels
+        if controller is None or not closed or image_id is None or layer is None or layer not in self.shell.viewer.layers:
+            return
+        if self.shell.is_busy() or self.shell.image_loading() or self.shell._labels_image_id != image_id:
+            return  # recorded after the current job, or with Record drawn edits
+        current = controller.recall(image_id)
+        data = np.asarray(layer.data)
+        if current is None or current.labels.shape != data.shape:
+            return
+        labels = set(closed)
+        before = current.labels
+        recorded = np.array(before, copy=True)
+        for label in labels:
+            recorded[data == label] = label
+
+        def finish(result) -> None:
+            owner, waiting = self._closed
+            self._closed = (owner, waiting - labels)
+            shell = self.shell
+            still = shell._labels_image_id == image_id and shell._shown_image_id == image_id and not shell.image_loading()
+            if not still or layer not in shell.viewer.layers:
+                # Moved to another image meanwhile: stay there; its kept drawing now sits on the recorded objects.
+                shell._experiment_panel.refresh_status()
+                kept = self._pending.get(self._key(image_id))
+                if kept is not None and kept[0].shape == before.shape and np.array_equal(kept[0], before):
+                    if np.array_equal(kept[1], result.labels):
+                        self._pending.pop(self._key(image_id), None)
+                    else:
+                        self._pending[self._key(image_id)] = (np.array(result.labels, copy=True), kept[1])
+                    self._show_pending()
+                self._say(f"Recorded {len(labels)} new object{'s' if len(labels) != 1 else ''}.")
+                return
+            now = np.array(layer.data, copy=True)
+            self._edited(result)
+            if now.shape == recorded.shape:
+                # Drawing done while recording stays on screen.
+                drawn = now != recorded
+                if drawn.any():
+                    data = np.array(layer.data, copy=True)
+                    data[drawn] = now[drawn]
+                    layer.data = data
+            count = len(labels)
+            self._say(f"Recorded {count} new object{'s' if count != 1 else ''}.")
+            self._record_closed()
+
+        self._say("")
+        self.shell._start_job(lambda: controller.commit_drawn_labels(image_id, recorded), finish)
 
     def _say(self, text: str) -> None:
         self.record_status.setText(text)
@@ -4706,6 +4828,8 @@ class EditPanel(QWidget):
 
     def bind_labels(self, boundaries) -> None:
         self._labels = boundaries
+        self._drawing_label = None
+        boundaries.events.paint.connect(self._on_paint)
         self.clear_selection()
         if not self._click_bound:
             # In delete mode a plain click on an object deletes it, whichever layer is active.
@@ -4811,6 +4935,8 @@ class EditPanel(QWidget):
         """Forget drawing not recorded yet; on screen, the Objects layer goes back to what it was given."""
 
         self._pending.pop(self._key(image_id), None)
+        if self._closed[0] == image_id:
+            self._closed = (None, set())
         shown_id, base = self._shown if self._shown is not None else (None, None)
         if shown_id == image_id and self._labels is not None and self._labels in self.shell.viewer.layers:
             if np.asarray(self._labels.data).shape == base.shape:
@@ -4929,6 +5055,8 @@ class EditPanel(QWidget):
 
         def finish(result) -> None:
             self._pending.pop(self._key(image_id), None)
+            if self._closed[0] == image_id:
+                self._closed = (None, set())
             self._edited(result)
             self._show_pending()
             self._say("Recorded.")
@@ -4971,6 +5099,8 @@ class EditPanel(QWidget):
             recorded, skipped, on_screen = outcome
             for image_id in recorded + skipped:
                 self._pending.pop((analysis, image_id), None)
+            if self._closed[0] in recorded + skipped:
+                self._closed = (None, set())
             self._edited(on_screen)
             self._show_pending()
             text = f"Recorded {len(recorded)} image{'s' if len(recorded) != 1 else ''}."
