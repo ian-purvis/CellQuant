@@ -39,8 +39,17 @@ from qtpy.QtWidgets import (
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import graphs
 from cellquant.gui.quantanalysis.datagrid import DataSheetView
-from cellquant.gui.quantanalysis.dialogs import DEFAULT_OPTIONS, ChooseTestDialog, CompareDialog, ImportCsvDialog, ImportDialog
-from cellquant.gui.quantanalysis.project import COMPARE_TESTS, LOG, DataSheet, GraphSheet, Project, ResultSheet
+from cellquant.gui.quantanalysis.dialogs import (
+    DEFAULT_OPTIONS,
+    AnovaDialog,
+    ChooseTestDialog,
+    CompareDialog,
+    ImportCsvDialog,
+    ImportDialog,
+    OutlierDialog,
+    PStackDialog,
+)
+from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, LOG, OUTLIER_NAMES, DataSheet, GraphSheet, Project, ResultSheet
 from cellquant.gui.quantanalysis.results_view import ResultSheetView
 from cellquant.stats import ColumnTable, sources
 
@@ -217,8 +226,15 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(analyze, "Normality and lognormality tests", lambda: self.analyze("normality"),
                      "D'Agostino-Pearson, Shapiro-Wilk, Anderson-Darling and Kolmogorov-Smirnov, on the values and on their logs.")
         self._action(analyze, "Compare two columns…", lambda: self.analyze("compare"), "t tests and rank tests (Prism's t test dialog).")
+        self._action(analyze, "Compare three or more columns…", lambda: self.analyze("anova"),
+                     "One-way ANOVA, Kruskal-Wallis and Friedman, with multiple comparisons against one or two reference groups or all pairs.")
         analyze.addSeparator()
-        self._action(analyze, "Help me choose…", self.help_choose, "Answer a few questions; the guide recommends a test and fills the Compare dialog.")
+        self._action(analyze, "Identify outliers…", lambda: self.analyze("outliers"),
+                     "ROUT, Grubbs' and iterative Grubbs' tests. Flagged values are shaded in the table and hollow on graphs; the table is not changed.")
+        self._action(analyze, "Analyze a stack of P values…", lambda: self.analyze("pstack"),
+                     "Paste P values and correct them for multiple testing (FDR, Holm-Sidak, Bonferroni).")
+        analyze.addSeparator()
+        self._action(analyze, "Help me choose…", self.help_choose, "Answer a few questions; the guide recommends a test and fills its dialog.")
         graph = bar.addMenu("&Graph")
         for key, (name, tip) in graphs.KINDS.items():
             self._action(graph, name, lambda key=key: self.new_graph(key), tip)
@@ -268,6 +284,8 @@ class QuantAnalysisWindow(QMainWindow):
                 item.setData(0, SHEET_ROLE, sheet.id)
                 if key == "data":
                     item.setToolTip(0, sheet.description or "Double-click to rename.")
+                elif not sheet.data_id:
+                    item.setToolTip(0, "P values pasted into the analysis; no data table.")
                 else:
                     data = self.project.data.get(sheet.data_id)
                     item.setToolTip(0, f"From data table: {data.name if data else '?'}")
@@ -325,7 +343,7 @@ class QuantAnalysisWindow(QMainWindow):
             for index in range(folder.childCount()):
                 child = folder.child(index)
                 other = self.project.sheet(child.data(0, SHEET_ROLE))
-                family = other is not None and data_id is not None and (other.id == data_id or getattr(other, "data_id", None) == data_id)
+                family = other is not None and bool(data_id) and (other.id == data_id or getattr(other, "data_id", None) == data_id)
                 font = child.font(0)
                 font.setUnderline(bool(family))
                 child.setFont(0, font)
@@ -494,12 +512,19 @@ class QuantAnalysisWindow(QMainWindow):
                                                          {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided",
                                                           "ci": 0.95, "alpha": 0.05, "style": "GP"}))
         kind = "superplot" if sheet.units is not None else "scatter"
-        self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {sheet.name}", sheet.id, kind, {"error": "sd"},
-                                          result.id if result else None))
+        graph = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {sheet.name}", sheet.id, kind, {"error": "sd"},
+                                                  result.id if result else None))
         if result is not None:
             self.project.add_graph(GraphSheet(f"Estimation plot: {sheet.name}", sheet.id, "estimation", {"error": "sd"}, result.id))
         if len(sheet.table) > 2:
-            self.status("Three or more groups: Kruskal-Wallis with Dunn's tests is coming in the next update. The SuperPlot is drawn.")
+            reference = sheet.table.names[0]
+            options = {"test": "kruskal_wallis", "comparisons": "control", "method": "dunn", "control": [reference], "family": "per_reference",
+                       "alpha": 0.05, "style": "GP"}
+            result = self.project.add_result(ResultSheet(f"Kruskal-Wallis test: {sheet.name}", sheet.id, "anova", options))
+            graph.result_id = result.id
+            self.project.changed.emit(graph.id)
+            self.status(f"Three or more groups: Kruskal-Wallis with Dunn's tests against {reference}. Change the reference group(s) "
+                        "with Change options….")
 
     # --- Following the open experiment ---------------------------------------------------------------------------
 
@@ -562,6 +587,10 @@ class QuantAnalysisWindow(QMainWindow):
     # --- Analyses and graphs ----------------------------------------------------------------------------------------
 
     def analyze(self, kind: str, options: dict | None = None) -> ResultSheet | None:
+        """Run an analysis on the current data table; ``options`` (from a dialog) skips the dialog, for scripts and tests."""
+
+        if kind == "pstack":
+            return self._add_result(None, "pstack", options, lambda: PStackDialog(self))
         data = self.current_data()
         if data is None:
             self.status("Select a data table first (or import one: File → Open CellQuant results folder…).")
@@ -570,47 +599,80 @@ class QuantAnalysisWindow(QMainWindow):
             if len(data.table) < 2:
                 self.status("Comparing needs at least two columns.")
                 return None
-            if options is None:
-                dialog = CompareDialog(self, data.table)
-                if not dialog.exec():
-                    return None
-                options = dialog.options()
-            name = f"{COMPARE_TESTS[options['test']][0]}: {data.name}"
+            dialog = lambda: CompareDialog(self, data.table)  # noqa: E731
+        elif kind == "anova":
+            if len(data.table) < 3:
+                self.status("Comparing three or more columns needs at least three columns. For two, use Compare two columns….")
+                return None
+            dialog = lambda: AnovaDialog(self, data.table)  # noqa: E731
+        elif kind == "outliers":
+            dialog = lambda: OutlierDialog(self, data.table)  # noqa: E731
         else:
-            name = {"colstats": "Column statistics", "normality": "Normality tests"}[kind] + f": {data.name}"
-            options = options or {}
-        sheet = self.project.add_result(ResultSheet(name, data.id, kind, options))
-        if kind == "compare":
+            dialog = None
+        sheet = self._add_result(data, kind, options, dialog)
+        if sheet is not None and kind in ("compare", "anova"):
             for graph in self.project.graphs.values():
                 if graph.data_id == data.id and graph.result_id is None:
                     graph.result_id = sheet.id
                     self.project.changed.emit(graph.id)
+        return sheet
+
+    def _add_result(self, data: DataSheet | None, kind: str, options: dict | None, dialog: Callable | None) -> ResultSheet | None:
+        if options is None and dialog is not None:
+            box = dialog()
+            if not box.exec():
+                return None
+            options = box.options()
+        name = result_name(kind, options or {}, data)
+        sheet = self.project.add_result(ResultSheet(name, data.id if data is not None else "", kind, options or {}))
         self.select(sheet.id)
         self.log(f"{name}: {'error: ' + sheet.error if sheet.error else 'done'}")
         return sheet
 
     def change_options(self, sheet: ResultSheet, options: dict | None = None) -> None:
         data = self.project.data.get(sheet.data_id)
-        if data is None:
+        if data is None and sheet.kind != "pstack":
             return
         if options is None:
-            dialog = CompareDialog(self, data.table, sheet.options)
-            if not dialog.exec():
+            box = {"compare": lambda: CompareDialog(self, data.table, sheet.options), "anova": lambda: AnovaDialog(self, data.table, sheet.options),
+                   "outliers": lambda: OutlierDialog(self, data.table, sheet.options), "pstack": lambda: PStackDialog(self, sheet.options)}[sheet.kind]()
+            if not box.exec():
                 return
-            options = dialog.options()
+            options = box.options()
         sheet.options = options
-        sheet.name = f"{COMPARE_TESTS[options['test']][0]}: {data.name}"
+        sheet.name = result_name(sheet.kind, options, data)
         self.sheet_renamed(sheet)
         self.project.rerun(sheet)
 
+    def create_cleaned_table(self, sheet: ResultSheet) -> DataSheet | None:
+        """A new data table that follows the original with the flagged outliers blank. The original is not changed."""
+
+        if sheet.result is None or not sheet.result.values.get("n_outliers"):
+            self.status("No outliers were flagged, so a cleaned table would equal the original.")
+            return None
+        cleaned = self.project.add_cleaned(sheet)
+        if cleaned is not None:
+            self.select(cleaned.id)
+            self.log(f"{cleaned.name} created from {sheet.name}: {sheet.result.values['n_outliers']} value(s) blank")
+        return cleaned
+
     def help_choose(self) -> None:
         dialog = ChooseTestDialog(self)
-        if dialog.exec() and dialog.choice():
-            data = self.current_data()
-            if data is None or len(data.table) < 2:
-                self.status("Select a data table with two columns, then run the recommended test.")
-                return
-            compare = CompareDialog(self, data.table, {**DEFAULT_OPTIONS, **dialog.choice()})
+        if not dialog.exec():
+            return
+        choice = dialog.choice()
+        data = self.current_data()
+        many = choice["kind"] == "anova"
+        if data is None or len(data.table) < (3 if many else 2):
+            self.status(f"Select a data table with {'three or more' if many else 'two'} columns, then run the recommended test.")
+            return
+        options = {key: value for key, value in choice.items() if key != "kind"}
+        if many:
+            anova = AnovaDialog(self, data.table, options)
+            if anova.exec():
+                self.analyze("anova", anova.options())
+        else:
+            compare = CompareDialog(self, data.table, {**DEFAULT_OPTIONS, **options})
             if compare.exec():
                 self.analyze("compare", compare.options())
 
@@ -620,7 +682,7 @@ class QuantAnalysisWindow(QMainWindow):
             self.status("Select a data table first.")
             return None
         result = next((item for item in reversed(list(self.project.results.values()))
-                       if item.data_id == data.id and item.kind == "compare"), None)
+                       if item.data_id == data.id and item.kind in ("compare", "anova")), None)
         sheet = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {data.name}", data.id, kind, {},
                                                   result.id if result else None))
         self.select(sheet.id)
@@ -681,6 +743,21 @@ class QuantAnalysisWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._watch.start()
+
+
+def result_name(kind: str, options: dict, data: DataSheet | None) -> str:
+    """The name of a results sheet: the test and its data table."""
+
+    where = f": {data.name}" if data is not None else ""
+    if kind == "compare":
+        return f"{COMPARE_TESTS[options['test']][0]}{where}"
+    if kind == "anova":
+        return f"{ANOVA_NAMES[options['test']][0]}{where}"
+    if kind == "outliers":
+        return f"Outliers ({OUTLIER_NAMES[options.get('method', 'rout')]}){where}"
+    if kind == "pstack":
+        return "Stack of P values"
+    return {"colstats": "Column statistics", "normality": "Normality tests"}[kind] + where
 
 
 def statistics_text() -> str:
