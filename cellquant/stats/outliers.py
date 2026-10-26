@@ -11,15 +11,15 @@ constant, K = 1 parameter):
    function Σ ln(1 + ((x - μ)/RSDR)²), where RSDR, the robust SD of the residuals, is the 68.27th
    percentile of |x - μ| times N/(N - K). RSDR and μ are updated in turn until μ stops changing.
 2. Outlier test. Each residual gives t = |x - μ|/RSDR and a two-tailed P from the t distribution
-   with N - K df. The Benjamini-Hochberg step-up rule is applied at the desired FDR Q (Prism's
+   with N - K df. The Benjamini-Hochberg step-up rule is applied at the desired FDR Q (the
    default Q = 1%): with P sorted ascending, the j most extreme values are outliers for the largest
-   j with P(j) ≤ j·Q/N, with j at most 30% of N (at least 1), as Prism allows up to 30% outliers.
-   Prism fits Y = M, M a robust mean, and needs n ≥ 3; so does this engine.
+   j with P(j) ≤ j·Q/N, with j at most 30% of N (at least 1).
+   The fit is Y = M, M a robust mean, and needs n ≥ 3; so does this engine.
 
-Limits of this implementation: it follows the published description, not Prism's code. The
+Limits of this implementation: it follows the published description, not any particular package's code. The
 percentile uses linear interpolation; the paper's further details (for example how far it iterates
 the robust fit, or whether only the most extreme residuals are tested) may differ, so on borderline
-values the flagged set can differ from Prism's. If more than 68% of the values are identical,
+values the flagged set can differ between packages. If more than 68% of the values are identical,
 RSDR is 0 and nothing is flagged. Only a constant model is fitted (no curve).
 
 Grubbs' test (two-sided): G = max |x - x̄| / s. Its critical value at alpha is
@@ -72,7 +72,7 @@ MAX_OUTLIER_FRACTION = 0.30
 
 
 def max_outliers(n: int) -> int:
-    """Most values ROUT may flag: 30% of n (Prism: "up to 30% of the values can be outliers"),
+    """Most values ROUT may flag: 30% of n ("up to 30% of the values can be outliers"),
     rounded down, but at least 1 so that a column of 3 can still have one."""
 
     return max(1, int(math.floor(MAX_OUTLIER_FRACTION * n + 1e-9)))
@@ -169,8 +169,8 @@ def grubbs_fit(values, alpha: float = 0.05, iterative: bool = False) -> dict:
 
 
 def identify_outliers(table: ColumnTable, method: str = "rout", *, q: float = 0.01, alpha: float = 0.05, columns=None,
-                      style: str = "GP") -> AnalysisResult:
-    """Prism's "Identify outliers" for each column: ``method`` "rout" (FDR ``q``, default 1%),
+                      style: str = "classic") -> AnalysisResult:
+    """Identify outliers for each column: ``method`` "rout" (FDR ``q``, default 1%),
     "grubbs" or "iterative_grubbs" (``alpha``, default 0.05).
 
     ``values["outliers"]`` maps each column to a list of {"row" (1-based), "value"};

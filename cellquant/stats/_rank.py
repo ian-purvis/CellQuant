@@ -1,18 +1,16 @@
 """Rank-test machinery shared by the one-sample, paired and two-sample tests.
 
-Exact P values follow Prism's documented rules, ties included (Prism 6 and later):
+Exact P values follow the usual rules, ties included:
 
 - Wilcoxon signed rank and matched pairs: exact for fewer than 200 values or pairs.
-  https://www.graphpad.com/guides/prism/latest/statistics/how_the_wilcoxon_matched_pairs_test_works.htm
 - Mann-Whitney: exact when the smaller group has at most 100 values.
-  https://www.graphpad.com/guides/prism/latest/statistics/how_the_mann-whitney_test_works.htm
   This engine also needs n_A·n_B ≤ 20 000, which keeps the exact calculation to about 2 seconds
-  (100 × 200). Larger tables use the Gaussian approximation, where Prism would still be exact.
+  (100 × 200). Larger tables use the Gaussian approximation, where an exact P would still be possible.
 
 The exact null distribution conditions on the observed ranks: midranks are doubled so they are
 whole numbers, and the distribution is counted by dynamic programming. Without ties it is the
 classic distribution. Otherwise P comes from the Gaussian approximation with tie correction and,
-as the Prism guide describes it, no continuity correction (``continuity=True`` adds R's 0.5).
+with no continuity correction (``continuity=True`` adds R's 0.5).
 """
 
 from __future__ import annotations
@@ -155,7 +153,7 @@ def _order_ci(sorted_values: np.ndarray, pmf: np.ndarray | None, sd: float, ci: 
     """CI [v(k), v(N+1-k)] from order statistics of the N differences or Walsh averages, which
     has confidence 1 - 2·P(S ≤ k-1) under H0 for the rank statistic S. Only some levels can be
     reached, so k gives the achievable level nearest to ``ci`` (the higher one on a tie), as
-    Sheskin and Klotz describe and Prism reports (for example "96.2% CI"). Without an exact pmf,
+    Sheskin and Klotz describe (for example "96.2% CI"). Without an exact pmf,
     P(S ≤ k-1) comes from the Gaussian approximation with a 0.5 correction."""
 
     count = sorted_values.size
@@ -214,9 +212,8 @@ class SignedRank:
 def signed_rank_test(d: np.ndarray, alternative: str, zero_method: str, exact: bool | None, continuity: bool) -> SignedRank:
     """Wilcoxon signed-rank test of differences ``d`` against 0.
 
-    ``zero_method="exclude"`` drops zero differences (Wilcoxon's method, Prism's original one).
-    ``"pratt"`` ranks them with the others and then leaves their ranks out of both sums (Pratt 1959;
-    an option from Prism 6 on). Exact P comes from the conditional distribution of the observed
+    ``zero_method="exclude"`` drops zero differences (Wilcoxon's method).
+    ``"pratt"`` ranks them with the others and then leaves their ranks out of both sums (Pratt 1959). Exact P comes from the conditional distribution of the observed
     nonzero ranks. The Gaussian approximation's mean and variance are adjusted for ties and, under
     Pratt, for the dropped ranks (Cureton 1967). "greater" means the differences tend to be positive."""
 

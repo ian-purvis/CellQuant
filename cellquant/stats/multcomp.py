@@ -2,7 +2,7 @@
 P value adjustment, FDR q values, compact letter displays and "Analyze a stack of P values".
 
 Every comparison is a difference between two groups, ``group_1 - group_2`` for the row
-"group_1 vs. group_2", as in Prism's tables. For comparisons against a reference (control)
+"group_1 vs. group_2", as in the usual tables. For comparisons against a reference (control)
 group the row is "reference vs. group", so the difference is reference - group.
 
 The engine works on group estimates (means, or mean ranks for Dunn's test) with a covariance
@@ -23,8 +23,8 @@ method             statistic and adjustment                       adjusted P    
 =================  =============================================  ============  ===
 tukey              q = |diff|/SE·√2, studentized range (k, df);   yes           yes
                    Tukey-Kramer when n differ
-newman_keuls       q as Tukey, range of the r means spanned,      no (Prism     no
-                   stepwise                                       gives none)
+newman_keuls       q as Tukey, range of the r means spanned,      no          no
+                   stepwise
 dunnett            t = diff/SE, max |t| of the k-1 comparisons    yes           yes
                    with one control (multivariate t)
 sidak              t, P_adj = 1 - (1-P)^m                         yes           yes
@@ -251,11 +251,11 @@ def adjust_p(pvalues: Iterable[float], method: str, q: float = 0.05) -> dict:
       P_adj(r) = max over s ≤ r of 1 - (1 - P(s))^(m - s + 1) (Holm-Šidák).
     - ``bh`` (Benjamini-Hochberg 1995): q(r) = min over s ≥ r of m·P(s)/s.
     - ``by`` (Benjamini-Yekutieli 2001): the BH q times Σ_{i=1..m} 1/i (valid under any dependence).
-    - ``bky`` (two-stage step-up, Benjamini, Krieger and Yekutieli 2006; Prism's default FDR method):
+    - ``bky`` (two-stage step-up, Benjamini, Krieger and Yekutieli 2006):
       stage 1 is BH at Q' = Q/(1 + Q), giving r₁ discoveries (none if r₁ = 0, all if r₁ = m);
       otherwise N_true = m - r₁ estimates the true nulls and stage 2 is BH at Q'·m/N_true, i.e. the
-      rank-i threshold is i·Q/[(1 + Q)·N_true] (Prism's q/[(1+q)·Ntrue] … [q/(1+q)]·N/Ntrue).
-      The q value is Prism's: the Q at which the comparison sits exactly on the border of being a
+      rank-i threshold is i·Q/[(1 + Q)·N_true] (q/[(1+q)·Ntrue] … [q/(1+q)]·N/Ntrue).
+      The q value is the Q at which the comparison sits exactly on the border of being a
       discovery (N_true changes with Q, so it is found interval by interval; see ``_bky``).
       Discoveries at the chosen Q are those with q ≤ Q.
 
@@ -321,8 +321,8 @@ STACK_METHODS = {**FDR_METHODS, "bonferroni": "Bonferroni-Dunn", "sidak": "Šid�
 
 
 def p_value_stack(pvalues: Iterable[float], method: str = "bky", *, alpha: float = 0.05, labels: Sequence[str] | None = None,
-                  style: str = "GP", title: str = "") -> AnalysisResult:
-    """Prism's "Analyze a stack of P values": FDR q values (``bky``, ``bh``, ``by``; ``alpha`` is
+                  style: str = "classic", title: str = "") -> AnalysisResult:
+    """Analyze a stack of P values: FDR q values (``bky``, ``bh``, ``by``; ``alpha`` is
     the desired FDR, Q) or family-wise adjusted P values (``bonferroni``, ``sidak``, ``holm``,
     ``holm_sidak``) for a pasted list of P values. Blank entries are left out.
     ``values["table"]`` lists each P with its rank, adjusted P or q, and discovery/significance."""
@@ -514,7 +514,7 @@ def _contrast(est: Estimates, i: int, j: int) -> tuple[float, float, float, np.n
     return diff, se, df, vec
 
 
-def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05, ci: float = 0.95, style: str = "GP") -> dict:
+def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05, ci: float = 0.95, style: str = "classic") -> dict:
     """Make the comparisons in ``plan`` from ``est``. Returns ``{"rows": [...], "method": ..., ...}``;
     each row is a dict (see docs/STATISTICS.md, "Multiple comparisons")."""
 
@@ -627,7 +627,7 @@ def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05
 
 
 def comparison_rows(result: AnalysisResult, out: dict, style: str, *, rank: bool = False) -> None:
-    """Add the multiple comparisons to a result as Prism lays them out."""
+    """Add the multiple comparisons to a result as a results sheet lays them out."""
 
     head = result.section(f"Multiple comparisons: {out['name']}")
     alpha, fdr = out["alpha"], out["fdr"]
@@ -680,9 +680,9 @@ def compact_letter_display(comparisons, groups: Sequence[str] | None = None, *, 
     ``comparisons`` is a result with ``values["comparisons"]``, or a list of rows with
     ``group_1``, ``group_2`` and ``significant``. With ``alpha``, significance is recomputed as
     adjusted P < alpha (q ≤ alpha for FDR rows). Pairs that were not compared count as not
-    different. ``style``: "upper" (A, B, C; Prism's default), "lower" (a, b, c) or "numbers"
+    different. ``style``: "upper" (A, B, C; the default), "lower" (a, b, c) or "numbers"
     (1, 2, 3, joined with commas). Letters are given in order of the groups (``groups``, or first
-    appearance); Prism does not document its ordering rule."""
+    appearance); the ordering rule is this engine's choice."""
 
     if style not in LETTER_STYLES:
         raise StatisticsError(f"style must be one of {', '.join(LETTER_STYLES)}.")

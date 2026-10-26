@@ -374,7 +374,7 @@ def test_legend_annotations_and_brackets(window):
 def test_significance_bracket_format(window):
     data = _data(window)
     result = window.analyze("compare", {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided", "ci": 0.95, "alpha": 0.05,
-                                        "style": "GP"})
+                                        "style": "classic"})
     graph, view = _graph(window)
     graph.result_id = result.id
     graph.format.update(bracket_width=2.2, star_size=14)
@@ -395,7 +395,7 @@ def test_significance_bracket_format(window):
 def test_same_reference_colours_dash_the_second(window):
     _data(window)
     result = window.analyze("anova", {"test": "kruskal_wallis", "comparisons": "control", "method": "dunn", "control": [NAMES[0], NAMES[1]],
-                                      "family": "per_reference", "alpha": 0.05, "ci": 0.95, "style": "GP", "geisser_greenhouse": True})
+                                      "family": "per_reference", "alpha": 0.05, "ci": 0.95, "style": "classic", "geisser_greenhouse": True})
     graph, view = _graph(window)
     graph.result_id = result.id
     graph.format.update(ref_colors=["#000000", "#000000"])

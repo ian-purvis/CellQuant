@@ -89,7 +89,7 @@ New engine modules introduced by this revision:
 - Cellpose and PyTorch as the learned segmentation engine (§9.3), in two interchangeable versions installed as separate environments: Cellpose-SAM (Cellpose ≥ 4.2) and classic Cellpose (3.1.x). Decided 2026-09-28 (§23.1).
 - pytest
 
-Remove Parquet export (it silently does nothing today because `pyarrow` is not a dependency). CSV is sufficient for Excel, Prism, R and Python. Parquet can return post-MVP.
+Remove Parquet export (it silently does nothing today because `pyarrow` is not a dependency). CSV is sufficient for spreadsheets, R and Python. Parquet can return post-MVP.
 
 Dask/Zarr lazy loading is **post-MVP**. For the MVP, images are loaded eagerly one at a time, and the resource preflight (§10) prevents loading something that will not fit in memory.
 
@@ -173,7 +173,7 @@ LoadedImage
 | Situation | Behavior |
 |---|---|
 | X, Y and Z calibrated in file | Use; show "µm (from file)". |
-| Some axis unknown | Block any analysis that needs physical units. Show a prompt: "This image doesn't say how big its pixels are. Enter X/Y pixel size and Z step (µm). In NIS-Elements, this is in the image's calibration settings." Values entered become `calibration = "user"` for that axis and can be applied to all images with the same dimensions. |
+| Some axis unknown | Block any analysis that needs physical units. Show a prompt: "This image doesn't say how big its pixels are. Enter X/Y pixel size and Z step (µm). Look in the microscope software's image calibration settings." Values entered become `calibration = "user"` for that axis and can be applied to all images with the same dimensions. |
 | User chooses to continue uncalibrated | Allowed for 2D modes only; all outputs are in pixels, and every table column and the results header say "px". 3D volume mode requires Z spacing and is refused without it (anisotropy is undefined). |
 | X ≠ Y spacing | Supported (anisotropic sampling), not rejected as it is today. |
 

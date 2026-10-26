@@ -20,7 +20,7 @@ Your original images are never changed or written to.
 ### Two kinds of folders
 
 - **The results folder** is the one you picked in step 1. CellQuant saves its work there automatically.
-- **An export folder** is the one you pick in step 6 (**Export results**). It holds tidy copies for Excel, Prism, or R. The results folder's own `exports/` folder is created empty; nothing is written into it unless you choose it.
+- **An export folder** is the one you pick in step 6 (**Export results**). It holds tidy copies for spreadsheets or R. The results folder's own `exports/` folder is created empty; nothing is written into it unless you choose it.
 
 ### How the numbers are made
 
@@ -1661,7 +1661,7 @@ These keys are only present if a count area is drawn.
 
 ## Export folder
 
-**Export results** in step 6 writes tidy copies of the results into a folder you choose, ready for Excel, Prism or R. Nothing in it is used by CellQuant to reopen your work; the results folder is for that. Here is what it writes:
+**Export results** in step 6 writes tidy copies of the results into a folder you choose, ready for a spreadsheet or R. Nothing in it is used by CellQuant to reopen your work; the results folder is for that. Here is what it writes:
 
 | File | What it is |
 |---|---|

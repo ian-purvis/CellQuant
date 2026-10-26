@@ -291,7 +291,7 @@ class ImportCsvDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"{len(frame)} rows, {len(frame.columns)} columns."))
         self.shape = QButtonGroup(self)
-        _radio(self.shape, layout, "Wide: each column is a group", "wide", "Every numeric column becomes a column of the table, as in Prism.")
+        _radio(self.shape, layout, "Wide: each column is a group", "wide", "Every numeric column becomes a column of the table.")
         _radio(self.shape, layout, "Long: one row per value, with a group column", "long",
                "One column holds the values and another names each row's group, as in objects.csv.")
         form = QFormLayout()
@@ -336,11 +336,11 @@ TEST_TIPS = {
     "kolmogorov_smirnov": tips.KS, "paired_t": "Paired t test: is the mean of the within-replicate differences zero?",
     "ratio_paired_t": tips.RATIO, "wilcoxon": tips.WILCOXON,
 }
-DEFAULT_OPTIONS = {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided", "ci": 0.95, "alpha": 0.05, "style": "GP"}
+DEFAULT_OPTIONS = {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided", "ci": 0.95, "alpha": 0.05, "style": "classic"}
 
 
 class CompareDialog(QDialog):
-    """Prism's t test dialog: columns, design, distribution, test, tails and P value options."""
+    """The t test dialog: columns, design, distribution, test, tails and P value options."""
 
     def __init__(self, parent, table: ColumnTable, options: dict | None = None):
         super().__init__(parent)
@@ -495,7 +495,7 @@ class CompareDialog(QDialog):
 ANOVA_TIPS = {"ordinary": tips.ANOVA_ORDINARY, "welch": tips.ANOVA_WELCH, "repeated_measures": tips.ANOVA_RM,
               "kruskal_wallis": tips.KRUSKAL, "friedman": tips.FRIEDMAN}
 ANOVA_DEFAULTS = {"test": "ordinary", "geisser_greenhouse": True, "comparisons": "all", "method": None, "control": [], "pairs": [],
-                  "family": "per_reference", "alpha": 0.05, "ci": 0.95, "style": "GP"}
+                  "family": "per_reference", "alpha": 0.05, "ci": 0.95, "style": "classic"}
 GOALS = (("none", "None: only the overall test"), ("all", "Every pair of groups"), ("control", "Each group vs one or two reference groups"),
          ("selected", "Selected pairs"), ("trend", "Test for a linear trend across the columns"))
 
@@ -511,7 +511,7 @@ def methods_for(test: str, goal: str, combined: bool = False) -> list[str]:
 
 
 class AnovaDialog(QDialog):
-    """Prism's one-way ANOVA dialog: design, Gaussian or not, the test, multiple comparisons (with one or two
+    """The one-way ANOVA dialog: design, Gaussian or not, the test, multiple comparisons (with one or two
     reference groups), alpha, CI level and P value style."""
 
     def __init__(self, parent, table: ColumnTable, options: dict | None = None):
@@ -761,11 +761,11 @@ class AnovaDialog(QDialog):
 # --- Identify outliers ----------------------------------------------------------------------------------------
 
 OUTLIER_TIPS = {"rout": tips.ROUT, "grubbs": tips.GRUBBS, "iterative_grubbs": tips.ITERATIVE_GRUBBS}
-OUTLIER_DEFAULTS = {"method": "rout", "q": 0.01, "alpha": 0.05, "columns": None, "style": "GP"}
+OUTLIER_DEFAULTS = {"method": "rout", "q": 0.01, "alpha": 0.05, "columns": None, "style": "classic"}
 
 
 class OutlierDialog(QDialog):
-    """Prism's Identify outliers: ROUT (Q), Grubbs' or iterative Grubbs' (alpha), for each ticked column."""
+    """Identify outliers: ROUT (Q), Grubbs' or iterative Grubbs' (alpha), for each ticked column."""
 
     def __init__(self, parent, table: ColumnTable, options: dict | None = None):
         super().__init__(parent)
@@ -848,11 +848,11 @@ class OutlierDialog(QDialog):
 
 # --- Analyze a stack of P values ------------------------------------------------------------------------------
 
-PSTACK_DEFAULTS = {"text": "", "method": "bky", "alpha": 0.05, "style": "GP"}
+PSTACK_DEFAULTS = {"text": "", "method": "bky", "alpha": 0.05, "style": "classic"}
 
 
 class PStackDialog(QDialog):
-    """Prism's "Analyze a stack of P values": paste P values, correct them for multiple testing."""
+    """Analyze a stack of P values: paste P values, correct them for multiple testing."""
 
     def __init__(self, parent, options: dict | None = None):
         super().__init__(parent)
@@ -927,7 +927,7 @@ GUIDE_CSS = "<style>p { margin: 4px 0; } .muted { color: #9aa3ad; } h3 { margin:
 
 
 class ChooseTestDialog(QDialog):
-    """Prism's questions, a recommended test with its reason and a worked example, and the image-data preset.
+    """A few questions, a recommended test with its reason and a worked example, and the image-data preset.
     Two groups fill Compare two columns; three or more fill Compare three or more columns."""
 
     def __init__(self, parent, paired: bool = False, groups: int = 2):

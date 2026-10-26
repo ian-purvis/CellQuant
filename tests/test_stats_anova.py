@@ -233,7 +233,7 @@ def test_repeated_measures_with_two_columns_is_the_paired_t_test():
     assert rm["epsilon"] == 1.0
     assert rm["f"] == pytest.approx(t["t"] ** 2) and rm["p"] == pytest.approx(t["p"])
     assert rm["r_squared"] == pytest.approx(t["r_squared"])
-    # Prism's two R² values: treatment SS_trt/(SS_trt + SS_resid), matching SS_subjects/SS_total.
+    # The two R² values: treatment SS_trt/(SS_trt + SS_resid), matching SS_subjects/SS_total.
     assert rm["r_squared"] == pytest.approx(rm["ss_treatment"] / (rm["ss_treatment"] + rm["ss_residual"]))
     assert rm["r_squared_matching"] == pytest.approx(rm["ss_subjects"] / rm["ss_total"])
 
@@ -325,7 +325,7 @@ def test_mixed_model_with_blanks_matches_a_direct_reml_fit():
     assert v["dfd"] == dfd and v["f"] == pytest.approx(f, rel=1e-3) and v["p"] == pytest.approx(stats.f.sf(f, k - 1, dfd), rel=1e-2)
     assert v["n_values"] == y.size and result.row("Data summary", "Number of missing values").value == 3
     assert [r["reference"] for r in v["comparisons"]] == ["T1"] * 3
-    assert any("Prism" in w for w in result.warnings)
+    assert any("Mixed-effects model" in w for w in result.warnings)
     # Geisser-Greenhouse (the default): epsilon from pairwise-complete column covariances scales both df.
     import pandas as pd
     S = pd.DataFrame(Y).cov(min_periods=2).to_numpy()
@@ -428,7 +428,7 @@ def test_exact_friedman_matches_brute_force_permutation(Y):
     assert result.values["exact"] and result.values["p"] == pytest.approx(_brute_friedman(Y), abs=1e-12)
 
 
-def test_friedman_exact_cutoff_is_prisms():
+def test_friedman_exact_cutoff_is_k_factorial_to_the_n():
     # Exact unless (k!)^n > 10⁹: 3 treatments are exact up to 11 subjects (6^11 ≈ 3.6e8), not at 12 (2.2e9).
     rng = np.random.default_rng(0)
     for n, exact in ((11, True), (12, False)):

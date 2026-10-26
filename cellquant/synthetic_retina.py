@@ -54,7 +54,7 @@ from scipy import ndimage
 PIXEL_SIZE_UM = 0.5754449716687396  # 20x, as in the lab's ND2 files
 Z_STEP_UM = 1.5
 CHANNEL_NAMES = ("Green", "Red", "Far Red")
-# Display colors of the three channels in NIS-Elements (RGB, 0-255).
+# Display colors of the three channels in the microscope software (RGB, 0-255).
 CHANNEL_COLORS = ((54, 255, 0), (255, 0, 0), (255, 0, 255))
 # Camera offset per channel (the darkest values in the real files).
 OFFSETS = (27.0, 80.0, 51.0)

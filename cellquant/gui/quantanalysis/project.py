@@ -1,6 +1,6 @@
 """The QuantAnalysis project: data tables, the results computed from them, and graphs.
 
-Like a Prism project, every result and graph is linked to one data table. Editing the table (or a
+Every result and graph is linked to one data table. Editing the table (or a
 fresh import of the experiment it came from) recomputes its results and redraws its graphs. No Qt
 widgets here; the window listens to ``Project.changed``.
 """
@@ -220,7 +220,7 @@ class Project(QObject):
                 [item for item in self.graphs.values() if item.data_id == data_id])
 
     def data_changed(self, data_id: str) -> None:
-        """The table changed: recompute its results, redraw its graphs (Prism's live links)."""
+        """The table changed: recompute its results, redraw its graphs (live links)."""
 
         results, graphs = self.linked(data_id)
         for result in results:
@@ -347,7 +347,7 @@ def _as_list(value) -> list:
 def run_outliers(data: DataSheet, options: dict) -> AnalysisResult:
     columns = [name for name in options.get("columns") or data.table.names if name in data.table.names]
     return identify_outliers(data.table, options.get("method", "rout"), q=options.get("q", 0.01), alpha=options.get("alpha", 0.05),
-                             columns=columns, style=options.get("style", "GP"))
+                             columns=columns, style=options.get("style", "classic"))
 
 
 def parse_p_values(text: str) -> tuple[list[float], list[str]]:
@@ -376,7 +376,7 @@ def run_pstack(options: dict) -> AnalysisResult:
         raise CellQuantError("Paste at least one P value.")
     if not all(0 <= value <= 1 for value in values):
         raise CellQuantError("A P value must be between 0 and 1.")
-    return p_value_stack(values, options.get("method", "bky"), alpha=options.get("alpha", 0.05), labels=labels, style=options.get("style", "GP"))
+    return p_value_stack(values, options.get("method", "bky"), alpha=options.get("alpha", 0.05), labels=labels, style=options.get("style", "classic"))
 
 
 def smallest_p(test: str, n_a: int, n_b: int) -> float:
@@ -432,7 +432,7 @@ def statsmodels_available() -> bool:
 
 def run_normality(data: DataSheet, options: dict) -> tuple[pd.DataFrame, list[str], str]:
     alpha = options.get("alpha", 0.05)
-    style = options.get("style", "GP")
+    style = options.get("style", "classic")
     tests = list(NORMALITY_TESTS)
     warnings = []
     if not statsmodels_available():

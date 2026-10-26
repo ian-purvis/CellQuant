@@ -51,8 +51,8 @@ def test_a_long_table_becomes_one_column_per_group_and_lines_up_subjects_when_pa
         (0.00010001, "***"), (0.0001, "****"), (0.0, "****"),
     ],
 )
-def test_gp_style_stars_use_less_or_equal_on_the_unrounded_p(p, stars):
-    assert p_summary(p, "GP") == stars
+def test_classic_style_stars_use_less_or_equal_on_the_unrounded_p(p, stars):
+    assert p_summary(p, "classic") == stars
 
 
 @pytest.mark.parametrize(
@@ -78,7 +78,7 @@ def test_p_values_are_written_with_the_styles_digits_and_a_less_than_floor():
     assert format_p(np.nan) == "" and p_summary(np.nan) == ""
     assert p_text(0.00001) == "P < 0.0001" and p_text(0.0123) == "P = 0.0123" and p_text(0.2, "APA") == "p = .200"
     with pytest.raises(ValueError, match="Unknown P value style"):
-        p_summary(0.1, "older")  # Prism's older scheme is the GP scheme
+        p_summary(0.1, "older")  # unknown style names are rejected
     assert format_p(0.05000001) == "0.0500" and p_summary(0.05000001) == "ns"  # stars use the unrounded P
 
 
@@ -95,3 +95,8 @@ def test_a_result_lists_its_sections_rows_warnings_and_methods_for_export():
     for key in ("difference", "ci_low", "ci_high", "p", "t", "df"):
         assert key in result.values
     frame.to_csv(index=False)  # exportable as is
+
+
+def test_the_old_gp_style_key_is_still_read_as_classic():
+    assert p_summary(0.004, "GP") == p_summary(0.004, "classic") == "**"
+    assert format_p(0.00001, style="GP") == "<0.0001"

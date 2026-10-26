@@ -623,7 +623,7 @@ def _star_kw(fmt: GraphFormat, font: float, color: str) -> dict:
 
 def _bracket(ax, a: int, b: int, result, fmt: GraphFormat, log: bool, font: float) -> None:
     p = result.values.get("p")
-    style = result.options.get("style", "GP")
+    style = result.options.get("style", "classic")
     label = p_summary(p, style) if fmt.bracket == "stars" else p_text(p, style)
     if not label:
         return
@@ -808,7 +808,7 @@ def _multiple_marks(ax, result, table, positions: dict, columns, fmt: GraphForma
         if "comparison_method" not in result.values:
             notes.append("This ANOVA has no multiple comparisons to show. Choose some with Change options… on its results sheet.")
         return
-    style = result.options.get("style", "GP")
+    style = result.options.get("style", "classic")
     tops = _column_tops(ax, columns, fmt, log)
     if not tops:
         return

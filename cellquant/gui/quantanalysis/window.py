@@ -191,7 +191,7 @@ class QuantAnalysisWindow(QMainWindow):
         title = QLabel("<h2>QuantAnalysis</h2>")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
-        text = QLabel("Analyse and graph CellQuant results the way GraphPad Prism does: a data table with one column per group, "
+        text = QLabel("Analyse and graph CellQuant results the standard column-table way: a data table with one column per group, "
                       "then statistics and graphs that follow it.")
         text.setWordWrap(True)
         text.setAlignment(Qt.AlignCenter)
@@ -225,7 +225,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(analyze, "Column statistics", lambda: self.analyze("colstats"), "n, mean, SD, SEM, CI, median and percentiles of every column.")
         self._action(analyze, "Normality and lognormality tests", lambda: self.analyze("normality"),
                      "D'Agostino-Pearson, Shapiro-Wilk, Anderson-Darling and Kolmogorov-Smirnov, on the values and on their logs.")
-        self._action(analyze, "Compare two columns…", lambda: self.analyze("compare"), "t tests and rank tests (Prism's t test dialog).")
+        self._action(analyze, "Compare two columns…", lambda: self.analyze("compare"), "t tests and rank tests (the t test dialog).")
         self._action(analyze, "Compare three or more columns…", lambda: self.analyze("anova"),
                      "One-way ANOVA, Kruskal-Wallis and Friedman, with multiple comparisons against one or two reference groups or all pairs.")
         analyze.addSeparator()
@@ -519,7 +519,7 @@ class QuantAnalysisWindow(QMainWindow):
         if len(sheet.table) == 2:
             result = self.project.add_result(ResultSheet(f"Welch's t test: {sheet.name}", sheet.id, "compare",
                                                          {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided",
-                                                          "ci": 0.95, "alpha": 0.05, "style": "GP"}))
+                                                          "ci": 0.95, "alpha": 0.05, "style": "classic"}))
         kind = "superplot" if sheet.units is not None else "scatter"
         graph = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {sheet.name}", sheet.id, kind, {"error": "sd"},
                                                   result.id if result else None))
@@ -528,7 +528,7 @@ class QuantAnalysisWindow(QMainWindow):
         if len(sheet.table) > 2:
             reference = sheet.table.names[0]
             options = {"test": "kruskal_wallis", "comparisons": "control", "method": "dunn", "control": [reference], "family": "per_reference",
-                       "alpha": 0.05, "style": "GP"}
+                       "alpha": 0.05, "style": "classic"}
             result = self.project.add_result(ResultSheet(f"Kruskal-Wallis test: {sheet.name}", sheet.id, "anova", options))
             graph.result_id = result.id
             self.project.changed.emit(graph.id)
