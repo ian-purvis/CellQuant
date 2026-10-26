@@ -67,7 +67,7 @@ def tails_text(alternative: str, names: tuple[str, str] | None = None) -> str:
 
 
 def p_rows(section: Section, p: float, alpha: float, style: str, alternative: str | None = None, names: tuple[str, str] | None = None, label: str = "Significantly different") -> None:
-    """P value, P value summary, significant yes/no and (when given) the tails, as Prism lists them."""
+    """P value, P value summary, significant yes/no and (when given) the tails, as results sheets usually list them."""
 
     section.add("P value", p, format_p(p, style=style))
     section.add("P value summary", p_summary(p, style), p_summary(p, style))
