@@ -217,7 +217,7 @@ BUTTON_HELP = {
     "Restore selected": "Bring back the selected objects that were deleted. Undo takes them away again.",
     "Clear selection": "Unselect every object.",
     "Add new objects": "Show the buttons for drawing new objects.",
-    "Draw new object": "Select the Objects layer with an unused number and napari's brush. Paint the object, then Record drawn edits. Click again for the next one.",
+    "Draw new object": "Select the Objects layer with an unused number and napari's brush. Outline a cell: when the outline closes, its inside is filled, it is recorded as a new object, and the next cell gets a new number.",
     "Back": "Return to the task choice.",
     "Draw area": "Outline objects to delete in the Delete area layer: click the corners, double-click to finish. Several areas are fine.",
     "Keep only": "Delete every object that does not touch the drawn area (use Draw area first); objects crossing its edge stay. Undo brings them all back.",

@@ -134,6 +134,61 @@ def test_step3_modes_and_draw_new_object(tmp_path: Path, open_window):  # noqa: 
     assert "Back" not in shown() and len(shown()) == len(panel._buttons) - 1
 
 
+def _ring(shape, top: int, left: int, size: int = 8):
+    """Pixel indices of a closed square outline, one pixel wide."""
+
+    mask = np.zeros(shape, dtype=bool)
+    mask[top : top + size, left : left + size] = True
+    mask[top + 1 : top + size - 1, left + 1 : left + size - 1] = False
+    return np.nonzero(mask)
+
+
+def test_each_closed_outline_is_recorded_as_a_new_object(tmp_path: Path, open_window):  # noqa: F811
+    from cellquant.controller import AnalysisController
+
+    image = tmp_path / "a.tif"
+    _write_squares(image)
+    controller = AnalysisController.create(tmp_path / "experiment", "Outlines")
+    controller.add_image_paths([image])
+    controller.set_recipe(_recipe())
+    controller.save()
+    shell = open_window(controller.directory)
+    shell.run_current()
+    assert _wait(shell, 120)
+    image_id = shell.controller.experiment.images[0].image_id
+    panel = shell._edit_panel
+    found = shell.controller.last_results[image_id]
+    top = int(found.automated_labels.max())
+    objects = len(found.objects)
+
+    panel._buttons["Add new objects"].click()
+    panel._buttons["Draw new object"].click()
+    layer = shell.viewer.layers["Objects"]
+    assert layer.selected_label == top + 1
+    free = np.asarray(layer.data) == 0
+    corners = [(y, x) for y in range(0, free.shape[0] - 8, 9) for x in range(0, free.shape[1] - 8, 9) if free[y : y + 8, x : x + 8].all()]
+    assert len(corners) >= 2
+
+    # An open line is not an object yet: the number stays.
+    layer.data_setitem((np.full(4, corners[0][0]), np.arange(corners[0][1], corners[0][1] + 4)), top + 1)
+    _events(0.2)
+    assert layer.selected_label == top + 1 and not shell.is_busy()
+
+    for number, (y, x) in enumerate(corners[:2], start=top + 1):
+        assert layer.selected_label == number
+        layer.data_setitem(_ring(free.shape, y, x), number)
+        _events(0.2)
+        assert _wait(shell)
+        _events(0.2)
+        result = shell.controller.last_results[image_id]
+        assert (np.asarray(result.labels) == number).sum() == 64  # outline and filled inside
+        assert layer.selected_label == number + 1
+
+    result = shell.controller.last_results[image_id]
+    assert len(result.objects) == objects + 2
+    assert {top + 1, top + 2} <= set(np.unique(result.labels).tolist())
+
+
 def test_keep_only_deletes_what_does_not_touch_the_area(tmp_path: Path, open_window):  # noqa: F811
     from cellquant.controller import AnalysisController
     from cellquant.gui.app import DELETE_AREA_LAYER
