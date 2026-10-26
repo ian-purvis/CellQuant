@@ -28,7 +28,7 @@ from scipy import special, stats
 
 from cellquant.errors import StatisticsError
 from cellquant.stats._common import check_options, finite, p_rows, pairs, t_critical, t_p, tails_text
-from cellquant.stats._rank import EXACT_LIMIT, exact_p, hodges_lehmann_two_sample, normal_p, rank_sum_pmf, tie_sum
+from cellquant.stats._rank import hodges_lehmann_two_sample, normal_p, rank_sum_exact_allowed, rank_sum_exact_p, tie_sum
 from cellquant.stats.descriptive import signed_rank_rows
 from cellquant.stats.pvalues import format_p, p_summary
 from cellquant.stats.results import AnalysisResult, Row, Section, fmt, fmt_ci
@@ -120,7 +120,8 @@ def _check_unpaired(a: np.ndarray, b: np.ndarray, welch: bool, what: str) -> Non
 
 
 def _variance_f_test(result: AnalysisResult, a: np.ndarray, b: np.ndarray, alpha: float, style: str, names: tuple[str, str]) -> None:
-    """F = larger variance / smaller variance; two-tailed P = 2·P(F' > F), at most 1."""
+    """F = larger variance / smaller variance (always ≥ 1, as Prism); two-tailed P = 2·P(F' > F), at most 1.
+    https://www.graphpad.com/guides/prism/latest/statistics/how_the_unpaired_t_test_works2.htm"""
 
     section = result.section("F test to compare variances")
     if a.size < 2 or b.size < 2:
@@ -354,15 +355,17 @@ def ratio_paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: st
 
 
 def mann_whitney(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95, alpha: float = 0.05,
-                 style: str = "GP", exact: bool | None = None, continuity: bool = True, table_title: str = "") -> AnalysisResult:
+                 style: str = "GP", exact: bool | None = None, continuity: bool = False, table_title: str = "") -> AnalysisResult:
     """Mann-Whitney U test (Wilcoxon rank-sum).
 
     All values are ranked together (ties get the average rank). U_B = R_B - n_B(n_B+1)/2 counts
     pairs with the B value larger (a tie counts 1/2); U_A = n_A·n_B - U_B; the reported U is the
-    smaller. P is exact (from the null distribution of U) when there are no ties and each column
-    has fewer than 50 values, otherwise from the normal approximation with
-    σ² = n_A n_B/12 · ((N+1) - Σ(t³-t)/(N(N-1))) and a 0.5 continuity correction (as R).
-    The Hodges-Lehmann difference is the median of all B_j - A_i, with a distribution-free CI."""
+    smaller. P is exact, ties included, when the smaller column has at most 100 values (Prism's
+    rule) and n_A·n_B ≤ 20 000 (this engine's limit on run time); otherwise it comes from the
+    Gaussian approximation with σ² = n_A n_B/12 · ((N+1) - Σ(t³-t)/(N(N-1))) and no continuity
+    correction (``continuity=True`` adds R's 0.5). The Hodges-Lehmann difference is the median of
+    all B_j - A_i; its CI is at the achievable level nearest to ``ci``, which is reported.
+    https://www.graphpad.com/guides/prism/latest/statistics/how_the_mann-whitney_test_works.htm"""
 
     alternative = check_options(alternative, ci, alpha)
     a, dropped_a = finite(a)
@@ -376,13 +379,11 @@ def mann_whitney(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str 
     rank_a, rank_b = float(ranks[:m].sum()), float(ranks[m:].sum())
     u_b = rank_b - n * (n + 1) / 2.0
     u_a = m * n - u_b
-    ties = np.unique(pooled).size < pooled.size
-    can_exact = not ties
-    use_exact = (can_exact and m < EXACT_LIMIT and n < EXACT_LIMIT) if exact is None else (bool(exact) and can_exact)
-    if exact and not can_exact:
-        result.warnings.append("An exact P value was asked for, but there are ties; the normal approximation was used.")
+    use_exact = rank_sum_exact_allowed(m, n) if exact is None else bool(exact)
+    min_p = np.nan
     if use_exact:
-        p, z = exact_p(rank_sum_pmf(m, n), u_b, alternative), np.nan
+        (p, min_p), z = rank_sum_exact_p(a, b, u_b, alternative), np.nan
+        _minimum_p_warning(result, min_p, alpha, style, f"{m} and {n} values")
     else:
         big = m + n
         sd = np.sqrt(m * n / 12.0 * ((big + 1) - tie_sum(pooled) / (big * (big - 1))))
@@ -392,7 +393,7 @@ def mann_whitney(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str 
     shift = hodges_lehmann_two_sample(a, b, ci, exact=use_exact)
     section = result.section("Mann Whitney test")
     p_rows(section, p, alpha, style, alternative, names)
-    section.add("Exact or approximate P value?", use_exact, "Exact" if use_exact else "Approximate (normal, tie-corrected)")
+    section.add("Exact or approximate P value?", use_exact, "Exact" if use_exact else "Approximate (Gaussian, tie-corrected)")
     section.add(f"Sum of ranks in {names[0]}, {names[1]}", (rank_a, rank_b), f"{fmt(rank_a)} , {fmt(rank_b)}")
     section.add("Mann-Whitney U", min(u_a, u_b))
     size = result.section("Difference between medians")
@@ -405,14 +406,20 @@ def mann_whitney(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str 
     data = result.section("Data analyzed")
     data.add(f"Sample size, {names[0]}", m)
     data.add(f"Sample size, {names[1]}", n)
-    if shift.confidence < ci - 1e-9:
-        result.warnings.append(f"Too few values for a {100 * ci:g}% CI; the widest possible interval ({100 * shift.confidence:.2f}%) is shown.")
-    result.values.update(n_a=m, n_b=n, rank_sum_a=rank_a, rank_sum_b=rank_b, u=min(u_a, u_b), u_a=u_a, u_b=u_b, p=p, z=z, exact=use_exact,
+    if abs(shift.confidence - ci) > 0.005:
+        result.warnings.append(f"The nearest confidence level these values allow is {100 * shift.confidence:.2f}%, not {100 * ci:g}%.")
+    result.values.update(n_a=m, n_b=n, rank_sum_a=rank_a, rank_sum_b=rank_b, u=min(u_a, u_b), u_a=u_a, u_b=u_b, p=p, min_p=min_p, z=z, exact=use_exact,
                          median_a=median_a, median_b=median_b, difference=median_b - median_a, hodges_lehmann=shift.estimate,
                          ci_low=shift.low, ci_high=shift.high, ci_achieved=shift.confidence)
     _blanks(result, dropped_a + dropped_b)
     _methods(result, f"Mann-Whitney test ({'exact' if use_exact else 'normal approximation'})", alternative, names, alpha)
     return result
+
+
+def _minimum_p_warning(result: AnalysisResult, min_p: float, alpha: float, style: str, what: str) -> None:
+    if np.isfinite(min_p) and min_p > alpha:
+        result.warnings.append(f"With {what}, the smallest P this test can give is {format_p(min_p, style=style)}, "
+                               f"which is above alpha = {alpha:g}: it cannot find a significant difference whatever the data.")
 
 
 def kolmogorov_smirnov(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", alpha: float = 0.05, style: str = "GP",
@@ -457,16 +464,20 @@ def kolmogorov_smirnov(a, b, *, names: tuple[str, str] = ("A", "B"), alternative
 
 
 def wilcoxon_matched_pairs(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95, alpha: float = 0.05,
-                           style: str = "GP", zero_method: str = "exclude", exact: bool | None = None, continuity: bool = True,
+                           style: str = "GP", zero_method: str = "exclude", exact: bool | None = None, continuity: bool = False,
                            table_title: str = "") -> AnalysisResult:
     """Wilcoxon matched-pairs signed-rank test on d = B - A.
 
-    ``zero_method``: "exclude" drops rows with d = 0 before ranking (Wilcoxon's original method,
-    and R's); "pratt" ranks them and then leaves their ranks out of the sums (Pratt 1959). Prism
-    offers both; which one it uses by default has not been checked here. W = sum of signed ranks.
-    P is exact for fewer than 50 untied, nonzero differences, otherwise normal with tie and
-    continuity corrections. Also reports the median of differences, the Hodges-Lehmann
-    pseudo-median with its CI, and Spearman's rs between the columns for pairing effectiveness."""
+    ``zero_method``: "exclude" (the default) drops rows with d = 0 before ranking, Wilcoxon's
+    original method; "pratt" ranks them and then leaves their ranks out of the sums (Pratt 1959).
+    Pratt is an option, from Prism 6 on.
+    https://www.graphpad.com/guides/prism/latest/statistics/stat_pratt.htm
+    W = sum of signed ranks. P is exact, ties included, for fewer than 200 pairs, otherwise
+    Gaussian with tie correction and no continuity correction. Also reports the median of the
+    differences, the Hodges-Lehmann pseudo-median with its CI (at the achievable level nearest to
+    ``ci``), and Spearman's rs between the columns with a one-tailed P, which tells whether pairing
+    was effective, as Prism does.
+    https://www.graphpad.com/guides/prism/latest/statistics/how_the_wilcoxon_matched_pairs_test_works.htm"""
 
     alternative = check_options(alternative, ci, alpha)
     a, b, dropped = pairs(a, b, names)
