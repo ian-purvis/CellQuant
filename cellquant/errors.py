@@ -27,3 +27,7 @@ class CalibrationError(CellQuantError):
 
 class RecipeValidationError(CellQuantError):
     """The analysis recipe is incomplete or inconsistent."""
+
+
+class StatisticsError(CellQuantError):
+    """A statistical analysis cannot be run on the data or options given."""
