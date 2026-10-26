@@ -124,7 +124,7 @@ def test_dunnett_matches_scipy_and_a_single_comparison_is_the_t_test():
     control, drug_a, drug_b = [7.40, 8.50, 7.20, 8.24, 9.84, 8.32], [9.76, 8.80, 7.68, 9.36], [12.80, 9.68, 12.16, 9.20, 10.55]
     table = ColumnTable.from_columns({"control": control, "a": drug_a, "b": drug_b})
     r = rows(ordinary_anova(table, comparisons="control", control="control"))
-    ref = stats.dunnett(drug_a, drug_b, control=control)
+    ref = stats.dunnett(drug_a, drug_b, control=control, rng=np.random.default_rng(0))
     ci = ref.confidence_interval()
     # scipy integrates by quasi-Monte Carlo (about 3-4 decimals); this engine integrates the one-factor form directly.
     for row, i in ((r["control vs. a"], 0), (r["control vs. b"], 1)):
@@ -303,6 +303,8 @@ def test_test_for_linear_trend_is_the_regression_on_column_number():
     ss_line = np.sum((np.polyval(np.polyfit(x, y, 1), x) - y.mean()) ** 2)
     assert v["trend_f"] == pytest.approx(ss_line / v["ms_within"]) and v["trend_p"] == pytest.approx(stats.f.sf(ss_line / v["ms_within"], 1, v["dfd"]))
     assert v["trend_r_squared"] == pytest.approx(ss_line / v["ss_total"])
+    # Alerting R²: the fraction of the variation among the group means explained by the trend (always the larger).
+    assert v["trend_alerting_r_squared"] == pytest.approx(ss_line / v["ss_between"]) and v["trend_alerting_r_squared"] > v["trend_r_squared"]
     # Deviation from linearity: the rest of the between-group variation, k - 2 df.
     assert v["nonlinear_f"] == pytest.approx((v["ss_between"] - ss_line) / 2 / v["ms_within"])
     assert result.row("Test for linear trend", "Is linear trend significant (P < 0.05)?").value == (v["trend_p"] < 0.05)
@@ -322,7 +324,9 @@ def test_dunns_test_formula_with_ties():
     ranks = stats.rankdata(pooled)
     N = pooled.size
     _, counts = np.unique(pooled, return_counts=True)
-    sigma2 = N * (N + 1) / 12 - np.sum(counts**3 - counts) / (12 * (N - 1))
+    # Prism's guide: z = |mean rank i - mean rank j| / sqrt[(N(N+1)/12)(1/Ni + 1/Nj)], with N(N+1) replaced by
+    # N(N+1) - Σ(T³ - T)/(N - 1) for ties; adjusted P = P × number of comparisons, capped at 1.
+    sigma2 = (N * (N + 1) - np.sum(counts**3 - counts) / (N - 1)) / 12
     split = np.split(ranks, np.cumsum([len(g) for g in groups.values()])[:-1])
     m = 15
     for row, row_u, (i, j) in zip(result.values["comparisons"], unc, itertools.combinations(range(6), 2)):
@@ -381,7 +385,7 @@ def test_fdr_q_values_match_statsmodels(seed):
     sm = pytest.importorskip("statsmodels.stats.multitest")
     rng = np.random.default_rng(seed)
     p = np.concatenate([rng.uniform(0, 1, 20), rng.uniform(0, 0.01 * seed, 3 * seed)])
-    for method, ref in (("bh", "fdr_bh"), ("by", "fdr_by"), ("bky", "fdr_tsbky"), ("holm", "holm"), ("sidak", "sidak"), ("bonferroni", "bonferroni")):
+    for method, ref in (("bh", "fdr_bh"), ("by", "fdr_by"), ("holm", "holm"), ("sidak", "sidak"), ("bonferroni", "bonferroni")):
         for q in (0.05, 0.1):
             mine = adjust_p(p, method, q)
             reject, corrected, _, _ = sm.multipletests(p, alpha=q, method=ref)
@@ -390,10 +394,58 @@ def test_fdr_q_values_match_statsmodels(seed):
                 assert np.array_equal(mine["significant"], reject), method
 
 
-def test_two_stage_fdr_edge_cases_match_statsmodels():
+def _bky_discoveries(p, Q):
+    """Prism's two-stage thresholds written out: stage 1 BH at Q/(1+Q); stage 2 rank-i threshold
+    i·Q/[(1+Q)·N_true] (from Q/[(1+Q)·N_true] up to [Q/(1+Q)]·N/N_true), step-up."""
+
+    p = np.asarray(p, float)
+    m = p.size
+    order = np.argsort(p)
+    ranks = np.arange(1, m + 1)
+
+    def step_up(thresholds):
+        passed = np.nonzero(p[order] <= thresholds)[0]
+        out = np.zeros(m, bool)
+        if passed.size:
+            out[order[: passed.max() + 1]] = True
+        return out
+
+    first = step_up(ranks * Q / ((1 + Q) * m))
+    r1 = first.sum()
+    if r1 in (0, m):
+        return first
+    return step_up(ranks * Q / ((1 + Q) * (m - r1)))
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_two_stage_q_values_sit_on_the_discovery_border(seed):
     sm = pytest.importorskip("statsmodels.stats.multitest")
-    for p in ([0.001, 0.002, 0.003], [0.5, 0.7, 0.9, 0.95], [0.0001, 0.2, 0.4, 0.001, 0.03]):
-        assert adjust_p(p, "bky", 0.05)["adjusted"] == pytest.approx(sm.multipletests(p, alpha=0.05, method="fdr_tsbky")[1], rel=1e-12)
+    rng = np.random.default_rng(seed)
+    p = np.concatenate([rng.uniform(0, 1, rng.integers(2, 15)), rng.uniform(0, 0.02, rng.integers(0, 8))])
+    q = adjust_p(p, "bky", 0.05)["adjusted"]
+    for i in range(p.size):
+        if q[i] < 1:
+            # At Q = q_i the comparison is a discovery; at any smaller Q it is not (Prism's definition of q).
+            assert _bky_discoveries(p, q[i] * (1 + 1e-12))[i] and not _bky_discoveries(p, q[i] * (1 - 1e-7))[i]
+            assert sm.multipletests(p, alpha=q[i] * (1 + 1e-12), method="fdr_tsbky")[0][i]
+    for Q in (0.01, 0.05, 0.1, 0.3):
+        mine = adjust_p(p, "bky", Q)
+        assert np.array_equal(mine["significant"], _bky_discoveries(p, Q))
+        assert np.array_equal(mine["significant"], sm.multipletests(p, alpha=Q, method="fdr_tsbky")[0])
+        assert np.array_equal(mine["significant"], mine["adjusted"] <= Q)
+
+
+def test_bh_and_by_q_values_use_prisms_thresholds():
+    # BH thresholds Q/n … Q (rank i: i·Q/n); BY thresholds Q/(n·H) … Q/H, H = 1 + 1/2 + … + 1/n.
+    rng = np.random.default_rng(3)
+    p = rng.uniform(0, 0.1, 12)
+    n = p.size
+    H = np.sum(1 / np.arange(1, n + 1))
+    order = np.argsort(p)
+    for method, scale in (("bh", 1.0), ("by", H)):
+        q = adjust_p(p, method)["adjusted"]
+        expected = np.minimum.accumulate((p[order] * n * scale / np.arange(1, n + 1))[::-1])[::-1]
+        assert q[order] == pytest.approx(np.minimum(expected, 1.0))
 
 
 def test_analyze_a_stack_of_p_values():
@@ -428,8 +480,14 @@ def test_fdr_after_anova_uses_fishers_lsd_p_values():
 
 def test_compact_letter_display_on_plantgrowth_tukey():
     # Only trt1 vs. trt2 differs: ctrl shares a letter with both.
-    letters = compact_letter_display(ordinary_anova(plant(), comparisons="all"))
-    assert letters == {"ctrl": "ab", "trt1": "a", "trt2": "b"}
+    result = ordinary_anova(plant(), comparisons="all")
+    assert compact_letter_display(result) == {"ctrl": "AB", "trt1": "A", "trt2": "B"}
+    assert compact_letter_display(result, style="lower") == {"ctrl": "ab", "trt1": "a", "trt2": "b"}
+    assert compact_letter_display(result, style="numbers") == {"ctrl": "1,2", "trt1": "1", "trt2": "2"}
+    # Groups share a letter when their adjusted P ≥ alpha: at alpha = 0.01, trt1 vs. trt2 (P = 0.012) is not different.
+    assert compact_letter_display(result, alpha=0.01) == {"ctrl": "A", "trt1": "A", "trt2": "A"}
+    with pytest.raises(StatisticsError):
+        compact_letter_display(result, style="roman")
 
 
 def test_compact_letters_share_a_letter_exactly_when_not_different():
@@ -441,4 +499,4 @@ def test_compact_letters_share_a_letter_exactly_when_not_different():
         for row in comps:
             share = bool(set(letters[row["group_1"]]) & set(letters[row["group_2"]]))
             assert share == (not row["significant"])
-    assert compact_letter_display([{"group_1": "x", "group_2": "y", "significant": False}]) == {"x": "a", "y": "a"}
+    assert compact_letter_display([{"group_1": "x", "group_2": "y", "significant": False}]) == {"x": "A", "y": "A"}

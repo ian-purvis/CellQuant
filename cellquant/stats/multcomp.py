@@ -196,6 +196,53 @@ def _bh(p: np.ndarray) -> np.ndarray:
     return out
 
 
+def _bky_at(p: np.ndarray, q: float) -> tuple[np.ndarray, int]:
+    """Discoveries of the two-stage BKY procedure at FDR level q, and N_true (m when undefined)."""
+
+    m = p.size
+    base = _bh(p)
+    q1 = q / (1 + q)
+    r1 = int(np.sum(base <= q1))
+    if r1 == 0:
+        return np.zeros(m, bool), m
+    if r1 == m:
+        return np.ones(m, bool), m
+    n_true = m - r1
+    return base <= q1 * m / n_true, n_true
+
+
+def _bky(p: np.ndarray, q: float) -> tuple[np.ndarray, np.ndarray, int]:
+    """Border q values of the two-stage BKY procedure, discoveries at ``q``, and N_true at ``q``.
+
+    With x = BH-adjusted P, stage 1 at level Q passes the x_j ≤ Q/(1+Q), so r₁(Q) is a step
+    function that changes at Q = x_j/(1 - x_j). Within each interval where r₁ = r is constant
+    (0 < r < m), comparison i is a discovery once Q/(1+Q) ≥ x_i·(m - r)/m; with r = m every
+    comparison is. Its q value is the smallest such Q (capped at 1). Discovery is monotone in Q
+    (a larger Q passes more in stage 1, so N_true falls and every threshold rises)."""
+
+    m = p.size
+    x = _bh(p)
+    with np.errstate(divide="ignore"):
+        breaks = np.sort(np.where(x < 1, x / (1 - x), np.inf))
+    edges = np.concatenate([[0.0], breaks, [np.inf]])
+    qv = np.full(m, np.inf)
+    for r in range(1, m + 1):
+        left, right = edges[r], edges[r + 1]
+        if not np.isfinite(left) or left >= right:
+            continue
+        if r == m:
+            qv = np.minimum(qv, left)
+            break
+        y = x * (m - r) / m
+        with np.errstate(divide="ignore"):
+            need = np.where(y < 1, y / (1 - y), np.inf)
+        need = np.maximum(need, left)
+        ok = need < right
+        qv = np.where(ok & (need < qv), need, qv)
+    discovered, n_true = _bky_at(p, q)
+    return np.minimum(qv, 1.0), discovered, n_true
+
+
 def adjust_p(pvalues: Iterable[float], method: str, q: float = 0.05) -> dict:
     """Multiplicity-adjusted P values (or FDR q values) for a list of P values.
 
@@ -205,9 +252,12 @@ def adjust_p(pvalues: Iterable[float], method: str, q: float = 0.05) -> dict:
     - ``bh`` (Benjamini-Hochberg 1995): q(r) = min over s ≥ r of m·P(s)/s.
     - ``by`` (Benjamini-Yekutieli 2001): the BH q times Σ_{i=1..m} 1/i (valid under any dependence).
     - ``bky`` (two-stage step-up, Benjamini, Krieger and Yekutieli 2006; Prism's default FDR method):
-      stage 1 is BH at Q' = Q/(1 + Q), giving r₁ discoveries; m₀ = m - r₁ estimates the true nulls,
-      and stage 2 is BH at Q'·m/m₀. The q values are BH q · (m₀/m) · (1 + Q) (m₀ = m when r₁ is 0 or
-      m), as statsmodels' ``fdr_tsbky``; they depend on Q, and a comparison is a discovery when q ≤ Q.
+      stage 1 is BH at Q' = Q/(1 + Q), giving r₁ discoveries (none if r₁ = 0, all if r₁ = m);
+      otherwise N_true = m - r₁ estimates the true nulls and stage 2 is BH at Q'·m/N_true, i.e. the
+      rank-i threshold is i·Q/[(1 + Q)·N_true] (Prism's q/[(1+q)·Ntrue] … [q/(1+q)]·N/Ntrue).
+      The q value is Prism's: the Q at which the comparison sits exactly on the border of being a
+      discovery (N_true changes with Q, so it is found interval by interval; see ``_bky``).
+      Discoveries at the chosen Q are those with q ≤ Q.
 
     Returns ``{"adjusted": array, "significant": array, "m0": ...}``; blanks (NaN) are left out of m
     and stay blank."""
@@ -250,12 +300,13 @@ def adjust_p(pvalues: Iterable[float], method: str, q: float = 0.05) -> dict:
     elif method == "by":
         adj = np.minimum(1.0, _bh(p) * np.sum(1.0 / np.arange(1, m + 1)))
     else:  # bky
-        base = _bh(p)
-        q1 = q / (1 + q)
-        r1 = int(np.sum(base <= q1))
-        m0 = m if r1 in (0, m) else m - r1
-        adj = np.minimum(1.0, base * (m0 / m) * (1 + q))
+        adj, discovered, m0 = _bky(p, q)
         info["m0"] = m0
+    out[keep] = adj
+    if method == "bky":
+        significant = np.zeros(p_all.shape, bool)
+        significant[keep] = discovered
+        return {"adjusted": out, "significant": significant, **info}
     out[keep] = adj
     significant = np.zeros(p_all.shape, bool)
     fdr = method in ("bh", "by", "bky")
@@ -617,13 +668,24 @@ def comparison_rows(result: AnalysisResult, out: dict, style: str, *, rank: bool
 # ---------------------------------------------------------------------------------------------
 
 
-def compact_letter_display(comparisons, groups: Sequence[str] | None = None) -> dict[str, str]:
+LETTER_STYLES = ("upper", "lower", "numbers")
+
+
+def compact_letter_display(comparisons, groups: Sequence[str] | None = None, *, style: str = "upper",
+                           alpha: float | None = None) -> dict[str, str]:
     """Letters for each group such that two groups share a letter exactly when they are NOT
-    significantly different (insert-absorb algorithm, Piepho 2004).
+    significantly different, i.e. their adjusted P ≥ alpha (insert-absorb algorithm, Piepho 2004).
+    Every group gets at least one letter.
 
     ``comparisons`` is a result with ``values["comparisons"]``, or a list of rows with
-    ``group_1``, ``group_2`` and ``significant``. Pairs that were not compared count as not
-    different. Letters are given in order of the groups (``groups``, or first appearance)."""
+    ``group_1``, ``group_2`` and ``significant``. With ``alpha``, significance is recomputed as
+    adjusted P < alpha (q ≤ alpha for FDR rows). Pairs that were not compared count as not
+    different. ``style``: "upper" (A, B, C; Prism's default), "lower" (a, b, c) or "numbers"
+    (1, 2, 3, joined with commas). Letters are given in order of the groups (``groups``, or first
+    appearance); Prism does not document its ordering rule."""
+
+    if style not in LETTER_STYLES:
+        raise StatisticsError(f"style must be one of {', '.join(LETTER_STYLES)}.")
 
     rows = comparisons.values.get("comparisons") if isinstance(comparisons, AnalysisResult) else comparisons
     if not rows:
@@ -638,7 +700,12 @@ def compact_letter_display(comparisons, groups: Sequence[str] | None = None) -> 
     index = {g: i for i, g in enumerate(groups)}
     different = set()
     for row in rows:
-        if row["significant"]:
+        if alpha is not None:
+            q = row.get("q", np.nan)
+            significant = bool(q <= alpha) if q is not None and np.isfinite(q) else bool(row.get("p_adjusted", np.nan) < alpha)
+        else:
+            significant = bool(row["significant"])
+        if significant:
             different.add(frozenset((index[row["group_1"]], index[row["group_2"]])))
     columns: list[set[int]] = [set(range(len(groups)))]
     for pair in sorted(different, key=lambda s: sorted(s)):
@@ -656,13 +723,13 @@ def compact_letter_display(comparisons, groups: Sequence[str] | None = None) -> 
                 unique.append(column)
         columns = [c for c in unique if not any(c < other for other in unique)]
     columns.sort(key=lambda c: (min(c), sorted(c)))
-    letters = _letters(len(columns))
-    return {g: "".join(letters[n] for n, column in enumerate(columns) if index[g] in column) for g in groups}
+    letters = _letters(len(columns), style)
+    joiner = "," if style == "numbers" else ""
+    return {g: joiner.join(letters[n] for n, column in enumerate(columns) if index[g] in column) for g in groups}
 
 
-def _letters(count: int) -> list[str]:
-    alphabet = "abcdefghijklmnopqrstuvwxyz"
-    out = []
-    for n in range(count):
-        out.append(alphabet[n] if n < 26 else alphabet[n // 26 - 1] + alphabet[n % 26])
-    return out
+def _letters(count: int, style: str = "upper") -> list[str]:
+    if style == "numbers":
+        return [str(n + 1) for n in range(count)]
+    alphabet = "abcdefghijklmnopqrstuvwxyz" if style == "lower" else "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    return [alphabet[n] if n < 26 else alphabet[n // 26 - 1] + alphabet[n % 26] for n in range(count)]
