@@ -40,6 +40,8 @@ cellpose-v3 = ["cellpose>=3.1,<4"]   # Classic Cellpose: lighter, faster on CPU
 cellpose = ["cellpose>=4.2,<5"]      # kept for older install commands; same as cellpose-v4
 # napari needs a Qt backend to open a window. Plain "napari" does not install one.
 gui = ["napari[pyqt6]>=0.5,<0.7"]
+# Statistics (cellquant.stats): statsmodels for two normality tests; matplotlib for the plots.
+stats = ["statsmodels", "matplotlib"]
 dev = ["pytest"]
 
 [project.urls]
