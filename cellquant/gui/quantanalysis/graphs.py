@@ -13,7 +13,8 @@ import math
 
 import numpy as np
 
-from cellquant.stats import p_summary, p_text
+from cellquant.errors import StatisticsError
+from cellquant.stats import compact_letter_display, format_p, p_summary, p_text
 from cellquant.stats.descriptive import describe, percentiles
 
 # key: (menu name, tooltip)
@@ -52,6 +53,12 @@ DEFAULT_FORMAT = {
     "height": 75.0,
     "units": "mm",
     "bracket": "stars",      # "stars", "p" or "none"
+    "bracket_mode": "brackets",  # multiple comparisons: "brackets" (one per comparison) or "columns" (stars above the compared columns)
+    "hide_ns": False,        # leave out the comparisons that are not significant
+    "letters": False,        # compact letter display above the columns instead of brackets
+    "letter_style": "upper",  # "upper" (A B C), "lower" (a b c) or "numbers" (1 2 3)
+    "ref_colors": ["#000000", "#D62728"],  # stars and brackets vs the first and the second reference group
+    "show_outliers": True,   # values flagged by Identify outliers are hollow
     "show_n": True,
 }
 
@@ -128,8 +135,10 @@ def _style_axes(ax, fmt: dict) -> None:
     ax.set_facecolor("white")
 
 
-def draw(figure, data, graph, result=None) -> list[str]:
-    """Draw ``graph`` (a GraphSheet) of ``data`` (a DataSheet) into ``figure``. Returns notes."""
+def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
+    """Draw ``graph`` (a GraphSheet) of ``data`` (a DataSheet) into ``figure``. Returns notes.
+
+    ``outliers`` maps a column name to a mask of its flagged cells (``Project.flags``); those values are drawn hollow."""
 
     fmt = {**DEFAULT_FORMAT, **graph.format}
     figure.clear()
@@ -160,6 +169,8 @@ def draw(figure, data, graph, result=None) -> list[str]:
             kind = "scatter"
     if kind == "before_after" and not table.paired:
         notes.append("Before-after joins rows of a paired table. Tick Paired on the data table if row i is the same subject in every column.")
+    if kind in ("superplot", "estimation") and any(np.any(mask) for mask in (outliers or {}).values()):
+        notes.append("Outliers are marked on column graphs (hollow points), not on a SuperPlot or an estimation plot.")
     if kind == "superplot" and (data.images is None or data.images.empty or not (data.images["unit"].astype(str) != "").any()):
         notes.append("A SuperPlot needs a table imported from CellQuant results with one dot per biological replicate (Import CellQuant results, Dot = biological replicate). Drawn as a column scatter.")
         kind = "scatter"
@@ -175,6 +186,7 @@ def draw(figure, data, graph, result=None) -> list[str]:
     else:
         for index, column in enumerate(columns):
             values = column.finite[column.finite > 0] if log else column.finite
+            flags = _flags(outliers, column, fmt, log)
             color = color_of(fmt, column.name, table.names.index(column.name))
             if kind == "bar":
                 center, low, high = _center_and_bars(values, "median_iqr" if error == "median_iqr" else error)
@@ -193,11 +205,10 @@ def draw(figure, data, graph, result=None) -> list[str]:
                 ax.hlines([p25, p75], index - 0.12, index + 0.12, color="#333333", linewidth=0.9, linestyles=":", zorder=3)
                 ax.hlines(p50, index - 0.2, index + 0.2, color="#111111", linewidth=1.4, zorder=3)
             if kind == "before_after":
-                ax.scatter(np.full(values.size, index), values, s=_dot_area(fmt, values.size), color=color, edgecolor="white", linewidth=0.4, zorder=3)
+                _dots(ax, np.full(values.size, index), values, flags, color, _dot_area(fmt, values.size), 1.0)
             else:
                 offsets = _jitter(np.log10(values) if log else values, 0.22 if kind != "bar" else 0.18)
-                ax.scatter(index + offsets, values, s=_dot_area(fmt, values.size), color=color, edgecolor="white",
-                           linewidth=0.4, alpha=0.9 if values.size < 200 else 0.6, zorder=3)
+                _dots(ax, index + offsets, values, flags, color, _dot_area(fmt, values.size), 0.9 if values.size < 200 else 0.6)
             if kind in ("scatter", "bar") and error != "none" and values.size:
                 center, low, high = _center_and_bars(values, error)
                 ax.hlines(center, index - 0.25, index + 0.25, color="#111111", linewidth=1.6, zorder=4)
@@ -222,10 +233,13 @@ def draw(figure, data, graph, result=None) -> list[str]:
         ax.set_xlabel(fmt["x_title"], fontsize=font)
     if fmt["title"]:
         ax.set_title(fmt["title"], fontsize=font + 1, loc="left", color="#111111")
-    if compared is not None and fmt.get("bracket", "stars") != "none" and kind != "estimation":
-        first, second = compared[0], compared[1]
-        if first in positions and second in positions:
-            _bracket(ax, positions[first], positions[second], result, fmt, log, font)
+    if kind != "estimation" and (fmt.get("bracket", "stars") != "none" or fmt.get("letters")):
+        if compared is not None:
+            first, second = compared[0], compared[1]
+            if first in positions and second in positions:
+                _bracket(ax, positions[first], positions[second], result, fmt, log, font)
+        elif result is not None and "names" in getattr(result, "values", {}):
+            _multiple_marks(ax, result, table, positions, columns, fmt, log, font, notes)
     figure.tight_layout(pad=0.6)
     return notes
 
@@ -291,6 +305,167 @@ def _bracket(ax, a: int, b: int, result, fmt: dict, log: bool, font: float) -> N
             ax.set_ylim(bottom, max(top, text_y + 0.12 * span))
     ax.plot([a, a, b, b], [lift, tick, tick, lift], color="#222222", linewidth=0.9, zorder=5)
     ax.text((a + b) / 2, text_y, label, ha="center", va="bottom", fontsize=font, color="#111111")
+
+
+def _flags(outliers, column, fmt: dict, log: bool) -> np.ndarray:
+    """Which of the column's plotted values (blanks, and values a log axis cannot show, left out) were flagged as outliers."""
+
+    mask = (outliers or {}).get(column.name) if fmt.get("show_outliers", True) else None
+    flags = np.zeros(column.finite.size, bool)
+    if mask is not None and np.asarray(mask).size == column.values.size:
+        flags = np.asarray(mask, bool)[np.isfinite(column.values)]
+    return flags[column.finite > 0] if log else flags
+
+
+def _dots(ax, x, y, flags, color: str, area: float, alpha: float) -> None:
+    """Dots; the flagged ones (outliers) are hollow."""
+
+    solid = ~flags
+    ax.scatter(x[solid], y[solid], s=area, color=color, edgecolor="white", linewidth=0.4, alpha=alpha, zorder=3)
+    if flags.any():
+        ax.scatter(x[flags], y[flags], s=area, facecolors="none", edgecolors=color, linewidth=1.1, zorder=3)
+
+
+# --- Multiple comparisons: brackets, stars above columns and compact letters ------------------------------------------
+
+
+def _label(row: dict, fmt: dict, style: str) -> str:
+    if fmt.get("bracket", "stars") == "p":
+        p = row["q"] if np.isfinite(row["q"]) else row["p_adjusted"]
+        text = format_p(p, style=style)
+        return f"q {text}" if np.isfinite(row["q"]) and not text.startswith(("<", ">")) else text
+    return row["summary"]
+
+
+def _column_tops(ax, columns, fmt: dict, log: bool) -> dict[str, float]:
+    """The highest drawn point (dots and error bar) of each column."""
+
+    tops: dict[str, float] = {}
+    for collection in ax.collections:
+        offsets = np.asarray(collection.get_offsets(), dtype=float)
+        if offsets.size == 0 or offsets.ndim != 2:
+            continue
+        index = np.rint(offsets[:, 0]).astype(int)
+        for position, column in enumerate(columns):
+            ys = offsets[index == position, 1]
+            ys = ys[np.isfinite(ys)]
+            if ys.size:
+                tops[column.name] = max(tops.get(column.name, -np.inf), float(ys.max()))
+    if fmt["error"] != "none":
+        for column in columns:
+            values = column.finite[column.finite > 0] if log else column.finite
+            _center, _low, high = _center_and_bars(values, fmt["error"])
+            if np.isfinite(high):
+                tops[column.name] = max(tops.get(column.name, -np.inf), float(high))
+    return tops
+
+
+def _reference_order(result, rows) -> list[str]:
+    options = result.options.get("control")
+    ordered = [options] if isinstance(options, str) else [str(name) for name in options or []]
+    for row in rows:
+        if row.get("reference") and row["reference"] not in ordered:
+            ordered.append(row["reference"])
+    return ordered
+
+
+def _multiple_marks(ax, result, table, positions: dict, columns, fmt: dict, log: bool, font: float, notes: list[str]) -> None:
+    rows = [row for row in result.values.get("comparisons") or [] if row["group_1"] in positions and row["group_2"] in positions]
+    if not rows:
+        if "comparison_method" not in result.values:
+            notes.append("This ANOVA has no multiple comparisons to show. Choose some with Change options… on its results sheet.")
+        return
+    style = result.options.get("style", "GP")
+    tops = _column_tops(ax, columns, fmt, log)
+    if not tops:
+        return
+    bottom, top = ax.get_ylim()
+    t, u = (np.log10, lambda value: 10.0**value) if log else ((lambda value: value), (lambda value: value))
+    base, floor = t(max(tops.values())), t(bottom)
+    if fmt.get("letters"):
+        _letters_above(ax, result, rows, positions, tops, table, fmt, (t, u), base, floor, font, notes)
+        return
+    if fmt.get("hide_ns"):
+        rows = [row for row in rows if row["significant"]]
+    references = _reference_order(result, rows)
+    colors = list(fmt.get("ref_colors") or DEFAULT_FORMAT["ref_colors"])
+    mode = fmt.get("bracket_mode", "brackets")
+    if mode == "columns" and not any(row.get("reference") for row in rows):
+        notes.append("Asterisks above the columns need comparisons against a reference group; brackets are shown instead.")
+        mode = "brackets"
+    marks = _stack(rows, positions, references, mode)
+    levels = 1 + max((level for _row, _a, _b, level in marks), default=0)
+    per_level = 0.085 if mode == "brackets" else 0.075
+    final = (base - floor) / max(1e-9, 1.0 - 0.05 - levels * per_level) if marks else base - floor
+    if fmt.get("y_max") is None and marks:
+        ax.set_ylim(bottom, u(floor + final))
+    elif marks:
+        final = t(ax.get_ylim()[1]) - floor
+    for row, a, b, level in marks:
+        color = colors[min(references.index(row["reference"]), len(colors) - 1)] if row.get("reference") in references else "#222222"
+        label = _label(row, fmt, style)
+        if mode == "brackets":
+            y = base + 0.04 * final + level * 0.085 * final
+            leg, gap = 0.02 * final, 0.006 * final
+            ax.plot([a, a, b, b], [u(y), u(y + leg), u(y + leg), u(y)], color=color, linewidth=0.9, zorder=5, clip_on=False)
+            ax.text((a + b) / 2, u(y + leg + gap), label, ha="center", va="bottom", fontsize=font, color=color, clip_on=False)
+        else:
+            column = row["group_2"] if row["group_1"] == row.get("reference") else row["group_1"]
+            y = t(tops.get(column, u(base))) + 0.03 * final + level * 0.075 * final
+            ax.text(positions[column], u(y), label, ha="center", va="bottom", fontsize=font, color=color, clip_on=False)
+    used = [name for name in references if any(row.get("reference") == name for row in rows)]
+    if len(used) == 2 and marks:
+        from matplotlib.lines import Line2D
+
+        handles = [Line2D([], [], color=colors[min(number, len(colors) - 1)], linewidth=1.6, label=f"vs {name}") for number, name in enumerate(used)]
+        ax.legend(handles=handles, loc="lower right", bbox_to_anchor=(1.0, 1.0), ncol=2, frameon=False, fontsize=font - 1,
+                  handlelength=1.2, borderaxespad=0.1, columnspacing=1.0)
+
+
+def _stack(rows, positions: dict, references: list[str], mode: str) -> list[tuple[dict, int, int, int]]:
+    """(row, left, right, level): brackets stacked so none overlaps another; in "columns" mode, one level per
+    reference above the compared column."""
+
+    marks = []
+    if mode == "columns":
+        taken: dict[str, int] = {}
+        for row in sorted(rows, key=lambda r: references.index(r["reference"]) if r.get("reference") in references else 99):
+            if not row.get("reference"):
+                continue
+            column = row["group_2"] if row["group_1"] == row["reference"] else row["group_1"]
+            level = taken.get(column, 0)
+            taken[column] = level + 1
+            marks.append((row, positions[column], positions[column], level))
+        return marks
+    placed: list[tuple[int, int, int]] = []
+    for row in sorted(rows, key=lambda r: (abs(positions[r["group_1"]] - positions[r["group_2"]]), min(positions[r["group_1"]], positions[r["group_2"]]))):
+        a, b = sorted((positions[row["group_1"]], positions[row["group_2"]]))
+        level = 0
+        while any(lv == level and a <= hi and lo <= b for lo, hi, lv in placed):
+            level += 1
+        placed.append((a, b, level))
+        marks.append((row, a, b, level))
+    return marks
+
+
+def _letters_above(ax, result, rows, positions: dict, tops: dict, table, fmt: dict, transform, base: float, floor: float, font: float,
+                   notes: list[str]) -> None:
+    t, u = transform
+    if result.options.get("comparisons") != "all":
+        notes.append("Compact letters need comparisons of every pair of groups. Choose “Every pair of groups” with Change options….")
+        return
+    try:
+        letters = compact_letter_display(rows, [name for name in table.names if name in positions], style=fmt.get("letter_style", "upper"))
+    except StatisticsError as exc:
+        notes.append(str(exc))
+        return
+    bottom, _top = ax.get_ylim()
+    final = (base - floor) / 0.88
+    if fmt.get("y_max") is None:
+        ax.set_ylim(bottom, u(floor + final))
+    for name, text in letters.items():
+        if name in tops:
+            ax.text(positions[name], u(t(tops[name]) + 0.03 * final), text, ha="center", va="bottom", fontsize=font, color="#111111", clip_on=False)
 
 
 def _draw_pairs(ax, table, columns, log: bool) -> None:

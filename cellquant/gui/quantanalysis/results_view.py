@@ -21,6 +21,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellquant.gui.quantanalysis import tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
 from cellquant.gui.quantanalysis.project import PSEUDO_WARNING, Project, ResultSheet
 
@@ -90,6 +91,9 @@ class ResultSheetView(QWidget):
         self.options_button = QPushButton("Change options…")
         self.options_button.setToolTip("Change the test or its options. The sheet and its graphs update in place.")
         self.options_button.clicked.connect(lambda: window.change_options(sheet))
+        self.clean_button = QPushButton("Create cleaned table")
+        self.clean_button.setToolTip(tips.CLEAN)
+        self.clean_button.clicked.connect(lambda: window.create_cleaned_table(sheet))
         copy = QPushButton("Copy")
         copy.setToolTip("Copy the results as tab-separated text, to paste into a spreadsheet, a commercial package or a document.")
         copy.clicked.connect(self.copy)
@@ -97,6 +101,7 @@ class ResultSheetView(QWidget):
         export.setToolTip("Save this results sheet as a CSV file: section, label, value and the text shown.")
         export.clicked.connect(self.export_csv)
         top.addWidget(self.options_button)
+        top.addWidget(self.clean_button)
         top.addWidget(copy)
         top.addWidget(export)
         layout.addLayout(top)
@@ -127,7 +132,9 @@ class ResultSheetView(QWidget):
         sheet = self.sheet
         data = self.project.data.get(sheet.data_id)
         self.source.setText(f"From data table: {data.name}" if data else "")
-        self.options_button.setVisible(sheet.kind == "compare")
+        self.options_button.setVisible(sheet.kind in ("compare", "anova", "outliers", "pstack"))
+        self.clean_button.setVisible(sheet.kind == "outliers")
+        self.clean_button.setEnabled(sheet.result is not None)
         self.error.setText(f"⚠ {sheet.error}" if sheet.error else "")
         self.error.setVisible(bool(sheet.error))
         danger = PSEUDO_WARNING in sheet.warnings or any(text.startswith("Small n") or "smallest P this test can give" in text for text in sheet.warnings)
