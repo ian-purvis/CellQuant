@@ -28,7 +28,7 @@ from cellquant.stats import ColumnTable, compact_letter_display  # noqa: E402
 
 NAMES = ["Negative control", "Positive control", "Treated 1", "Treated 2"]
 TWO_REFERENCES = {"test": "ordinary", "comparisons": "control", "method": "dunnett", "control": [NAMES[0], NAMES[1]], "family": "per_reference",
-                  "alpha": 0.05, "ci": 0.95, "style": "GP", "geisser_greenhouse": True}
+                  "alpha": 0.05, "ci": 0.95, "style": "classic", "geisser_greenhouse": True}
 ALL_PAIRS = {**TWO_REFERENCES, "comparisons": "all", "method": "tukey", "control": []}
 
 
@@ -121,7 +121,7 @@ def test_anova_dialog_options_and_tooltips(qtbot):
 def test_outlier_and_pstack_dialogs(qtbot):
     outliers = OutlierDialog(None, make_table())
     qtbot.addWidget(outliers)
-    assert outliers.options() == {"method": "rout", "q": 0.01, "alpha": 0.05, "columns": None, "style": "GP"}
+    assert outliers.options() == {"method": "rout", "q": 0.01, "alpha": 0.05, "columns": None, "style": "classic"}
     _check(outliers.method, "grubbs")
     assert outliers.alpha.isEnabled() and not outliers.q.isEnabled()
     outliers.columns.item(0).setCheckState(Qt.Unchecked)
@@ -350,17 +350,17 @@ def test_removing_the_outlier_result_clears_the_marks(window):
 def test_stack_of_p_values(window):
     from cellquant.gui.quantanalysis.results_view import result_text
 
-    sheet = window.analyze("pstack", {"text": "0.001\n0.02\nthird  0.04\n0.5\n", "method": "bky", "alpha": 0.05, "style": "GP"})
+    sheet = window.analyze("pstack", {"text": "0.001\n0.02\nthird  0.04\n0.5\n", "method": "bky", "alpha": 0.05, "style": "classic"})
     assert sheet.error == "" and sheet.data_id == "" and sheet.name == "Stack of P values"
     assert sheet.result.values["m"] == 4 and "third" in result_text(sheet)
     assert window.item_of(sheet.id).toolTip(0) == "P values pasted into the analysis; no data table."
-    window.change_options(sheet, {"text": "0.001\n0.02\n", "method": "holm_sidak", "alpha": 0.05, "style": "GP"})
+    window.change_options(sheet, {"text": "0.001\n0.02\n", "method": "holm_sidak", "alpha": 0.05, "style": "classic"})
     assert sheet.result.values["m"] == 2 and sheet.result.options["method"] == "holm_sidak"
-    bad = window.analyze("pstack", {"text": "oops", "method": "bky", "alpha": 0.05, "style": "GP"})
+    bad = window.analyze("pstack", {"text": "oops", "method": "bky", "alpha": 0.05, "style": "classic"})
     assert "Line 1" in bad.error
-    empty = window.analyze("pstack", {"text": "", "method": "bky", "alpha": 0.05, "style": "GP"})
+    empty = window.analyze("pstack", {"text": "", "method": "bky", "alpha": 0.05, "style": "classic"})
     assert "at least one P value" in empty.error
-    too_big = window.analyze("pstack", {"text": "1.5", "method": "bky", "alpha": 0.05, "style": "GP"})
+    too_big = window.analyze("pstack", {"text": "1.5", "method": "bky", "alpha": 0.05, "style": "classic"})
     assert "between 0 and 1" in too_big.error
 
 
@@ -420,7 +420,7 @@ def test_missing_matplotlib_and_statsmodels_show_the_message(qtbot, monkeypatch)
     assert window.analyze("normality").error == "" and window.analyze("colstats").error == ""
     assert window.analyze("anova", {**ALL_PAIRS, "test": "kruskal_wallis", "method": "dunn"}).error == ""
     assert window.analyze("outliers", {"method": "rout", "q": 0.01}).error == ""
-    assert window.analyze("pstack", {"text": "0.01\n0.03", "method": "bky", "alpha": 0.05, "style": "GP"}).error == ""
+    assert window.analyze("pstack", {"text": "0.01\n0.03", "method": "bky", "alpha": 0.05, "style": "classic"}).error == ""
     blank = ColumnTable.from_columns({"A": [1, 2, 3, np.nan], "B": [2, 3, 4, 5], "C": [3, 5, 4, 6]}, paired=True)
     window.select(window.project.add_data(DataSheet("Blank", blank)).id)
     mixed = window.analyze("anova", {**ALL_PAIRS, "test": "repeated_measures", "method": "tukey"})

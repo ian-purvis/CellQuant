@@ -1,4 +1,4 @@
-"""The result of one analysis, laid out like a Prism results sheet.
+"""The result of one analysis, laid out like a results sheet.
 
 A result has sections (a title and rows of label, value and display text), warnings, and a
 one-line methods sentence. ``values`` keeps the raw numbers under stable keys (for example

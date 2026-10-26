@@ -41,7 +41,7 @@ def test_tukey_matches_r_tukeyhsd_on_plantgrowth():
     #   trt1-ctrl -0.371 -1.0622161 0.3202161 0.3908711
     #   trt2-ctrl  0.494 -0.1972161 1.1852161 0.1979960
     #   trt2-trt1  0.865  0.1737839 1.5562161 0.0120064
-    # R reports second minus first; Prism (and this engine) report "ctrl vs. trt1" as ctrl - trt1.
+    # R reports second minus first; this engine reports "ctrl vs. trt1" as ctrl - trt1.
     r = rows(ordinary_anova(plant(), comparisons="all"))
     expected = {"ctrl vs. trt1": (0.371, -0.3202161, 1.0622161, 0.3908711), "ctrl vs. trt2": (-0.494, -1.1852161, 0.1972161, 0.1979960),
                 "trt1 vs. trt2": (-0.865, -1.5562161, -0.1737839, 0.0120064)}
@@ -324,7 +324,7 @@ def test_dunns_test_formula_with_ties():
     ranks = stats.rankdata(pooled)
     N = pooled.size
     _, counts = np.unique(pooled, return_counts=True)
-    # Prism's guide: z = |mean rank i - mean rank j| / sqrt[(N(N+1)/12)(1/Ni + 1/Nj)], with N(N+1) replaced by
+    # Dunn's z = |mean rank i - mean rank j| / sqrt[(N(N+1)/12)(1/Ni + 1/Nj)], with N(N+1) replaced by
     # N(N+1) - Σ(T³ - T)/(N - 1) for ties; adjusted P = P × number of comparisons, capped at 1.
     sigma2 = (N * (N + 1) - np.sum(counts**3 - counts) / (N - 1)) / 12
     split = np.split(ranks, np.cumsum([len(g) for g in groups.values()])[:-1])
@@ -395,7 +395,7 @@ def test_fdr_q_values_match_statsmodels(seed):
 
 
 def _bky_discoveries(p, Q):
-    """Prism's two-stage thresholds written out: stage 1 BH at Q/(1+Q); stage 2 rank-i threshold
+    """The two-stage thresholds written out: stage 1 BH at Q/(1+Q); stage 2 rank-i threshold
     i·Q/[(1+Q)·N_true] (from Q/[(1+Q)·N_true] up to [Q/(1+Q)]·N/N_true), step-up."""
 
     p = np.asarray(p, float)
@@ -425,7 +425,7 @@ def test_two_stage_q_values_sit_on_the_discovery_border(seed):
     q = adjust_p(p, "bky", 0.05)["adjusted"]
     for i in range(p.size):
         if q[i] < 1:
-            # At Q = q_i the comparison is a discovery; at any smaller Q it is not (Prism's definition of q).
+            # At Q = q_i the comparison is a discovery; at any smaller Q it is not (the definition of q).
             assert _bky_discoveries(p, q[i] * (1 + 1e-12))[i] and not _bky_discoveries(p, q[i] * (1 - 1e-7))[i]
             assert sm.multipletests(p, alpha=q[i] * (1 + 1e-12), method="fdr_tsbky")[0][i]
     for Q in (0.01, 0.05, 0.1, 0.3):
@@ -435,7 +435,7 @@ def test_two_stage_q_values_sit_on_the_discovery_border(seed):
         assert np.array_equal(mine["significant"], mine["adjusted"] <= Q)
 
 
-def test_bh_and_by_q_values_use_prisms_thresholds():
+def test_bh_and_by_q_values_use_the_two_stage_thresholds():
     # BH thresholds Q/n … Q (rank i: i·Q/n); BY thresholds Q/(n·H) … Q/H, H = 1 + 1/2 + … + 1/n.
     rng = np.random.default_rng(3)
     p = rng.uniform(0, 0.1, 12)

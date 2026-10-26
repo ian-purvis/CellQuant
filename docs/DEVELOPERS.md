@@ -14,7 +14,7 @@
 | `cellquant/gui/plan_dock.py` | The Plan dock. |
 | `cellquant/gui/START_HERE.md` | The in-app guide: a copy of `docs/START_HERE.md` (a test keeps them identical). |
 | `cellquant/sweep.py`, `sweep_report.py` | Comparing segmentation methods (see `docs/SWEEP.md`). |
-| `cellquant/stats/` | Prism-style column statistics, normality tests and two-column comparisons, without the window (see `docs/STATISTICS.md`). |
+| `cellquant/stats/` | Column-table statistics, normality tests and two-column comparisons, without the window (see `docs/STATISTICS.md`). |
 | `packaging/` | The Windows installer and launcher (`Install CellQuant.bat`, `Open CellQuant.bat` call these). |
 | `tests/` | Automated tests; see [tests/README.md](../tests/README.md). |
 

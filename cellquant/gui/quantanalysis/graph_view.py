@@ -37,7 +37,7 @@ from cellquant.gui.quantanalysis.project import PSEUDO_WARNING, GraphSheet, Proj
 
 # key: (name, file suffix, raster)
 EXPORT_FORMATS = {
-    "svg": ("SVG (vector, for Illustrator / Inkscape)", ".svg", False),
+    "svg": ("SVG (vector, for a vector editor such as Inkscape)", ".svg", False),
     "pdf": ("PDF (vector)", ".pdf", False),
     "eps": ("EPS (vector, older journals)", ".eps", False),
     "png": ("PNG", ".png", True),

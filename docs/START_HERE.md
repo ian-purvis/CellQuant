@@ -76,7 +76,7 @@ The bar at the bottom of the window is shared by all steps. It shows which image
 7. Choose which images to analyze. Everything listed is included at first. Untick **Include** to leave an image out. **Show ND2 only** / **Show TIFF only** and the filter box (for example *Retina 2* or *Control*) narrow the list.
 
    The line above the list says how many images are included. Left-out images are never deleted, are skipped by **Next image ▶**, and are not analyzed by **Run all images**. Tick them again at any time.
-8. Optional: edit **Sample name**, or paste columns such as *Genotype* or *Age* from Excel to the right of the table.
+8. Optional: edit **Sample name**, or paste columns such as *Genotype* or *Age* from a spreadsheet to the right of the table.
 
 **Success check:** every image you expect is listed once, in the right folder; the ones you want are included; and the open image shows a clear Channel 1 = … order.
 

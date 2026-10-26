@@ -18,8 +18,8 @@ SLEEP_2 = [1.9, 0.8, 1.1, 0.1, -0.1, 4.4, 5.5, 1.6, 4.6, 3.4]
 SLEEP_DIFF = [b - a for a, b in zip(SLEEP_1, SLEEP_2)]
 
 
-def test_skewness_and_kurtosis_match_excels_documented_examples():
-    # Microsoft's documentation of SKEW and KURT uses these ten values: SKEW = 0.359543, KURT = -0.151799637.
+def test_skewness_and_kurtosis_match_documented_spreadsheet_examples():
+    # Spreadsheet documentation of SKEW and KURT uses these ten values: SKEW = 0.359543, KURT = -0.151799637.
     d = describe([3, 4, 5, 2, 3, 4, 5, 6, 4, 7])
     assert d["skewness"] == pytest.approx(0.359543, abs=1e-6)
     assert d["kurtosis"] == pytest.approx(-0.151799637, abs=1e-9)
@@ -31,9 +31,9 @@ def test_skewness_and_kurtosis_match_excels_documented_examples():
 
 
 def test_percentiles_use_the_n_plus_1_rule():
-    # Microsoft's PERCENTILE.EXC example: 25th percentile of 1,2,3,6,6,6,7,8,9 is 2.5.
+    # The spreadsheet PERCENTILE.EXC example: 25th percentile of 1,2,3,6,6,6,7,8,9 is 2.5.
     assert percentiles([1, 2, 3, 6, 6, 6, 7, 8, 9], 25) == pytest.approx(2.5)
-    # Microsoft's QUARTILE.EXC example (also Hyndman-Fan type 6): Q1 = 15, Q3 = 43.
+    # The spreadsheet QUARTILE.EXC example (also Hyndman-Fan type 6): Q1 = 15, Q3 = 43.
     assert list(percentiles([6, 7, 15, 36, 39, 40, 41, 42, 43, 47, 49], [25, 75])) == [15, 43]
     # By hand: rank (n+1)p = 0.9 * 6 = 5.4 among 1..5 is past the end, so the maximum; 0.1 * 6 = 0.6 gives the minimum.
     assert list(percentiles([10, 20, 30, 40, 50], [10, 90])) == [10, 50]
