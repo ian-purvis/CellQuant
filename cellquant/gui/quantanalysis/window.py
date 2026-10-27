@@ -39,7 +39,7 @@ from qtpy.QtWidgets import (
 
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import graphs
-from cellquant.gui.quantanalysis import project_file
+from cellquant.gui.quantanalysis import project_file, tips
 from cellquant.gui.quantanalysis.datagrid import DataSheetView
 from cellquant.gui.quantanalysis.dialogs import (
     DEFAULT_OPTIONS,
@@ -54,7 +54,7 @@ from cellquant.gui.quantanalysis.dialogs import (
 )
 from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, LOG, OUTLIER_NAMES, DataSheet, GraphSheet, Project, ResultSheet
 from cellquant.gui.quantanalysis.results_view import ResultSheetView
-from cellquant.stats import ColumnTable, sources
+from cellquant.stats import ColumnTable, sources, transforms
 
 INSTALL = 'pip install "cellquant[stats]"'
 SHEET_ROLE = Qt.UserRole + 1
@@ -259,9 +259,6 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(analyze, "Analyze a stack of P values…", lambda: self.analyze("pstack"),
                      "Paste P values and correct them for multiple testing (FDR, Holm-Sidak, Bonferroni).")
         analyze.addSeparator()
-        from cellquant.gui.quantanalysis import tips
-        from cellquant.stats import transforms
-
         processing = analyze.addMenu("Data processing")
         processing.setToolTipsVisible(True)
         for kind, name in transforms.PROCESSES.items():
@@ -272,8 +269,6 @@ class QuantAnalysisWindow(QMainWindow):
         for key, (name, tip) in graphs.KINDS.items():
             self._action(graph, name, lambda key=key: self.new_graph(key), tip)
         graph.addSeparator()
-        from cellquant.gui.quantanalysis import tips
-
         for text, method, tip in (("Format graph…", lambda view: view.format_dialog("graph"), tips.FORMAT_GRAPH),
                                   ("Format axes…", lambda view: view.format_dialog("axes"), tips.FORMAT_AXES),
                                   ("Make this graph look like…", lambda view: view.magic_dialog(), tips.FORMAT["magic"]),

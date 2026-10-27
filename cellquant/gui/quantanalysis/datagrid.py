@@ -230,6 +230,7 @@ class DataSheetView(QWidget):
         names = names if names is not None else self._names()
         values = [_trim(np.asarray(column, float)) for column in values] if values is not None else self._column_values()
         paired = self.paired.isChecked() if paired is None else paired
+        before = sheet.table.names
         try:
             sheet.table = table_with(sheet.table, names, values, paired)
         except Exception as exc:  # noqa: BLE001 - a repeated title, for example; the grid shows the table as it was
@@ -248,7 +249,8 @@ class DataSheetView(QWidget):
             sheet.units = None
             sheet.stale = False
             sheet.notes = [*sheet.notes, "Edited by hand: no longer follows the CellQuant results."]
-        self.project.data_changed(sheet.id)
+        renamed = {old: new for old, new in zip(before, names) if old != new} if len(before) == len(names) else None
+        self.project.data_changed(sheet.id, renamed)
 
     def _edited(self, item: QTableWidgetItem) -> None:
         if self._filling:

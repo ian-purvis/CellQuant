@@ -7,7 +7,7 @@ import pytest
 
 from cellquant.errors import StatisticsError
 from cellquant.stats import ColumnTable, column_math, fraction_of_total, normalize, process, remove_baseline, transform
-from cellquant.stats.transforms import TRANSFORMS, label
+from cellquant.stats.transforms import TRANSFORMS, label, renamed
 
 
 def _table(paired: bool = False) -> ColumnTable:
@@ -94,3 +94,11 @@ def test_column_math_and_process():
     assert label({"kind": "transform", "function": "multiply", "k": 100}) == "Y × 100"
     with pytest.raises(StatisticsError, match="Unknown data processing"):
         process(table, {"kind": "nothing"})
+
+
+def test_renamed_options():
+    names = {"A": "X", "B": "Y"}
+    assert renamed({"kind": "transform", "columns": ["A", "C"]}, names)["columns"] == ["X", "C"]
+    assert renamed({"kind": "baseline", "baseline": "B"}, names)["baseline"] == "Y"
+    assert renamed({"kind": "column_math", "a": "B", "b": "A"}, names) == {"kind": "column_math", "a": "Y", "b": "X"}
+    assert renamed({"kind": "transform", "columns": None}, names)["columns"] is None

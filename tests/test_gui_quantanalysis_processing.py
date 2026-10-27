@@ -3,6 +3,7 @@ Needs Qt (xvfb-run on Linux) and matplotlib."""
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 pytest.importorskip("pytestqt")
@@ -108,6 +109,44 @@ def test_every_kind_from_its_dialog(window, qtbot):
     processing = next(action.menu() for action in menu.actions() if action.text() == "Data processing")
     assert [action.text() for action in processing.actions()] == ["Transform…", "Normalize…", "Fraction of total…",
                                                                   "Remove baseline…", "Column math…"]
+
+
+def test_renamed_and_removed_source_columns(window):
+    data = window.new_table()
+    data.table = ColumnTable.from_columns({"A": [1.0, 2.0, 4.0], "B": [2.0, 6.0, 8.0]})
+    window.project.data_changed(data.id)
+    window.select(data.id)
+    percent = window.process_data("baseline", {"baseline": "A", "operation": "percent", "by": "mean"})
+    window.select(percent.id)
+    logs = window.process_data("transform", {"function": "log10", "columns": ["A", "B"]})
+    window.select(percent.id)
+    window.analyze("compare", WELCH)
+
+    # Renaming a column renames it in the options of every table that follows it, down the chain.
+    window.select(data.id)
+    window.stack.currentWidget().commit(names=["X", "B"])
+    assert percent.process["baseline"] == "X" and percent.name == "% of X: Data 1" and percent.table.names == ["X", "B"]
+    assert logs.process["columns"] == ["X", "B"] and logs.table.names == ["X", "B"] and not logs.warnings
+    assert logs.table["B"].values == pytest.approx(np.log10(np.array([2, 6, 8]) / (7 / 3) * 100))
+
+    # Removing the column it needs blanks the table and says so; results do not look current.
+    window.stack.currentWidget().commit(names=["B"], values=[data.table["B"].values])
+    assert np.isnan(percent.table["X"].values).all() and "Out of date" in percent.warnings[-1]
+    assert np.isnan(logs.table["B"].values).all() and any("Out of date" in item for item in logs.warnings)
+    result = next(item for item in window.project.results.values() if item.data_id == percent.id)
+    assert result.result is None or not np.isfinite(result.result.values["p"])
+
+
+def test_tables_computed_from_each_other_do_not_loop(window):
+    data = window.new_table()
+    data.table = ColumnTable.from_columns({"A": [1.0, 2.0], "B": [3.0, 4.0]})
+    window.select(data.id)
+    first = window.process_data("transform", {"function": "multiply", "k": 2})
+    data.processed_from, data.process = first.id, {"kind": "transform", "function": "multiply", "k": 2}
+    window.project.data_changed(data.id)  # returns: each table is computed once
+    assert window.project.processed_description(first, data).startswith("Transform")
+    first.process = {"kind": "nothing"}
+    assert window.project.processed_description(first, data).startswith("Processing")
 
 
 def test_recent_projects_survive_commas_and_bad_values(window, tmp_path):

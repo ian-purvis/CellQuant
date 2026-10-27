@@ -21,7 +21,7 @@ import pandas as pd
 
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis.project import DataSheet, GraphSheet, Project, ResultSheet, reserve_ids
-from cellquant.stats import ColumnTable
+from cellquant.stats import ColumnTable, transforms
 from cellquant.stats.sources import ImportSpec
 from cellquant.stats.tables import Column
 
@@ -270,7 +270,7 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
     for sheet in data.values():
         if sheet.cleaned_from not in data:
             sheet.cleaned_from = None
-        if sheet.processed_from not in data:
+        if sheet.processed_from not in data or sheet.process.get("kind") not in transforms.PROCESSES:
             sheet.processed_from = None
     reserve_ids([*data, *results, *graph_sheets])
     project.replace(data, results, graph_sheets)

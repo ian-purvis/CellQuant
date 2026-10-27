@@ -305,6 +305,18 @@ def process(table: ColumnTable, options: dict) -> tuple[ColumnTable, list[str]]:
     raise StatisticsError(f"Unknown data processing {kind!r}.")
 
 
+def renamed(options: dict, names: dict[str, str]) -> dict:
+    """``options`` with the columns it names renamed (``names``: old name -> new name)."""
+
+    out = dict(options)
+    if out.get("columns") is not None:
+        out["columns"] = [names.get(name, name) for name in out["columns"]]
+    for key in ("baseline", "a", "b"):
+        if out.get(key) in names:
+            out[key] = names[out[key]]
+    return out
+
+
 def label(options: dict) -> str:
     """A short name for the processing, for sheet names: "log10(Y)", "Normalized", "% of A"…"""
 
