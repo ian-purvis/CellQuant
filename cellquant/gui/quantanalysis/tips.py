@@ -412,3 +412,26 @@ LAYOUT_LABEL_SIZE = "The size of the panel letters, in points (1 pt = 1/72 inch)
 LAYOUT_TITLE = "Optional text across the top of the page, and its size in points."
 LAYOUT_CELLS = "Which graph goes in each cell, row by row. Click a cell on the page to choose its graph."
 LAYOUT_ALIGN = "Where a graph sits in its cell: at the top left, right under its panel letter (the usual figure look), or centred."
+
+# --- Grouped tables and two-way ANOVA ---------------------------------------------------------------------------------
+
+NEW_GROUPED = ("An empty grouped table: two grouping factors. Rows are one factor (for example treatment), data sets the other "
+               "(for example genotype), and each data set's replicates sit side by side.")
+GROUPED_TABLE = ("Type or paste values: one row per level of the row factor, one data set per level of the other factor, with the "
+                 "replicates side by side. Blank cells are missing values.")
+GROUPED_ADD_ROW = "Add an empty row (a new level of the row factor) at the bottom."
+GROUPED_ADD_SET = "Add an empty data set (a new level of the column factor) at the right."
+GROUPED_ADD_REPLICATE = "Add one more replicate subcolumn to every data set."
+COLUMN_BY = ("A second factor makes a grouped table for two-way ANOVA: Group by gives the rows, this gives the data sets. "
+             "Leave it at none for a column table.")
+TWO_WAY = ("Two-way ANOVA asks three questions at once: does the row factor change the mean, does the data set factor change it, "
+           "and does the effect of one depend on the other (the interaction)?")
+TWO_WAY_INTERACTION = ("With the interaction, each cell has its own mean; without it, the effects of the two factors simply add up. "
+                       "Keep it unless you have a reason not to; it cannot be fitted when a cell is empty or every cell has one value.")
+TWO_WAY_COMPARE = ("Within each row: compare the data sets at every level of the row factor (simple effects). Main effect: compare "
+                   "factor means averaged over the other factor (least-squares means, every cell weighted equally); most useful "
+                   "when the interaction is small.")
+TWO_WAY_FAMILY = ("One family per row (or data set) corrects for the comparisons inside each one; all comparisons in one family corrects "
+                  "for every comparison in the table at once, which is stricter.")
+TWO_WAY_METHOD = ("Tukey for every pair and Dunnett against a reference are the most powerful corrections for those goals. Šidák, "
+                  "Holm-Šidák and Bonferroni work for any set of comparisons; Fisher's LSD does not correct; the FDR methods give q values.")

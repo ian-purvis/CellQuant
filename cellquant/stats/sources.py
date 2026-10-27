@@ -20,9 +20,11 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from cellquant.errors import StatisticsError
+from cellquant.stats.grouped import GroupedTable
 from cellquant.stats.tables import ColumnTable
 from cellquant.storage import default_unit_column, unit_summary
 
@@ -314,6 +316,8 @@ class ImportSpec:
     group_by: str | None = None         # a group column of step 1, or a per-object column
     order: list[str] | None = None      # group names in table order; groups left out are dropped
     approved_only: bool = True
+    column_by: str | None = None        # a second factor (grouped table): its levels are the data sets, group_by's the rows
+    column_order: list[str] | None = None
 
     def with_(self, **changes) -> "ImportSpec":
         return replace(self, **changes)
@@ -329,6 +333,7 @@ class Imported:
     warnings: list[str]                 # shown prominently
     pseudoreplicated: bool              # each dot is one object
     description: str                    # one line for the sheet
+    grouped: GroupedTable | None = None  # with a second factor (ImportSpec.column_by): rows × data sets × replicates
 
 
 def groups(source: Source, group_by: str | None, spec_measure: str | None = None) -> list[str]:
@@ -365,7 +370,47 @@ def counted_objects(objects: pd.DataFrame) -> pd.DataFrame:
     return objects.loc[keep]
 
 
+PAIR = " \u2016 "  # joins a row label and a data set label while a grouped table is built
+
+
 def build(source: Source, spec: ImportSpec) -> Imported:
+    if spec.column_by:
+        return _build_grouped(source, spec)
+    return _build(source, spec)
+
+
+def _build_grouped(source: Source, spec: ImportSpec) -> Imported:
+    """A grouped table: ``group_by`` makes the rows and ``column_by`` the data sets. Each value is one dot (image,
+    biological replicate or object) of one row and data set; there is no pairing."""
+
+    if not spec.group_by:
+        raise StatisticsError("A grouped table needs a row factor (Group by) as well as a data set factor.")
+    if spec.column_by == spec.group_by:
+        raise StatisticsError("Choose two different factors for the rows and the data sets.")
+    for factor in (spec.group_by, spec.column_by):
+        if factor not in source.images.columns and (source.objects is None or factor not in source.objects.columns):
+            raise StatisticsError(f"The results have no column {factor!r}.")
+    rows = [name for name in (spec.order or groups(source, spec.group_by))]
+    columns = [name for name in (spec.column_order or groups(source, spec.column_by))]
+    imported = _build(source, spec, pair_with=spec.column_by, order=[f"{r}{PAIR}{c}" for r in rows for c in columns])
+    cells = {tuple(column.name.split(PAIR, 1)): column.finite for column in imported.table.columns}
+    present_rows = [name for name in rows if any(key[0] == name for key in cells)]
+    present_columns = [name for name in columns if any(key[1] == name for key in cells)]
+    grouped = GroupedTable.from_cells(cells, present_rows, present_columns, title=imported.table.title)
+    def factor(column: str) -> str:
+        name = source.names.get(column, column)
+        return f"{name} +/−" if column.endswith("_pos") else name
+
+    what = {"image": "one dot per image", "unit": f"one dot per biological replicate ({spec.unit})", "object": "one dot per object"}[spec.dot]
+    imported.grouped = grouped
+    imported.description = (f"{grouped.title}, {what}, rows by {factor(spec.group_by)}, data sets by {factor(spec.column_by)} "
+                            f"({len(present_rows)} rows × {len(present_columns)} data sets, {int(np.isfinite(grouped.values).sum())} values). "
+                            f"From {source.label}.")
+    imported.notes.append(f"Grouped table: rows by {factor(spec.group_by)}, data sets by {factor(spec.column_by)}; each cell's values side by side.")
+    return imported
+
+
+def _build(source: Source, spec: ImportSpec, pair_with: str | None = None, order: list[str] | None = None) -> Imported:
     measure = source.measure(spec.measure)
     if spec.dot not in DOTS:
         raise StatisticsError(f"Dot must be one of {', '.join(DOTS)}.")
@@ -392,6 +437,13 @@ def build(source: Source, spec: ImportSpec) -> Imported:
     images["_image"] = images["sample_name"].astype(str) if "sample_name" in images.columns else images.index.astype(str)
     images["_unit"] = images[spec.unit].map(lambda value: group_label(spec.unit, value, {})) if spec.unit and spec.unit in images.columns else ""
     images["_group"] = images[group_by].map(lambda value: group_label(group_by, value, source.names)) if group_by and not object_group else "All"
+    pair_object = bool(pair_with) and pair_with not in source.images.columns
+    if pair_object and measure.level != "object":
+        raise StatisticsError(f"{pair_with} is a per-object column; use a per-object measure, or a column of step 1 for the data sets.")
+    if pair_with and not pair_object:
+        images["_pair"] = images[pair_with].map(lambda value: group_label(pair_with, value, source.names))
+        if not object_group:
+            images["_group"] = images["_group"].astype(str) + PAIR + images["_pair"].astype(str)
     if spec.dot == "unit" and spec.unit not in images.columns:
         raise StatisticsError(f"The summaries have no column {spec.unit!r}.")
 
@@ -408,7 +460,7 @@ def build(source: Source, spec: ImportSpec) -> Imported:
         if source.objects is None:
             raise StatisticsError("These results have no per-object table (objects.csv or measurements/).")
         objects = counted_objects(source.objects)
-        keep = ["image_id", "_image", "_unit", "_group"] if "image_id" in images.columns else []
+        keep = ["image_id", "_image", "_unit", "_group", *(["_pair"] if "_pair" in images.columns else [])] if "image_id" in images.columns else []
         if not keep:
             raise StatisticsError("The summaries have no image_id column, so objects cannot be matched to images.")
         objects = objects.merge(images[keep], on="image_id", how="inner", suffixes=("", "_img"))
@@ -416,6 +468,12 @@ def build(source: Source, spec: ImportSpec) -> Imported:
             if group_by not in objects.columns:
                 raise StatisticsError(f"The object table has no column {group_by!r}.")
             objects["_group"] = objects[group_by].map(lambda value: group_label(group_by, value, source.names))
+        if pair_object:
+            if pair_with not in objects.columns:
+                raise StatisticsError(f"The object table has no column {pair_with!r}.")
+            objects["_pair"] = objects[pair_with].map(lambda value: group_label(pair_with, value, source.names))
+        if pair_with and (object_group or pair_object):
+            objects["_group"] = objects["_group"].astype(str) + PAIR + objects["_pair"].astype(str)
         objects["_value"] = pd.to_numeric(objects[measure.key], errors="coerce")
         objects = objects.loc[objects["_group"].notna()]
         per_image = (objects.groupby(["_group", "_unit", "_image"], sort=False)["_value"].mean().reset_index()
@@ -436,11 +494,11 @@ def build(source: Source, spec: ImportSpec) -> Imported:
             notes.append(f"Each unit's value is the mean of every counted object in its images ({spec.unit}).")
 
     available = groups(source, group_by) if group_by else ["All"]
-    order = [name for name in (spec.order or available) if name in set(long["group"])]
+    order = [name for name in (order or spec.order or available) if name in set(long["group"])]
     if not order:
         raise StatisticsError("No values for the chosen groups.")
     long = long.loc[long["group"].isin(order)]
-    paired = object_group and spec.dot != "object"
+    paired = object_group and spec.dot != "object" and not pair_with
     title = measure.label.replace(" per object", "")
     if paired:
         table = ColumnTable.from_long(long, value="value", group="group", order=order, subject="dot", title=title)

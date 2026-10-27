@@ -32,6 +32,7 @@ from cellquant.stats import (
     p_value_stack,
 )
 from cellquant.stats import transforms
+from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
 
 LOG = logging.getLogger("cellquant.quantanalysis")
@@ -101,6 +102,7 @@ class DataSheet:
     cleaned_options: dict = field(default_factory=dict)  # the outlier method and its Q or alpha
     processed_from: str | None = None   # the data table this one is computed from (transform, normalize…); follows it
     process: dict = field(default_factory=dict)          # the processing: "kind" and its options (cellquant.stats.transforms)
+    grouped: GroupedTable | None = None  # a grouped table (two factors); ``table`` is then its cells as columns ("Row: Data set")
 
 
 @dataclass
@@ -383,8 +385,8 @@ class Project(QObject):
         data = self.data.get(sheet.data_id)
         sheet.result, sheet.wide, sheet.warnings, sheet.methods, sheet.error = None, None, [], "", ""
         try:
-            if sheet.kind in ("compare", "anova", "outliers"):
-                run = {"compare": run_compare, "anova": run_anova, "outliers": run_outliers}[sheet.kind]
+            if sheet.kind in ("compare", "anova", "outliers", "twoway"):
+                run = {"compare": run_compare, "anova": run_anova, "outliers": run_outliers, "twoway": run_two_way}[sheet.kind]
                 sheet.result = run(data, sheet.options)
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
@@ -459,6 +461,29 @@ def run_anova(data: DataSheet, options: dict) -> AnalysisResult:
     if goal != "control":
         kwargs.pop("family", None)
     return one_way(table, test, **kwargs)
+
+
+TWO_WAY_KEYS = ("interaction", "compare", "goal", "method", "control", "family", "alpha", "ci", "style")
+
+
+def run_two_way(data: DataSheet, options: dict) -> AnalysisResult:
+    """Two-way ANOVA of a grouped table by the options of the Two-way ANOVA dialog."""
+
+    if data is None or data.grouped is None:
+        raise CellQuantError("Two-way ANOVA needs a grouped table (rows × data sets). Make one with File → New grouped table, "
+                             "or import results with a data set factor.")
+    grouped = data.grouped
+    kwargs = {key: options[key] for key in TWO_WAY_KEYS if key in options and options[key] is not None}
+    if kwargs.get("compare") in (None, "none"):
+        for key in ("compare", "goal", "method", "control", "family"):
+            kwargs.pop(key, None)
+    elif kwargs.get("goal") != "control":
+        kwargs.pop("control", None)
+    else:
+        inner = grouped.rows if kwargs["compare"] in ("within_columns", "row_means") else grouped.columns
+        if kwargs.get("control") not in inner:
+            raise CellQuantError(f"The reference {kwargs.get('control')!r} is gone; choose it again (Change options…).")
+    return two_way_anova(grouped, **kwargs)
 
 
 def _as_list(value) -> list:
@@ -581,6 +606,30 @@ def run_normality(data: DataSheet, options: dict) -> tuple[pd.DataFrame, list[st
     if not frame.empty:
         frame.index.names = ["section", "statistic"]
     return frame, warnings, (methods + " Lognormality: the same tests on the natural logs.") if methods else ""
+
+
+def cells_table(grouped: GroupedTable) -> ColumnTable:
+    """A grouped table's cells as columns ("Row: Data set"), for the analyses and graphs of column tables."""
+
+    from cellquant.stats import Column
+
+    columns, names = [], set()
+    for i, row in enumerate(grouped.rows):
+        for j, column in enumerate(grouped.columns):
+            values = grouped.values[i, j]
+            filled = np.nonzero(np.isfinite(values))[0]
+            name = base = f"{row}: {column}"
+            number = 2
+            while name in names:  # "a: b" + "c" and "a" + "b: c" read the same
+                name, number = f"{base} ({number})", number + 1
+            names.add(name)
+            columns.append(Column(name, values[: filled[-1] + 1] if filled.size else values[:0]))
+    return ColumnTable(title=grouped.title, columns=columns)
+
+
+def set_grouped(sheet: DataSheet, grouped: GroupedTable) -> None:
+    sheet.grouped = grouped
+    sheet.table = cells_table(grouped)
 
 
 def table_with(table: ColumnTable, names: list[str], values: list[np.ndarray], paired: bool) -> ColumnTable:
