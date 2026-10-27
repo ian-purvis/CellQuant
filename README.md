@@ -1,10 +1,5 @@
 # CellQuant
 
-> **This is CellQuant 2**, a rewrite. The original CellQuant (0.4.0a3 and earlier) is kept unchanged on the
-> [`v1` branch](https://github.com/ian-purvis/CellQuant/tree/v1) and at tag
-> [`v0.4.0a3`](https://github.com/ian-purvis/CellQuant/releases/tag/v0.4.0a3). Settings files and results from
-> version 1 do not open in version 2. See [CHANGELOG.md](CHANGELOG.md).
-
 CellQuant finds nuclei (or cells) in fluorescence microscope images and counts how many are positive for markers. It works on one image or a whole experiment, and you check every result by eye in napari.
 
 **New to CellQuant? Read [Start here](docs/START_HERE.md).** It covers installing, a 15-minute practice run with a known answer, and each step with a success check.
