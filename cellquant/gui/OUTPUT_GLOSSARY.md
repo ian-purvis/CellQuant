@@ -1641,6 +1641,16 @@ These keys are only present if a count area is drawn.
 
 **What it means:** A sorted list. It matches the rows where `excluded` is `True`.
 
+###### `hand_calls_sha256`
+
+**In short:** A checksum of the calls made by hand in this image. Only present when there are any.
+
+**What it means:** The calls themselves are in `classification_definitions` (`cell_calls`). The checksum changes whenever a call is added, changed or taken back, so two provenance files with the same checksum used the same calls.
+
+**For experts:** SHA-256 of the image's `cell_calls` per marker, as sorted JSON (`pipeline._hand_calls_digest`).
+
+**Related:** `cell_calls`
+
 #### `tables/<image>.json`
 <!-- data: json run/tables/<image>.json -->
 

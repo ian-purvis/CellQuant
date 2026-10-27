@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+import hashlib
 import json
 import re
 
@@ -458,6 +459,9 @@ def assemble_result(
         "manual_edits": [item.model_dump(mode="json") for item in operations],
         "excluded_object_ids": sorted(removed),
     }
+    digest = _hand_calls_digest(parsed.classifications)
+    if digest:
+        provenance["hand_calls_sha256"] = digest  # only with calls by hand, so other results are unchanged
     if polygons:
         # Only with a count area, so results without one are unchanged.
         provenance["count_area"] = polygons
@@ -670,6 +674,10 @@ def reclassify_result(result: ImageResult, recipe: Recipe | dict | str | Path) -
     provenance["recipe_sha256"] = parsed.content_hash()
     provenance["classification_definitions"] = [item.model_dump(mode="json") for item in parsed.classifications]
     provenance["timestamp"] = datetime.now(timezone.utc).isoformat()
+    provenance.pop("hand_calls_sha256", None)
+    digest = _hand_calls_digest(parsed.classifications)
+    if digest:
+        provenance["hand_calls_sha256"] = digest
     provenance["warnings"] = list(dict.fromkeys([*result.qc.warnings, *summary_warnings]))
     return ImageResult(
         labels=result.labels,
@@ -971,6 +979,15 @@ def _parse_edits(manual_edits: list | None) -> list[EditOperation]:
         item if isinstance(item, EditOperation) else EditOperation.model_validate(item)
         for item in manual_edits
     ]
+
+
+def _hand_calls_digest(classifications) -> str:
+    """Checksum of the calls by hand in these settings (one image's, after ``Recipe.for_image``); blank without any."""
+
+    calls = {item.id: item.cell_calls for item in classifications if item.cell_calls}
+    if not calls:
+        return ""
+    return hashlib.sha256(json.dumps(calls, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def _annotate_objects(

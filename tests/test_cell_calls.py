@@ -117,3 +117,20 @@ def test_step_5_counts_count_calls_by_hand(tmp_path: Path):
     counts = controller.histogram(first, "marker_a_mean", 200, "above", "class_a")
     assert (counts["positive"], counts["negative"], counts["percent_positive"]) == (2, 0, 100.0)
     assert controller.histogram(first, "marker_a_mean", 200)["positive"] == 1  # the cutoff alone
+
+
+def test_stale_calls_are_dropped_and_the_provenance_has_a_checksum(tmp_path: Path):
+    controller, ids = _three_runs(tmp_path)
+    first = ids[0]
+    result = controller.call_cells(first, "class_a", [2], True)
+    digest = result.provenance["hand_calls_sha256"]
+    assert len(digest) == 64
+    assert "hand_calls_sha256" not in controller.classified_now(ids[1]).provenance
+    # Object 2 moves (run again with other objects): the next call drops its stale entry.
+    objects = result.objects.copy()
+    objects.loc[objects["object_id"] == 2, "centroid_x"] += 30
+    controller.last_results[first] = dataclasses.replace(result, objects=objects)
+    controller.call_cells(first, "class_a", [1], False)
+    assert set(controller.recipe.classifications[0].cell_calls[first]) == {"1"}
+    controller.call_cells(first, "class_a", [1], None)
+    assert "hand_calls_sha256" not in controller.classified_now(first).provenance

@@ -190,7 +190,10 @@ class EditCellsWindow(QDialog):
         if controller is None or result is None:
             self.marker_line.setText("Run this image first.")
         elif classification is None:
-            self.marker_line.setText("Choose a marker under <b>Display objects by</b> in step 5.")
+            self.marker_line.setText(
+                "Calls are made one marker at a time: choose a single marker (not all markers together) under "
+                "<b>Display objects by</b> in step 5."
+            )
         else:
             self.marker_line.setText(f"Marker shown: <b>{classification.name}</b>")
         if on:
@@ -460,13 +463,7 @@ class EditCellsWindow(QDialog):
 
     def _apply(self, classification_id: str, object_ids: list[int], call: bool | None) -> None:
         controller, _classification, image_id, _result = self._context()
-        if controller is None or image_id is None:
-            return
-        if self.shell.is_busy():
-            self.shell.message("Wait for the current analysis to finish, then try again.")
-            return
-        if self.shell._labels_image_id != image_id:
-            self.shell.message("Wait for the image to finish loading, then try again.")
+        if not self._ready(controller, image_id):
             return
         was = controller.experiment.image(image_id).processing_status
         try:
@@ -476,16 +473,29 @@ class EditCellsWindow(QDialog):
             return
         self._after_call(result, was, f"{len(object_ids)} cell{'s' if len(object_ids) != 1 else ''}: {CALL_WORDS[call].lower()}.")
 
+    def _ready(self, controller, image_id) -> bool:
+        """Calls change the settings: never while an analysis runs or another image is loading."""
+
+        if controller is None or image_id is None:
+            return False
+        if self.shell.is_busy():
+            self.shell.message("Wait for the current analysis to finish, then try again.")
+            return False
+        if self.shell._labels_image_id != image_id:
+            self.shell.message("Wait for the image to finish loading, then try again.")
+            return False
+        return True
+
     def _undo(self) -> None:
         controller, _classification, image_id, _result = self._context()
-        if controller is None or image_id is None:
+        if not self._ready(controller, image_id):
             return
         was = controller.experiment.image(image_id).processing_status
         self._after_call(controller.undo_cell_calls(image_id), was, "Last call by hand taken back.")
 
     def _clear_all(self) -> None:
         controller, classification, image_id, _result = self._context()
-        if controller is None or classification is None or image_id is None:
+        if classification is None or not self._ready(controller, image_id):
             return
         count = len(controller.cell_calls(image_id, classification.id))
         if not count:
@@ -498,7 +508,7 @@ class EditCellsWindow(QDialog):
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
-        if answer != QMessageBox.Yes:
+        if answer != QMessageBox.Yes or not self._ready(controller, image_id):
             return
         was = controller.experiment.image(image_id).processing_status
         self._after_call(controller.clear_cell_calls(image_id, classification.id), was, "The cutoff calls every cell again.")

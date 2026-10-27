@@ -505,7 +505,14 @@ class AnalysisController:
             with self._image_settings(self.experiment.image(image_id)):
                 settings = self.recipe.content_hash()
         fingerprint = f"{settings}:{len(self._active_edits(image_id))}"
-        calls = {item.id: item.calls_for(image_id) for item in self.recipe.classifications if item.calls_for(image_id)}
+        # Only the calls still applied (their object is there), so a stale entry changes nothing.
+        objects = result.objects if result is not None else None
+        calls = {
+            item.id: {str(key): positive for key, positive in self._live_calls(item.calls_for(image_id), objects).items()}
+            for item in self.recipe.classifications
+            if item.calls_for(image_id)
+        }
+        calls = {key: value for key, value in calls.items() if value}
         if calls:
             # Objects called by hand: what an approval vouches for, like the edits.
             digest = hashlib.sha256(json.dumps(calls, sort_keys=True).encode("utf-8")).hexdigest()[:16]
@@ -1058,7 +1065,20 @@ class AnalysisController:
     def can_undo_cell_calls(self, image_id: str) -> bool:
         return bool(self._call_history.get(image_id))
 
+    @staticmethod
+    def _live_calls(marks: dict, objects: pd.DataFrame | None) -> dict[int, bool]:
+        """Calls whose object is still there (all of them when no objects are at hand)."""
+
+        if objects is None:
+            return {int(key): bool(mark.get("positive")) for key, mark in marks.items()}
+        return hand_calls(marks, objects)
+
     def _set_calls(self, image_id: str, classification_id: str, data: dict, calls: dict) -> ImageResult | None:
+        current = self.last_results.get(image_id)
+        if calls and current is not None:
+            # Calls whose object moved or was deleted are dropped, not kept in the settings.
+            live = hand_calls(calls, current.objects)
+            calls = {key: mark for key, mark in calls.items() if int(key) in live}
         stored = next(item for item in data["classifications"] if item["id"] == classification_id).setdefault("cell_calls", {})
         if calls:
             stored[image_id] = calls
