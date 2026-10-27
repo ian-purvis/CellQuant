@@ -1578,6 +1578,7 @@ class CellQuantWindow:
             self._review_panel.display,
         }
         inputs: list[QWidget] = [self._review_panel.threshold_slider, self._review_panel.histogram]
+        inputs.extend(self._review_panel.combined.settings_inputs())  # also while in a window of its own
         panels = (self._experiment_panel, self._objects_panel, self._measurements_panel, self._review_panel, self._marker_setup)
         for panel in panels:
             for kind in (QComboBox, QAbstractSpinBox, QLineEdit, QCheckBox, QSlider):
@@ -2306,24 +2307,31 @@ class CellQuantWindow:
 
     def _set_classification_overlay(self, result) -> None:
         choice = self._review_panel.classification_id()
-        if not choice or choice not in result.objects.columns:
+        all_markers = self._review_panel.showing_all_markers()
+        if not all_markers and (not choice or choice not in result.objects.columns):
             self._drop("Classification")
             return
-        frame = result.objects
-        if "excluded" in frame.columns:
-            frame = frame.loc[~frame["excluded"].astype(bool)]
-        frame = frame.loc[~outside(frame)]  # objects outside the count area are not colored
+        if all_markers:
+            # Each object's mix of markers (counted objects only), see combined_markers.
+            ids, flags = self._review_panel.combined.overlay_codes(result.objects)
+            flags = flags.astype(np.int32)
+        else:
+            frame = result.objects
+            if "excluded" in frame.columns:
+                frame = frame.loc[~frame["excluded"].astype(bool)]
+            frame = frame.loc[~outside(frame)]  # objects outside the count area are not colored
+            ids = frame["object_id"].to_numpy(dtype=np.int64)
+            flags = np.array([2 if _is_positive_flag(value) else 1 for value in frame[choice].tolist()], dtype=np.int32)
         # One lookup per pixel instead of one full-image comparison per object.
         labels = np.asarray(result.labels)
         codes = np.zeros(int(labels.max(initial=0)) + 1, dtype=np.int32)
-        ids = frame["object_id"].to_numpy(dtype=np.int64)
-        flags = np.array([2 if _is_positive_flag(value) else 1 for value in frame[choice].tolist()], dtype=np.int32)
         inside = ids < len(codes)
         codes[ids[inside]] = flags[inside]
         overlay = codes[labels]
         existing = self._layer_if_shape("Classification", overlay.shape)
         if existing is not None:
             existing.data = overlay
+            self.apply_classification_colors()  # one marker or All markers: different colors
             return
         self._drop("Classification")
         layer = self.viewer.add_labels(overlay, name="Classification", opacity=0.85)
@@ -2331,19 +2339,18 @@ class CellQuantWindow:
         self.apply_classification_colors()
 
     def apply_classification_colors(self) -> None:
-        """Positive objects in the positive color, negative in the negative color."""
+        """Positive objects in the positive color, negative in the negative color; with All markers,
+        each mix of markers in its own color."""
 
         if "Classification" not in self.viewer.layers:
             return
         positive, negative = classification_colors()
         layer = self.viewer.layers["Classification"]
-        layer.colormap = DirectLabelColormap(
-            color_dict={
-                None: np.array([0, 0, 0, 0], dtype=np.float32),
-                1: _rgba(negative),
-                2: _rgba(positive),
-            }
-        )
+        if self._review_panel.showing_all_markers():
+            colors = {code: _rgba(color) for code, color in self._review_panel.combined.code_colors().items()}
+        else:
+            colors = {1: _rgba(negative), 2: _rgba(positive)}
+        layer.colormap = DirectLabelColormap(color_dict={None: np.array([0, 0, 0, 0], dtype=np.float32), **colors})
         layer.contour = 2 if classification_outline() else 0
 
     def _set_ids(self, result) -> None:
@@ -5564,6 +5571,7 @@ class CutoffHistogram(QWidget):
         self._at_least = False
         self._examples: tuple[np.ndarray, np.ndarray] = (np.zeros(0), np.zeros(0))
         self.draggable = True
+        self.colors: tuple[str, str] | None = None  # (positive, negative); None: the classification colors
 
     def set_examples(self, positive, negative) -> None:
         """Values of the objects marked positive and negative: short ticks along the top."""
@@ -5610,7 +5618,7 @@ class CutoffHistogram(QWidget):
             counts, edges = np.histogram(np.clip(self._values, self._low, self._high), bins=48, range=(self._low, self._high))
             # Log heights: a few bright positives stay visible next to many dim negatives.
             heights = np.log1p(counts) / max(np.log1p(counts.max()), 1e-9)
-            positive, negative = (QColor(color) for color in classification_colors())
+            positive, negative = (QColor(color) for color in (self.colors or classification_colors()))
             for count, fraction, start, end in zip(counts, heights, edges[:-1], edges[1:]):
                 if not count:
                     continue
@@ -5659,6 +5667,16 @@ class ReviewPanel(QWidget):
         self.display.currentIndexChanged.connect(lambda _index: self._recolor())
         layout.addWidget(QLabel("Display objects by"))
         layout.addWidget(self.display)
+        # "All markers": every marker's cutoff at once, objects colored by their mix of markers.
+        from cellquant.gui.combined_markers import CombinedMarkersView
+
+        self.combined_box = QWidget()
+        combined_slot = QVBoxLayout(self.combined_box)
+        combined_slot.setContentsMargins(0, 0, 0, 0)
+        self.combined = CombinedMarkersView(self)
+        self.combined.set_slot(combined_slot)
+        self.combined_box.setVisible(False)
+        layout.addWidget(self.combined_box)
         # The cutoff, set like napari's opacity: drag the slider or type the number.
         from superqt import QLabeledDoubleSlider
 
@@ -6248,6 +6266,7 @@ class ReviewPanel(QWidget):
         self.update_status_line()
         self.counts.setText("Not run yet.")
         self.qc.setText("")
+        self.combined.show_no_result()
         self._show_strip()  # the bold row follows the image shown
 
     def show_result(self, result) -> None:
@@ -6258,6 +6277,13 @@ class ReviewPanel(QWidget):
         self.display.addItem("Objects", "")
         for classification in self.shell.controller.recipe.classifications:
             self.display.addItem(classification.name, classification.id)
+        if len(self.shell.controller.recipe.classifications) > 1:
+            from cellquant.gui.combined_markers import ALL_MARKERS
+
+            self.display.addItem("All markers", ALL_MARKERS)
+            self.display.setItemData(
+                self.display.count() - 1, "Every marker's cutoff at once; objects colored by the markers they are positive for.", Qt.ToolTipRole
+            )
         index = self.display.findData(current)
         if index >= 0:
             self.display.setCurrentIndex(index)
@@ -6276,7 +6302,20 @@ class ReviewPanel(QWidget):
         )
 
     def classification_id(self) -> str:
-        return str(self.display.currentData() or "")
+        """The one marker shown; empty for Objects and for All markers."""
+
+        return "" if self.showing_all_markers() else str(self.display.currentData() or "")
+
+    def showing_all_markers(self) -> bool:
+        from cellquant.gui.combined_markers import ALL_MARKERS
+
+        return self.display.currentData() == ALL_MARKERS
+
+    def combined_moved(self) -> None:
+        """All markers went to its own window or came back: step 5 shows it only while docked."""
+
+        self.combined_box.setVisible(self.showing_all_markers() and not self.combined.popped_out())
+        self._recolor()
 
     def bind_labels(self, boundaries, fills) -> None:
         self._labels = boundaries
@@ -6293,6 +6332,10 @@ class ReviewPanel(QWidget):
 
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
+        all_markers = self.showing_all_markers()
+        self.combined_box.setVisible(all_markers and not self.combined.popped_out())
+        if all_markers or self.combined.popped_out():
+            self.combined.show_result(result, self.shell.controller)
         classification_id = self.classification_id()
         examples = self._examples_mode()
         for widget in (self.cutoff_label, self.histogram, self.strip, self.apply_all):
@@ -6445,13 +6488,14 @@ class ReviewPanel(QWidget):
         which = "every image" if include_approved else "every unapproved image"
         self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff {value:g} applied to {which}.")
 
-    def _ask_include_approved(self, name: str, value: float, approved: int) -> bool | None:
+    def _ask_include_approved(self, name: str, value: float | None, approved: int) -> bool | None:
         """Change the approved images too (True), only the unapproved ones (False), or nothing (None)."""
 
         box = QMessageBox(self)
         box.setWindowTitle("Apply to all images")
         count = f"{approved} other image{'s are' if approved != 1 else ' is'} approved"
-        box.setText(f"Apply the {name} cutoff {value:g} to every image? {count}.")
+        what = name if value is None else f"the {name} cutoff {value:g}"
+        box.setText(f"Apply {what} to every image? {count}.")
         box.setInformativeText("Approved images whose percent positive changes will need approving again.")
         every = box.addButton("All images", QMessageBox.AcceptRole)
         unapproved = box.addButton("Unapproved images only", QMessageBox.AcceptRole)
@@ -6540,18 +6584,54 @@ class ReviewPanel(QWidget):
         self.shell.apply_classification_colors()
 
     def _threshold_moved(self, value: float) -> None:
-        controller = self.shell.controller
         classification_id = self.classification_id()
-        if controller is None or not classification_id or not self.shell._nav_ids:
-            return
-        if self._current_classification() is None:
+        if not classification_id or self._current_classification() is None:
             return  # the marker shown was removed in step 4
+        self.set_cutoffs({classification_id: value})
+
+    def set_cutoffs(self, cutoffs: dict[str, float]) -> None:
+        """This image's cutoff for each marker given (the slider, or All markers' sliders)."""
+
+        controller = self.shell.controller
+        if controller is None or not self.shell._nav_ids:
+            return
+        known = {item.id for item in controller.recipe.classifications}
+        cutoffs = {key: value for key, value in cutoffs.items() if key in known}
+        if not cutoffs:
+            return
         image_id = self.shell._nav_ids[self.shell._nav_index]
-        result = controller.update_thresholds(image_id, {classification_id: value}, this_image_only=self._this_image_only())
+        result = controller.update_thresholds(image_id, cutoffs, this_image_only=self._this_image_only())
         if controller.cleared_approvals or controller.kept_approvals:
             self._after_cutoff_change(result)
         elif result is not None:
             self.shell.show_classification(result)
+
+    def redraw(self) -> None:
+        self._recolor()
+
+    def apply_all_markers_to_all(self) -> None:
+        """All markers' Apply to all images: this image's cutoff for every marker, for every image."""
+
+        controller, image_id = self.shell.controller, self._shown_image_id()
+        if controller is None or image_id is None:
+            return
+        classifications = list(controller.recipe.classifications)
+        approved = [
+            record.image_id
+            for record in controller.experiment.images
+            if record.processing_status in ("approved", "reviewed") and record.image_id != image_id
+        ]
+        include_approved = self._ask_include_approved("this image's cutoff for every marker", None, len(approved)) if approved else True
+        if include_approved is None:
+            return
+        kept, cleared = set(), set()
+        for classification in classifications:
+            controller.apply_cutoff_to_all(classification.id, classification.threshold_for(image_id), include_approved=include_approved)
+            kept.update(controller.kept_approvals)
+            cleared.update(controller.cleared_approvals)
+        controller.kept_approvals, controller.cleared_approvals = sorted(kept), sorted(cleared)
+        which = "every image" if include_approved else "every unapproved image"
+        self._after_cutoff_change(controller.classified_now(image_id), f"This image's cutoffs for all {len(classifications)} markers applied to {which}.")
 
     def _recolor(self) -> None:
         controller = self.shell.controller
