@@ -67,6 +67,20 @@ Every setting is kept in the graph's format (`GraphFormat` in `cellquant/gui/qua
 
 Dividing every value by the same control mean (% of control by mean) changes the units but not the P value of a comparison between two treated groups; it does make the control's own spread visible. Dividing by each replicate's own control (row by row) removes the variation between replicates, which is what a paired design is for.
 
+### Page layouts
+
+**Graph → New page layout** puts several graphs on one page, for a figure. The page starts with the project's graphs (the one shown first) in a grid just large enough for them, and appears under **Layouts** in the navigator. The panel beside the page sets:
+
+- **Paper**: US Letter, A4 (portrait or landscape) or a custom size in mm, such as one journal column (85 mm) or two (175 mm) wide.
+- **Grid**: rows × columns of cells (up to 6 × 6), the **margin** around the page and the **gap** between cells, in mm. Each cell is (page width − 2 × margin − (columns − 1) × gap) ÷ columns wide, and the same down the page (less the title).
+- **Graph in cell**: at the top left under its panel letter (the usual figure look) or centred.
+- **Panel letters** (A, B, C… or a, b, c…, or none), their size in points and bold, and an optional **title**. Letters follow reading order and count only the cells that hold a graph.
+- **Graphs**: which graph goes in each cell. Clicking a cell on the page opens its choice. Changing the grid keeps every graph in its row and column; graphs that no longer fit move to empty cells, or wait until the grid grows.
+
+A graph keeps its own size (Format graph → size) and font sizes. A graph larger than its cell is shrunk to fit, text and all, by the scale s = min(1, cell width ÷ graph width, cell height ÷ graph height); a note above the page says which graphs are shrunk. Graphs are never enlarged. The page follows its graphs: editing a data table, an analysis or a graph's format shows on the page. Deleting a graph empties its cell.
+
+**Export layout…** saves the page as SVG, where every graph stays vector (a vector editor such as Inkscape can save it as PDF), or as PNG, TIFF (LZW) or JPEG at 300 or 600 dpi. Layouts are saved in the project file.
+
 ## Replicates: N and n
 
 A **biological replicate** is an independent sample: one subject, one culture, one independently prepared sample. Its number is **N**. **Technical replicates** are repeated measurements of one sample: its images, fields or cells. Their number is **n**.

@@ -130,6 +130,14 @@ class GraphSheet:
         self.format = as_format(self.format)
 
 
+@dataclass
+class LayoutSheet:
+    name: str
+    page: dict = field(default_factory=dict)   # paper, orientation, grid, margins, panel letters, title (layouts.DEFAULT_PAGE)
+    graphs: list = field(default_factory=list)  # a graph id (or None: empty) per cell, row by row
+    id: str = field(default_factory=lambda: next_id("layout"))
+
+
 class Project(QObject):
     """Every sheet, and the links between them. ``changed(id)`` names the sheet that changed ("" for the list)."""
 
@@ -141,6 +149,7 @@ class Project(QObject):
         self.data: dict[str, DataSheet] = {}
         self.results: dict[str, ResultSheet] = {}
         self.graphs: dict[str, GraphSheet] = {}
+        self.layouts: dict[str, LayoutSheet] = {}
         self._refreshing: set[str] = set()
         self._renamed_from: dict[str, str] = {}  # sheet id -> its name before a rename that its processed tables follow
         self.changed.connect(lambda _sheet_id: self.modified.emit())
@@ -148,19 +157,19 @@ class Project(QObject):
     def touch(self) -> None:
         self.modified.emit()
 
-    def replace(self, data: dict, results: dict, graphs: dict) -> None:
+    def replace(self, data: dict, results: dict, graphs: dict, layouts: dict | None = None) -> None:
         """Every sheet at once (a project file opened, or a new project): analyses are computed again."""
 
-        self.data, self.results, self.graphs = dict(data), dict(results), dict(graphs)
+        self.data, self.results, self.graphs, self.layouts = dict(data), dict(results), dict(graphs), dict(layouts or {})
         for sheet in self.results.values():
             self.compute(sheet)
         self.changed.emit("")
 
     def sheet(self, sheet_id: str):
-        return self.data.get(sheet_id) or self.results.get(sheet_id) or self.graphs.get(sheet_id)
+        return self.data.get(sheet_id) or self.results.get(sheet_id) or self.graphs.get(sheet_id) or self.layouts.get(sheet_id)
 
     def unique_name(self, base: str) -> str:
-        names = {sheet.name for sheet in (*self.data.values(), *self.results.values(), *self.graphs.values())}
+        names = {sheet.name for sheet in (*self.data.values(), *self.results.values(), *self.graphs.values(), *self.layouts.values())}
         if base not in names:
             return base
         number = 2
@@ -292,8 +301,14 @@ class Project(QObject):
         self.changed.emit("")
         return sheet
 
+    def add_layout(self, sheet: LayoutSheet) -> LayoutSheet:
+        sheet.name = self.unique_name(sheet.name)
+        self.layouts[sheet.id] = sheet
+        self.changed.emit("")
+        return sheet
+
     def remove(self, sheet_id: str) -> None:
-        """Remove a sheet; a data table takes its results and graphs with it."""
+        """Remove a sheet; a data table takes its results and graphs with it, and a graph leaves its layout cells empty."""
 
         if sheet_id in self.data:
             for result in [item for item in self.results.values() if item.data_id == sheet_id]:
@@ -308,6 +323,9 @@ class Project(QObject):
                     other.processed_from = None
         removed = self.results.pop(sheet_id, None)
         self.graphs.pop(sheet_id, None)
+        self.layouts.pop(sheet_id, None)
+        for layout in self.layouts.values():
+            layout.graphs = [graph_id if graph_id in self.graphs else None for graph_id in layout.graphs]
         for graph in self.graphs.values():
             if graph.result_id == sheet_id:
                 graph.result_id = None

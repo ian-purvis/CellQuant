@@ -52,7 +52,17 @@ from cellquant.gui.quantanalysis.dialogs import (
     ProcessDialog,
     PStackDialog,
 )
-from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, LOG, OUTLIER_NAMES, DataSheet, GraphSheet, Project, ResultSheet
+from cellquant.gui.quantanalysis.project import (
+    ANOVA_NAMES,
+    COMPARE_TESTS,
+    LOG,
+    OUTLIER_NAMES,
+    DataSheet,
+    GraphSheet,
+    LayoutSheet,
+    Project,
+    ResultSheet,
+)
 from cellquant.gui.quantanalysis.results_view import ResultSheetView
 from cellquant.stats import ColumnTable, sources, transforms
 
@@ -169,6 +179,7 @@ class QuantAnalysisWindow(QMainWindow):
             ("data", "Data tables", "Your numbers: one column per group. Edit them and every linked result and graph updates."),
             ("results", "Results", "Analyses of a data table. Each one follows its table."),
             ("graphs", "Graphs", "Graphs of a data table, and of a comparison for the P bracket."),
+            ("layouts", "Layouts", "Pages with several graphs on them, for figures. Each one follows its graphs."),
         ):
             folder = QTreeWidgetItem([title])
             folder.setToolTip(0, tip)
@@ -275,8 +286,11 @@ class QuantAnalysisWindow(QMainWindow):
                                   ("Copy format", lambda view: view.copy_format(), tips.FORMAT["copy_format"]),
                                   ("Paste format", lambda view: view.paste_format(), tips.FORMAT["paste_format"])):
             self._action(graph, text, lambda method=method: self._on_graph(method), tip)
+        graph.addSeparator()
+        self._action(graph, "New page layout", self.new_layout, tips.NEW_LAYOUT)
         export = bar.addMenu("&Export")
         self._action(export, "Export graph…", self.export_graph, "The graph shown, as SVG, PDF, EPS, PNG, TIFF or JPEG.")
+        self._action(export, "Export page layout…", self.export_layout, tips.LAYOUT_EXPORT)
         self._action(export, "Export results CSV…", self.export_results, "The results sheet shown, as a CSV file.")
         self._action(export, "Copy results", self.copy_results, "The results sheet shown, as tab-separated text.")
         help_menu = bar.addMenu("&Help")
@@ -313,7 +327,8 @@ class QuantAnalysisWindow(QMainWindow):
     def _rebuild_navigator(self) -> None:
         current = self.current_id()
         self.navigator.blockSignals(True)
-        for key, sheets in (("data", self.project.data), ("results", self.project.results), ("graphs", self.project.graphs)):
+        for key, sheets in (("data", self.project.data), ("results", self.project.results), ("graphs", self.project.graphs),
+                            ("layouts", self.project.layouts)):
             folder = self.folders[key]
             folder.takeChildren()
             for sheet in sheets.values():
@@ -321,6 +336,8 @@ class QuantAnalysisWindow(QMainWindow):
                 item.setData(0, SHEET_ROLE, sheet.id)
                 if key == "data":
                     item.setToolTip(0, sheet.description or "Double-click to rename.")
+                elif key == "layouts":
+                    item.setToolTip(0, f"{sum(1 for graph_id in sheet.graphs if graph_id in self.project.graphs)} graph(s) on one page.")
                 elif not sheet.data_id:
                     item.setToolTip(0, "P values pasted into the analysis; no data table.")
                 else:
@@ -365,8 +382,10 @@ class QuantAnalysisWindow(QMainWindow):
         view = self.views.get(sheet_id)
         if view is None:
             from cellquant.gui.quantanalysis.graph_view import GraphSheetView
+            from cellquant.gui.quantanalysis.layout_view import LayoutSheetView
 
-            kind = DataSheetView if isinstance(sheet, DataSheet) else ResultSheetView if isinstance(sheet, ResultSheet) else GraphSheetView
+            kind = (DataSheetView if isinstance(sheet, DataSheet) else ResultSheetView if isinstance(sheet, ResultSheet)
+                    else LayoutSheetView if isinstance(sheet, LayoutSheet) else GraphSheetView)
             view = kind(self, self.project, sheet)
             self.views[sheet_id] = view
             self.stack.addWidget(view)
@@ -930,6 +949,28 @@ class QuantAnalysisWindow(QMainWindow):
                                                   result.id if result else None))
         self.select(sheet.id)
         return sheet
+
+    def new_layout(self) -> LayoutSheet:
+        """A new page with the project's graphs in a grid just large enough for them (the graph shown first)."""
+
+        graph_ids = list(self.project.graphs)
+        current = self.current_id()
+        if current in graph_ids:
+            graph_ids.remove(current)
+            graph_ids.insert(0, current)
+        count = max(1, min(len(graph_ids), 36))
+        columns = 1 if count == 1 else 2 if count <= 4 else 3 if count <= 9 else 4 if count <= 16 else 6
+        rows = min(6, -(-count // columns))
+        sheet = self.project.add_layout(LayoutSheet("Layout", {"rows": rows, "columns": columns}, graph_ids[:rows * columns]))
+        self.select(sheet.id)
+        return sheet
+
+    def export_layout(self) -> None:
+        view = self.stack.currentWidget()
+        if hasattr(view, "export_dialog") and isinstance(self.project.sheet(self.current_id() or ""), LayoutSheet):
+            view.export_dialog()
+        else:
+            self.status("Select a page layout first.")
 
     def _on_graph(self, method) -> None:
         view = self.stack.currentWidget()
