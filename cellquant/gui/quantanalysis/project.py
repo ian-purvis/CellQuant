@@ -25,11 +25,13 @@ from cellquant.stats import (
     column_statistics_table,
     compare,
     identify_outliers,
+    process,
     lognormality,
     normality,
     one_way,
     p_value_stack,
 )
+from cellquant.stats import transforms
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
 
 LOG = logging.getLogger("cellquant.quantanalysis")
@@ -97,6 +99,8 @@ class DataSheet:
     stale: bool = False                 # the experiment changed since the import
     cleaned_from: str | None = None     # the data table this one is a cleaned copy of (flagged outliers blank); follows it
     cleaned_options: dict = field(default_factory=dict)  # the outlier method and its Q or alpha
+    processed_from: str | None = None   # the data table this one is computed from (transform, normalize…); follows it
+    process: dict = field(default_factory=dict)          # the processing: "kind" and its options (cellquant.stats.transforms)
 
 
 @dataclass
@@ -137,6 +141,8 @@ class Project(QObject):
         self.data: dict[str, DataSheet] = {}
         self.results: dict[str, ResultSheet] = {}
         self.graphs: dict[str, GraphSheet] = {}
+        self._refreshing: set[str] = set()
+        self._renamed_from: dict[str, str] = {}  # sheet id -> its name before a rename that its processed tables follow
         self.changed.connect(lambda _sheet_id: self.modified.emit())
 
     def touch(self) -> None:
@@ -189,6 +195,75 @@ class Project(QObject):
         sheet.description = f"{source.name} with the values flagged by {self.cleaned_label(result.options)} left blank. Follows {source.name}."
         return self.add_data(sheet)
 
+    def add_processed(self, source: DataSheet, options: dict) -> DataSheet:
+        """A new data table computed from ``source`` (transformed, normalized…) that follows it; ``source`` is not changed.
+        Raises CellQuantError when the options do not fit the table."""
+
+        table, notes = process(source.table, options)
+        sheet = DataSheet(f"{transforms.label(options)}: {source.name}", table, row_labels=list(source.row_labels),
+                          processed_from=source.id, process=dict(options), pseudoreplicated=source.pseudoreplicated,
+                          warnings=list(source.warnings), notes=notes)
+        sheet.description = self.processed_description(sheet, source)
+        return self.add_data(sheet)
+
+    @staticmethod
+    def processed_description(sheet: DataSheet, source: DataSheet) -> str:
+        kind = transforms.PROCESSES.get(sheet.process.get("kind"), "Processing")
+        return f"{kind} of {source.name}: {sheet.notes[0] if sheet.notes else ''} Follows {source.name}."
+
+    def refresh_processed(self, sheet: DataSheet, renamed: dict[str, str] | None = None) -> None:
+        """A processed table follows its source: compute it again with the same options. ``renamed`` (old column
+        name -> new) renames the source columns its options name. When it cannot be computed again (a column it
+        uses was removed, for example) its values are blanked and a warning says why, so nothing looks current."""
+
+        source = self.data.get(sheet.processed_from or "")
+        if source is None or sheet.id in self._refreshing:  # a loop of tables computed from each other stops here
+            return
+        self._refreshing.add(sheet.id)
+        try:
+            if renamed:
+                source_name = self._renamed_from.get(source.id, source.name)
+                named = sheet.name == f"{transforms.label(sheet.process)}: {source_name}"
+                sheet.process = transforms.renamed(sheet.process, renamed)
+                if named:
+                    self._renamed_from[sheet.id] = sheet.name
+                    sheet.name = ""
+                    sheet.name = self.unique_name(f"{transforms.label(sheet.process)}: {source.name}")
+            before = sheet.table.names
+            failed = ""
+            try:
+                sheet.table, sheet.notes = process(source.table, sheet.process)
+            except CellQuantError as exc:
+                failed = str(exc)
+                sheet.table = table_with(sheet.table, before, [np.full(len(column.values), np.nan) for column in sheet.table.columns],
+                                         sheet.table.paired)
+                sheet.notes = [f"Could not be computed again: {exc}"]
+                LOG.info("%s: %s", sheet.name, exc)
+            sheet.row_labels = list(source.row_labels)
+            sheet.pseudoreplicated, sheet.warnings = source.pseudoreplicated, list(source.warnings)
+            if failed:
+                sheet.warnings.append(f"Out of date: could not be computed again from {source.name} ({failed}) and is blank. "
+                                      "Use Change processing… or undo the change to it.")
+            sheet.description = self.processed_description(sheet, source)
+            after = sheet.table.names
+            self.data_changed(sheet.id, {old: new for old, new in zip(before, after) if old != new} if len(before) == len(after) else None)
+        finally:
+            self._refreshing.discard(sheet.id)
+            self._renamed_from.pop(sheet.id, None)
+
+    def change_process(self, sheet: DataSheet, options: dict) -> None:
+        """New processing options for a processed table (raises CellQuantError when they do not fit its source)."""
+
+        source = self.data[sheet.processed_from]
+        process(source.table, options)
+        named = sheet.name == f"{transforms.label(sheet.process)}: {source.name}"
+        sheet.process = dict(options)
+        if named:  # still the name it was given: name it after the new processing
+            sheet.name = ""
+            sheet.name = self.unique_name(f"{transforms.label(options)}: {source.name}")
+        self.refresh_processed(sheet)
+        self.changed.emit("")
+
     @staticmethod
     def cleaned_label(options: dict) -> str:
         return OUTLIER_NAMES[options.get("method", "rout")]
@@ -229,6 +304,8 @@ class Project(QObject):
             for other in self.data.values():
                 if other.cleaned_from == sheet_id:
                     other.cleaned_from = None
+                if other.processed_from == sheet_id:
+                    other.processed_from = None
         removed = self.results.pop(sheet_id, None)
         self.graphs.pop(sheet_id, None)
         for graph in self.graphs.values():
@@ -242,8 +319,9 @@ class Project(QObject):
         return ([item for item in self.results.values() if item.data_id == data_id],
                 [item for item in self.graphs.values() if item.data_id == data_id])
 
-    def data_changed(self, data_id: str) -> None:
-        """The table changed: recompute its results, redraw its graphs (live links)."""
+    def data_changed(self, data_id: str, renamed: dict[str, str] | None = None) -> None:
+        """The table changed: recompute its results, redraw its graphs (live links). ``renamed``: its columns renamed,
+        old name -> new, so the tables computed from it follow the new names."""
 
         results, graphs = self.linked(data_id)
         for result in results:
@@ -255,6 +333,8 @@ class Project(QObject):
             self.changed.emit(graph.id)
         for copy in [item for item in self.data.values() if item.cleaned_from == data_id]:
             self.refresh_cleaned(copy)
+        for copy in [item for item in self.data.values() if item.processed_from == data_id]:
+            self.refresh_processed(copy, renamed)
 
     def refresh_cleaned(self, sheet: DataSheet) -> None:
         """The cleaned copy follows its source: flag the outliers again and blank them."""

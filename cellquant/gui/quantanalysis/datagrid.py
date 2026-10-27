@@ -30,6 +30,7 @@ from qtpy.QtWidgets import (
 
 from cellquant.gui.quantanalysis import graphs, tips
 from cellquant.gui.quantanalysis.project import DataSheet, Project, table_with
+from cellquant.stats import transforms
 
 SPARE_ROWS = 12
 WARNING_STYLE = "QLabel { background: rgba(217, 164, 0, 0.20); border-radius: 6px; padding: 6px; }"
@@ -107,6 +108,23 @@ class DataSheetView(QWidget):
             button.setToolTip(tip)
             button.clicked.connect(slot)
             bar.addWidget(button)
+        processing = QToolButton()
+        processing.setText("Process ▾")
+        processing.setToolTip("Make a new table from this one: transformed, normalized, as a fraction of a total, against a baseline "
+                              "column, or a column computed from two others. It follows this table.")
+        processing.setPopupMode(QToolButton.InstantPopup)
+        process_menu = QMenu(processing)
+        for kind, name in transforms.PROCESSES.items():
+            action = process_menu.addAction(f"{name}…")
+            action.setToolTip(tips.PROCESS[kind])
+            action.triggered.connect(lambda _checked=False, kind=kind: window.process_data(kind))
+        process_menu.setToolTipsVisible(True)
+        processing.setMenu(process_menu)
+        bar.addWidget(processing)
+        self.change = QPushButton("Change processing…")
+        self.change.setToolTip(tips.CHANGE_PROCESS)
+        self.change.clicked.connect(lambda: window.change_process(self.sheet))
+        bar.addWidget(self.change)
         graph = QToolButton()
         graph.setText("Graph ▾")
         graph.setToolTip("Draw this table on a new graph sheet.")
@@ -178,6 +196,7 @@ class DataSheetView(QWidget):
         self.description.setToolTip("\n".join(sheet.notes))
         self.notes.setText(" ".join(sheet.notes))
         self.stale.setVisible(sheet.stale)
+        self.change.setVisible(sheet.processed_from is not None)
         danger = sheet.pseudoreplicated
         text = "<br>".join(f"⚠ {html.escape(item)}" for item in sheet.warnings)
         self.warnings.setText(text)
@@ -211,6 +230,7 @@ class DataSheetView(QWidget):
         names = names if names is not None else self._names()
         values = [_trim(np.asarray(column, float)) for column in values] if values is not None else self._column_values()
         paired = self.paired.isChecked() if paired is None else paired
+        before = sheet.table.names
         try:
             sheet.table = table_with(sheet.table, names, values, paired)
         except Exception as exc:  # noqa: BLE001 - a repeated title, for example; the grid shows the table as it was
@@ -220,13 +240,17 @@ class DataSheetView(QWidget):
         if sheet.cleaned_from is not None:
             sheet.cleaned_from = None
             sheet.notes = [*sheet.notes, "Edited by hand: no longer follows the table it was cleaned from."]
+        if sheet.processed_from is not None:
+            sheet.processed_from = None
+            sheet.notes = [*sheet.notes, "Edited by hand: no longer follows the table it was computed from."]
         if sheet.spec is not None:
             sheet.spec = None
             sheet.images = None
             sheet.units = None
             sheet.stale = False
             sheet.notes = [*sheet.notes, "Edited by hand: no longer follows the CellQuant results."]
-        self.project.data_changed(sheet.id)
+        renamed = {old: new for old, new in zip(before, names) if old != new} if len(before) == len(names) else None
+        self.project.data_changed(sheet.id, renamed)
 
     def _edited(self, item: QTableWidgetItem) -> None:
         if self._filling:

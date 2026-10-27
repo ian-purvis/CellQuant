@@ -9,6 +9,7 @@ activated, or with Refresh; their results and graphs follow.
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 from pathlib import Path
 from typing import Callable
@@ -38,7 +39,7 @@ from qtpy.QtWidgets import (
 
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import graphs
-from cellquant.gui.quantanalysis import project_file
+from cellquant.gui.quantanalysis import project_file, tips
 from cellquant.gui.quantanalysis.datagrid import DataSheetView
 from cellquant.gui.quantanalysis.dialogs import (
     DEFAULT_OPTIONS,
@@ -48,11 +49,12 @@ from cellquant.gui.quantanalysis.dialogs import (
     ImportCsvDialog,
     ImportDialog,
     OutlierDialog,
+    ProcessDialog,
     PStackDialog,
 )
 from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, LOG, OUTLIER_NAMES, DataSheet, GraphSheet, Project, ResultSheet
 from cellquant.gui.quantanalysis.results_view import ResultSheetView
-from cellquant.stats import ColumnTable, sources
+from cellquant.stats import ColumnTable, sources, transforms
 
 INSTALL = 'pip install "cellquant[stats]"'
 SHEET_ROLE = Qt.UserRole + 1
@@ -257,13 +259,16 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(analyze, "Analyze a stack of P values…", lambda: self.analyze("pstack"),
                      "Paste P values and correct them for multiple testing (FDR, Holm-Sidak, Bonferroni).")
         analyze.addSeparator()
+        processing = analyze.addMenu("Data processing")
+        processing.setToolTipsVisible(True)
+        for kind, name in transforms.PROCESSES.items():
+            self._action(processing, f"{name}…", lambda kind=kind: self.process_data(kind), tips.PROCESS[kind])
+        analyze.addSeparator()
         self._action(analyze, "Help me choose…", self.help_choose, "Answer a few questions; the guide recommends a test and fills its dialog.")
         graph = bar.addMenu("&Graph")
         for key, (name, tip) in graphs.KINDS.items():
             self._action(graph, name, lambda key=key: self.new_graph(key), tip)
         graph.addSeparator()
-        from cellquant.gui.quantanalysis import tips
-
         for text, method, tip in (("Format graph…", lambda view: view.format_dialog("graph"), tips.FORMAT_GRAPH),
                                   ("Format axes…", lambda view: view.format_dialog("axes"), tips.FORMAT_AXES),
                                   ("Make this graph look like…", lambda view: view.magic_dialog(), tips.FORMAT["magic"]),
@@ -544,13 +549,18 @@ class QuantAnalysisWindow(QMainWindow):
         return self.experiment_dir() or Path.home()
 
     def recent_projects(self) -> list[str]:
-        value = QSettings("CellQuant", "CellQuant").value(RECENT_KEY, [])
-        if isinstance(value, str):  # one entry comes back as a plain string
-            value = [value] if value else []
-        return [str(item) for item in (value or []) if item]
+        value = QSettings("CellQuant", "CellQuant").value(RECENT_KEY, "")
+        if isinstance(value, str):
+            try:  # kept as JSON text: a list, or one path, can come back split at its commas from an .ini file
+                value = json.loads(value) if value else []
+            except ValueError:
+                value = [value]
+        if not isinstance(value, (list, tuple)):
+            return []
+        return [str(item) for item in value if isinstance(item, str) and item]
 
     def _set_recent(self, paths: list[str]) -> None:
-        QSettings("CellQuant", "CellQuant").setValue(RECENT_KEY, paths[:RECENT_COUNT])
+        QSettings("CellQuant", "CellQuant").setValue(RECENT_KEY, json.dumps(list(paths[:RECENT_COUNT])))
 
     def _remember_recent(self, path: Path) -> None:
         text = str(Path(path).resolve())
@@ -839,6 +849,43 @@ class QuantAnalysisWindow(QMainWindow):
         sheet.name = result_name(sheet.kind, options, data)
         self.sheet_renamed(sheet)
         self.project.rerun(sheet)
+
+    def process_data(self, kind: str, options: dict | None = None) -> DataSheet | None:
+        """A new data table computed from the current one (transform, normalize…); ``options`` skips the dialog."""
+
+        data = self.current_data()
+        if data is None:
+            self.status("Select a data table first (in the list on the left).")
+            return None
+        if options is None:
+            dialog = ProcessDialog(self, data.table, kind)
+            if not dialog.exec():
+                return None
+            options = dialog.options()
+        try:
+            sheet = self.project.add_processed(data, {**options, "kind": kind})
+        except CellQuantError as exc:
+            self.status(str(exc))
+            return None
+        self.select(sheet.id)
+        self.log(f"{sheet.name}: {' '.join(sheet.notes)}")
+        return sheet
+
+    def change_process(self, sheet: DataSheet, options: dict | None = None) -> None:
+        source = self.project.data.get(sheet.processed_from or "")
+        if source is None:
+            return
+        if options is None:
+            dialog = ProcessDialog(self, source.table, sheet.process["kind"], sheet.process)
+            if not dialog.exec():
+                return
+            options = dialog.options()
+        try:
+            self.project.change_process(sheet, {**options, "kind": sheet.process["kind"]})
+        except CellQuantError as exc:
+            self.status(str(exc))
+            return
+        self.log(f"{sheet.name}: {' '.join(sheet.notes)}")
 
     def create_cleaned_table(self, sheet: ResultSheet) -> DataSheet | None:
         """A new data table that follows the original with the flagged outliers blank. The original is not changed."""

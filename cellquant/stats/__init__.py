@@ -40,6 +40,7 @@ from cellquant.stats.outliers import grubbs_fit, identify_outliers, rout_fit
 from cellquant.stats.pvalues import STYLES, format_p, p_summary, p_text
 from cellquant.stats.results import AnalysisResult, Row, Section
 from cellquant.stats.tables import Column, ColumnTable
+from cellquant.stats.transforms import column_math, fraction_of_total, normalize, process, remove_baseline, transform
 from cellquant.stats.ttests import (
     TESTS,
     compare,
@@ -69,6 +70,7 @@ __all__ = [
     "adjust_p",
     "bartlett_test",
     "brown_forsythe_test",
+    "column_math",
     "column_statistics",
     "column_statistics_table",
     "compact_letter_display",
@@ -76,6 +78,7 @@ __all__ = [
     "describe",
     "effect_sizes",
     "format_p",
+    "fraction_of_total",
     "friedman",
     "geisser_greenhouse_epsilon",
     "grubbs_fit",
@@ -89,6 +92,7 @@ __all__ = [
     "mann_whitney",
     "mixed_effects_anova",
     "normality",
+    "normalize",
     "one_sample_t",
     "one_way",
     "ordinary_anova",
@@ -98,10 +102,13 @@ __all__ = [
     "paired_effect_sizes",
     "paired_t",
     "percentiles",
+    "process",
     "ratio_paired_t",
+    "remove_baseline",
     "repeated_measures_anova",
     "rout_fit",
     "skewness",
+    "transform",
     "unpaired_t",
     "welch_anova",
     "welch_t",
