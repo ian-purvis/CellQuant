@@ -649,7 +649,7 @@ def comparison_rows(result: AnalysisResult, out: dict, style: str, *, rank: bool
             if np.isfinite(row["p_adjusted"]):
                 parts.append(f"{'P' if out['method'] in ('fisher_lsd', 'dunn_uncorrected') else 'Adjusted P'} = {format_p(row['p_adjusted'], style=style)}")
             parts.append(f"Significant? {'Yes' if row['significant'] else 'No'} ({row['summary']})")
-        tagged = row["reference"] and (out["n_families"] > 1 or out["family_mode"] == "combined")
+        tagged = row["reference"] and out.get("tag_references", True) and (out["n_families"] > 1 or out["family_mode"] == "combined")
         label = row["label"] + (f" [ref: {row['reference']}]" if tagged else "")
         head.add(label, row, "; ".join(parts))
     for text in out["warnings"]:
