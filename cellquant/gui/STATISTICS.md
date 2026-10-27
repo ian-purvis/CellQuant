@@ -67,6 +67,10 @@ Every setting is kept in the graph's format (`GraphFormat` in `cellquant/gui/qua
 
 Dividing every value by the same control mean (% of control by mean) changes the units but not the P value of a comparison between two treated groups; it does make the control's own spread visible. Dividing by each replicate's own control (row by row) removes the variation between replicates, which is what a paired design is for.
 
+### Grouped tables
+
+**File → New grouped table** makes a table with two grouping factors: one row per level of the row factor (for example treatment), one **data set** per level of the other factor (for example genotype), and each data set's replicates in side-by-side subcolumns. Type or paste values; **Add row**, **Add data set** and **Add replicate** make room, and double-clicking a row or data set title renames it. To import one, choose **Data sets by** as well as **Group by** in the import dialog: Group by gives the rows, Data sets by the data sets, and each value is one dot (image, biological replicate or object) of that row and data set. **Two-way ANOVA…** analyzes it. The column analyses and graphs see a grouped table's cells as columns ("Row: Data set"); data processing and cleaned copies work on column tables only.
+
 ### Page layouts
 
 **Graph → New page layout** puts several graphs on one page, for a figure. The page starts with the project's graphs (the one shown first) in a grid just large enough for them, and appears under **Layouts** in the navigator. The panel beside the page sets:
@@ -321,6 +325,25 @@ Values are ranked within each row (ties get the average rank), and Rⱼ is the r
 Q = 12 Σ(Rⱼ − n(k + 1)/2)² / [nk(k + 1) − Σ(t³ − t)/(k − 1)],
 
 Rows with a blank are left out. P is **exact** unless (k!)^n > 10⁹, which is the usual rule (3 treatments: up to 11 subjects; 4: up to 6; 5: up to 4). The exact distribution assumes each row's ranks (ties included) are in a random order. It is built row by row over the column rank sums, keeping each state sorted because every order is applied. P is the probability that ΣRⱼ² is at least the observed value. Above the cutoff, P comes from χ² with k − 1 df. `exact=False` forces χ². The tests check the exact P against brute-force enumeration. The exact test cannot give a P below (k!)^(1−n) (every row ranking the columns the same way). For example, 2 subjects and 3 treatments cannot go below 1/6. When that floor is not below α, the result warns.
+
+## Two-way ANOVA (`two_way_anova(grouped)`)
+
+A grouped table has a row factor with levels i = 1…a and a column factor with levels j = 1…b; cell (i, j) holds n_ij values. The model is
+
+y_ijk = μ + α_i + β_j + (αβ)_ij + ε_ijk,  with Σα_i = Σβ_j = Σ_i(αβ)_ij = Σ_j(αβ)_ij = 0 and ε ~ N(0, σ²),
+
+fitted by least squares with sum-to-zero (effect) coding. It answers three questions: does the row factor change the mean (α), does the column factor (β), and does the effect of one depend on the other (the interaction, αβ)?
+
+- **Sums of squares** are Type III: each effect's SS is the rise in the residual SS when that effect alone is left out of the full model, SS_effect = RSS(without the effect) − RSS(full). With equal n in every cell this is the classical two-way ANOVA (SS_row = b·n·Σ(ȳ_i·· − ȳ)², SS_column = a·n·Σ(ȳ·j· − ȳ)², SS_interaction = n·Σ(ȳ_ij· − ȳ_i·· − ȳ·j· + ȳ)²); with unequal n each effect is adjusted for the others, and the SS no longer add up to the total.
+- **F** = MS_effect / MS_residual with (df_effect, N − rank) df, where df_row = a − 1, df_column = b − 1, df_interaction = (a − 1)(b − 1). **% of total variation** = 100 · SS_effect / SS_total.
+- **Without the interaction** (untick it, or automatically when every cell has one value) the model is additive: y = μ + α_i + β_j + ε. The interaction cannot be fitted when a cell is empty; fit the additive model or fill the cell.
+
+**Multiple comparisons** use the model's estimates, the pooled residual mean square MS_residual and its df, as one-way ANOVA does (see Multiple comparisons):
+
+- **Within each row, compare the data sets** (or **within each data set, compare the rows**): simple effects, from the cell means. **One family per row** (or data set) allows Tukey (every pair) and Dunnett (each against a reference); **all comparisons in one family** corrects for every comparison in the table at once (Šidák, Holm-Šidák, Bonferroni, Fisher's LSD or an FDR method), which is stricter.
+- **Main column (or row) effect**: compare least-squares means, the average of a level's cell means with every cell weighted equally (they equal the plain means when the table is balanced). SE² of a difference = MS_residual · (Σ_i 1/n_ij + Σ_i 1/n_ij') / a². Most useful when the interaction is small: with a large interaction, the main effect averages over effects that differ by row.
+
+Two-way ANOVA assumes independent values: technical replicates (many objects from one biological replicate) give P values that are far too small, and a warning says so when a cell has more than 30 values. Checked against an independent least-squares fit (Type III sums of squares with sum-to-zero contrasts).
 
 ## Multiple comparisons
 

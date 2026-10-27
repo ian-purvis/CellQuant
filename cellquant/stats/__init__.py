@@ -34,6 +34,7 @@ from cellquant.stats.descriptive import (
     skewness,
     wilcoxon_signed_rank,
 )
+from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.multcomp import ComparisonPlan, adjust_p, compact_letter_display, p_value_stack
 from cellquant.stats.normality import lognormality, normality
 from cellquant.stats.outliers import grubbs_fit, identify_outliers, rout_fit
@@ -65,6 +66,7 @@ __all__ = [
     "Column",
     "ColumnTable",
     "ComparisonPlan",
+    "GroupedTable",
     "Row",
     "Section",
     "adjust_p",
@@ -109,6 +111,7 @@ __all__ = [
     "rout_fit",
     "skewness",
     "transform",
+    "two_way_anova",
     "unpaired_t",
     "welch_anova",
     "welch_t",

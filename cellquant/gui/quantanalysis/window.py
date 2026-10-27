@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 from qtpy.QtCore import QEvent, QSettings, Qt, QTimer
 from qtpy.QtGui import QFont, QKeySequence
@@ -49,8 +50,10 @@ from cellquant.gui.quantanalysis.dialogs import (
     ImportCsvDialog,
     ImportDialog,
     OutlierDialog,
+    TWO_WAY_DEFAULTS,
     ProcessDialog,
     PStackDialog,
+    TwoWayDialog,
 )
 from cellquant.gui.quantanalysis.project import (
     ANOVA_NAMES,
@@ -62,9 +65,11 @@ from cellquant.gui.quantanalysis.project import (
     LayoutSheet,
     Project,
     ResultSheet,
+    set_grouped,
 )
 from cellquant.gui.quantanalysis.results_view import ResultSheetView
 from cellquant.stats import ColumnTable, sources, transforms
+from cellquant.stats.grouped import GroupedTable
 
 INSTALL = 'pip install "cellquant[stats]"'
 SHEET_ROLE = Qt.UserRole + 1
@@ -226,6 +231,7 @@ class QuantAnalysisWindow(QMainWindow):
             ("Import from the open experiment…", "Choose a measure, what a dot is, and the groups, from the experiment open in CellQuant.", self.import_experiment),
             ("Open CellQuant results folder…", "A results folder (with experiment.json) or an export folder (with image_summary.csv).", self.open_folder_dialog),
             ("New column table", "An empty table to type or paste values into.", self.new_table),
+            ("New grouped table", tips.NEW_GROUPED, self.new_grouped_table),
             ("Open project…", "A QuantAnalysis project file (.cqstats) saved before: its tables, analyses and graphs.", self.open_project_dialog),
         ):
             button = QPushButton(label)
@@ -250,6 +256,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(file, "Save project as…", self.save_project_as, "Save the project in a new file.").setShortcut(QKeySequence.SaveAs)
         file.addSeparator()
         self._action(file, "New column table", self.new_table, "An empty table: one column per group.")
+        self._action(file, "New grouped table", self.new_grouped_table, tips.NEW_GROUPED)
         self._action(file, "Import CSV…", self.import_csv_dialog, "A CSV file, wide (one column per group) or long (value and group columns).")
         file.addSeparator()
         self._action(file, "Import from the open experiment…", self.import_experiment, "The experiment open in CellQuant, at its current cutoffs.")
@@ -264,6 +271,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(analyze, "Compare two columns…", lambda: self.analyze("compare"), "t tests and rank tests (the t test dialog).")
         self._action(analyze, "Compare three or more columns…", lambda: self.analyze("anova"),
                      "One-way ANOVA, Kruskal-Wallis and Friedman, with multiple comparisons against one or two reference groups or all pairs.")
+        self._action(analyze, "Two-way ANOVA…", lambda: self.analyze("twoway"), tips.TWO_WAY)
         analyze.addSeparator()
         self._action(analyze, "Identify outliers…", lambda: self.analyze("outliers"),
                      "ROUT, Grubbs' and iterative Grubbs' tests. Flagged values are shaded in the table and hollow on graphs; the table is not changed.")
@@ -382,9 +390,11 @@ class QuantAnalysisWindow(QMainWindow):
         view = self.views.get(sheet_id)
         if view is None:
             from cellquant.gui.quantanalysis.graph_view import GraphSheetView
+            from cellquant.gui.quantanalysis.grouped_view import GroupedSheetView
             from cellquant.gui.quantanalysis.layout_view import LayoutSheetView
 
-            kind = (DataSheetView if isinstance(sheet, DataSheet) else ResultSheetView if isinstance(sheet, ResultSheet)
+            kind = (GroupedSheetView if isinstance(sheet, DataSheet) and sheet.grouped is not None
+                    else DataSheetView if isinstance(sheet, DataSheet) else ResultSheetView if isinstance(sheet, ResultSheet)
                     else LayoutSheetView if isinstance(sheet, LayoutSheet) else GraphSheetView)
             view = kind(self, self.project, sheet)
             self.views[sheet_id] = view
@@ -624,6 +634,15 @@ class QuantAnalysisWindow(QMainWindow):
         self.select(sheet.id)
         return sheet
 
+    def new_grouped_table(self) -> DataSheet:
+        """An empty grouped table: two rows × two data sets × three replicates, to type or paste into."""
+
+        sheet = DataSheet(f"Data {len(self.project.data) + 1}", ColumnTable())
+        set_grouped(sheet, GroupedTable("", ["Row 1", "Row 2"], ["Data set A", "Data set B"], np.full((2, 2, 3), np.nan)))
+        self.project.add_data(sheet)
+        self.select(sheet.id)
+        return sheet
+
     def import_csv_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import CSV", str(Path.home()), "CSV files (*.csv *.txt);;All files (*)")
         if path:
@@ -722,15 +741,22 @@ class QuantAnalysisWindow(QMainWindow):
         return sheet
 
     def _apply_import(self, sheet: DataSheet, imported: sources.Imported, spec, origin: str) -> None:
-        sheet.table, sheet.row_labels = imported.table, imported.row_labels
+        sheet.table, sheet.row_labels, sheet.grouped = imported.table, imported.row_labels, None
         sheet.images, sheet.units = imported.images, imported.units
+        if imported.grouped is not None:  # cells of a grouped table: no per-image or per-replicate frames (SuperPlots are per column)
+            set_grouped(sheet, imported.grouped)
+            sheet.images, sheet.units, sheet.row_labels = None, None, []
         sheet.notes, sheet.warnings = imported.notes, imported.warnings
         sheet.pseudoreplicated, sheet.description = imported.pseudoreplicated, imported.description
         sheet.spec, sheet.origin, sheet.stale = spec, origin, False
 
     def suggested_analysis(self, sheet: DataSheet) -> None:
-        """The image-data preset: a SuperPlot (mean ± SD) and, for two groups, Welch's t test with an estimation plot."""
+        """The image-data preset: a SuperPlot (mean ± SD) and, for two groups, Welch's t test with an estimation plot.
+        A grouped table gets a two-way ANOVA comparing the data sets within each row."""
 
+        if sheet.grouped is not None:
+            self.project.add_result(ResultSheet(f"Two-way ANOVA: {sheet.name}", sheet.id, "twoway", dict(TWO_WAY_DEFAULTS)))
+            return
         result = None
         if len(sheet.table) == 2:
             result = self.project.add_result(ResultSheet(f"Welch's t test: {sheet.name}", sheet.id, "compare",
@@ -832,6 +858,12 @@ class QuantAnalysisWindow(QMainWindow):
             dialog = lambda: AnovaDialog(self, data.table)  # noqa: E731
         elif kind == "outliers":
             dialog = lambda: OutlierDialog(self, data.table)  # noqa: E731
+        elif kind == "twoway":
+            if data.grouped is None:
+                self.status("Two-way ANOVA needs a grouped table (rows × data sets): File → New grouped table, or import results with a "
+                            "data set factor.")
+                return None
+            dialog = lambda: TwoWayDialog(self, data.grouped)  # noqa: E731
         else:
             dialog = None
         sheet = self._add_result(data, kind, options, dialog)
@@ -860,7 +892,8 @@ class QuantAnalysisWindow(QMainWindow):
             return
         if options is None:
             box = {"compare": lambda: CompareDialog(self, data.table, sheet.options), "anova": lambda: AnovaDialog(self, data.table, sheet.options),
-                   "outliers": lambda: OutlierDialog(self, data.table, sheet.options), "pstack": lambda: PStackDialog(self, sheet.options)}[sheet.kind]()
+                   "outliers": lambda: OutlierDialog(self, data.table, sheet.options), "pstack": lambda: PStackDialog(self, sheet.options),
+                   "twoway": lambda: TwoWayDialog(self, data.grouped, sheet.options)}[sheet.kind]()
             if not box.exec():
                 return
             options = box.options()
@@ -875,6 +908,9 @@ class QuantAnalysisWindow(QMainWindow):
         data = self.current_data()
         if data is None:
             self.status("Select a data table first (in the list on the left).")
+            return None
+        if data.grouped is not None:
+            self.status("Data processing works on column tables; a grouped table cannot be processed yet.")
             return None
         if options is None:
             dialog = ProcessDialog(self, data.table, kind)
@@ -911,6 +947,10 @@ class QuantAnalysisWindow(QMainWindow):
 
         if sheet.result is None or not sheet.result.values.get("n_outliers"):
             self.status("No outliers were flagged, so a cleaned table would equal the original.")
+            return None
+        source = self.project.data.get(sheet.data_id)
+        if source is not None and source.grouped is not None:
+            self.status("A cleaned copy keeps a column table's layout; for a grouped table, blank the flagged values in the table itself.")
             return None
         cleaned = self.project.add_cleaned(sheet)
         if cleaned is not None:
@@ -1048,6 +1088,8 @@ def result_name(kind: str, options: dict, data: DataSheet | None) -> str:
         return f"Outliers ({OUTLIER_NAMES[options.get('method', 'rout')]}){where}"
     if kind == "pstack":
         return "Stack of P values"
+    if kind == "twoway":
+        return f"Two-way ANOVA{where}"
     return {"colstats": "Column statistics", "normality": "Normality tests"}[kind] + where
 
 

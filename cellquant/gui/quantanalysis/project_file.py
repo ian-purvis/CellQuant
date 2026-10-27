@@ -20,8 +20,9 @@ import numpy as np
 import pandas as pd
 
 from cellquant.errors import CellQuantError
-from cellquant.gui.quantanalysis.project import DataSheet, GraphSheet, LayoutSheet, Project, ResultSheet, reserve_ids
+from cellquant.gui.quantanalysis.project import DataSheet, GraphSheet, LayoutSheet, Project, ResultSheet, reserve_ids, set_grouped
 from cellquant.stats import ColumnTable, transforms
+from cellquant.stats.grouped import GroupedTable
 from cellquant.stats.sources import ImportSpec
 from cellquant.stats.tables import Column
 
@@ -29,7 +30,7 @@ SUFFIX = ".cqstats"
 FORMAT = "cellquant-quantanalysis-project"
 VERSION = 1
 MEMBER = "project.json"
-RESULT_KINDS = {"compare", "anova", "colstats", "normality", "outliers", "pstack"}
+RESULT_KINDS = {"compare", "anova", "colstats", "normality", "outliers", "pstack", "twoway"}
 
 
 # --- Writing -------------------------------------------------------------------------------------------------------------
@@ -98,6 +99,9 @@ def _data(sheet: DataSheet, experiment_dir: str | None) -> dict:
         "cleaned_options": dict(sheet.cleaned_options),
         "processed_from": sheet.processed_from,
         "process": dict(sheet.process),
+        "grouped": None if sheet.grouped is None else {
+            "rows": list(sheet.grouped.rows), "columns": list(sheet.grouped.columns),
+            "values": [[_numbers(cell) for cell in row] for row in sheet.grouped.values]},
     }
 
 
@@ -248,6 +252,11 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
                               description=item.get("description", ""), cleaned_from=item.get("cleaned_from"),
                               cleaned_options=dict(item.get("cleaned_options") or {}), processed_from=item.get("processed_from"),
                               process=dict(item.get("process") or {}))
+            grouped = item.get("grouped")
+            if isinstance(grouped, dict):
+                set_grouped(sheet, GroupedTable(table.title, list(grouped["rows"]), list(grouped["columns"]),
+                                                np.array([[_values(cell) for cell in row] for row in grouped["values"]], dtype=float)
+                                                .reshape(len(grouped["rows"]), len(grouped["columns"]), -1)))
         except (KeyError, TypeError, ValueError, CellQuantError) as exc:
             notes.append(f"A data table ({item.get('name', '?')}) could not be read: {exc}")
             continue

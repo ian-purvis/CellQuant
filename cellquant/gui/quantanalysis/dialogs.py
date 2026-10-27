@@ -34,6 +34,7 @@ from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNI
 from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, parse_p_values
 from cellquant.stats import STYLES, ColumnTable
 from cellquant.stats import sources, transforms
+from cellquant.stats.grouped import COMPARE, FAMILIES, GroupedTable, two_way_anova
 from cellquant.stats.multcomp import (
     ALL_PAIRS_ONLY,
     EQUAL_SD_METHODS,
@@ -136,6 +137,9 @@ class ImportDialog(QDialog):
         self.group_by = QComboBox()
         self.group_by.setToolTip(tips.GROUP_BY)
         form.addRow("Group by", self.group_by)
+        self.column_by = QComboBox()
+        self.column_by.setToolTip(tips.COLUMN_BY)
+        form.addRow("Data sets by", self.column_by)
         self.approved = QCheckBox("Approved images only")
         self.approved.setToolTip(tips.APPROVED if source.approvals_known else "This folder does not record approvals (an export folder), so every image is used.")
         self.approved.setEnabled(source.approvals_known)
@@ -169,6 +173,7 @@ class ImportDialog(QDialog):
         self.dot.currentIndexChanged.connect(lambda _index: self._dot_changed())
         self.unit.currentIndexChanged.connect(lambda _index: self._preview())
         self.group_by.currentIndexChanged.connect(lambda _index: self._fill_order())
+        self.column_by.currentIndexChanged.connect(lambda _index: self._preview())
         self.approved.toggled.connect(lambda _on: self._preview())
         self._quiet = False
         self.set_spec(spec or self._default_spec())
@@ -187,6 +192,7 @@ class ImportDialog(QDialog):
         if spec.unit:
             self.unit.setCurrentIndex(max(0, self.unit.findData(spec.unit)))
         self.group_by.setCurrentIndex(max(0, self.group_by.findData(spec.group_by)))
+        self.column_by.setCurrentIndex(max(0, self.column_by.findData(spec.column_by)))
         if self.approved.isEnabled():
             self.approved.setChecked(spec.approved_only)
         self._quiet = False
@@ -220,6 +226,14 @@ class ImportDialog(QDialog):
                 self.group_by.addItem(label, name)
         self.group_by.setCurrentIndex(max(0, self.group_by.findData(keep)))
         self.group_by.blockSignals(False)
+        keep_column = self.column_by.currentData()
+        self.column_by.blockSignals(True)
+        self.column_by.clear()
+        self.column_by.addItem("none (a column table)", None)
+        for index in range(1, self.group_by.count()):
+            self.column_by.addItem(self.group_by.itemText(index), self.group_by.itemData(index))
+        self.column_by.setCurrentIndex(max(0, self.column_by.findData(keep_column)))
+        self.column_by.blockSignals(False)
         self._fill_order()
 
     def _dot_changed(self) -> None:
@@ -254,6 +268,7 @@ class ImportDialog(QDialog):
             measure=self.measure.currentData(), dot=self.dot.currentData(),
             unit=self.unit.currentData() if self.dot.currentData() == "unit" else (self.unit.currentData() or None),
             group_by=self.group_by.currentData(), order=order or None, approved_only=self.approved.isChecked(),
+            column_by=self.column_by.currentData() if self.group_by.currentData() else None,
         )
 
     def _preview(self) -> None:
@@ -753,6 +768,142 @@ class AnovaDialog(QDialog):
             return
         if goal == "selected" and not options["pairs"]:
             self.note.setText("Tick at least one pair to compare.")
+            self.note.setVisible(True)
+            return
+        super().accept()
+
+
+# --- Two-way ANOVA --------------------------------------------------------------------------------------------
+
+TWO_WAY_DEFAULTS = {"interaction": True, "compare": "within_rows", "goal": "all", "method": "tukey", "control": None,
+                    "family": "per_group", "alpha": 0.05, "ci": 0.95, "style": "classic"}
+TWO_WAY_SIMPLE = ("within_rows", "within_columns")
+
+
+def two_way_methods(goal: str, family: str) -> list[str]:
+    """Methods offered for a two-way follow-up, the default first."""
+
+    if family == "combined":
+        return ["sidak", "holm_sidak", "bonferroni", "fisher_lsd", "bky", "bh", "by"]
+    first = "dunnett" if goal == "control" else "tukey"
+    return [first, "sidak", "holm_sidak", "bonferroni", "fisher_lsd", "bky", "bh", "by"]
+
+
+class TwoWayDialog(QDialog):
+    """Two-way ANOVA of a grouped table: the model (with or without interaction) and which means to compare."""
+
+    def __init__(self, parent, grouped: GroupedTable, options: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Two-way ANOVA")
+        self.grouped = grouped
+        options = {**TWO_WAY_DEFAULTS, **(options or {})}
+        layout = QVBoxLayout(self)
+        intro = QLabel(f"{len(grouped.rows)} rows × {len(grouped.columns)} data sets. {tips.TWO_WAY}")
+        intro.setWordWrap(True)
+        intro.setStyleSheet(NOTE_STYLE)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        self.interaction = QCheckBox("Fit the interaction (row × data set)")
+        self.interaction.setToolTip(tips.TWO_WAY_INTERACTION)
+        form.addRow("Model", self.interaction)
+        self.compare = QComboBox()
+        self.compare.addItem("No multiple comparisons", None)
+        for key, name in COMPARE.items():
+            self.compare.addItem(name, key)
+        self.compare.setToolTip(tips.TWO_WAY_COMPARE)
+        form.addRow("Compare", self.compare)
+        self.goal = QComboBox()
+        self.goal.addItem("Every pair", "all")
+        self.goal.addItem("Each with a reference (control)", "control")
+        form.addRow("Which pairs", self.goal)
+        self.control = QComboBox()
+        self.control.setToolTip("The reference group every other group is compared with.")
+        form.addRow("Reference", self.control)
+        self.family = QComboBox()
+        for key, name in FAMILIES.items():
+            self.family.addItem(name, key)
+        self.family.setToolTip(tips.TWO_WAY_FAMILY)
+        form.addRow("Family", self.family)
+        self.method = QComboBox()
+        self.method.setToolTip(tips.TWO_WAY_METHOD)
+        form.addRow("Test", self.method)
+        self.alpha = QDoubleSpinBox()
+        self.alpha.setRange(0.0001, 0.5)
+        self.alpha.setDecimals(4)
+        self.alpha.setSingleStep(0.01)
+        self.alpha.setToolTip(tips.ANOVA_ALPHA)
+        form.addRow("Alpha", self.alpha)
+        self.ci = QComboBox()
+        for value in (0.90, 0.95, 0.99):
+            self.ci.addItem(f"{100 * value:g}%", value)
+        self.ci.setToolTip(tips.ANOVA_CI)
+        form.addRow("Confidence interval", self.ci)
+        self.style = QComboBox()
+        for name in STYLES:
+            self.style.addItem(name, name)
+        self.style.setToolTip(tips.ANOVA_STYLE)
+        form.addRow("P value style", self.style)
+        layout.addLayout(form)
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet(WARNING_STYLE)
+        self.note.setVisible(False)
+        layout.addWidget(self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.interaction.setChecked(bool(options["interaction"]))
+        self.compare.setCurrentIndex(max(0, self.compare.findData(options["compare"])))
+        self.goal.setCurrentIndex(max(0, self.goal.findData(options["goal"])))
+        self.family.setCurrentIndex(max(0, self.family.findData(options["family"])))
+        self.alpha.setValue(float(options["alpha"]))
+        self.ci.setCurrentIndex(max(0, self.ci.findData(options["ci"])))
+        self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
+        for box in (self.compare, self.goal, self.family):
+            box.currentIndexChanged.connect(lambda _index: self._update())
+        self._update(options.get("control"), options.get("method"))
+
+    def _inner(self) -> list[str]:
+        """The groups compared: data sets (within rows, main column effect) or rows."""
+
+        return list(self.grouped.rows if self.compare.currentData() in ("within_columns", "row_means") else self.grouped.columns)
+
+    def _update(self, control: str | None = None, method: str | None = None) -> None:
+        compare = self.compare.currentData()
+        on = compare is not None
+        for widget in (self.goal, self.method):
+            widget.setEnabled(on)
+        self.family.setEnabled(compare in TWO_WAY_SIMPLE)
+        goal = self.goal.currentData()
+        keep = control or self.control.currentData()
+        self.control.clear()
+        for name in self._inner():
+            self.control.addItem(name, name)
+        self.control.setCurrentIndex(max(0, self.control.findData(keep)))
+        self.control.setEnabled(on and goal == "control")
+        family = self.family.currentData() if compare in TWO_WAY_SIMPLE else "per_group"
+        keep_method = method or self.method.currentData()
+        self.method.clear()
+        for name in two_way_methods(goal, family):
+            self.method.addItem(METHOD_NAMES[name], name)
+        self.method.setCurrentIndex(max(0, self.method.findData(keep_method)))
+
+    def options(self) -> dict:
+        compare = self.compare.currentData()
+        return {
+            "interaction": self.interaction.isChecked(), "compare": compare, "goal": self.goal.currentData(),
+            "method": self.method.currentData() if compare else None,
+            "control": self.control.currentData() if compare and self.goal.currentData() == "control" else None,
+            "family": self.family.currentData() if compare in TWO_WAY_SIMPLE else "per_group",
+            "alpha": round(self.alpha.value(), 6), "ci": self.ci.currentData(), "style": self.style.currentData(),
+        }
+
+    def accept(self) -> None:
+        try:
+            two_way_anova(self.grouped, **{key: value for key, value in self.options().items() if value is not None})
+        except CellQuantError as exc:
+            self.note.setText(str(exc))
             self.note.setVisible(True)
             return
         super().accept()
