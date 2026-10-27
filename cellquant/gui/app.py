@@ -769,6 +769,7 @@ class CellQuantWindow:
         self._footer = Footer(self)
         self._tabs.currentChanged.connect(lambda _index: self._markers_page_shown())
         self._tabs.currentChanged.connect(lambda _index: self._edit_panel.leave_delete())
+        self._tabs.currentChanged.connect(lambda _index: self._edit_panel._set_circle(None))
         self._tabs.currentChanged.connect(lambda _index: self._review_panel.leave_marking())
         main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
@@ -4606,8 +4607,8 @@ class EditPanel(QWidget):
             ("Delete selected", self._delete_selected, "Restore selected", self._restore_selected),
             ("Clear selection", self.clear_picked, None, None),
             ("Draw area", self._draw_area, "Delete in area", self._delete_in_area),
-            ("Keep only", self._keep_only, None, None),
-            ("Draw new object", self._draw_new, None, None),
+            ("Keep only", self._keep_only, "Delete circle", self._delete_circle_mode),
+            ("Draw new object", self._draw_new, "Circle", self._circle_mode),
             ("Record drawn edits", self._commit, "Record all images", self._commit_all),  # a row of their own: no label cut off
             ("Undo", self._undo, "Undo all", self._reset),
             ("Reset all images", self._reset_all, "Back", self._go_home),
@@ -4629,6 +4630,26 @@ class EditPanel(QWidget):
             layout.addWidget(holder)
             self._rows.append((holder, names))
         self.undo_button = self._buttons["Undo"]
+        # Circle: diameter in pixels; the default is the median object size until the user sets it.
+        self.circle_size_label = QLabel("Size")
+        self.circle_size = QSpinBox()
+        self.circle_size.setRange(3, 500)
+        self.circle_size.setValue(20)
+        self.circle_size.setSuffix(" px")
+        self.circle_size.setToolTip("Circle diameter in pixels. Starts at the median size of the objects in this image.")
+        self.circle_size.valueChanged.connect(self._size_changed)
+        self.circle_size_row = QWidget()
+        size_line = QHBoxLayout(self.circle_size_row)
+        size_line.setContentsMargins(0, 0, 0, 0)
+        size_line.addWidget(self.circle_size_label)
+        size_line.addWidget(self.circle_size)
+        size_line.addStretch(1)
+        layout.insertWidget(layout.indexOf(self._buttons["Undo"].parentWidget()), self.circle_size_row)
+        self._circle: str | None = None  # "add", "delete" or off
+        self._size_edited_for: str | None = None
+        self._setting_size = False
+        self._buttons["Circle"].setCheckable(True)
+        self._buttons["Delete circle"].setCheckable(True)
         self._buttons["Delete objects"].setCheckable(True)
         self._buttons["Select objects"].setCheckable(True)
         self._selected: set[int] = set()
@@ -4677,15 +4698,15 @@ class EditPanel(QWidget):
 
     _MODE_BUTTONS = {
         "home": ("Delete objects", "Select objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"),
-        "delete": ("Delete objects", "Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"),
+        "delete": ("Delete objects", "Draw area", "Delete in area", "Keep only", "Delete circle", "Undo", "Undo all", "Back"),
         "select": ("Select objects", "Delete selected", "Restore selected", "Clear selection", "Undo", "Undo all", "Back"),
-        "add": ("Draw new object", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"),
+        "add": ("Draw new object", "Circle", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"),
     }
     _MODE_HINT = {
         "home": "Pick a task: delete objects or add new ones.",
-        "delete": "Click an object to delete it. <b>Back</b> or Esc to stop.",
+        "delete": "Click an object to delete it, or <b>Delete circle</b> and click or drag a circle. <b>Back</b> or Esc to stop.",
         "select": "Click an object to select it (Shift+click adds more), then <b>Delete selected</b> or <b>Restore selected</b>. <b>Back</b> or Esc stops.",
-        "add": "<b>Draw new object</b>, then outline each cell: a closed outline is recorded as a new object.",
+        "add": "<b>Draw new object</b> and outline each cell, or <b>Circle</b> and click a cell: each is recorded as a new object.",
     }
 
     def _apply_mode(self) -> None:
@@ -4695,6 +4716,7 @@ class EditPanel(QWidget):
             for name in names:
                 self._buttons[name].setVisible(name in wanted)
             holder.setVisible(any(name in wanted for name in names))
+        self.circle_size_row.setVisible("Circle" in wanted or "Delete circle" in wanted)
         self.mask_colors_row.setVisible(everything or self._mode == "home")
         hint = "Delete: click <b>Delete objects</b>, then click objects. Add: outline cells after <b>Draw new object</b>." if everything else self._MODE_HINT[self._mode]
         card = getattr(self.shell, "_step_pages", None)
@@ -4723,6 +4745,8 @@ class EditPanel(QWidget):
 
     def set_mode(self, mode: str) -> None:
         self._mode = mode
+        if (self._circle, mode) not in (("add", "add"), ("delete", "delete")):
+            self._set_circle(None)
         self._apply_mode()
         self._show_delete_cue(mode in ("delete", "select"))
         self._buttons["Delete objects"].setChecked(mode == "delete")
@@ -4731,6 +4755,9 @@ class EditPanel(QWidget):
             self.clear_picked()
 
     def leave_delete(self) -> None:
+        if self._circle:
+            self._set_circle(None)  # Esc first puts the circle tool down
+            return
         if self._mode in ("delete", "select"):
             self.set_mode("home")
 
@@ -4762,7 +4789,7 @@ class EditPanel(QWidget):
                     layer.mode = "pan_zoom"
 
     def _cross_cursor(self, _event=None) -> None:
-        if self._mode in ("delete", "select"):
+        if self._mode in ("delete", "select") and not self._circle:
             self._pan_active_layer()
             self.shell.viewer.cursor.style = "cross"
 
@@ -4789,9 +4816,181 @@ class EditPanel(QWidget):
             self.shell.message("Run step 2 on this image first.")
             return
         layer = self._labels
+        self._set_circle(None)
         self.shell.viewer.layers.selection.active = layer
         layer.selected_label = self._drawing_label = self._next_label()
         layer.mode = "paint"
+
+    def _circle_mode(self) -> None:
+        """Switch the circle that adds objects on or off (the button is a toggle)."""
+
+        self._set_circle("add" if self._buttons["Circle"].isChecked() else None, warn=True)
+
+    def _delete_circle_mode(self) -> None:
+        """Switch the circle that deletes the objects inside it on or off."""
+
+        self._set_circle("delete" if self._buttons["Delete circle"].isChecked() else None, warn=True)
+
+    def _set_circle(self, kind: str | None, warn: bool = False) -> None:
+        viewer = self.shell.viewer
+        if kind is not None:
+            controller = self.shell.controller
+            if controller is None or not self.shell._nav_ids or self._labels is None or self._labels not in viewer.layers:
+                if warn:
+                    self.shell.message("Run step 2 on this image first.")
+                kind = None
+        self._buttons["Circle"].setChecked(kind == "add")
+        self._buttons["Delete circle"].setChecked(kind == "delete")
+        if kind == self._circle:
+            return
+        self._circle = kind
+        if kind is not None:
+            self._default_size()
+            viewer.layers.selection.active = self._labels
+            self._labels.mode = "pan_zoom"  # a paint tool would paint on the click
+            if not self._cue_connected_circle:
+                viewer.layers.selection.events.active.connect(self._circle_cursor)
+                self._cue_connected_circle = True
+            self._circle_cursor()
+        else:
+            if self._cue_connected_circle:
+                viewer.layers.selection.events.active.disconnect(self._circle_cursor)
+                self._cue_connected_circle = False
+            active = viewer.layers.selection.active
+            if self._mode in ("delete", "select"):
+                viewer.cursor.style = "cross"
+            else:
+                viewer.cursor.style = getattr(active, "cursor", "standard") if active is not None else "standard"
+
+    _cue_connected_circle = False
+
+    def _circle_cursor(self, _event=None) -> None:
+        """A round cursor about the size of the circle that a click would place."""
+
+        if not self._circle:
+            return
+        viewer = self.shell.viewer
+        try:
+            viewer.cursor.size = max(5, int(self.circle_size.value() * float(viewer.camera.zoom)))
+            viewer.cursor.style = "circle"
+        except Exception:  # noqa: BLE001 - an older napari: a cross is enough
+            viewer.cursor.style = "cross"
+
+    def _size_changed(self, _value=None) -> None:
+        if not self._setting_size:
+            self._size_edited_for = self.shell._labels_image_id
+        self._circle_cursor()
+
+    def _default_size(self) -> None:
+        """Start the diameter at the median object size of this image, unless the user set it for this image."""
+
+        image_id = self.shell._labels_image_id
+        if self._size_edited_for is not None and self._size_edited_for == image_id:
+            return
+        controller = self.shell.controller
+        current = controller.recall(image_id) if controller is not None and image_id is not None else None
+        diameter = 20
+        if current is not None and current.labels.size:
+            labels = np.asarray(current.labels)
+            if labels.ndim == 3:
+                labels = labels.max(axis=0)
+            areas = np.bincount(labels.ravel())[1:]
+            areas = areas[areas > 0]
+            if areas.size:
+                diameter = int(round(2 * np.sqrt(float(np.median(areas)) / np.pi)))
+        self._setting_size = True
+        try:
+            self.circle_size.setValue(min(max(diameter, self.circle_size.minimum()), self.circle_size.maximum()))
+        finally:
+            self._setting_size = False
+
+    def _on_circle(self, viewer, event):
+        """Click for a circle of the Size diameter; drag from the centre to set its radius. It adds an object or deletes the ones inside."""
+
+        layer = self._labels
+        if not self._circle or layer is None or layer not in viewer.layers:
+            return
+        if viewer.layers.selection.active is not layer or layer.mode != "pan_zoom":
+            return
+        if self.shell._tabs.currentWidget() is not self.shell._step_pages[2]:
+            return
+        start = np.asarray(layer.world_to_data(event.position), dtype=float)
+        yield
+        while event.type == "mouse_move":
+            yield
+        end = np.asarray(layer.world_to_data(event.position), dtype=float)
+        radius = float(np.hypot(*(end - start)[-2:]))
+        if radius < 1.5:
+            radius = self.circle_size.value() / 2
+        if self._circle == "delete":
+            self._delete_in_circle(start, radius)
+        else:
+            self._place_circle(start, radius)
+
+    def _delete_in_circle(self, center: np.ndarray, radius: float) -> None:
+        """Delete every object lying entirely inside the circle (those crossing its edge stay); Undo brings them back."""
+
+        controller = self.shell.require_controller()
+        if controller is None or not self.shell._nav_ids:
+            return
+        if self.shell.is_busy() or self.shell.image_loading():
+            self.shell.message("Wait for the current analysis to finish, then place the circle again.")
+            return
+        image_id = self.shell._nav_ids[self.shell._nav_index]
+        if self.shell._labels_image_id != image_id:
+            return
+        angles = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)
+        polygon = np.stack([center[-2] + radius * np.sin(angles), center[-1] + radius * np.cos(angles)], axis=1).tolist()
+
+        def finish(outcome) -> None:
+            result, count = outcome
+            if result is None:
+                self.shell.message("Run step 2 on this image first.")
+                return
+            self._edited(result)
+            self.shell.message(f"Deleted {count} object{'s' if count != 1 else ''}." if count else "No object lies entirely inside the circle.")
+
+        self.shell._start_job(lambda: controller.delete_objects_in_area(image_id, [polygon]), finish)
+
+    def _place_circle(self, center: np.ndarray, radius: float) -> None:
+        """Paint a round object with a new number on the pixels that are free, and record it."""
+
+        layer = self._labels
+        data = np.asarray(layer.data)
+        if self.shell.image_loading():
+            self.shell.message("Wait for the image to load, then place the circle again.")
+            return
+        # While a job runs (such as recording the last circle) the circle is recorded after it.
+        cy, cx = float(center[-2]), float(center[-1])
+        top, left = max(int(np.floor(cy - radius)), 0), max(int(np.floor(cx - radius)), 0)
+        bottom, right = min(int(np.ceil(cy + radius)) + 1, data.shape[-2]), min(int(np.ceil(cx + radius)) + 1, data.shape[-1])
+        if bottom <= top or right <= left:
+            self._say("The circle is outside the image.")
+            return
+        yy, xx = np.ogrid[top:bottom, left:right]
+        disc = (yy - cy) ** 2 + (xx - cx) ** 2 <= radius**2
+        index: tuple = ()
+        if data.ndim == 3:
+            plane = int(round(center[0]))
+            if not 0 <= plane < data.shape[0]:
+                return
+            index = (plane,)
+        free = disc & (data[index + (slice(top, bottom), slice(left, right))] == 0)
+        if not free.any():
+            self._say("Nothing to add there: that spot is already inside an object, or outside the image.")
+            return
+        label = self._next_label()
+        ys, xs = np.nonzero(free)
+        self._filling = True
+        try:
+            layer.data_setitem(tuple(np.full(ys.shape, i) for i in index) + (ys + top, xs + left), label)
+        finally:
+            self._filling = False
+        image_id = self.shell._labels_image_id
+        owner, closed = self._closed
+        self._closed = (image_id, (closed if owner == image_id else set()) | {label})
+        layer.selected_label = self._drawing_label = self._next_label()
+        self._record_closed()
 
     def _next_label(self) -> int:
         """An object number not used on screen, nor by an object found in step 2 (deleted ones stay taken)."""
@@ -4849,6 +5048,9 @@ class EditPanel(QWidget):
         image_id, closed = self._closed
         layer = self._labels
         if controller is None or not closed or image_id is None or layer is None or layer not in self.shell.viewer.layers:
+            return
+        if self.shell._job is not None and self.shell._batch is None and self.shell._labels_image_id == image_id:
+            QTimer.singleShot(100, self._record_closed)  # recorded once the current job ends
             return
         if self.shell.is_busy() or self.shell.image_loading() or self.shell._labels_image_id != image_id:
             return  # recorded after the current job, or with Record drawn edits
@@ -4949,11 +5151,13 @@ class EditPanel(QWidget):
     def bind_labels(self, boundaries) -> None:
         self._labels = boundaries
         self._drawing_label = None
+        self._set_circle(None)
         boundaries.events.paint.connect(self._on_paint)
         self.clear_selection()
         if not self._click_bound:
             # In delete mode a plain click on an object deletes it, whichever layer is active.
             self.shell.viewer.mouse_drag_callbacks.append(self._on_click)
+            self.shell.viewer.mouse_drag_callbacks.append(self._on_circle)
             self._click_bound = True
 
     def clear_selection(self) -> None:
@@ -5016,7 +5220,7 @@ class EditPanel(QWidget):
         return [int(item) for item in present], absent
 
     def _on_click(self, viewer, event):
-        if self._mode not in ("delete", "select"):
+        if self._mode not in ("delete", "select") or self._circle:
             return
         start = tuple(event.position)
         shift = "Shift" in getattr(event, "modifiers", ())

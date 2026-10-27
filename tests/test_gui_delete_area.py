@@ -111,10 +111,10 @@ def test_step3_modes_and_draw_new_object(tmp_path: Path, open_window):  # noqa: 
 
     assert shown() == {"Delete objects", "Select objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"}
     panel._buttons["Delete objects"].click()
-    assert shown() == {"Delete objects", "Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"}
+    assert shown() == {"Delete objects", "Draw area", "Delete in area", "Keep only", "Delete circle", "Undo", "Undo all", "Back"}
     panel._buttons["Back"].click()
     panel._buttons["Add new objects"].click()
-    assert shown() == {"Draw new object", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"}
+    assert shown() == {"Draw new object", "Circle", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"}
 
     top = int(shell.controller.last_results[image_id].automated_labels.max())
     panel._buttons["Draw new object"].click()
