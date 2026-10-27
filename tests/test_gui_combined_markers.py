@@ -92,10 +92,23 @@ def test_all_markers(tmp_path: Path, monkeypatch):
         assert counts[f"{names[0]} + {names[1]}"] == 0
         assert not np.any(np.asarray(layer.data) == both_value)
 
-        # Pop out and put back.
+        # A marker whose cutoff is set by examples cannot be dragged here.
+        controller.set_cutoff_by(ids[1], "examples")
+        panel.redraw()
+        _settle()
+        second = view._rows[ids[1]]
+        assert not second.slider.isVisibleTo(view) and not second.histogram.draggable
+        assert "Set by examples" in second.counts.text()
+        controller.set_cutoff_by(ids[1], "slider")
+        panel.redraw()
+        _settle()
+        assert second.slider.isVisibleTo(view) and second.histogram.draggable
+
+        # Pop out (in a scrolling window) and put back.
         view.pop_out()
         _settle()
         assert view.popped_out() and not panel.combined_box.isVisibleTo(panel) and view.window() is not shell
+        assert view._window.scroll.widget() is view
         view._window.close()
         _settle()
         assert not view.popped_out() and panel.combined_box.isVisibleTo(panel)

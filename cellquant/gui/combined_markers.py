@@ -188,7 +188,9 @@ class _MarkerRow(QGroupBox):
         layout.addWidget(self.slider)
         layout.addWidget(self.counts)
 
-    def show_values(self, values: np.ndarray, cutoff: float, comparison: str, percent_rule: bool, counts: dict) -> None:
+    def show_values(
+        self, values: np.ndarray, cutoff: float, comparison: str, percent_rule: bool, counts: dict, by_examples: bool = False
+    ) -> None:
         low, high, decimals = slider_range(values, cutoff, percent_rule)
         self.slider.blockSignals(True)
         self.slider.setDecimals(decimals)
@@ -201,9 +203,12 @@ class _MarkerRow(QGroupBox):
         percent = counts["percent_positive"]
         percent_text = "—" if percent != percent else f"{percent:.1f}%"
         rule = "min % of cell" if percent_rule else "cutoff"
-        self.counts.setText(f"Positive {counts['positive']} of {classified} ({percent_text}) · {rule} {cutoff:g}")
-        for widget in (self.histogram, self.slider):
-            widget.setVisible(True)
+        text = f"Positive {counts['positive']} of {classified} ({percent_text}) · {rule} {cutoff:g}"
+        # A cutoff set by clicked examples (step 4) is changed there, with this marker shown alone.
+        self.slider.setVisible(not by_examples)
+        self.histogram.set_draggable(not by_examples)
+        self.histogram.setVisible(True)
+        self.counts.setText(text + ("\nSet by examples: show this marker alone to change it." if by_examples else ""))
 
     def show_unmeasured(self) -> None:
         for widget in (self.histogram, self.slider):
@@ -216,9 +221,17 @@ class _OwnWindow(QWidget):
 
     def __init__(self, view: CombinedMarkersView):
         super().__init__(None, Qt.Window)
+        from qtpy.QtWidgets import QScrollArea
+
         self.view = view
         self.setWindowTitle("All markers · CellQuant")
-        QVBoxLayout(self).setContentsMargins(6, 6, 6, 6)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        # Scrolls when the markers do not fit, like the step 5 panel.
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QScrollArea.NoFrame)
+        layout.addWidget(self.scroll)
         self.resize(520, 760)
 
     def closeEvent(self, event) -> None:
@@ -324,7 +337,10 @@ class CombinedMarkersView(QWidget):
             cutoff = classification.threshold_for(image_id)
             values = result.objects[classification.measurement].to_numpy(dtype=float)
             counts = controller.histogram(image_id, classification.measurement, cutoff, classification.comparison)
-            row.show_values(values, cutoff, classification.comparison, classification.measurement in percent_ids, counts)
+            row.show_values(
+                values, cutoff, classification.comparison, classification.measurement in percent_ids, counts,
+                by_examples=classification.cutoff_by == "examples",
+            )
         self._color_rows()
         self._show_table(result)
 
@@ -469,7 +485,7 @@ class CombinedMarkersView(QWidget):
         if self._window is not None:
             return
         self._window = _OwnWindow(self)
-        self._window.layout().addWidget(self)
+        self._window.scroll.setWidget(self)
         self.pop_button.setText("Put back")
         self.pop_button.setToolTip("Put these cutoffs and counts back in step 5.")
         self.setVisible(True)
@@ -480,6 +496,7 @@ class CombinedMarkersView(QWidget):
         window, self._window = self._window, None
         if window is None:
             return
+        window.scroll.takeWidget()  # the window is closing: keep this view
         if self._slot is not None:
             self._slot.addWidget(self)
         self.pop_button.setText("Pop out")
