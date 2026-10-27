@@ -96,6 +96,8 @@ def _data(sheet: DataSheet, experiment_dir: str | None) -> dict:
         "description": sheet.description,
         "cleaned_from": sheet.cleaned_from,
         "cleaned_options": dict(sheet.cleaned_options),
+        "processed_from": sheet.processed_from,
+        "process": dict(sheet.process),
     }
 
 
@@ -242,7 +244,8 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
                               units=_read_frame(item.get("units")), notes=list(item.get("notes", [])),
                               warnings=list(item.get("warnings", [])), pseudoreplicated=bool(item.get("pseudoreplicated")),
                               description=item.get("description", ""), cleaned_from=item.get("cleaned_from"),
-                              cleaned_options=dict(item.get("cleaned_options") or {}))
+                              cleaned_options=dict(item.get("cleaned_options") or {}), processed_from=item.get("processed_from"),
+                              process=dict(item.get("process") or {}))
         except (KeyError, TypeError, ValueError, CellQuantError) as exc:
             notes.append(f"A data table ({item.get('name', '?')}) could not be read: {exc}")
             continue
@@ -267,6 +270,8 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
     for sheet in data.values():
         if sheet.cleaned_from not in data:
             sheet.cleaned_from = None
+        if sheet.processed_from not in data:
+            sheet.processed_from = None
     reserve_ids([*data, *results, *graph_sheets])
     project.replace(data, results, graph_sheets)
     current = content.get("current")

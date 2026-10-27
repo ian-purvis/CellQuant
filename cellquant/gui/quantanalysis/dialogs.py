@@ -1,5 +1,5 @@
 """QuantAnalysis dialogs: import CellQuant results, import a CSV, compare two columns, compare three or
-more columns, identify outliers, a stack of P values, and the "Help me choose" test guide."""
+more columns, identify outliers, a stack of P values, data processing, and the "Help me choose" test guide."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from cellquant.gui.quantanalysis import tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
 from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, parse_p_values
 from cellquant.stats import STYLES, ColumnTable
-from cellquant.stats import sources
+from cellquant.stats import sources, transforms
 from cellquant.stats.multcomp import (
     ALL_PAIRS_ONLY,
     EQUAL_SD_METHODS,
@@ -841,6 +841,173 @@ class OutlierDialog(QDialog):
     def accept(self) -> None:
         if not self.options()["columns"] and self.options()["columns"] is not None:
             self.note.setText("Tick at least one column.")
+            self.note.setVisible(True)
+            return
+        super().accept()
+
+
+# --- Data processing ------------------------------------------------------------------------------------------
+
+PROCESS_DEFAULTS = {
+    "transform": {"function": "log10", "k": 100.0, "columns": None},
+    "normalize": {"zero": "smallest", "hundred": "largest", "zero_value": 0.0, "hundred_value": 100.0, "result": "percent", "columns": None},
+    "fraction": {"total": "column", "result": "percent", "columns": None},
+    "baseline": {"baseline": None, "operation": "percent", "by": "mean", "keep_baseline": True},
+    "column_math": {"a": None, "b": None, "operation": "difference"},
+}
+
+
+class ProcessDialog(QDialog):
+    """Transform, normalize, fraction of total, remove baseline or column math: the options of one kind of processing."""
+
+    def __init__(self, parent, table: ColumnTable, kind: str, options: dict | None = None):
+        super().__init__(parent)
+        self.kind = kind
+        self.table = table
+        self.setWindowTitle(transforms.PROCESSES[kind])
+        options = {**PROCESS_DEFAULTS[kind], **(options or {}), "kind": kind}
+        layout = QVBoxLayout(self)
+        intro = QLabel(tips.PROCESS[kind])
+        intro.setWordWrap(True)
+        intro.setStyleSheet(NOTE_STYLE)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        layout.addLayout(form)
+        names = table.names
+        self.columns = None
+        if kind == "transform":
+            self.function = QComboBox()
+            for key, (label, _needs_k) in transforms.TRANSFORMS.items():
+                self.function.addItem(label, key)
+                self.function.setItemData(self.function.count() - 1, tips.FUNCTION[key], Qt.ToolTipRole)
+            self.function.setCurrentIndex(max(0, self.function.findData(options["function"])))
+            self.function.currentIndexChanged.connect(lambda _index: self._function_changed())
+            form.addRow("Function", self.function)
+            self.k = QDoubleSpinBox()
+            self.k.setRange(-1e9, 1e9)
+            self.k.setDecimals(6)
+            self.k.setValue(float(options["k"] if options.get("k") is not None else 100.0))
+            self.k.setToolTip(tips.K_VALUE)
+            form.addRow("K", self.k)
+            self.function_note = QLabel()
+            self.function_note.setWordWrap(True)
+            self.function_note.setStyleSheet(NOTE_STYLE)
+            form.addRow(self.function_note)
+            self._function_changed()
+        elif kind == "normalize":
+            self.zero = self._combo(transforms.NORMALIZE_ZERO, options["zero"], tips.NORMALIZE_ZERO)
+            self.zero_value = self._number(options["zero_value"], tips.NORMALIZE_ZERO)
+            self.hundred = self._combo(transforms.NORMALIZE_HUNDRED, options["hundred"], tips.NORMALIZE_HUNDRED)
+            self.hundred_value = self._number(options["hundred_value"], tips.NORMALIZE_HUNDRED)
+            form.addRow("0% is", self.zero)
+            form.addRow("  number", self.zero_value)
+            form.addRow("100% is", self.hundred)
+            form.addRow("  number", self.hundred_value)
+            self.result = self._combo({"percent": "Percentages (0 to 100)", "fraction": "Fractions (0 to 1)"}, options["result"], tips.RESULT)
+            form.addRow("Results as", self.result)
+            self.zero.currentIndexChanged.connect(lambda _index: self._values_enabled())
+            self.hundred.currentIndexChanged.connect(lambda _index: self._values_enabled())
+            self._values_enabled()
+        elif kind == "fraction":
+            self.total = self._combo(transforms.FRACTION_TOTALS, options["total"], tips.FRACTION_TOTAL)
+            form.addRow("Divide by", self.total)
+            self.result = self._combo({"percent": "Percentages (0 to 100)", "fraction": "Fractions (0 to 1)"}, options["result"], tips.RESULT)
+            form.addRow("Results as", self.result)
+        elif kind == "baseline":
+            self.baseline = self._combo({name: name for name in names}, options["baseline"] or (names[0] if names else None), tips.BASELINE)
+            form.addRow("Baseline column", self.baseline)
+            self.operation = self._combo(transforms.BASELINE_OPERATIONS, options["operation"], tips.BASELINE_OPERATION)
+            form.addRow("Compute", self.operation)
+            self.by = self._combo(transforms.BASELINE_BY, options["by"], tips.BASELINE_BY)
+            form.addRow("Baseline value", self.by)
+            self.keep = QCheckBox("Keep the baseline column")
+            self.keep.setChecked(bool(options["keep_baseline"]))
+            self.keep.setToolTip(tips.KEEP_BASELINE)
+            form.addRow(self.keep)
+        elif kind == "column_math":
+            self.a = self._combo({name: name for name in names}, options["a"] or (names[1] if len(names) > 1 else names[0] if names else None),
+                                 tips.COLUMN_A)
+            self.b = self._combo({name: name for name in names}, options["b"] or (names[0] if names else None), tips.COLUMN_B)
+            self.operation = self._combo({key: text.format(a="A", b="B") for key, (text, _function) in transforms.COLUMN_MATH.items()},
+                                         options["operation"], tips.MATH_OPERATION)
+            form.addRow("Column A", self.a)
+            form.addRow("Column B", self.b)
+            form.addRow("Compute", self.operation)
+        if kind in ("transform", "normalize", "fraction"):
+            title = QLabel("Columns")
+            title.setToolTip(tips.PROCESS_COLUMNS)
+            layout.addWidget(title)
+            self.columns = QListWidget()
+            self.columns.setToolTip(tips.PROCESS_COLUMNS)
+            self.columns.setMaximumHeight(130)
+            chosen = options.get("columns")
+            for name in names:
+                item = QListWidgetItem(name)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if chosen is None or name in chosen else Qt.Unchecked)
+                self.columns.addItem(item)
+            layout.addWidget(self.columns)
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet(WARNING_STYLE)
+        self.note.setVisible(False)
+        layout.addWidget(self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Create table")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _combo(self, choices: dict, current, tip: str) -> QComboBox:
+        combo = QComboBox()
+        for key, text in choices.items():
+            combo.addItem(text, key)
+        combo.setCurrentIndex(max(0, combo.findData(current)))
+        combo.setToolTip(tip)
+        return combo
+
+    def _number(self, value, tip: str) -> QDoubleSpinBox:
+        box = QDoubleSpinBox()
+        box.setRange(-1e12, 1e12)
+        box.setDecimals(6)
+        box.setValue(float(value))
+        box.setToolTip(tip)
+        return box
+
+    def _function_changed(self) -> None:
+        key = self.function.currentData()
+        self.k.setEnabled(transforms.TRANSFORMS[key][1])
+        self.function_note.setText(tips.FUNCTION[key])
+
+    def _values_enabled(self) -> None:
+        self.zero_value.setEnabled(self.zero.currentData() == "value")
+        self.hundred_value.setEnabled(self.hundred.currentData() == "value")
+
+    def options(self) -> dict:
+        options = {"kind": self.kind}
+        if self.kind == "transform":
+            options.update(function=self.function.currentData(), k=round(self.k.value(), 6) if self.k.isEnabled() else None)
+        elif self.kind == "normalize":
+            options.update(zero=self.zero.currentData(), hundred=self.hundred.currentData(), zero_value=self.zero_value.value(),
+                           hundred_value=self.hundred_value.value(), result=self.result.currentData())
+        elif self.kind == "fraction":
+            options.update(total=self.total.currentData(), result=self.result.currentData())
+        elif self.kind == "baseline":
+            options.update(baseline=self.baseline.currentData(), operation=self.operation.currentData(), by=self.by.currentData(),
+                           keep_baseline=self.keep.isChecked())
+        else:
+            options.update(a=self.a.currentData(), b=self.b.currentData(), operation=self.operation.currentData())
+        if self.columns is not None:
+            ticked = [self.columns.item(row).text() for row in range(self.columns.count())
+                      if self.columns.item(row).checkState() == Qt.Checked]
+            options["columns"] = None if len(ticked) == self.columns.count() else ticked
+        return options
+
+    def accept(self) -> None:
+        try:
+            transforms.process(self.table, self.options())
+        except CellQuantError as exc:
+            self.note.setText(str(exc))
             self.note.setVisible(True)
             return
         super().accept()

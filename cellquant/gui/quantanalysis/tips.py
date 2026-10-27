@@ -333,3 +333,64 @@ FORMAT = {
 }
 MAGIC_SOURCE = "The graph or style to copy the look from."
 MAGIC_TARGETS = "Other graphs that should take the same look at once."
+
+# --- Data processing (transform, normalize, fraction of total, remove baseline, column math) -------------------------
+
+PROCESS = {
+    "transform": "A new table with every value of the ticked columns changed by one function, for example log10(Y) before a t test "
+                 "on values that span several powers of ten, or Y × 100 to turn fractions into percentages. The table it comes from "
+                 "is not changed; the new one follows it.",
+    "normalize": "A new table with each ticked column rescaled so its 0% value becomes 0 and its 100% value becomes 100: "
+                 "Y' = 100 × (Y − Z) ÷ (H − Z). Use it to put columns measured on different scales on one scale.",
+    "fraction": "A new table with each value divided by a total: its column's total, the grand total, or its row's total. "
+                "For example the share of all positive cells that each group holds.",
+    "baseline": "A new table with every column compared with a baseline column, for example % of control: 100 × Y ÷ the control "
+                "mean. Row by row (paired) uses the baseline value in the same row, for example each replicate's own control.",
+    "column_math": "A new table with one column computed row by row from two columns, for example the paired difference B − A "
+                   "or the ratio B ÷ A of each replicate.",
+}
+FUNCTION = {
+    "multiply": "Y × K. For example K = 100 turns fractions into percentages.",
+    "divide": "Y ÷ K. For example K = 100 turns percentages into fractions.",
+    "add": "Y + K.",
+    "subtract": "Y − K, for example to remove a constant background.",
+    "power": "Y raised to the power K.",
+    "square": "Y × Y.",
+    "sqrt": "The square root of Y; a negative value has none and is left blank. Often used for counts.",
+    "reciprocal": "1 ÷ Y; zero has none and is left blank.",
+    "log10": "Log base 10. For values that span several powers of ten or grow by factors (intensities, areas, fold changes). Values ≤ 0 are left blank.",
+    "log2": "Log base 2: each step of 1 is a doubling. Common for fold changes. Values ≤ 0 are left blank.",
+    "ln": "Natural log (base e). Values ≤ 0 are left blank.",
+    "exp10": "10 to the power Y: undoes log10.",
+    "exp": "e to the power Y: undoes the natural log.",
+    "abs": "The absolute value: negative values become positive.",
+    "logit": "ln(Y ÷ (1 − Y)) for proportions between 0 and 1 (not percentages): spreads values near 0 and 1. 0 and 1 are left blank.",
+    "arcsine": "arcsine(√Y) for proportions from 0 to 1 (not percentages): an older way to steady the variance of proportions.",
+    "zscore": "How many SDs each value lies from its column's mean: (Y − mean) ÷ SD. Each column then has mean 0 and SD 1.",
+}
+K_VALUE = "The constant K used by the functions that name it (Y × K, Y ÷ K, Y + K, Y − K, Y^K)."
+PROCESS_COLUMNS = "Tick the columns to process. Columns left unticked are copied unchanged into the new table."
+NORMALIZE_ZERO = "The value that becomes 0%: the smallest value of each column, its first value (row 1), or a number you type."
+NORMALIZE_HUNDRED = "The value that becomes 100%: the largest value of each column, its last value, its sum, or a number you type."
+RESULT = "Show the results as percentages (0 to 100) or as fractions (0 to 1)."
+FRACTION_TOTAL = (
+    "Column total: each value ÷ the sum of its column. Grand total: ÷ the sum of every ticked column. "
+    "Row total: ÷ the sum of the ticked values in the same row (for example the share of each category in one replicate)."
+)
+BASELINE = "The baseline (control) column every column is compared with. Put the control first in the table to have it chosen."
+BASELINE_OPERATION = (
+    "Subtract: Y − baseline (the difference, in the data's units). Divide: Y ÷ baseline (a ratio). % of baseline: "
+    "100 × Y ÷ baseline (the control is then 100% on average). % change: 100 × (Y − baseline) ÷ baseline (the control is then 0%)."
+)
+BASELINE_BY = (
+    "The baseline column's mean: one number for every value, for example % of the control mean (unpaired groups). "
+    "Same row: each value against the baseline value in its own row, for paired data such as each replicate's own control."
+)
+KEEP_BASELINE = "Keep the baseline column in the new table (it becomes 0, 1 or 100 on average), or leave it out."
+COLUMN_A = "The first column of the formula."
+COLUMN_B = "The second column of the formula. Rows are paired: row 1 of A with row 1 of B, and so on."
+MATH_OPERATION = (
+    "Difference A − B, ratio A ÷ B, sum, product, % change from B to A (100 × (A − B) ÷ B) or log2(A ÷ B) "
+    "(a log fold change: +1 is a doubling, −1 a halving)."
+)
+CHANGE_PROCESS = "Change how this table is computed from its source; its results and graphs update."

@@ -25,11 +25,13 @@ from cellquant.stats import (
     column_statistics_table,
     compare,
     identify_outliers,
+    process,
     lognormality,
     normality,
     one_way,
     p_value_stack,
 )
+from cellquant.stats import transforms
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
 
 LOG = logging.getLogger("cellquant.quantanalysis")
@@ -97,6 +99,8 @@ class DataSheet:
     stale: bool = False                 # the experiment changed since the import
     cleaned_from: str | None = None     # the data table this one is a cleaned copy of (flagged outliers blank); follows it
     cleaned_options: dict = field(default_factory=dict)  # the outlier method and its Q or alpha
+    processed_from: str | None = None   # the data table this one is computed from (transform, normalize…); follows it
+    process: dict = field(default_factory=dict)          # the processing: "kind" and its options (cellquant.stats.transforms)
 
 
 @dataclass
@@ -189,6 +193,50 @@ class Project(QObject):
         sheet.description = f"{source.name} with the values flagged by {self.cleaned_label(result.options)} left blank. Follows {source.name}."
         return self.add_data(sheet)
 
+    def add_processed(self, source: DataSheet, options: dict) -> DataSheet:
+        """A new data table computed from ``source`` (transformed, normalized…) that follows it; ``source`` is not changed.
+        Raises CellQuantError when the options do not fit the table."""
+
+        table, notes = process(source.table, options)
+        sheet = DataSheet(f"{transforms.label(options)}: {source.name}", table, row_labels=list(source.row_labels),
+                          processed_from=source.id, process=dict(options), pseudoreplicated=source.pseudoreplicated,
+                          warnings=list(source.warnings), notes=notes)
+        sheet.description = self.processed_description(sheet, source)
+        return self.add_data(sheet)
+
+    @staticmethod
+    def processed_description(sheet: DataSheet, source: DataSheet) -> str:
+        return f"{transforms.PROCESSES[sheet.process['kind']]} of {source.name}: {sheet.notes[0] if sheet.notes else ''} Follows {source.name}."
+
+    def refresh_processed(self, sheet: DataSheet) -> None:
+        """A processed table follows its source: compute it again with the same options."""
+
+        source = self.data.get(sheet.processed_from or "")
+        if source is None:
+            return
+        try:
+            sheet.table, sheet.notes = process(source.table, sheet.process)
+        except CellQuantError as exc:
+            sheet.notes = [f"Could not be computed again: {exc}"]
+            LOG.info("%s: %s", sheet.name, exc)
+        sheet.row_labels = list(source.row_labels)
+        sheet.pseudoreplicated, sheet.warnings = source.pseudoreplicated, list(source.warnings)
+        sheet.description = self.processed_description(sheet, source)
+        self.data_changed(sheet.id)
+
+    def change_process(self, sheet: DataSheet, options: dict) -> None:
+        """New processing options for a processed table (raises CellQuantError when they do not fit its source)."""
+
+        source = self.data[sheet.processed_from]
+        process(source.table, options)
+        named = sheet.name == f"{transforms.label(sheet.process)}: {source.name}"
+        sheet.process = dict(options)
+        if named:  # still the name it was given: name it after the new processing
+            sheet.name = ""
+            sheet.name = self.unique_name(f"{transforms.label(options)}: {source.name}")
+        self.refresh_processed(sheet)
+        self.changed.emit("")
+
     @staticmethod
     def cleaned_label(options: dict) -> str:
         return OUTLIER_NAMES[options.get("method", "rout")]
@@ -229,6 +277,8 @@ class Project(QObject):
             for other in self.data.values():
                 if other.cleaned_from == sheet_id:
                     other.cleaned_from = None
+                if other.processed_from == sheet_id:
+                    other.processed_from = None
         removed = self.results.pop(sheet_id, None)
         self.graphs.pop(sheet_id, None)
         for graph in self.graphs.values():
@@ -255,6 +305,8 @@ class Project(QObject):
             self.changed.emit(graph.id)
         for copy in [item for item in self.data.values() if item.cleaned_from == data_id]:
             self.refresh_cleaned(copy)
+        for copy in [item for item in self.data.values() if item.processed_from == data_id]:
+            self.refresh_processed(copy)
 
     def refresh_cleaned(self, sheet: DataSheet) -> None:
         """The cleaned copy follows its source: flag the outliers again and blank them."""

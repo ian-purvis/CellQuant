@@ -55,6 +55,18 @@ The format panel beside a graph has collapsible sections: **Graph**, **Data sets
 
 Every setting is kept in the graph's format (`GraphFormat` in `cellquant/gui/quantanalysis/graph_format.py`), a plain record that converts to and from JSON.
 
+### Data processing
+
+**Analyze → Data processing** (or **Process ▾** above a data table) makes a new data table from the one selected. The new table follows its source: edit the source (or let it be imported again) and the new table, its results and its graphs update. **Change processing…** above it changes the options; editing it by hand keeps its numbers and stops it following. The source is never changed. A value with no result (the log of 0 or of a negative number, a division by 0) is left blank, and the table's notes say how many. Y is a value, K a constant you type.
+
+- **Transform**: each value Y of the ticked columns becomes Y × K, Y ÷ K, Y + K, Y − K, Y^K, Y², √Y, 1/Y, log10(Y), log2(Y), ln(Y), 10^Y, e^Y, |Y|, logit = ln(Y ÷ (1 − Y)), arcsine(√Y), or the z-score (Y − mean) ÷ SD of its column. Logs suit values that grow by factors (intensities, areas, fold changes): a t test on log10 values compares geometric means. Logit and arcsine take proportions from 0 to 1, so divide percentages by 100 first.
+- **Normalize**: Y' = 100 × (Y − Z) ÷ (H − Z) for each ticked column, where Z (0%) is the column's smallest value, its first value or a number, and H (100%) is its largest value, its last value, its sum or a number. Results as percentages or fractions (without the 100).
+- **Fraction of total**: Y ÷ T, where T is the column's total, the grand total of the ticked columns, or the total of the ticked values in the same row; as a percentage (× 100) or a fraction.
+- **Remove baseline**: every column against a baseline column B, either its mean (one number, for unpaired groups) or the value in the same row (paired: each replicate's own control). Y − B (a difference in the data's units), Y ÷ B (a ratio), 100 × Y ÷ B (% of baseline, for example % of control, where the control averages 100%) or 100 × (Y − B) ÷ B (% change, where the control averages 0%). The baseline column can be kept or left out.
+- **Column math**: one new column computed row by row from columns A and B: A − B, A ÷ B, A + B, A × B, % change 100 × (A − B) ÷ B, or log2(A ÷ B) (a log fold change: +1 is a doubling, −1 a halving). Rows are paired, so each row should be one subject.
+
+Dividing every value by the same control mean (% of control by mean) changes the units but not the P value of a comparison between two treated groups; it does make the control's own spread visible. Dividing by each replicate's own control (row by row) removes the variation between replicates, which is what a paired design is for.
+
 ## Replicates: N and n
 
 A **biological replicate** is an independent sample: one subject, one culture, one independently prepared sample. Its number is **N**. **Technical replicates** are repeated measurements of one sample: its images, fields or cells. Their number is **n**.
