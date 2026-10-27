@@ -328,7 +328,7 @@ class LayoutSheetView(QWidget):
         except ImportError:
             self.preview.setText('Page layouts need matplotlib: pip install "cellquant[stats]"')
             return []
-        except CellQuantError as exc:
+        except (CellQuantError, ValueError, TypeError) as exc:  # a page that cannot be drawn says why instead of failing
             self.notes.setText(str(exc))
             self.notes.setVisible(True)
             return [str(exc)]

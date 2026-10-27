@@ -91,6 +91,36 @@ def test_removing_a_graph_empties_its_cell_and_projects_keep_layouts(tmp_path):
     assert not project.layouts
 
 
+def test_damaged_layouts_in_a_project_file_are_skipped_or_repaired(tmp_path):
+    import json
+    import zipfile
+
+    from cellquant.gui.quantanalysis import layouts, project_file
+    from cellquant.gui.quantanalysis.project import Project
+
+    project, _data, graph_sheets, layout = _project()
+    path = project_file.save(project, tmp_path / "p.cqstats")
+    content = json.loads(zipfile.ZipFile(path).read("project.json"))
+    good = content["layouts"][0]
+    for value, kept in ((5, 0), (None, 0), ([3, "text", None], 0), ([{"name": "no id"}, {"id": ["x"], "page": 7}], 1),
+                        ([dict(good, page={"rows": "a", "columns": None, "margin": "wide", "paper": ["x"], "gap": float("inf")},
+                               graphs=[["x"], graph_sheets[0].id, "gone"])], 1)):
+        content["layouts"] = value
+        damaged = tmp_path / "damaged.cqstats"
+        with zipfile.ZipFile(damaged, "w") as archive:
+            archive.writestr("project.json", json.dumps(content))
+        other = Project()
+        project_file.load(damaged, other)
+        assert len(other.layouts) == kept, value
+    loaded = next(iter(other.layouts.values()))
+    assert loaded.graphs == [None, graph_sheets[0].id, None]
+    page = layouts.page_options(loaded.page)
+    assert (page["rows"], page["columns"], page["margin"], page["paper"]) == (2, 2, 12.0, "letter") and page["gap"] == 2000.0
+    with pytest.raises(CellQuantError, match="no room"):
+        layouts.cells(loaded.page)  # an enormous gap: the page says so instead of failing
+    assert layouts.page_options({"rows": float("nan"), "title_size": float("nan")})["title_size"] == 14.0
+
+
 @pytest.fixture
 def window(qtbot):
     from cellquant.gui.quantanalysis.window import QuantAnalysisWindow

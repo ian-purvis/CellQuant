@@ -44,17 +44,24 @@ DEFAULT_PAGE = {
 
 
 def page_options(page: dict | None) -> dict:
-    """``page`` with every missing setting filled from DEFAULT_PAGE, and numbers kept in range."""
+    """``page`` with every missing or unreadable setting taken from DEFAULT_PAGE, and numbers kept in range."""
 
-    out = {**DEFAULT_PAGE, **(page or {})}
-    out["paper"] = out["paper"] if out["paper"] in PAPERS else "letter"
+    out = {**DEFAULT_PAGE, **(page if isinstance(page, dict) else {})}
+
+    def number(key: str, kind=float):
+        try:
+            value = kind(out[key])
+        except (TypeError, ValueError, OverflowError):
+            return kind(DEFAULT_PAGE[key])
+        return value if value == value else kind(DEFAULT_PAGE[key])  # NaN: the default
+
+    for key, choices in (("paper", PAPERS), ("labels", LABELS), ("align", ALIGN)):
+        out[key] = out[key] if isinstance(out[key], str) and out[key] in choices else DEFAULT_PAGE[key]
     out["orientation"] = "landscape" if out["orientation"] == "landscape" else "portrait"
-    out["labels"] = out["labels"] if out["labels"] in LABELS else "upper"
-    out["align"] = out["align"] if out["align"] in ALIGN else "top_left"
-    out["rows"] = max(1, min(6, int(out["rows"])))
-    out["columns"] = max(1, min(6, int(out["columns"])))
+    out["rows"] = max(1, min(6, number("rows", int)))
+    out["columns"] = max(1, min(6, number("columns", int)))
     for key, low in (("width", 20.0), ("height", 20.0), ("margin", 0.0), ("gap", 0.0), ("label_size", 4.0), ("title_size", 4.0)):
-        out[key] = max(low, float(out[key]))
+        out[key] = min(2000.0, max(low, number(key)))
     out["label_bold"] = bool(out["label_bold"])
     out["title"] = str(out["title"] or "")
     return out
@@ -176,7 +183,7 @@ def render(layout, project, dpi: float = 100.0):
 
     places = placements(layout, project)
     figure = _page_figure(layout, places, dpi)
-    width, height = page_size(layout.page)
+    _width, height = page_size(layout.page)
     for place in places:
         x, y, _w, h = place["box"]
         buffer = io.BytesIO()
@@ -186,7 +193,7 @@ def render(layout, project, dpi: float = 100.0):
 
         image = imread(buffer)
         top = (height - y - h) / MM_PER_INCH * dpi  # figimage counts pixels from the bottom left
-        figure.figimage(image, xo=int(round(x / MM_PER_INCH * dpi)), yo=int(round(top)), origin="upper", zorder=1)
+        figure.figimage(image, xo=round(x / MM_PER_INCH * dpi), yo=round(top), origin="upper", zorder=1)
     figure.canvas.draw()
     return np.asarray(figure.canvas.buffer_rgba())[..., :3].copy()
 

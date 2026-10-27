@@ -275,11 +275,17 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
         if sheet.processed_from not in data or sheet.process.get("kind") not in transforms.PROCESSES:
             sheet.processed_from = None
     layouts: dict[str, LayoutSheet] = {}
-    for item in content.get("layouts", []):
+    items = content.get("layouts")
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            notes.append("A page layout could not be read.")
+            continue
         try:
-            sheet = LayoutSheet(item.get("name", "Layout"), dict(item.get("page") or {}),
-                                [graph_id if graph_id in graph_sheets else None for graph_id in item.get("graphs", [])], id=item["id"])
-        except (KeyError, TypeError, ValueError) as exc:
+            graph_ids = item.get("graphs") if isinstance(item.get("graphs"), list) else []
+            sheet = LayoutSheet(str(item.get("name", "Layout")), dict(item["page"]) if isinstance(item.get("page"), dict) else {},
+                                [graph_id if isinstance(graph_id, str) and graph_id in graph_sheets else None for graph_id in graph_ids],
+                                id=str(item["id"]))
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
             notes.append(f"A page layout ({item.get('name', '?')}) could not be read: {exc}")
             continue
         layouts[sheet.id] = sheet
