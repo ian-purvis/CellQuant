@@ -170,6 +170,9 @@ class GraphFormat:
     connect_color: str = "#111111"
     connect_width: float = 1.0
     connect_style: str = "-"
+    # Grouped tables
+    grouped_layout: str = "interleaved"  # "interleaved": each row's data sets side by side; "separated": one block per data set
+    cluster_gap: float = 0.8        # the space between blocks, in column widths
     # Axes
     frame: str = "plain"
     frame_offset: float = 6.0       # points, for the offset frame

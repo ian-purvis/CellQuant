@@ -752,10 +752,12 @@ class QuantAnalysisWindow(QMainWindow):
 
     def suggested_analysis(self, sheet: DataSheet) -> None:
         """The image-data preset: a SuperPlot (mean ± SD) and, for two groups, Welch's t test with an estimation plot.
-        A grouped table gets a two-way ANOVA comparing the data sets within each row."""
+        A grouped table gets a two-way ANOVA comparing the data sets within each row, and an interleaved bar graph showing it."""
 
         if sheet.grouped is not None:
-            self.project.add_result(ResultSheet(f"Two-way ANOVA: {sheet.name}", sheet.id, "twoway", dict(TWO_WAY_DEFAULTS)))
+            result = self.project.add_result(ResultSheet(f"Two-way ANOVA: {sheet.name}", sheet.id, "twoway", dict(TWO_WAY_DEFAULTS)))
+            self.project.add_graph(GraphSheet(f"{graphs.KINDS['bar'][0]}: {sheet.name}", sheet.id, "bar", {"error": "sd", "legend": {"show": True, "position": "master"}},
+                                              result.id))
             return
         result = None
         if len(sheet.table) == 2:
@@ -984,9 +986,10 @@ class QuantAnalysisWindow(QMainWindow):
             self.status("Select a data table first.")
             return None
         result = next((item for item in reversed(list(self.project.results.values()))
-                       if item.data_id == data.id and item.kind in ("compare", "anova")), None)
-        sheet = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {data.name}", data.id, kind, {},
-                                                  result.id if result else None))
+                       if item.data_id == data.id and item.kind in ("compare", "anova", "twoway")), None)
+        # A grouped graph colours its cells by data set, so its legend is on from the start.
+        sheet = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {data.name}", data.id, kind,
+                                                  {"legend": {"show": True, "position": "master"}} if data.grouped is not None else {}, result.id if result else None))
         self.select(sheet.id)
         return sheet
 

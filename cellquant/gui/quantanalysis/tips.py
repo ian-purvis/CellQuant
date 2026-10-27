@@ -221,7 +221,8 @@ LETTERS = (
     "Compact letters above the columns: groups that share a letter are not significantly different; groups with no letter in common are. "
     "Needs comparisons of all pairs. Replaces brackets. Example: A, AB and B means A and B differ but neither differs from AB."
 )
-GRAPH_COMPARISON = "The comparison whose P values the brackets show, and whose difference the estimation plot draws. A two-column test or an ANOVA with multiple comparisons."
+GRAPH_COMPARISON = ("The comparison whose P values the brackets show, and whose difference the estimation plot draws. A two-column test, an ANOVA "
+                    "with multiple comparisons, or (for a grouped table) a two-way ANOVA with multiple comparisons.")
 LETTER_STYLE = "How the letters are written: A B C (the default), a b c, or numbers 1 2 3. Groups that share one are not significantly different."
 
 # --- Formatting graphs (Format graph, Format axes, styles) -----------------------------------------------------------
@@ -435,3 +436,6 @@ TWO_WAY_FAMILY = ("One family per row (or data set) corrects for the comparisons
                   "for every comparison in the table at once, which is stricter.")
 TWO_WAY_METHOD = ("Tukey for every pair and Dunnett against a reference are the most powerful corrections for those goals. Šidák, "
                   "Holm-Šidák and Bonferroni work for any set of comparisons; Fisher's LSD does not correct; the FDR methods give q values.")
+GROUPED_LAYOUT = ("How a grouped table is laid out. Interleaved: one block per row, its data sets side by side in their colours (the legend "
+                  "names them). Separated: one block per data set, its rows side by side, the data set named under its block.")
+CLUSTER_GAP = "The space between blocks, in column widths (0: no gap)."
