@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import Callable
 
 import pandas as pd
-from qtpy.QtCore import QEvent, Qt, QTimer
-from qtpy.QtGui import QFont
+from qtpy.QtCore import QEvent, QSettings, Qt, QTimer
+from qtpy.QtGui import QFont, QKeySequence
 from qtpy.QtWidgets import (
     QApplication,
     QDialog,
@@ -38,6 +38,7 @@ from qtpy.QtWidgets import (
 
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import graphs
+from cellquant.gui.quantanalysis import project_file
 from cellquant.gui.quantanalysis.datagrid import DataSheetView
 from cellquant.gui.quantanalysis.dialogs import (
     DEFAULT_OPTIONS,
@@ -55,6 +56,8 @@ from cellquant.stats import ColumnTable, sources
 
 INSTALL = 'pip install "cellquant[stats]"'
 SHEET_ROLE = Qt.UserRole + 1
+RECENT_KEY = "quantanalysis/recent_projects"
+RECENT_COUNT = 8
 FALLBACK_STYLE = """
 QWidget { background-color: #262930; color: #f0f1f2; }
 QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QTableWidget, QTreeWidget, QListWidget, QTextBrowser, QPlainTextEdit {
@@ -122,6 +125,13 @@ class QuantAnalysisWindow(QMainWindow):
         self._folder_sources: dict[str, sources.Source] = {}
         self.project = Project()
         self.project.changed.connect(self._project_changed)
+        self.path: Path | None = None   # the project file, once saved or opened
+        self._saved = project_file.fingerprint(self.project)
+        self._title = QTimer(self)
+        self._title.setSingleShot(True)
+        self._title.setInterval(300)
+        self._title.timeout.connect(self.update_title)
+        self.project.modified.connect(self._title.start)
         self.views: dict[str, QWidget] = {}
         self._log = _LogBuffer()
         LOG.addHandler(self._log)
@@ -181,6 +191,8 @@ class QuantAnalysisWindow(QMainWindow):
         self._watch.setInterval(1500)
         self._watch.timeout.connect(self._check_experiment)
         self._watch.start()
+        if parent is not None:
+            parent.installEventFilter(self)  # CellQuant closing asks to save an unsaved project
 
     # --- Building the window ---------------------------------------------------------------------------------------
 
@@ -201,6 +213,7 @@ class QuantAnalysisWindow(QMainWindow):
             ("Import from the open experiment…", "Choose a measure, what a dot is, and the groups, from the experiment open in CellQuant.", self.import_experiment),
             ("Open CellQuant results folder…", "A results folder (with experiment.json) or an export folder (with image_summary.csv).", self.open_folder_dialog),
             ("New column table", "An empty table to type or paste values into.", self.new_table),
+            ("Open project…", "A QuantAnalysis project file (.cqstats) saved before: its tables, analyses and graphs.", self.open_project_dialog),
         ):
             button = QPushButton(label)
             button.setToolTip(tip)
@@ -213,6 +226,16 @@ class QuantAnalysisWindow(QMainWindow):
     def _menus(self) -> None:
         bar = self.menuBar()
         file = bar.addMenu("&File")
+        self._action(file, "New project", self.new_project, "Start again with no tables, analyses or graphs.").setShortcut(QKeySequence.New)
+        self._action(file, "Open project…", self.open_project_dialog,
+                     "A QuantAnalysis project file (.cqstats): its tables, analyses and graphs.").setShortcut(QKeySequence.Open)
+        self.recent_menu = file.addMenu("Open recent")
+        self.recent_menu.setToolTipsVisible(True)
+        self.recent_menu.aboutToShow.connect(self._fill_recent)
+        self._action(file, "Save project", self.save_project,
+                     "Save every table, analysis and graph in one .cqstats file. Analyses are computed again when it is opened.").setShortcut(QKeySequence.Save)
+        self._action(file, "Save project as…", self.save_project_as, "Save the project in a new file.").setShortcut(QKeySequence.SaveAs)
+        file.addSeparator()
         self._action(file, "New column table", self.new_table, "An empty table: one column per group.")
         self._action(file, "Import CSV…", self.import_csv_dialog, "A CSV file, wide (one column per group) or long (value and group columns).")
         file.addSeparator()
@@ -380,6 +403,7 @@ class QuantAnalysisWindow(QMainWindow):
         item = self.item_of(sheet.id)
         if item is not None and item.text(0) != sheet.name:
             item.setText(0, sheet.name)
+        self.project.touch()
 
     def _delete(self, sheet_id: str) -> None:
         sheet = self.project.sheet(sheet_id)
@@ -391,6 +415,169 @@ class QuantAnalysisWindow(QMainWindow):
                 if answer != QMessageBox.Yes:
                     return
         self.project.remove(sheet_id)
+
+    # --- Project files ----------------------------------------------------------------------------------------------
+
+    def experiment_dir(self) -> Path | None:
+        directory = getattr(self.controller(), "directory", None)
+        return Path(directory) if directory else None
+
+    def has_unsaved_changes(self) -> bool:
+        return project_file.fingerprint(self.project) != self._saved
+
+    def update_title(self) -> None:
+        if self.path is None:
+            self.setWindowTitle("QuantAnalysis")
+        else:
+            self.setWindowTitle(f"QuantAnalysis: {self.path.name}{'*' if self.has_unsaved_changes() else ''}")
+
+    def ask_save(self, action: str) -> str:
+        """"save", "discard" or "cancel"."""
+
+        name = self.path.name if self.path is not None else "this project"
+        box = QMessageBox(QMessageBox.Question, "QuantAnalysis", f"Save the changes to {name} before {action}?",
+                          QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, self)
+        box.setInformativeText("Without saving, the tables, analyses and graph formats made since the last save are lost.")
+        box.setDefaultButton(QMessageBox.Save)
+        return {QMessageBox.Save: "save", QMessageBox.Discard: "discard"}.get(box.exec(), "cancel")
+
+    def maybe_save(self, action: str) -> bool:
+        """True when it is fine to go on: nothing unsaved, saved now, or the user chose not to save."""
+
+        if not self.has_unsaved_changes():
+            return True
+        answer = self.ask_save(action)
+        if answer == "save":
+            return self.save_project()
+        return answer == "discard"
+
+    def _drop_views(self) -> None:
+        for view in self.views.values():
+            self.stack.removeWidget(view)
+            view.deleteLater()
+        self.views.clear()
+
+    def new_project(self) -> bool:
+        if not self.maybe_save("starting a new project"):
+            return False
+        self._drop_views()
+        self.project.replace({}, {}, {})
+        self.path = None
+        self._saved = project_file.fingerprint(self.project)
+        self.update_title()
+        self.select(None)
+        self.log("new project")
+        return True
+
+    def open_project_dialog(self) -> None:
+        if not self.maybe_save("opening another project"):
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "Open a QuantAnalysis project", str(self._project_folder()),
+                                              f"QuantAnalysis projects (*{project_file.SUFFIX});;All files (*)")
+        if path:
+            self.open_project(path, ask=False)
+
+    def open_project(self, path: str | Path, ask: bool = True) -> bool:
+        """Open a project file in place of the current project (asking first to save it when ``ask``)."""
+
+        if ask and not self.maybe_save("opening another project"):
+            return False
+        path = Path(path)
+        experiment = self.experiment_dir()
+        try:
+            content = project_file.read(path)
+        except CellQuantError as exc:
+            self.status(str(exc))
+            QMessageBox.warning(self, "QuantAnalysis", str(exc))
+            self._forget_recent(path)
+            return False
+        self._drop_views()
+        current, notes = project_file.load(path, self.project, experiment, content)
+        self.path = path
+        self._saved = project_file.fingerprint(self.project)
+        self._remember_recent(path)
+        self.update_title()
+        self.select(current or next(iter(self.project.data), None))
+        for note in notes:
+            self.log(note)
+        self.status(f"Opened {path.name}: {len(self.project.data)} table(s), {len(self.project.results)} analysis(es), "
+                    f"{len(self.project.graphs)} graph(s)." + (f" {len(notes)} item(s) could not be read; see Help → Log." if notes else ""))
+        linked = [sheet for sheet in self.project.data.values() if sheet.origin == "experiment" and sheet.spec is not None]
+        if linked and self.controller() is not None:
+            # The experiment may have changed since the save: import its tables again, with the same choices.
+            for sheet in linked:
+                sheet.stale = True
+            self.refresh_imports()
+        return True
+
+    def save_project(self) -> bool:
+        if self.path is None:
+            return self.save_project_as()
+        return self._write(self.path)
+
+    def save_project_as(self) -> bool:
+        start = self.path if self.path is not None else self._project_folder() / project_file.default_name(self.experiment_dir())
+        path, _ = QFileDialog.getSaveFileName(self, "Save the QuantAnalysis project", str(start),
+                                              f"QuantAnalysis projects (*{project_file.SUFFIX})")
+        return self._write(Path(path)) if path else False
+
+    def _write(self, path: Path) -> bool:
+        try:
+            written = project_file.save(self.project, path, self.experiment_dir(), self.current_id())
+        except CellQuantError as exc:
+            self.status(str(exc))
+            QMessageBox.warning(self, "QuantAnalysis", str(exc))
+            return False
+        self.path = written
+        self._saved = project_file.fingerprint(self.project)
+        self._remember_recent(written)
+        self.update_title()
+        self.status(f"Saved {written}.")
+        return True
+
+    def _project_folder(self) -> Path:
+        if self.path is not None:
+            return self.path.parent
+        recent = self.recent_projects()
+        if recent:
+            return Path(recent[0]).parent
+        return self.experiment_dir() or Path.home()
+
+    def recent_projects(self) -> list[str]:
+        value = QSettings("CellQuant", "CellQuant").value(RECENT_KEY, [])
+        if isinstance(value, str):  # one entry comes back as a plain string
+            value = [value] if value else []
+        return [str(item) for item in (value or []) if item]
+
+    def _set_recent(self, paths: list[str]) -> None:
+        QSettings("CellQuant", "CellQuant").setValue(RECENT_KEY, paths[:RECENT_COUNT])
+
+    def _remember_recent(self, path: Path) -> None:
+        text = str(Path(path).resolve())
+        self._set_recent([text, *[item for item in self.recent_projects() if item != text]])
+
+    def _forget_recent(self, path: Path) -> None:
+        text = str(Path(path).resolve())
+        self._set_recent([item for item in self.recent_projects() if item != text])
+
+    def _fill_recent(self) -> None:
+        self.recent_menu.clear()
+        recent = self.recent_projects()
+        for item in recent:
+            action = self.recent_menu.addAction(Path(item).name)
+            action.setToolTip(item)
+            action.triggered.connect(lambda _checked=False, item=item: self.open_project(item))
+        if not recent:
+            self.recent_menu.addAction("No recent projects").setEnabled(False)
+        else:
+            self.recent_menu.addSeparator()
+            self.recent_menu.addAction("Clear the list").triggered.connect(lambda: self._set_recent([]))
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self.parent() and event.type() == QEvent.Close and not self.maybe_save("CellQuant closes"):
+            event.ignore()
+            return True
+        return False
 
     # --- Data tables ------------------------------------------------------------------------------------------------
 
