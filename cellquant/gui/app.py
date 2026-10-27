@@ -4765,8 +4765,8 @@ class EditPanel(QWidget):
         """Delete mode shows a cross cursor over the image (napari resets it when another layer is chosen)."""
 
         viewer = self.shell.viewer
-        if on and self._labels is not None and self._labels in viewer.layers and self._labels.mode != "pan_zoom":
-            self._labels.mode = "pan_zoom"  # a paint tool would paint on the click
+        if on:
+            self._pan_active_layer()
         if on and not self._cue_connected:
             viewer.layers.selection.events.active.connect(self._cross_cursor)
             self._cue_connected = True
@@ -4779,8 +4779,18 @@ class EditPanel(QWidget):
             active = viewer.layers.selection.active
             viewer.cursor.style = getattr(active, "cursor", "standard") if active is not None else "standard"
 
+    def _pan_active_layer(self) -> None:
+        """Click-to-pick needs napari's pan tool on the layer in use: a paint, pick or other tool would take the click."""
+
+        viewer = self.shell.viewer
+        for layer in (self._labels, viewer.layers.selection.active):
+            if layer is not None and layer in viewer.layers and layer.name != DELETE_AREA_LAYER:
+                if getattr(layer, "mode", "pan_zoom") not in ("pan_zoom", "transform"):
+                    layer.mode = "pan_zoom"
+
     def _cross_cursor(self, _event=None) -> None:
         if self._mode in ("delete", "select") and not self._circle:
+            self._pan_active_layer()
             self.shell.viewer.cursor.style = "cross"
 
     def _enter_delete(self) -> None:
@@ -5214,10 +5224,14 @@ class EditPanel(QWidget):
             return
         start = tuple(event.position)
         shift = "Shift" in getattr(event, "modifiers", ())
+        origin = np.asarray(getattr(event, "pos", None) if getattr(event, "pos", None) is not None else (0, 0), dtype=float)
         dragged = False
         yield
         while event.type == "mouse_move":
-            dragged = True
+            # A few pixels of hand shake are still a click.
+            moved = getattr(event, "pos", None)
+            if moved is None or float(np.hypot(*(np.asarray(moved, dtype=float) - origin))) > 6:
+                dragged = True
             yield
         if dragged or self._labels is None or self._labels not in viewer.layers:
             return

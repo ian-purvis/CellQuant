@@ -313,13 +313,19 @@ def test_select_objects_then_delete_and_restore(tmp_path: Path, open_window):  #
         view_direction = None
         dims_displayed = [0, 1]
 
+        pos = (100.0, 100.0)
+
         def __init__(self, y, x):
             self.position = tuple(objects.data_to_world((y, x)))
 
-    def click(y, x):
+    def click(y, x, shake=0.0):
         event = Click(y, x)
         generator = panel._on_click(shell.viewer, event)
         next(generator)
+        if shake:  # a hand that moves a pixel or two between press and release is still a click
+            event.type = "mouse_move"
+            event.pos = (100.0 + shake, 100.0)
+            next(generator)
         event.type = "mouse_release"
         try:
             next(generator)
@@ -327,11 +333,13 @@ def test_select_objects_then_delete_and_restore(tmp_path: Path, open_window):  #
             pass
 
     shell._tabs.setCurrentWidget(shell._step_pages[2])
+    objects.mode = "paint"  # a leftover tool must not swallow the click
+    shell.viewer.layers.selection.active = objects
     panel._buttons["Select objects"].click()
-    assert panel._mode == "select"
+    assert panel._mode == "select" and objects.mode == "pan_zoom"
     assert {n for n, b in panel._buttons.items() if not b.isHidden()} == {
         "Select objects", "Delete selected", "Restore selected", "Clear selection", "Undo", "Undo all", "Back"}
-    click(15, 15)
+    click(15, 15, shake=2.0)
     assert panel._selected == {label}
     assert SELECTED_LAYER in shell.viewer.layers
     assert int(np.asarray(shell.viewer.layers[SELECTED_LAYER].data)[15, 15]) == 1
