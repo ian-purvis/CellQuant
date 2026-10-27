@@ -7,6 +7,7 @@ buttons. Next is disabled with a plain reason when the step is not finished.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -621,6 +622,33 @@ class MarkerSetup(QGroupBox):
         self.window.apply_marker_setup(chosen, rule=str(self.rule.currentData()), min_percent=self.min_percent.value())
 
 
+def _overlap_lines(result, recipe=None) -> list[str]:
+    """Objects positive for two or more markers (each set of markers, whatever the others are),
+    except sets a report above already counts among all objects."""
+
+    table = getattr(result, "combination_counts", None)
+    if table is None or table.empty or "phenotype" not in table.columns:
+        return []
+    reported = set()
+    if recipe is not None:
+        names = {item.id: item.name for item in recipe.classifications}
+        for report in recipe.reports:
+            if report.denominator.strip().casefold() not in {"all_objects", "all_measured_objects"}:
+                continue
+            parts = [part.strip() for part in re.split(r"\s+AND\s+", report.numerator.strip(), flags=re.IGNORECASE)]
+            if not any(part.casefold().startswith("not ") for part in parts):
+                reported.add(frozenset(names.get(part, part) for part in parts))
+    lines = []
+    for row in table.to_dict(orient="records"):
+        markers = [part.removesuffix("+") for part in str(row["phenotype"]).split("|")]
+        if len(markers) < 2 or frozenset(markers) in reported:
+            continue
+        percent = row.get("percent_of_objects", float("nan"))
+        percent_text = "—" if percent != percent else f"{percent:.1f}%"
+        lines.append(f"Positive for {' and '.join(html.escape(name) for name in markers)}: <b>{row['count']}</b> ({percent_text} of counted objects)")
+    return lines
+
+
 class ResultsSummary(QGroupBox):
     """Step 6: the numbers for the image on screen, in words, and the two main actions."""
 
@@ -693,6 +721,7 @@ class ResultsSummary(QGroupBox):
                 f"{_readable(row['numerator'], names)} among {_readable(row['denominator'], names)}: "
                 f"<b>{row['count']}</b> of {row['denominator_count']} ({percent_text})"
             )
+        lines.extend(_overlap_lines(result, recipe))
         unmeasured = int(result.summary.iloc[0].get("n_unmeasured", 0)) if not result.summary.empty and "n_unmeasured" in result.summary.columns else 0
         if unmeasured:
             lines.append(f"<span style='background-color:rgba(217,164,0,0.2)'>{unmeasured} unmeasured, left out.</span>")
