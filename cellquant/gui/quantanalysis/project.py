@@ -142,6 +142,7 @@ class Project(QObject):
         self.results: dict[str, ResultSheet] = {}
         self.graphs: dict[str, GraphSheet] = {}
         self._refreshing: set[str] = set()
+        self._renamed_from: dict[str, str] = {}  # sheet id -> its name before a rename that its processed tables follow
         self.changed.connect(lambda _sheet_id: self.modified.emit())
 
     def touch(self) -> None:
@@ -221,9 +222,11 @@ class Project(QObject):
         self._refreshing.add(sheet.id)
         try:
             if renamed:
-                named = sheet.name == f"{transforms.label(sheet.process)}: {source.name}"
+                source_name = self._renamed_from.get(source.id, source.name)
+                named = sheet.name == f"{transforms.label(sheet.process)}: {source_name}"
                 sheet.process = transforms.renamed(sheet.process, renamed)
                 if named:
+                    self._renamed_from[sheet.id] = sheet.name
                     sheet.name = ""
                     sheet.name = self.unique_name(f"{transforms.label(sheet.process)}: {source.name}")
             before = sheet.table.names
@@ -246,6 +249,7 @@ class Project(QObject):
             self.data_changed(sheet.id, {old: new for old, new in zip(before, after) if old != new} if len(before) == len(after) else None)
         finally:
             self._refreshing.discard(sheet.id)
+            self._renamed_from.pop(sheet.id, None)
 
     def change_process(self, sheet: DataSheet, options: dict) -> None:
         """New processing options for a processed table (raises CellQuantError when they do not fit its source)."""

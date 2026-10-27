@@ -127,6 +127,15 @@ def test_renamed_and_removed_source_columns(window):
     window.stack.currentWidget().commit(names=["X", "B"])
     assert percent.process["baseline"] == "X" and percent.name == "% of X: Data 1" and percent.table.names == ["X", "B"]
     assert logs.process["columns"] == ["X", "B"] and logs.table.names == ["X", "B"] and not logs.warnings
+    assert logs.name == "log10(Y): % of X: Data 1"  # each level keeps its automatic name
+    # Swapping two names follows both; a table renamed by hand keeps its name; a repeated name is refused.
+    logs.name = "Mine"
+    window.stack.currentWidget().commit(names=["B", "X"])
+    assert percent.process["baseline"] == "B" and percent.name == "% of B: Data 1" and logs.process["columns"] == ["B", "X"]
+    assert logs.name == "Mine"
+    window.stack.currentWidget().commit(names=["B", "B"])
+    assert data.table.names == ["B", "X"] and percent.process["baseline"] == "B"
+    window.stack.currentWidget().commit(names=["X", "B"])
     assert logs.table["B"].values == pytest.approx(np.log10(np.array([2, 6, 8]) / (7 / 3) * 100))
 
     # Removing the column it needs blanks the table and says so; results do not look current.
@@ -147,6 +156,22 @@ def test_tables_computed_from_each_other_do_not_loop(window):
     assert window.project.processed_description(first, data).startswith("Transform")
     first.process = {"kind": "nothing"}
     assert window.project.processed_description(first, data).startswith("Processing")
+
+
+def test_unknown_processing_loads_as_a_plain_table(window, tmp_path):
+    from cellquant.errors import CellQuantError, StatisticsError
+    from cellquant.gui.quantanalysis import project_file
+
+    assert issubclass(StatisticsError, CellQuantError)
+    data = window.new_table()
+    data.table = ColumnTable.from_columns({"A": [1.0, 2.0]})
+    window.select(data.id)
+    sheet = window.process_data("transform", {"function": "log10"})
+    sheet.process = {"kind": "from a newer version"}
+    path = project_file.save(window.project, tmp_path / "p.cqstats")
+    assert window.open_project(path, ask=False)
+    copy = window.project.data[sheet.id]
+    assert copy.processed_from is None and copy.table["A"].values == pytest.approx(np.log10([1, 2]))
 
 
 def test_recent_projects_survive_commas_and_bad_values(window, tmp_path):
