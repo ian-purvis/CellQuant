@@ -23,6 +23,7 @@ from cellquant.errors import ChannelMismatchError
 from cellquant.image import LoadedImage, load_image
 from cellquant.quantify import (
     classify_objects,
+    count_by_hand,
     count_unmeasured,
     generate_phenotypes,
     image_summary_row,
@@ -404,6 +405,7 @@ def assemble_result(
         reports=reports,
         metadata=metadata,
         n_unmeasured=count_unmeasured(with_phenotypes),
+        n_called_by_hand=count_by_hand(with_phenotypes),
         count_area=area_counted,
     )
     provenance = {
@@ -520,6 +522,7 @@ def apply_count_area(result: ImageResult, count_area: list | None) -> ImageResul
         reports=reports,
         metadata=dict(provenance.get("user_metadata") or {}),
         n_unmeasured=count_unmeasured(objects),
+        n_called_by_hand=count_by_hand(objects),
         count_area=area_counted,
     )
     return ImageResult(
@@ -638,7 +641,8 @@ def reclassify_result(result: ImageResult, recipe: Recipe | dict | str | Path) -
     parsed = load_recipe(recipe)
     frame = result.objects.copy()
     previous_ids = [item.get("id") for item in result.provenance.get("classification_definitions", [])]
-    drop = [column for column in [*previous_ids, "phenotype"] if column in frame.columns]
+    by_hand = [f"{item}_by_hand" for item in previous_ids]
+    drop = [column for column in [*previous_ids, *by_hand, "phenotype"] if column in frame.columns]
     if drop:
         frame = frame.drop(columns=drop)
     classified = classify_objects(frame, parsed.classifications)
@@ -658,6 +662,7 @@ def reclassify_result(result: ImageResult, recipe: Recipe | dict | str | Path) -
         reports=reports,
         metadata=metadata,
         n_unmeasured=count_unmeasured(with_phenotypes),
+        n_called_by_hand=count_by_hand(with_phenotypes),
         count_area=result.provenance.get("count_area_size"),
     )
     provenance = dict(result.provenance)

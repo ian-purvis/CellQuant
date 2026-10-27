@@ -7,6 +7,7 @@ summary each cache on their own inputs, and manual edits stay out of the recipe.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import threading
@@ -52,7 +53,7 @@ from cellquant.pipeline import (
     segmentation_details_of,
 )
 from cellquant.count_area import outside
-from cellquant.quantify import classification_counts
+from cellquant.quantify import classification_counts, hand_call, hand_calls
 from cellquant.recipe import Recipe, load_recipe, save_recipe
 from cellquant.result_cache import ResultCache
 from cellquant.segmentation import engine_signature
@@ -171,6 +172,8 @@ class AnalysisController:
         self.cleared_approvals: list[str] = []
         self.kept_approvals: list[str] = []  # approved images the last shared cutoff change left on their own
         self._column_cache: dict[tuple[str, str], tuple[tuple, np.ndarray]] = {}
+        # Calls by hand per image, newest last: (marker id, that image's calls before), for Undo.
+        self._call_history: dict[str, list[tuple[str, dict]]] = {}
         self._table_paths: dict[str, Path] = {}  # where each image's saved table was found; reset on saving
         self._session_images: OrderedDict[str, LoadedImage] = OrderedDict()
         self._segmentation_ids: dict[str, str] = {}
@@ -502,6 +505,11 @@ class AnalysisController:
             with self._image_settings(self.experiment.image(image_id)):
                 settings = self.recipe.content_hash()
         fingerprint = f"{settings}:{len(self._active_edits(image_id))}"
+        calls = {item.id: item.calls_for(image_id) for item in self.recipe.classifications if item.calls_for(image_id)}
+        if calls:
+            # Objects called by hand: what an approval vouches for, like the edits.
+            digest = hashlib.sha256(json.dumps(calls, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+            fingerprint += f":calls-{digest}"
         if result is not None and result.provenance.get("crop_rectangles") and getattr(result.labels, "ndim", 2) == 3:
             # A Z-stack cropped to its region: approvals made before stacks were cropped no longer match.
             fingerprint += ":stack-crop"
@@ -763,10 +771,9 @@ class AnalysisController:
                 low, high = old.threshold_for(record.image_id), item.threshold_for(record.image_id)
                 if low == high:
                     continue
-                values = self._marker_column(record.image_id, item.measurement)
-                values = None if values is None else values[np.isfinite(values)]
+                before_count = self._positive_count(record.image_id, item, low)
                 # Approval vouches for the percent positive: only a change in the positive count clears it.
-                if values is not None and _positive_calls(values, low, item.comparison).sum() != _positive_calls(values, high, item.comparison).sum():
+                if before_count is not None and before_count != self._positive_count(record.image_id, item, high):
                     cleared.append(record.image_id)
                     break
         self._clear_approvals(cleared, "Approval was cleared because the cutoff changed.")
@@ -946,13 +953,128 @@ class AnalysisController:
         for image_id in image_ids:
             if image_id in pending:
                 continue
-            values = self._marker_column(image_id, item.measurement)
-            if values is None:
-                continue
-            values = values[np.isfinite(values)]
-            positive = int(_positive_calls(values, item.threshold_for(image_id), item.comparison).sum())
-            counts[image_id] = (positive, int(values.size))
+            count = self._positive_count(image_id, item, item.threshold_for(image_id))
+            if count is not None:
+                counts[image_id] = count
         return counts
+
+    def _positive_count(self, image_id: str, item, cutoff: float) -> tuple[int, int] | None:
+        """(positive, counted) objects of the image for the marker at ``cutoff``, with the objects
+        called by hand counted as called. None when the image has no measured values."""
+
+        values = self._marker_column(image_id, item.measurement)
+        if values is None:
+            return None
+        marks = item.calls_for(image_id)
+        if not marks:
+            values = values[np.isfinite(values)]
+            return int(_positive_calls(values, cutoff, item.comparison).sum()), int(values.size)
+        frame = self._counted_frame(image_id, item.measurement)
+        if frame is None:
+            return None
+        calls = hand_calls(marks, frame)
+        values = frame[item.measurement].to_numpy(dtype=float)
+        called = frame["object_id"].astype(int).isin(list(calls)).to_numpy()
+        free = ~called & np.isfinite(values)
+        positive = int(_positive_calls(values[free], cutoff, item.comparison).sum()) + sum(calls.values())
+        return positive, int(free.sum() + called.sum())
+
+    def _counted_frame(self, image_id: str, measurement_id: str) -> pd.DataFrame | None:
+        """The counted objects of the image with what telling a called object apart needs."""
+
+        result = self.last_results.get(image_id)
+        if result is not None:
+            table = result.objects
+        else:
+            path = self._table_paths.get(image_id) or self._saved_table_path(image_id)
+            if path is None or not path.is_file():
+                return None
+            wanted = {measurement_id, "object_id", "area", "excluded", "in_count_area", "centroid_x", "centroid_y"}
+            table = self._in_current_count_area(image_id, pd.read_csv(path, usecols=lambda column: column in wanted), path)
+        if measurement_id not in table.columns or "object_id" not in table.columns:
+            return None
+        if "excluded" in table.columns:
+            table = table.loc[~table["excluded"].astype(str).str.lower().isin(["true", "1"])]
+        return table.loc[~outside(table)].drop(columns="excluded", errors="ignore")
+
+    def cell_calls(self, image_id: str, classification_id: str) -> dict[int, bool]:
+        """This image's objects called by hand for the marker (object id -> positive), those still there."""
+
+        item = next((item for item in self.recipe.classifications if item.id == classification_id), None)
+        result = self.last_results.get(image_id)
+        if item is None or result is None:
+            return {}
+        return hand_calls(item.calls_for(image_id), result.objects)
+
+    def call_cells(
+        self, image_id: str, classification_id: str, object_ids, positive: bool | None
+    ) -> ImageResult | None:
+        """Call these objects positive or negative for the marker by hand; None gives them back to the
+        cutoff. Only this image changes, and no cutoff moves. One Undo (``undo_cell_calls``) takes the
+        whole call back. An approval is cleared only when the counted results change."""
+
+        result = self.classified_now(image_id)
+        if result is None:
+            raise CellQuantError("Run this image first.")
+        data = self.recipe.model_dump(mode="json")
+        known = {item["id"]: item for item in data["classifications"]}
+        if classification_id not in known:
+            raise KeyError(classification_id)
+        stored = known[classification_id].setdefault("cell_calls", {})
+        before = dict(stored.get(image_id, {}))
+        calls = dict(before)
+        rows = result.objects.drop_duplicates("object_id").set_index("object_id", drop=False)
+        for object_id in sorted({int(value) for value in object_ids}):
+            if positive is None:
+                calls.pop(str(object_id), None)
+            elif object_id in rows.index:
+                calls[str(object_id)] = hand_call(rows.loc[object_id], positive)
+        if calls == before:
+            return result
+        self._call_history.setdefault(image_id, []).append((classification_id, before))
+        return self._set_calls(image_id, classification_id, data, calls)
+
+    def clear_cell_calls(self, image_id: str, classification_id: str) -> ImageResult | None:
+        """Give every object of this image back to the cutoff for the marker. One Undo brings the calls back."""
+
+        item = next((item for item in self.recipe.classifications if item.id == classification_id), None)
+        if item is None:
+            raise KeyError(classification_id)
+        return self.call_cells(image_id, classification_id, [int(key) for key in item.calls_for(image_id)], None)
+
+    def undo_cell_calls(self, image_id: str) -> ImageResult | None:
+        """Take back the last call by hand made on this image."""
+
+        history = self._call_history.get(image_id)
+        if not history:
+            return self.last_results.get(image_id)
+        classification_id, before = history.pop()
+        data = self.recipe.model_dump(mode="json")
+        known = {item["id"]: item for item in data["classifications"]}
+        if classification_id not in known:
+            return self.last_results.get(image_id)
+        return self._set_calls(image_id, classification_id, data, before)
+
+    def can_undo_cell_calls(self, image_id: str) -> bool:
+        return bool(self._call_history.get(image_id))
+
+    def _set_calls(self, image_id: str, classification_id: str, data: dict, calls: dict) -> ImageResult | None:
+        stored = next(item for item in data["classifications"] if item["id"] == classification_id).setdefault("cell_calls", {})
+        if calls:
+            stored[image_id] = calls
+        else:
+            stored.pop(image_id, None)
+        counted = _counted_numbers(self.last_results.get(image_id))
+        self.set_recipe(data)
+        result = self.classified_now(image_id)
+        record = self.experiment.image(image_id)
+        if record.processing_status == "approved":
+            # Approval vouches for the counted results: only a change in them clears it.
+            if _counted_numbers(result) != counted:
+                self._clear_approvals([image_id], "Approval was cleared because a cell was called by hand.")
+            else:
+                record.approved_settings_sha256 = self._approval_fingerprint(image_id)
+        return result
 
     def apply_cutoff_to_all(self, classification_id: str, value: float, *, include_approved: bool) -> None:
         """One cutoff for every image: the shared cutoff becomes ``value`` and own cutoffs are dropped.
@@ -1327,7 +1449,17 @@ class AnalysisController:
             return None
         return self._remeasure_cached(image_id)
 
-    def histogram(self, image_id: str, measurement_id: str, threshold: float, comparison: str = "above") -> dict[str, float]:
+    def histogram(
+        self,
+        image_id: str,
+        measurement_id: str,
+        threshold: float,
+        comparison: str = "above",
+        classification_id: str | None = None,
+    ) -> dict[str, float]:
+        """Counts at ``threshold``. With ``classification_id``, objects called by hand for that marker
+        count as called."""
+
         result = self.last_results.get(image_id)
         if result is None or measurement_id not in result.objects.columns:
             return {"positive": 0, "negative": 0, "percent_positive": float("nan"), "n_missing": 0}
@@ -1335,7 +1467,19 @@ class AnalysisController:
         if "excluded" in active.columns:
             active = active.loc[~active["excluded"].astype(bool)]
         active = active.loc[~outside(active)]
-        return classification_counts(active[measurement_id].to_numpy(dtype=float), threshold, comparison)
+        values = active[measurement_id].to_numpy(dtype=float)
+        calls = self.cell_calls(image_id, classification_id) if classification_id else {}
+        counted = set(active["object_id"].astype(int).tolist()) if calls else set()
+        calls = {key: value for key, value in calls.items() if key in counted}
+        if not calls:
+            return classification_counts(values, threshold, comparison)
+        called = active["object_id"].astype(int).isin(list(calls)).to_numpy()
+        counts = classification_counts(values[~called], threshold, comparison)
+        positive = int(counts["positive"]) + sum(calls.values())
+        negative = int(counts["negative"]) + len(calls) - sum(calls.values())
+        counts.update(positive=positive, negative=negative)
+        counts["percent_positive"] = 100.0 * positive / (positive + negative) if positive + negative else float("nan")
+        return counts
 
     def export(self, directory: str | Path, *, group_by: str | None = None, unit: str | None = None) -> Path:
         """Export this analysis. ``unit`` is the metadata column whose values are the biological units
@@ -2655,7 +2799,7 @@ def process_experiment(
 
 
 # Marker fields that only set or choose cutoffs.
-_CUTOFF_KEYS = ("threshold", "auto_method", "auto_percent", "image_thresholds", "cutoff_by")
+_CUTOFF_KEYS = ("threshold", "auto_method", "auto_percent", "image_thresholds", "cutoff_by", "cell_calls")
 
 
 _NO_MASK = np.zeros((0, 0), dtype=np.int32)  # in place of the masks of a result given only for its tables
