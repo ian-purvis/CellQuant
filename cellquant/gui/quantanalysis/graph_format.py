@@ -419,6 +419,10 @@ def auto_decimals(values) -> int:
     """Enough decimals to tell the ticks apart."""
 
     finite = sorted({float(v) for v in values if v is not None and math.isfinite(float(v))})
+    tolerance = 1e-6 * min((abs(v) for v in finite if v), default=1.0)  # rounding error only, at the scale of the ticks
+    for places in range(9):  # the fewest that write every tick exactly (2.5 needs one even with ticks 2.5 apart)
+        if finite and all(abs(v - round(v, places)) <= tolerance for v in finite):
+            return places
     if len(finite) < 2:
         return 0 if not finite or float(finite[0]).is_integer() else 2
     step = min(b - a for a, b in zip(finite, finite[1:]) if b > a) if any(b > a for a, b in zip(finite, finite[1:])) else 1.0

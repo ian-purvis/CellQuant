@@ -116,6 +116,9 @@ def test_markup_and_number_formats():
     assert gf.number_text(1000, axis(notation="power"), base=10) == "10³"
     assert gf.number_text(8, axis(notation="power"), base=2) == "2³"
     assert gf.auto_decimals([0, 0.5, 1.0]) == 1 and gf.auto_decimals([0, 20, 40]) == 0
+    assert gf.auto_decimals([0, 2.5, 5, 7.5, 10]) == 1 and gf.auto_decimals([0, 0.25, 0.5]) == 2  # not "2", "8" or "0.2"
+    assert gf.auto_decimals([0.1, 0.2, 0.30000000000000004]) == 1 and gf.auto_decimals([1e-5, 2e-5]) == 5
+    assert gf.auto_decimals([1e-12, 1.5e-12]) == 8  # tiny ticks are not rounded to 0
 
 
 def test_number_format_on_the_drawn_axis(window):
