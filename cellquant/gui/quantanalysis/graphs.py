@@ -718,15 +718,18 @@ def _grouped_marks(ax, result, grouped, table, positions: dict, blocks, columns,
         key = lambda row, group: cells.get((group, row.get("within")))  # noqa: E731
     else:
         key = lambda row, group: cells.get((row.get("within"), group))  # noqa: E731
-    mapped = []
+    mapped, skipped = [], 0
     for row in rows:
         first, second = key(row, row["group_1"]), key(row, row["group_2"])
         if first is None or second is None:
+            skipped += 1
             continue
         reference = row.get("reference")
         mapped.append(dict(row, group_1=first, group_2=second, reference=key(row, reference) if reference else None, color_reference=reference))
+    if skipped:
+        notes.append(f"{skipped} of {len(rows)} comparisons are not shown: the table's rows or data sets changed since the two-way ANOVA; "
+                     "run it again.")
     if not mapped:
-        notes.append("The two-way ANOVA's comparisons do not match this table's rows and data sets; run it again.")
         return
     _multiple_marks(ax, result, table, positions, columns, fmt, log, font, notes, rows=mapped)
 

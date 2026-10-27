@@ -239,6 +239,10 @@ class GraphFormat:
                 fmt[key] = value
             elif key in _FIELDS:
                 setattr(fmt, key, _load(_FIELDS[key], value, getattr(fmt, key)))
+        if fmt.grouped_layout not in ("interleaved", "separated"):
+            fmt.grouped_layout = "interleaved"
+        gap = fmt.cluster_gap
+        fmt.cluster_gap = min(5.0, max(0.0, float(gap))) if isinstance(gap, (int, float)) and math.isfinite(gap) else 0.8
         return fmt
 
     def copy(self) -> GraphFormat:

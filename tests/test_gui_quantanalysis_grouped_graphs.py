@@ -155,3 +155,21 @@ def test_window_draws_grouped_graphs_and_layouts(qtbot, tmp_path):
     column_view = window.stack.currentWidget()
     assert column_graph.result_id is None and not column_view.panel["graph"].arrangement.isVisibleTo(column_view)
     assert np.isfinite(result.result.values["p_columns"])
+
+
+def test_comparisons_that_no_longer_match_are_counted():
+    from cellquant.gui.quantanalysis.graph_format import GraphFormat
+
+    sheet = _sheet()
+    result = two_way_anova(sheet.grouped, compare="within_rows")  # 6 comparisons, 3 per row
+    renamed = dict(BALANCED)
+    for column in ("WT", "KO1", "KO2"):
+        renamed[("Untreated", column)] = renamed.pop(("Control", column))
+    figure, notes = _draw(_sheet(renamed), "bar", {}, result)
+    assert len(_brackets(figure)) == 3 and notes == ["3 of 6 comparisons are not shown: the table's rows or data sets changed since "
+                                                     "the two-way ANOVA; run it again."]
+    fewer = {key: value for key, value in BALANCED.items() if key[1] != "KO2"}
+    figure, notes = _draw(_sheet(fewer), "bar", {}, result)
+    assert len(_brackets(figure)) == 2 and notes[0].startswith("4 of 6")
+    assert (GraphFormat.from_dict({"grouped_layout": ["x"], "cluster_gap": 1e9}).grouped_layout,
+            GraphFormat.from_dict({"cluster_gap": 1e9}).cluster_gap, GraphFormat.from_dict({"cluster_gap": "wide"}).cluster_gap) == ("interleaved", 5.0, 0.8)
