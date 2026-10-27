@@ -257,6 +257,7 @@ class GraphSheetView(QWidget):
             if section is not source:
                 section.fill()
         self._redraw.start()
+        self.project.touch()
 
     def flush(self) -> None:
         """Draw now if a redraw is waiting (tests and exports)."""
@@ -319,7 +320,11 @@ class GraphSheetView(QWidget):
     def save_style(self, name: str) -> dict:
         style = gf.make_style(self.sheet.format, self.names(), format_panel.SAVED_GROUPS)
         replaced = name in gf.load_styles()
-        gf.save_style(name, style)
+        try:
+            gf.save_style(name, style)
+        except OSError as exc:
+            self.window.status(f"The style “{name}” could not be saved to {gf.styles_path()}: {exc.strerror or exc}.")
+            return style
         for section in self.sections:
             if isinstance(section, format_panel.StyleSection):
                 section.fill()

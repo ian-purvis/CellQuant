@@ -69,6 +69,16 @@ def next_id(prefix: str) -> str:
     return f"{prefix}{next(_ids)}"
 
 
+def reserve_ids(ids) -> None:
+    """New sheets get ids after these (sheets read from a project file keep theirs)."""
+
+    global _ids
+    numbers = [int(match.group(1)) for value in ids if (match := re.search(r"(\d+)$", str(value)))]
+    if numbers:
+        following = next(_ids)
+        _ids = itertools.count(max(following, max(numbers) + 1))
+
+
 @dataclass
 class DataSheet:
     name: str
@@ -120,12 +130,25 @@ class Project(QObject):
     """Every sheet, and the links between them. ``changed(id)`` names the sheet that changed ("" for the list)."""
 
     changed = Signal(str)
+    modified = Signal()  # anything that would be saved may have changed (also a graph's format, a name)
 
     def __init__(self):
         super().__init__()
         self.data: dict[str, DataSheet] = {}
         self.results: dict[str, ResultSheet] = {}
         self.graphs: dict[str, GraphSheet] = {}
+        self.changed.connect(lambda _sheet_id: self.modified.emit())
+
+    def touch(self) -> None:
+        self.modified.emit()
+
+    def replace(self, data: dict, results: dict, graphs: dict) -> None:
+        """Every sheet at once (a project file opened, or a new project): analyses are computed again."""
+
+        self.data, self.results, self.graphs = dict(data), dict(results), dict(graphs)
+        for sheet in self.results.values():
+            self.compute(sheet)
+        self.changed.emit("")
 
     def sheet(self, sheet_id: str):
         return self.data.get(sheet_id) or self.results.get(sheet_id) or self.graphs.get(sheet_id)
