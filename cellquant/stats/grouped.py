@@ -180,11 +180,18 @@ def fit_two_way(table: GroupedTable, interaction: bool = True) -> dict:
                      "the model has no interaction term (the additive model).")
     X, terms = _design(i, j, r, c, interaction)
     rss, beta, rank = _rss(X, y)
+    if rank < X.shape[1]:
+        # Only possible without the interaction: the filled cells split the table into parts that share no row or
+        # data set, so row and data set effects cannot be told apart.
+        raise StatisticsError("The filled cells do not link every row with every data set (for example only Row 1 / Data set A and "
+                              "Row 2 / Data set B have values), so row and data set effects cannot be told apart. Fill more cells.")
     df_resid = y.size - rank
     if df_resid < 1:
         raise StatisticsError("Two-way ANOVA needs more values than cells (some cell needs at least 2 values).")
-    ms_resid = rss / df_resid
     ss_total = float(((y - y.mean()) ** 2).sum())
+    if rss <= 1e-12 * max(ss_total, float((y ** 2).sum()), 1e-300):
+        rss = 0.0  # no scatter within cells (rounding only): F and P are undefined
+    ms_resid = rss / df_resid
     rows = []
     for name in ("interaction", "row", "column"):
         if name not in terms:
@@ -205,7 +212,7 @@ def fit_two_way(table: GroupedTable, interaction: bool = True) -> dict:
     cov = cell_X @ unscaled @ cell_X.T * ms_resid
     return {"rows": rows, "ss_resid": rss, "df_resid": int(df_resid), "ms_resid": ms_resid, "ss_total": ss_total, "n": int(y.size),
             "counts": counts, "interaction": interaction, "cell_means": means.reshape(r, c), "cell_X": cell_X, "beta": beta,
-            "cov_cells": cov, "unscaled": unscaled, "notes": notes, "balanced": bool((counts == counts.flat[0]).all())}
+            "cov_cells": cov, "unscaled": unscaled, "projector": np.linalg.pinv(X) @ X, "notes": notes, "balanced": bool((counts == counts.flat[0]).all())}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -216,6 +223,8 @@ def fit_two_way(table: GroupedTable, interaction: bool = True) -> dict:
 def _estimates(names: list[str], L: np.ndarray, fit: dict, n: np.ndarray, label: str) -> Estimates:
     """Estimates L·β with covariance L (X'X)⁻¹ L' · MS_residual."""
 
+    if not np.allclose(L @ fit["projector"], L, atol=1e-8):
+        raise StatisticsError("These means cannot be estimated from the filled cells; fill more cells or compare other means.")
     return Estimates(names, L @ fit["beta"], n.astype(float), L @ fit["unscaled"] @ L.T * fit["ms_resid"], float(fit["df_resid"]), "pooled",
                      error_label=label)
 
@@ -250,19 +259,28 @@ def _comparisons(table: GroupedTable, fit: dict, compare: str, goal: str, method
             if control is None or str(control) not in inner:
                 raise StatisticsError(f"Choose the reference (control) among: {', '.join(inner)}.")
             reference = inner.index(str(control))
-            pairs = [(names[cells_of(o)[reference]], names[cells_of(o)[k]]) for o in range(len(outer)) for k in range(len(inner)) if k != reference]
+            pairs = [(cells_of(o)[reference], cells_of(o)[k]) for o in range(len(outer)) for k in range(len(inner)) if k != reference]
         else:
-            pairs = [(names[cells_of(o)[a]], names[cells_of(o)[b]]) for o in range(len(outer)) for a, b in itertools.combinations(range(len(inner)), 2)]
+            pairs = [(cells_of(o)[a], cells_of(o)[b]) for o in range(len(outer)) for a, b in itertools.combinations(range(len(inner)), 2)]
+        filled = counts.ravel() > 0  # an empty cell has no values to compare
+        pairs = [(names[a], names[b]) for a, b in pairs if filled[a] and filled[b]]
+        if not pairs:
+            raise StatisticsError("No comparison has values in both of its cells.")
         chosen = method or "sidak"
         plan = ComparisonPlan(goal="selected", method=chosen, pairs=pairs)
         est = _estimates(names, fit["cell_X"], fit, counts.ravel(), label)
         return [("", run_comparisons(est, plan, alpha=alpha, ci=ci, style=style))]
     out = []
     for o, name in enumerate(outer):
-        index = cells_of(o)
-        n = counts.ravel()[index]
+        index = [x for x in cells_of(o) if counts.ravel()[x] > 0]  # an empty cell has no values to compare
+        groups = [table.rows[x // c] if not within_rows else table.columns[x % c] for x in index]
+        if len(groups) < 2 or goal == "control" and str(control) not in groups:
+            continue
         plan = ComparisonPlan(goal=goal, method=method, control=control)
-        out.append((name, run_comparisons(_estimates(list(inner), fit["cell_X"][index], fit, n, label), plan, alpha=alpha, ci=ci, style=style)))
+        out.append((name, run_comparisons(_estimates(groups, fit["cell_X"][index], fit, counts.ravel()[index], label), plan,
+                                          alpha=alpha, ci=ci, style=style)))
+    if not out:
+        raise StatisticsError("No row (or data set) has values in two cells to compare.")
     return out
 
 
@@ -299,6 +317,8 @@ def two_way_anova(table: GroupedTable, *, interaction: bool = True, compare: str
         significance.add(labels[row["term"]], row["p"],
                          f"F ({row['df']}, {fit['df_resid']}) = {fmt(row['f'])}; P = {format_p(row['p'], style=style)} "
                          f"({p_summary(row['p'], style)}); significant? {'' if sig is None else ('Yes' if sig else 'No')}")
+    residual = 100 * fit["ss_resid"] / fit["ss_total"] if fit["ss_total"] > 0 else np.nan
+    variation.add("Residual", residual, f"{fmt(residual)}% of total variation")
     anova = result.section("ANOVA table")
     for row in fit["rows"]:
         anova.add(labels[row["term"]], row, f"SS = {fmt(row['ss'])}; DF = {row['df']}; MS = {fmt(row['ms'])}; "
@@ -346,7 +366,7 @@ def two_way_anova(table: GroupedTable, *, interaction: bool = True, compare: str
         first = families[0][1]
         merged = dict(first, rows=everything, n_families=len(families), per_family=[len(out["rows"]) for _n, out in families],
                       warnings=sorted({text for _n, out in families for text in out["warnings"]}),
-                      family_mode="per_reference")
+                      family_mode="per_reference", tag_references=False)
         comparison_rows(result, merged, style)
         result.values["comparisons"] = everything
         result.values["compare"] = compare

@@ -129,3 +129,27 @@ def test_comparisons_within_rows_and_of_main_effects():
     assert first["se"] == pytest.approx(np.sqrt(ms * 2 / 6))
     with pytest.raises(StatisticsError):
         two_way_anova(table, compare="within_rows", goal="control", control="nobody", family="combined")
+
+
+def test_disconnected_designs_empty_cells_and_constant_data():
+    # Without the interaction, cells that link no row with any shared data set cannot separate the two effects.
+    split = GroupedTable.from_cells({("A", "x"): [1.0, 2.0, 3.0], ("B", "y"): [5.0, 6.0, 8.0], ("A", "y"): [], ("B", "x"): []})
+    with pytest.raises(StatisticsError, match="do not link every row"):
+        two_way_anova(split, interaction=False, compare="column_means")
+    # Connected but with an empty cell: comparisons within a row skip the empty cell instead of predicting it.
+    holed = GroupedTable.from_cells({("a", "x"): [1, 2], ("a", "y"): [3, 4], ("a", "z"): [5, 7],
+                                     ("b", "x"): [2, 3], ("b", "y"): [4, 6], ("b", "z"): []})
+    rows = two_way_anova(holed, interaction=False, compare="within_rows").values["comparisons"]
+    assert {row["label"] for row in rows} == {"a: x vs. y", "a: x vs. z", "a: y vs. z", "b: x vs. y"}
+    combined = two_way_anova(holed, interaction=False, compare="within_rows", family="combined").values["comparisons"]
+    assert len(combined) == 4 and all("z" not in row["label"] or row["label"].startswith("a:") for row in combined)
+    control = two_way_anova(holed, interaction=False, compare="within_rows", goal="control", control="x").values["comparisons"]
+    assert {row["label"] for row in control} == {"a: x vs. y", "a: x vs. z", "b: x vs. y"}
+    assert not any("[ref:" in row["label"] for row in control)
+    # No scatter within cells: F and P are undefined, not huge.
+    flat = GroupedTable.from_cells({(r, c): [1.0 + i + 2 * j] * 2 for i, r in enumerate("ab") for j, c in enumerate("xy")})
+    result = two_way_anova(flat)
+    assert all(np.isnan(row["f"]) and np.isnan(row["p"]) for row in result.values["anova"])
+    # The residual's share of the variation is listed with the factors'.
+    sections = {section.title: section for section in two_way_anova(GroupedTable.from_cells(BALANCED)).sections}
+    assert "Residual" in [row.label for row in sections["Source of variation"].rows]

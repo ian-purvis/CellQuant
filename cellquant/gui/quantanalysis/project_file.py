@@ -257,7 +257,7 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
                 set_grouped(sheet, GroupedTable(table.title, list(grouped["rows"]), list(grouped["columns"]),
                                                 np.array([[_values(cell) for cell in row] for row in grouped["values"]], dtype=float)
                                                 .reshape(len(grouped["rows"]), len(grouped["columns"]), -1)))
-        except (KeyError, TypeError, ValueError, CellQuantError) as exc:
+        except (KeyError, TypeError, ValueError, OverflowError, CellQuantError) as exc:
             notes.append(f"A data table ({item.get('name', '?')}) could not be read: {exc}")
             continue
         data[sheet.id] = sheet
