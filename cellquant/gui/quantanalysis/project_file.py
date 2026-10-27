@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from cellquant.errors import CellQuantError
-from cellquant.gui.quantanalysis.project import DataSheet, GraphSheet, Project, ResultSheet, reserve_ids
+from cellquant.gui.quantanalysis.project import DataSheet, GraphSheet, LayoutSheet, Project, ResultSheet, reserve_ids
 from cellquant.stats import ColumnTable, transforms
 from cellquant.stats.sources import ImportSpec
 from cellquant.stats.tables import Column
@@ -114,6 +114,8 @@ def to_dict(project: Project, experiment_dir: str | Path | None = None, current:
                     for sheet in project.results.values()],
         "graphs": [{"id": sheet.id, "name": sheet.name, "data_id": sheet.data_id, "kind": sheet.kind, "format": sheet.format.to_dict(),
                     "result_id": sheet.result_id} for sheet in project.graphs.values()],
+        "layouts": [{"id": sheet.id, "name": sheet.name, "page": dict(sheet.page), "graphs": list(sheet.graphs)}
+                    for sheet in project.layouts.values()],
         "current": current,
     }
 
@@ -272,8 +274,23 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
             sheet.cleaned_from = None
         if sheet.processed_from not in data or sheet.process.get("kind") not in transforms.PROCESSES:
             sheet.processed_from = None
-    reserve_ids([*data, *results, *graph_sheets])
-    project.replace(data, results, graph_sheets)
+    layouts: dict[str, LayoutSheet] = {}
+    items = content.get("layouts")
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            notes.append("A page layout could not be read.")
+            continue
+        try:
+            graph_ids = item.get("graphs") if isinstance(item.get("graphs"), list) else []
+            sheet = LayoutSheet(str(item.get("name", "Layout")), dict(item["page"]) if isinstance(item.get("page"), dict) else {},
+                                [graph_id if isinstance(graph_id, str) and graph_id in graph_sheets else None for graph_id in graph_ids],
+                                id=str(item["id"]))
+        except (AttributeError, KeyError, TypeError, ValueError) as exc:
+            notes.append(f"A page layout ({item.get('name', '?')}) could not be read: {exc}")
+            continue
+        layouts[sheet.id] = sheet
+    reserve_ids([*data, *results, *graph_sheets, *layouts])
+    project.replace(data, results, graph_sheets, layouts)
     current = content.get("current")
     return (current if project.sheet(current or "") is not None else None), notes
 

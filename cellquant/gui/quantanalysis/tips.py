@@ -394,3 +394,21 @@ MATH_OPERATION = (
     "(a log fold change: +1 is a doubling, −1 a halving)."
 )
 CHANGE_PROCESS = "Change how this table is computed from its source; its results and graphs update."
+
+# --- Page layouts ---------------------------------------------------------------------------------------------------
+
+NEW_LAYOUT = ("A page with several graphs on it, for a figure: a grid of cells with panel letters (A, B, C…). "
+              "It starts with the graphs of the project and follows them as they change.")
+LAYOUT_EXPORT = ("Save the page as SVG (every graph stays vector, for a vector editor such as Inkscape, which can also save it "
+                 "as PDF) or as PNG, TIFF (LZW) or JPEG at 300 or 600 dpi.")
+LAYOUT_PAPER = "The page size. Choose Custom size for a figure exactly as wide as a journal column (85 or 175 mm, for example)."
+LAYOUT_CUSTOM = "Width and height of a custom page, in mm. Used when Paper is Custom size."
+LAYOUT_GRID = ("How many cells across and down. Each cell holds one graph. A graph keeps its own size and font sizes; "
+               "one larger than its cell is shrunk to fit (text too), never enlarged.")
+LAYOUT_MARGIN = "Blank space around the page edge, in mm."
+LAYOUT_GAP = "Blank space between cells, in mm."
+LAYOUT_LABELS = "Letters that name each panel in the figure legend, in reading order, counting filled cells only."
+LAYOUT_LABEL_SIZE = "The size of the panel letters, in points (1 pt = 1/72 inch)."
+LAYOUT_TITLE = "Optional text across the top of the page, and its size in points."
+LAYOUT_CELLS = "Which graph goes in each cell, row by row. Click a cell on the page to choose its graph."
+LAYOUT_ALIGN = "Where a graph sits in its cell: at the top left, right under its panel letter (the usual figure look), or centred."
