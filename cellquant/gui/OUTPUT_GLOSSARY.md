@@ -514,6 +514,18 @@ For `integrated` the background is multiplied by the number of pixels in the reg
 
 **Related:** `cutoff_examples/<image>.json`
 
+##### `cell_calls`
+
+**In short:** Objects called positive or negative by hand, overriding the cutoff for those objects only.
+
+**What it means:** Set in step 5 with **Edit cells…**: you select objects and click Positive, Negative or Use cutoff. Listed per image as object number, the call, and the object's centre. Every other object is still called by the cutoff, and moving a cutoff never changes a call made by hand. A call is kept only while its object is still there: same number, not deleted, and its centre within half its radius of where it was. Running the image again with new objects drops calls whose object moved.
+
+**Good to know:** Calls by hand are a judgement, not a measurement. Each object called by hand is marked in `<marker>_pos_by_hand`, and each image's number is `n_called_by_hand`, so readers can see how much of a result was set by hand.
+
+**For experts:** `recipe.ClassificationSpec.cell_calls` (image id → object id → `positive`, `x`, `y`), applied by `quantify.classify_objects` through `quantify.hand_calls`. `Recipe.for_image` keeps only that image's calls, so a provenance file lists the calls its image used. Not part of `recipe_sha256`; an image's approval covers its calls.
+
+**Related:** `<marker>_pos`, `<marker>_pos_by_hand`, `n_called_by_hand`
+
 #### `reports`
 
 **In short:** The percentages to calculate, each as a numerator and a denominator.
@@ -983,12 +995,23 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 **How it's calculated:**
 
     positive ⇔ measurement > cutoff       (or ≥ cutoff with "at least")
+    an object called by hand takes that call instead
 
-**Good to know:** Equal to the cutoff is negative unless the marker uses the "at least" rule. If you move a cutoff, only this column and what is counted from it change; nothing is measured again.
+**Good to know:** Equal to the cutoff is negative unless the marker uses the "at least" rule. If you move a cutoff, only this column and what is counted from it change; nothing is measured again. Objects called by hand keep their call.
 
 **For experts:** `quantify.classify_objects`: a nullable boolean column; values that are not finite stay missing, and `unmeasured` is set. `quantify._positive` uses `>` for `comparison: above` and `≥` for `at_least`.
 
-**Related:** `threshold`, `comparison`, `unmeasured`, `phenotype`
+**Related:** `threshold`, `comparison`, `unmeasured`, `phenotype`, `cell_calls`
+
+##### `<marker>_pos_by_hand`
+
+**In short:** `True` when the object's call for the marker was set by hand instead of by the cutoff.
+
+**What it means:** Only present for markers with at least one call by hand in the image. `<marker>_pos` then holds the call you made, whatever the measurement.
+
+**For experts:** Added by `quantify.classify_objects` for each marker whose `cell_calls` has an object still in the table.
+
+**Related:** `cell_calls`, `n_called_by_hand`
 
 ##### `unmeasured`
 
@@ -1062,6 +1085,16 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 **What it means:** Normally 0. A higher number means some objects had no value for a marker, so the percentages are of the rest. A warning is added to the QC file.
 
 **Related:** `unmeasured`
+
+##### `n_called_by_hand`
+
+**In short:** How many counted objects have at least one marker called by hand.
+
+**What it means:** Normally 0. A higher number means some calls in this image were set in step 5 **Edit cells…** rather than by the cutoff.
+
+**For experts:** `quantify.count_by_hand`: counted objects with any `<marker>_pos_by_hand` True.
+
+**Related:** `cell_calls`, `<marker>_pos_by_hand`
 
 ##### `qc_status`
 
@@ -1157,6 +1190,14 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 **What it means:** Normally 0. It comes from the calculation in step 6 Results. Objects that count but have no value for a marker used by a classification cannot be called positive or negative, so they are left out of the counts. A number above 0 is worth a look at step 5 Check, because the percentages are then of the remaining objects.
 
 **Related:** `unmeasured`
+
+##### `n_called_by_hand`
+
+**In short:** How many counted objects have at least one marker called by hand.
+
+**What it means:** Normally 0. It comes from step 5 **Edit cells…**, where single objects can be called positive or negative instead of by the cutoff.
+
+**Related:** `cell_calls`, `<marker>_pos_by_hand`
 
 ##### `percent`
 
@@ -1599,6 +1640,16 @@ These keys are only present if a count area is drawn.
 **In short:** The ids of the objects you deleted.
 
 **What it means:** A sorted list. It matches the rows where `excluded` is `True`.
+
+###### `hand_calls_sha256`
+
+**In short:** A checksum of the calls made by hand in this image. Only present when there are any.
+
+**What it means:** The calls themselves are in `classification_definitions` (`cell_calls`). The checksum changes whenever a call is added, changed or taken back, so two provenance files with the same checksum used the same calls.
+
+**For experts:** SHA-256 of the image's `cell_calls` per marker, as sorted JSON (`pipeline._hand_calls_digest`).
+
+**Related:** `cell_calls`
 
 #### `tables/<image>.json`
 <!-- data: json run/tables/<image>.json -->

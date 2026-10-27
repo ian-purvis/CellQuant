@@ -686,6 +686,7 @@ class CellQuantWindow:
         self.viewer = viewer
         self.controller: AnalysisController | None = None
         self._glossary_window = None
+        self._edit_cells = None  # step 5 Edit cells window, made when first opened
         self._quantanalysis = None  # the QuantAnalysis statistics window, made on first use
         self._folder_lock = None  # this window's hold on the open experiment folder
         self._managed: set[str] = set()
@@ -769,6 +770,7 @@ class CellQuantWindow:
         self._footer = Footer(self)
         self._tabs.currentChanged.connect(lambda _index: self._markers_page_shown())
         self._tabs.currentChanged.connect(lambda _index: self._edit_panel.leave_delete())
+        self._tabs.currentChanged.connect(lambda _index: self._edit_panel._set_circle(None))
         self._tabs.currentChanged.connect(lambda _index: self._review_panel.leave_marking())
         main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.plan_dock import PlanDock
@@ -1577,6 +1579,7 @@ class CellQuantWindow:
             self._review_panel.display,
         }
         inputs: list[QWidget] = [self._review_panel.threshold_slider, self._review_panel.histogram]
+        inputs.extend(self._review_panel.combined.settings_inputs())  # also while in a window of its own
         panels = (self._experiment_panel, self._objects_panel, self._measurements_panel, self._review_panel, self._marker_setup)
         for panel in panels:
             for kind in (QComboBox, QAbstractSpinBox, QLineEdit, QCheckBox, QSlider):
@@ -1986,15 +1989,7 @@ class CellQuantWindow:
             self._drop(EXAMPLES_LAYER)
             return
         ids = [int(value) for value in frame["object_id"].tolist()]
-        centers = np.column_stack([frame["centroid_y"].to_numpy(dtype=float), frame["centroid_x"].to_numpy(dtype=float)])
-        if result.spatial_unit == "um":
-            record = self.controller.experiment.image(result.provenance["image_id"])
-            if record.pixel_size_x and record.pixel_size_y:
-                centers = centers / np.array([record.pixel_size_y, record.pixel_size_x])
-        if np.asarray(result.labels).ndim == 3 and "z_first" in frame.columns:
-            # On the object's middle slice, like its number.
-            middle = (frame["z_first"].to_numpy(dtype=float) + frame["z_last"].to_numpy(dtype=float)) / 2 - 1
-            centers = np.column_stack([np.round(middle), centers])
+        centers = self.object_centers(result, frame)
         positive, negative = classification_colors()
         properties = dict(
             symbol=["cross" if examples[object_id] else "hbar" for object_id in ids],
@@ -2017,6 +2012,47 @@ class CellQuantWindow:
         layer.face_color = properties["face_color"]
         layer.border_color = properties["border_color"]
         layer.border_width = properties["border_width"]
+
+    def object_centers(self, result, frame) -> np.ndarray:
+        """Each object's center in pixels ((z,) row, column), on its middle slice in a stack."""
+
+        centers = np.column_stack([frame["centroid_y"].to_numpy(dtype=float), frame["centroid_x"].to_numpy(dtype=float)])
+        if result.spatial_unit == "um":
+            record = self.controller.experiment.image(result.provenance["image_id"])
+            if record.pixel_size_x and record.pixel_size_y:
+                centers = centers / np.array([record.pixel_size_y, record.pixel_size_x])
+        if np.asarray(result.labels).ndim == 3 and "z_first" in frame.columns:
+            # On the object's middle slice, like its number.
+            middle = (frame["z_first"].to_numpy(dtype=float) + frame["z_last"].to_numpy(dtype=float)) / 2 - 1
+            centers = np.column_stack([np.round(middle), centers])
+        return centers
+
+    def center_on(self, center) -> None:
+        """Center the view on a point in pixels ((z,) row, column), on its slice in a stack."""
+
+        labels = self._review_panel._labels
+        if labels is None or labels not in self.viewer.layers:
+            return
+        point = np.asarray(center, dtype=float)
+        world = np.asarray(labels.data_to_world(np.concatenate([[0.0] * (labels.ndim - point.size), point])))
+        if point.size == 3:
+            self.viewer.dims.set_point(0, float(world[-3]))
+        self.viewer.camera.center = tuple(world[-2:])
+
+    def open_edit_cells(self) -> None:
+        """Step 5 Edit cells: call single objects positive or negative by hand (one window, reused)."""
+
+        from cellquant.gui.cell_calls_window import EditCellsWindow
+
+        if self._edit_cells is None:
+            self._edit_cells = EditCellsWindow(self, self._tabs)
+        self._edit_cells.show()
+        self._edit_cells.raise_()
+        self._edit_cells.activateWindow()
+
+    def refresh_edit_cells(self, result=None) -> None:
+        if self._edit_cells is not None:
+            self._edit_cells.refresh(result)
 
     def set_pixel_scale(self, record) -> None:
         """Give every layer the shown image's pixel size, so napari's scale bar reads in µm (px when unknown)."""
@@ -2305,24 +2341,31 @@ class CellQuantWindow:
 
     def _set_classification_overlay(self, result) -> None:
         choice = self._review_panel.classification_id()
-        if not choice or choice not in result.objects.columns:
+        all_markers = self._review_panel.showing_all_markers()
+        if not all_markers and (not choice or choice not in result.objects.columns):
             self._drop("Classification")
             return
-        frame = result.objects
-        if "excluded" in frame.columns:
-            frame = frame.loc[~frame["excluded"].astype(bool)]
-        frame = frame.loc[~outside(frame)]  # objects outside the count area are not colored
+        if all_markers:
+            # Each object's mix of markers (counted objects only), see combined_markers.
+            ids, flags = self._review_panel.combined.overlay_codes(result.objects)
+            flags = flags.astype(np.int32)
+        else:
+            frame = result.objects
+            if "excluded" in frame.columns:
+                frame = frame.loc[~frame["excluded"].astype(bool)]
+            frame = frame.loc[~outside(frame)]  # objects outside the count area are not colored
+            ids = frame["object_id"].to_numpy(dtype=np.int64)
+            flags = np.array([2 if _is_positive_flag(value) else 1 for value in frame[choice].tolist()], dtype=np.int32)
         # One lookup per pixel instead of one full-image comparison per object.
         labels = np.asarray(result.labels)
         codes = np.zeros(int(labels.max(initial=0)) + 1, dtype=np.int32)
-        ids = frame["object_id"].to_numpy(dtype=np.int64)
-        flags = np.array([2 if _is_positive_flag(value) else 1 for value in frame[choice].tolist()], dtype=np.int32)
         inside = ids < len(codes)
         codes[ids[inside]] = flags[inside]
         overlay = codes[labels]
         existing = self._layer_if_shape("Classification", overlay.shape)
         if existing is not None:
             existing.data = overlay
+            self.apply_classification_colors()  # one marker or All markers: different colors
             return
         self._drop("Classification")
         layer = self.viewer.add_labels(overlay, name="Classification", opacity=0.85)
@@ -2330,19 +2373,18 @@ class CellQuantWindow:
         self.apply_classification_colors()
 
     def apply_classification_colors(self) -> None:
-        """Positive objects in the positive color, negative in the negative color."""
+        """Positive objects in the positive color, negative in the negative color; with All markers,
+        each mix of markers in its own color."""
 
         if "Classification" not in self.viewer.layers:
             return
         positive, negative = classification_colors()
         layer = self.viewer.layers["Classification"]
-        layer.colormap = DirectLabelColormap(
-            color_dict={
-                None: np.array([0, 0, 0, 0], dtype=np.float32),
-                1: _rgba(negative),
-                2: _rgba(positive),
-            }
-        )
+        if self._review_panel.showing_all_markers():
+            colors = {code: _rgba(color) for code, color in self._review_panel.combined.code_colors().items()}
+        else:
+            colors = {1: _rgba(negative), 2: _rgba(positive)}
+        layer.colormap = DirectLabelColormap(color_dict={None: np.array([0, 0, 0, 0], dtype=np.float32), **colors})
         layer.contour = 2 if classification_outline() else 0
 
     def _set_ids(self, result) -> None:
@@ -4606,8 +4648,8 @@ class EditPanel(QWidget):
             ("Delete selected", self._delete_selected, "Restore selected", self._restore_selected),
             ("Clear selection", self.clear_picked, None, None),
             ("Draw area", self._draw_area, "Delete in area", self._delete_in_area),
-            ("Keep only", self._keep_only, None, None),
-            ("Draw new object", self._draw_new, None, None),
+            ("Keep only", self._keep_only, "Delete circle", self._delete_circle_mode),
+            ("Draw new object", self._draw_new, "Circle", self._circle_mode),
             ("Record drawn edits", self._commit, "Record all images", self._commit_all),  # a row of their own: no label cut off
             ("Undo", self._undo, "Undo all", self._reset),
             ("Reset all images", self._reset_all, "Back", self._go_home),
@@ -4629,6 +4671,26 @@ class EditPanel(QWidget):
             layout.addWidget(holder)
             self._rows.append((holder, names))
         self.undo_button = self._buttons["Undo"]
+        # Circle: diameter in pixels; the default is the median object size until the user sets it.
+        self.circle_size_label = QLabel("Size")
+        self.circle_size = QSpinBox()
+        self.circle_size.setRange(3, 500)
+        self.circle_size.setValue(20)
+        self.circle_size.setSuffix(" px")
+        self.circle_size.setToolTip("Circle diameter in pixels. Starts at the median size of the objects in this image.")
+        self.circle_size.valueChanged.connect(self._size_changed)
+        self.circle_size_row = QWidget()
+        size_line = QHBoxLayout(self.circle_size_row)
+        size_line.setContentsMargins(0, 0, 0, 0)
+        size_line.addWidget(self.circle_size_label)
+        size_line.addWidget(self.circle_size)
+        size_line.addStretch(1)
+        layout.insertWidget(layout.indexOf(self._buttons["Undo"].parentWidget()), self.circle_size_row)
+        self._circle: str | None = None  # "add", "delete" or off
+        self._size_edited_for: str | None = None
+        self._setting_size = False
+        self._buttons["Circle"].setCheckable(True)
+        self._buttons["Delete circle"].setCheckable(True)
         self._buttons["Delete objects"].setCheckable(True)
         self._buttons["Select objects"].setCheckable(True)
         self._selected: set[int] = set()
@@ -4677,15 +4739,15 @@ class EditPanel(QWidget):
 
     _MODE_BUTTONS = {
         "home": ("Delete objects", "Select objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"),
-        "delete": ("Delete objects", "Draw area", "Delete in area", "Keep only", "Undo", "Undo all", "Back"),
+        "delete": ("Delete objects", "Draw area", "Delete in area", "Keep only", "Delete circle", "Undo", "Undo all", "Back"),
         "select": ("Select objects", "Delete selected", "Restore selected", "Clear selection", "Undo", "Undo all", "Back"),
-        "add": ("Draw new object", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"),
+        "add": ("Draw new object", "Circle", "Record drawn edits", "Record all images", "Undo", "Undo all", "Back"),
     }
     _MODE_HINT = {
         "home": "Pick a task: delete objects or add new ones.",
-        "delete": "Click an object to delete it. <b>Back</b> or Esc to stop.",
+        "delete": "Click an object to delete it, or <b>Delete circle</b> and click or drag a circle. <b>Back</b> or Esc to stop.",
         "select": "Click an object to select it (Shift+click adds more), then <b>Delete selected</b> or <b>Restore selected</b>. <b>Back</b> or Esc stops.",
-        "add": "<b>Draw new object</b>, then outline each cell: a closed outline is recorded as a new object.",
+        "add": "<b>Draw new object</b> and outline each cell, or <b>Circle</b> and click a cell: each is recorded as a new object.",
     }
 
     def _apply_mode(self) -> None:
@@ -4695,6 +4757,7 @@ class EditPanel(QWidget):
             for name in names:
                 self._buttons[name].setVisible(name in wanted)
             holder.setVisible(any(name in wanted for name in names))
+        self.circle_size_row.setVisible("Circle" in wanted or "Delete circle" in wanted)
         self.mask_colors_row.setVisible(everything or self._mode == "home")
         hint = "Delete: click <b>Delete objects</b>, then click objects. Add: outline cells after <b>Draw new object</b>." if everything else self._MODE_HINT[self._mode]
         card = getattr(self.shell, "_step_pages", None)
@@ -4723,6 +4786,8 @@ class EditPanel(QWidget):
 
     def set_mode(self, mode: str) -> None:
         self._mode = mode
+        if (self._circle, mode) not in (("add", "add"), ("delete", "delete")):
+            self._set_circle(None)
         self._apply_mode()
         self._show_delete_cue(mode in ("delete", "select"))
         self._buttons["Delete objects"].setChecked(mode == "delete")
@@ -4731,6 +4796,9 @@ class EditPanel(QWidget):
             self.clear_picked()
 
     def leave_delete(self) -> None:
+        if self._circle:
+            self._set_circle(None)  # Esc first puts the circle tool down
+            return
         if self._mode in ("delete", "select"):
             self.set_mode("home")
 
@@ -4762,7 +4830,7 @@ class EditPanel(QWidget):
                     layer.mode = "pan_zoom"
 
     def _cross_cursor(self, _event=None) -> None:
-        if self._mode in ("delete", "select"):
+        if self._mode in ("delete", "select") and not self._circle:
             self._pan_active_layer()
             self.shell.viewer.cursor.style = "cross"
 
@@ -4789,9 +4857,181 @@ class EditPanel(QWidget):
             self.shell.message("Run step 2 on this image first.")
             return
         layer = self._labels
+        self._set_circle(None)
         self.shell.viewer.layers.selection.active = layer
         layer.selected_label = self._drawing_label = self._next_label()
         layer.mode = "paint"
+
+    def _circle_mode(self) -> None:
+        """Switch the circle that adds objects on or off (the button is a toggle)."""
+
+        self._set_circle("add" if self._buttons["Circle"].isChecked() else None, warn=True)
+
+    def _delete_circle_mode(self) -> None:
+        """Switch the circle that deletes the objects inside it on or off."""
+
+        self._set_circle("delete" if self._buttons["Delete circle"].isChecked() else None, warn=True)
+
+    def _set_circle(self, kind: str | None, warn: bool = False) -> None:
+        viewer = self.shell.viewer
+        if kind is not None:
+            controller = self.shell.controller
+            if controller is None or not self.shell._nav_ids or self._labels is None or self._labels not in viewer.layers:
+                if warn:
+                    self.shell.message("Run step 2 on this image first.")
+                kind = None
+        self._buttons["Circle"].setChecked(kind == "add")
+        self._buttons["Delete circle"].setChecked(kind == "delete")
+        if kind == self._circle:
+            return
+        self._circle = kind
+        if kind is not None:
+            self._default_size()
+            viewer.layers.selection.active = self._labels
+            self._labels.mode = "pan_zoom"  # a paint tool would paint on the click
+            if not self._cue_connected_circle:
+                viewer.layers.selection.events.active.connect(self._circle_cursor)
+                self._cue_connected_circle = True
+            self._circle_cursor()
+        else:
+            if self._cue_connected_circle:
+                viewer.layers.selection.events.active.disconnect(self._circle_cursor)
+                self._cue_connected_circle = False
+            active = viewer.layers.selection.active
+            if self._mode in ("delete", "select"):
+                viewer.cursor.style = "cross"
+            else:
+                viewer.cursor.style = getattr(active, "cursor", "standard") if active is not None else "standard"
+
+    _cue_connected_circle = False
+
+    def _circle_cursor(self, _event=None) -> None:
+        """A round cursor about the size of the circle that a click would place."""
+
+        if not self._circle:
+            return
+        viewer = self.shell.viewer
+        try:
+            viewer.cursor.size = max(5, int(self.circle_size.value() * float(viewer.camera.zoom)))
+            viewer.cursor.style = "circle"
+        except Exception:  # noqa: BLE001 - an older napari: a cross is enough
+            viewer.cursor.style = "cross"
+
+    def _size_changed(self, _value=None) -> None:
+        if not self._setting_size:
+            self._size_edited_for = self.shell._labels_image_id
+        self._circle_cursor()
+
+    def _default_size(self) -> None:
+        """Start the diameter at the median object size of this image, unless the user set it for this image."""
+
+        image_id = self.shell._labels_image_id
+        if self._size_edited_for is not None and self._size_edited_for == image_id:
+            return
+        controller = self.shell.controller
+        current = controller.recall(image_id) if controller is not None and image_id is not None else None
+        diameter = 20
+        if current is not None and current.labels.size:
+            labels = np.asarray(current.labels)
+            if labels.ndim == 3:
+                labels = labels.max(axis=0)
+            areas = np.bincount(labels.ravel())[1:]
+            areas = areas[areas > 0]
+            if areas.size:
+                diameter = int(round(2 * np.sqrt(float(np.median(areas)) / np.pi)))
+        self._setting_size = True
+        try:
+            self.circle_size.setValue(min(max(diameter, self.circle_size.minimum()), self.circle_size.maximum()))
+        finally:
+            self._setting_size = False
+
+    def _on_circle(self, viewer, event):
+        """Click for a circle of the Size diameter; drag from the centre to set its radius. It adds an object or deletes the ones inside."""
+
+        layer = self._labels
+        if not self._circle or layer is None or layer not in viewer.layers:
+            return
+        if viewer.layers.selection.active is not layer or layer.mode != "pan_zoom":
+            return
+        if self.shell._tabs.currentWidget() is not self.shell._step_pages[2]:
+            return
+        start = np.asarray(layer.world_to_data(event.position), dtype=float)
+        yield
+        while event.type == "mouse_move":
+            yield
+        end = np.asarray(layer.world_to_data(event.position), dtype=float)
+        radius = float(np.hypot(*(end - start)[-2:]))
+        if radius < 1.5:
+            radius = self.circle_size.value() / 2
+        if self._circle == "delete":
+            self._delete_in_circle(start, radius)
+        else:
+            self._place_circle(start, radius)
+
+    def _delete_in_circle(self, center: np.ndarray, radius: float) -> None:
+        """Delete every object lying entirely inside the circle (those crossing its edge stay); Undo brings them back."""
+
+        controller = self.shell.require_controller()
+        if controller is None or not self.shell._nav_ids:
+            return
+        if self.shell.is_busy() or self.shell.image_loading():
+            self.shell.message("Wait for the current analysis to finish, then place the circle again.")
+            return
+        image_id = self.shell._nav_ids[self.shell._nav_index]
+        if self.shell._labels_image_id != image_id:
+            return
+        angles = np.linspace(0.0, 2.0 * np.pi, 64, endpoint=False)
+        polygon = np.stack([center[-2] + radius * np.sin(angles), center[-1] + radius * np.cos(angles)], axis=1).tolist()
+
+        def finish(outcome) -> None:
+            result, count = outcome
+            if result is None:
+                self.shell.message("Run step 2 on this image first.")
+                return
+            self._edited(result)
+            self.shell.message(f"Deleted {count} object{'s' if count != 1 else ''}." if count else "No object lies entirely inside the circle.")
+
+        self.shell._start_job(lambda: controller.delete_objects_in_area(image_id, [polygon]), finish)
+
+    def _place_circle(self, center: np.ndarray, radius: float) -> None:
+        """Paint a round object with a new number on the pixels that are free, and record it."""
+
+        layer = self._labels
+        data = np.asarray(layer.data)
+        if self.shell.image_loading():
+            self.shell.message("Wait for the image to load, then place the circle again.")
+            return
+        # While a job runs (such as recording the last circle) the circle is recorded after it.
+        cy, cx = float(center[-2]), float(center[-1])
+        top, left = max(int(np.floor(cy - radius)), 0), max(int(np.floor(cx - radius)), 0)
+        bottom, right = min(int(np.ceil(cy + radius)) + 1, data.shape[-2]), min(int(np.ceil(cx + radius)) + 1, data.shape[-1])
+        if bottom <= top or right <= left:
+            self._say("The circle is outside the image.")
+            return
+        yy, xx = np.ogrid[top:bottom, left:right]
+        disc = (yy - cy) ** 2 + (xx - cx) ** 2 <= radius**2
+        index: tuple = ()
+        if data.ndim == 3:
+            plane = int(round(center[0]))
+            if not 0 <= plane < data.shape[0]:
+                return
+            index = (plane,)
+        free = disc & (data[index + (slice(top, bottom), slice(left, right))] == 0)
+        if not free.any():
+            self._say("Nothing to add there: that spot is already inside an object, or outside the image.")
+            return
+        label = self._next_label()
+        ys, xs = np.nonzero(free)
+        self._filling = True
+        try:
+            layer.data_setitem(tuple(np.full(ys.shape, i) for i in index) + (ys + top, xs + left), label)
+        finally:
+            self._filling = False
+        image_id = self.shell._labels_image_id
+        owner, closed = self._closed
+        self._closed = (image_id, (closed if owner == image_id else set()) | {label})
+        layer.selected_label = self._drawing_label = self._next_label()
+        self._record_closed()
 
     def _next_label(self) -> int:
         """An object number not used on screen, nor by an object found in step 2 (deleted ones stay taken)."""
@@ -4849,6 +5089,9 @@ class EditPanel(QWidget):
         image_id, closed = self._closed
         layer = self._labels
         if controller is None or not closed or image_id is None or layer is None or layer not in self.shell.viewer.layers:
+            return
+        if self.shell._job is not None and self.shell._batch is None and self.shell._labels_image_id == image_id:
+            QTimer.singleShot(100, self._record_closed)  # recorded once the current job ends
             return
         if self.shell.is_busy() or self.shell.image_loading() or self.shell._labels_image_id != image_id:
             return  # recorded after the current job, or with Record drawn edits
@@ -4949,11 +5192,13 @@ class EditPanel(QWidget):
     def bind_labels(self, boundaries) -> None:
         self._labels = boundaries
         self._drawing_label = None
+        self._set_circle(None)
         boundaries.events.paint.connect(self._on_paint)
         self.clear_selection()
         if not self._click_bound:
             # In delete mode a plain click on an object deletes it, whichever layer is active.
             self.shell.viewer.mouse_drag_callbacks.append(self._on_click)
+            self.shell.viewer.mouse_drag_callbacks.append(self._on_circle)
             self._click_bound = True
 
     def clear_selection(self) -> None:
@@ -5016,7 +5261,7 @@ class EditPanel(QWidget):
         return [int(item) for item in present], absent
 
     def _on_click(self, viewer, event):
-        if self._mode not in ("delete", "select"):
+        if self._mode not in ("delete", "select") or self._circle:
             return
         start = tuple(event.position)
         shift = "Shift" in getattr(event, "modifiers", ())
@@ -5360,6 +5605,7 @@ class CutoffHistogram(QWidget):
         self._at_least = False
         self._examples: tuple[np.ndarray, np.ndarray] = (np.zeros(0), np.zeros(0))
         self.draggable = True
+        self.colors: tuple[str, str] | None = None  # (positive, negative); None: the classification colors
 
     def set_examples(self, positive, negative) -> None:
         """Values of the objects marked positive and negative: short ticks along the top."""
@@ -5406,7 +5652,7 @@ class CutoffHistogram(QWidget):
             counts, edges = np.histogram(np.clip(self._values, self._low, self._high), bins=48, range=(self._low, self._high))
             # Log heights: a few bright positives stay visible next to many dim negatives.
             heights = np.log1p(counts) / max(np.log1p(counts.max()), 1e-9)
-            positive, negative = (QColor(color) for color in classification_colors())
+            positive, negative = (QColor(color) for color in (self.colors or classification_colors()))
             for count, fraction, start, end in zip(counts, heights, edges[:-1], edges[1:]):
                 if not count:
                     continue
@@ -5455,6 +5701,16 @@ class ReviewPanel(QWidget):
         self.display.currentIndexChanged.connect(lambda _index: self._recolor())
         layout.addWidget(QLabel("Display objects by"))
         layout.addWidget(self.display)
+        # "All markers": every marker's cutoff at once, objects colored by their mix of markers.
+        from cellquant.gui.combined_markers import CombinedMarkersView
+
+        self.combined_box = QWidget()
+        combined_slot = QVBoxLayout(self.combined_box)
+        combined_slot.setContentsMargins(0, 0, 0, 0)
+        self.combined = CombinedMarkersView(self)
+        self.combined.set_slot(combined_slot)
+        self.combined_box.setVisible(False)
+        layout.addWidget(self.combined_box)
         # The cutoff, set like napari's opacity: drag the slider or type the number.
         from superqt import QLabeledDoubleSlider
 
@@ -5505,6 +5761,10 @@ class ReviewPanel(QWidget):
         layout.addWidget(self._count_area_box())
         self.status_line = QLabel("")
         layout.addWidget(self.status_line)
+        self.edit_cells = QPushButton("Edit cells…")
+        self.edit_cells.setToolTip("Select single cells and call them positive or negative by hand, whatever the cutoff.")
+        self.edit_cells.clicked.connect(lambda _checked=False: self.shell.open_edit_cells())
+        layout.addWidget(self.edit_cells)
         self.approve_button = QPushButton("Approve")
         self.approve_button.clicked.connect(lambda _checked=False: self._set_status("approved"))
         layout.addWidget(self.approve_button)
@@ -6044,7 +6304,9 @@ class ReviewPanel(QWidget):
         self.update_status_line()
         self.counts.setText("Not run yet.")
         self.qc.setText("")
+        self.combined.show_no_result()
         self._show_strip()  # the bold row follows the image shown
+        self.shell.refresh_edit_cells()
 
     def show_result(self, result) -> None:
         self.update_status_line()
@@ -6054,6 +6316,13 @@ class ReviewPanel(QWidget):
         self.display.addItem("Objects", "")
         for classification in self.shell.controller.recipe.classifications:
             self.display.addItem(classification.name, classification.id)
+        if len(self.shell.controller.recipe.classifications) > 1:
+            from cellquant.gui.combined_markers import ALL_MARKERS
+
+            self.display.addItem("All markers", ALL_MARKERS)
+            self.display.setItemData(
+                self.display.count() - 1, "Every marker's cutoff at once; objects colored by the markers they are positive for.", Qt.ToolTipRole
+            )
         index = self.display.findData(current)
         if index >= 0:
             self.display.setCurrentIndex(index)
@@ -6070,9 +6339,23 @@ class ReviewPanel(QWidget):
             f"Touching border: {border_text}\n"
             f"Checks: {QC_WORDS.get(result.qc.status, result.qc.status)}"
         )
+        self.shell.refresh_edit_cells(result)
 
     def classification_id(self) -> str:
-        return str(self.display.currentData() or "")
+        """The one marker shown; empty for Objects and for All markers."""
+
+        return "" if self.showing_all_markers() else str(self.display.currentData() or "")
+
+    def showing_all_markers(self) -> bool:
+        from cellquant.gui.combined_markers import ALL_MARKERS
+
+        return self.display.currentData() == ALL_MARKERS
+
+    def combined_moved(self) -> None:
+        """All markers went to its own window or came back: step 5 shows it only while docked."""
+
+        self.combined_box.setVisible(self.showing_all_markers() and not self.combined.popped_out())
+        self._recolor()
 
     def bind_labels(self, boundaries, fills) -> None:
         self._labels = boundaries
@@ -6089,6 +6372,10 @@ class ReviewPanel(QWidget):
 
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
+        all_markers = self.showing_all_markers()
+        self.combined_box.setVisible(all_markers and not self.combined.popped_out())
+        if all_markers or self.combined.popped_out():
+            self.combined.show_result(result, self.shell.controller)
         classification_id = self.classification_id()
         examples = self._examples_mode()
         for widget in (self.cutoff_label, self.histogram, self.strip, self.apply_all):
@@ -6121,7 +6408,9 @@ class ReviewPanel(QWidget):
             self._show_examples(classification, image_id, result)
         else:
             self.shell.show_examples(result, {}, [])
-        counts = self.shell.controller.histogram(image_id, classification.measurement, cutoff, classification.comparison)
+        counts = self.shell.controller.histogram(
+            image_id, classification.measurement, cutoff, classification.comparison, classification.id
+        )
         percent = counts["percent_positive"]
         percent_text = "—" if percent != percent else f"{percent:.1f}%"
         shown = self.shell.controller.recipe.for_image(image_id)  # this image's own cutoff, if it has one
@@ -6241,13 +6530,14 @@ class ReviewPanel(QWidget):
         which = "every image" if include_approved else "every unapproved image"
         self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff {value:g} applied to {which}.")
 
-    def _ask_include_approved(self, name: str, value: float, approved: int) -> bool | None:
+    def _ask_include_approved(self, name: str, value: float | None, approved: int) -> bool | None:
         """Change the approved images too (True), only the unapproved ones (False), or nothing (None)."""
 
         box = QMessageBox(self)
         box.setWindowTitle("Apply to all images")
         count = f"{approved} other image{'s are' if approved != 1 else ' is'} approved"
-        box.setText(f"Apply the {name} cutoff {value:g} to every image? {count}.")
+        what = name if value is None else f"the {name} cutoff {value:g}"
+        box.setText(f"Apply {what} to every image? {count}.")
         box.setInformativeText("Approved images whose percent positive changes will need approving again.")
         every = box.addButton("All images", QMessageBox.AcceptRole)
         unapproved = box.addButton("Unapproved images only", QMessageBox.AcceptRole)
@@ -6336,18 +6626,54 @@ class ReviewPanel(QWidget):
         self.shell.apply_classification_colors()
 
     def _threshold_moved(self, value: float) -> None:
-        controller = self.shell.controller
         classification_id = self.classification_id()
-        if controller is None or not classification_id or not self.shell._nav_ids:
-            return
-        if self._current_classification() is None:
+        if not classification_id or self._current_classification() is None:
             return  # the marker shown was removed in step 4
+        self.set_cutoffs({classification_id: value})
+
+    def set_cutoffs(self, cutoffs: dict[str, float]) -> None:
+        """This image's cutoff for each marker given (the slider, or All markers' sliders)."""
+
+        controller = self.shell.controller
+        if controller is None or not self.shell._nav_ids:
+            return
+        known = {item.id for item in controller.recipe.classifications}
+        cutoffs = {key: value for key, value in cutoffs.items() if key in known}
+        if not cutoffs:
+            return
         image_id = self.shell._nav_ids[self.shell._nav_index]
-        result = controller.update_thresholds(image_id, {classification_id: value}, this_image_only=self._this_image_only())
+        result = controller.update_thresholds(image_id, cutoffs, this_image_only=self._this_image_only())
         if controller.cleared_approvals or controller.kept_approvals:
             self._after_cutoff_change(result)
         elif result is not None:
             self.shell.show_classification(result)
+
+    def redraw(self) -> None:
+        self._recolor()
+
+    def apply_all_markers_to_all(self) -> None:
+        """All markers' Apply to all images: this image's cutoff for every marker, for every image."""
+
+        controller, image_id = self.shell.controller, self._shown_image_id()
+        if controller is None or image_id is None:
+            return
+        classifications = list(controller.recipe.classifications)
+        approved = [
+            record.image_id
+            for record in controller.experiment.images
+            if record.processing_status in ("approved", "reviewed") and record.image_id != image_id
+        ]
+        include_approved = self._ask_include_approved("this image's cutoff for every marker", None, len(approved)) if approved else True
+        if include_approved is None:
+            return
+        kept, cleared = set(), set()
+        for classification in classifications:
+            controller.apply_cutoff_to_all(classification.id, classification.threshold_for(image_id), include_approved=include_approved)
+            kept.update(controller.kept_approvals)
+            cleared.update(controller.cleared_approvals)
+        controller.kept_approvals, controller.cleared_approvals = sorted(kept), sorted(cleared)
+        which = "every image" if include_approved else "every unapproved image"
+        self._after_cutoff_change(controller.classified_now(image_id), f"This image's cutoffs for all {len(classifications)} markers applied to {which}.")
 
     def _recolor(self) -> None:
         controller = self.shell.controller

@@ -208,18 +208,34 @@ class ClassificationSpec(BaseModel):
     image_thresholds: dict[str, float] = Field(default_factory=dict)
     # How the cutoff is set in step 5: the slider, or examples clicked positive or negative.
     cutoff_by: Literal["slider", "examples"] = "slider"
+    # Objects called positive or negative by hand, overriding the cutoff for that object only:
+    # image id -> {object id: {"positive": bool, "x": centroid_x, "y": centroid_y}}. The centroid
+    # tells the called object from a new object with the same number after the image is run again.
+    cell_calls: dict[str, dict[str, dict[str, Any]]] = Field(default_factory=dict)
 
     @model_serializer(mode="wrap")
     def _drop_unused(self, handler):
         return _without_defaults(
             handler(self),
-            {"comparison": "above", "auto_method": "otsu", "auto_percent": 10.0, "image_thresholds": {}, "cutoff_by": "slider"},
+            {
+                "comparison": "above",
+                "auto_method": "otsu",
+                "auto_percent": 10.0,
+                "image_thresholds": {},
+                "cutoff_by": "slider",
+                "cell_calls": {},
+            },
         )
 
     def threshold_for(self, image_id: str | None) -> float:
         """The cutoff this image uses: its own, or the shared one."""
 
         return float(self.image_thresholds.get(str(image_id), self.threshold)) if image_id else float(self.threshold)
+
+    def calls_for(self, image_id: str | None) -> dict[str, dict[str, Any]]:
+        """This image's objects called by hand (object id -> call)."""
+
+        return dict(self.cell_calls.get(str(image_id), {})) if image_id else {}
 
     @model_validator(mode="after")
     def _check(self) -> ClassificationSpec:
@@ -334,14 +350,16 @@ class Recipe(BaseModel):
         return self.model_dump(mode="json")
 
     def for_image(self, image_id: str) -> Recipe:
-        """These settings as one image uses them: each marker at that image's cutoff."""
+        """These settings as one image uses them: each marker at that image's cutoff, with only that
+        image's objects called by hand."""
 
-        if not any(item.image_thresholds for item in self.classifications):
+        if not any(item.image_thresholds or set(item.cell_calls) - {image_id} for item in self.classifications):
             return self
         copied = self.model_copy(deep=True)
         for item in copied.classifications:
             item.threshold = item.threshold_for(image_id)
             item.image_thresholds = {}
+            item.cell_calls = {image_id: item.cell_calls[image_id]} if item.cell_calls.get(image_id) else {}
         return copied
 
     def content_hash(self) -> str:
@@ -381,8 +399,9 @@ class Recipe(BaseModel):
         }
 
 
-# Classification fields that only choose or hold cutoffs; the cutoff an image uses is in "threshold".
-_CUTOFF_CHOICES = ("auto_method", "auto_percent", "image_thresholds", "cutoff_by")
+# Classification fields that only choose or hold cutoffs (the cutoff an image uses is in "threshold"),
+# and calls made by hand: they change which objects are positive, never what is measured.
+_CUTOFF_CHOICES = ("auto_method", "auto_percent", "image_thresholds", "cutoff_by", "cell_calls")
 
 
 def load_recipe(source: Recipe | dict[str, Any] | str | Path) -> Recipe:
