@@ -7,6 +7,7 @@ buttons. Next is disabled with a plain reason when the step is not finished.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,7 +110,7 @@ STEPS = (
         "Click <b>Delete objects</b>, then click each object to remove (debris, a bad outline); <b>Back</b> or Esc stops. "
         "<b>Select objects</b> picks several (Shift+click adds) to delete or restore together. "
         "To redraw outlines, select the <i>Objects</i> layer, paint or erase with napari's tools, then click "
-        "<b>Record drawn edits</b>. <b>Undo</b> takes back the last edit, <b>Undo all</b> every edit on this image. "
+        "<b>Record drawn edits</b>. <b>Delete circle</b> deletes the objects inside a circle you click or drag. <b>Add new objects</b> then <b>Circle</b>: click a cell to add a round object (drag to set its size). <b>Undo</b> takes back the last edit, <b>Undo all</b> every edit on this image. "
         "The objects found in step 2 are kept; edits are saved as a list applied on top. "
         "Running step 2 again with new settings gives new objects, and these edits no longer apply to them.",
         "Each object is one nucleus: no debris, merges, or splits left. Skip this step if step 2 looked right.",
@@ -218,6 +219,8 @@ BUTTON_HELP = {
     "Clear selection": "Unselect every object.",
     "Add new objects": "Show the buttons for drawing new objects.",
     "Draw new object": "Select the Objects layer with an unused number and napari's brush. Outline a cell: when the outline closes, its inside is filled, it is recorded as a new object, and the next cell gets a new number.",
+    "Circle": "Click a cell to add a round object there; drag to set its size. Each circle is recorded as a new object.",
+    "Delete circle": "Click or drag a circle; every object entirely inside it is deleted. Undo brings them back.",
     "Back": "Return to the task choice.",
     "Draw area": "Outline objects to delete in the Delete area layer: click the corners, double-click to finish. Several areas are fine.",
     "Keep only": "Delete every object that does not touch the drawn area (use Draw area first); objects crossing its edge stay. Undo brings them all back.",
@@ -621,6 +624,33 @@ class MarkerSetup(QGroupBox):
         self.window.apply_marker_setup(chosen, rule=str(self.rule.currentData()), min_percent=self.min_percent.value())
 
 
+def _overlap_lines(result, recipe=None) -> list[str]:
+    """Objects positive for two or more markers (each set of markers, whatever the others are),
+    except sets a report above already counts among all objects."""
+
+    table = getattr(result, "combination_counts", None)
+    if table is None or table.empty or "phenotype" not in table.columns:
+        return []
+    reported = set()
+    if recipe is not None:
+        names = {item.id: item.name for item in recipe.classifications}
+        for report in recipe.reports:
+            if report.denominator.strip().casefold() not in {"all_objects", "all_measured_objects"}:
+                continue
+            parts = [part.strip() for part in re.split(r"\s+AND\s+", report.numerator.strip(), flags=re.IGNORECASE)]
+            if not any(part.casefold().startswith("not ") for part in parts):
+                reported.add(frozenset(names.get(part, part) for part in parts))
+    lines = []
+    for row in table.to_dict(orient="records"):
+        markers = [part.removesuffix("+") for part in str(row["phenotype"]).split("|")]
+        if len(markers) < 2 or frozenset(markers) in reported:
+            continue
+        percent = row.get("percent_of_objects", float("nan"))
+        percent_text = "—" if percent != percent else f"{percent:.1f}%"
+        lines.append(f"Positive for {' and '.join(html.escape(name) for name in markers)}: <b>{row['count']}</b> ({percent_text} of counted objects)")
+    return lines
+
+
 class ResultsSummary(QGroupBox):
     """Step 6: the numbers for the image on screen, in words, and the two main actions."""
 
@@ -693,6 +723,7 @@ class ResultsSummary(QGroupBox):
                 f"{_readable(row['numerator'], names)} among {_readable(row['denominator'], names)}: "
                 f"<b>{row['count']}</b> of {row['denominator_count']} ({percent_text})"
             )
+        lines.extend(_overlap_lines(result, recipe))
         unmeasured = int(result.summary.iloc[0].get("n_unmeasured", 0)) if not result.summary.empty and "n_unmeasured" in result.summary.columns else 0
         if unmeasured:
             lines.append(f"<span style='background-color:rgba(217,164,0,0.2)'>{unmeasured} unmeasured, left out.</span>")
