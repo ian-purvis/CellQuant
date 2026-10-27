@@ -29,7 +29,7 @@ from cellquant.storage import default_unit_column, unit_summary
 APPROVED = ("approved", "reviewed")
 DOTS = ("image", "unit", "object")
 # Per-image columns that are never a measure or a group.
-_IMAGE_ID_COLUMNS = {"sample_name", "filename", "image_id", "experiment_id", "run_id", "qc_status", "n_unmeasured", "summary_note"}
+_IMAGE_ID_COLUMNS = {"sample_name", "filename", "image_id", "experiment_id", "run_id", "qc_status", "n_unmeasured", "n_called_by_hand", "summary_note"}
 # Per-object columns that are never a measure.
 _OBJECT_NOT_MEASURES = {
     "object_id", "centroid_x", "centroid_y", "centroid_z", "z_first", "z_last", "excluded", "unmeasured",

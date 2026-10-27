@@ -686,6 +686,7 @@ class CellQuantWindow:
         self.viewer = viewer
         self.controller: AnalysisController | None = None
         self._glossary_window = None
+        self._edit_cells = None  # step 5 Edit cells window, made when first opened
         self._quantanalysis = None  # the QuantAnalysis statistics window, made on first use
         self._folder_lock = None  # this window's hold on the open experiment folder
         self._managed: set[str] = set()
@@ -1988,15 +1989,7 @@ class CellQuantWindow:
             self._drop(EXAMPLES_LAYER)
             return
         ids = [int(value) for value in frame["object_id"].tolist()]
-        centers = np.column_stack([frame["centroid_y"].to_numpy(dtype=float), frame["centroid_x"].to_numpy(dtype=float)])
-        if result.spatial_unit == "um":
-            record = self.controller.experiment.image(result.provenance["image_id"])
-            if record.pixel_size_x and record.pixel_size_y:
-                centers = centers / np.array([record.pixel_size_y, record.pixel_size_x])
-        if np.asarray(result.labels).ndim == 3 and "z_first" in frame.columns:
-            # On the object's middle slice, like its number.
-            middle = (frame["z_first"].to_numpy(dtype=float) + frame["z_last"].to_numpy(dtype=float)) / 2 - 1
-            centers = np.column_stack([np.round(middle), centers])
+        centers = self.object_centers(result, frame)
         positive, negative = classification_colors()
         properties = dict(
             symbol=["cross" if examples[object_id] else "hbar" for object_id in ids],
@@ -2019,6 +2012,47 @@ class CellQuantWindow:
         layer.face_color = properties["face_color"]
         layer.border_color = properties["border_color"]
         layer.border_width = properties["border_width"]
+
+    def object_centers(self, result, frame) -> np.ndarray:
+        """Each object's center in pixels ((z,) row, column), on its middle slice in a stack."""
+
+        centers = np.column_stack([frame["centroid_y"].to_numpy(dtype=float), frame["centroid_x"].to_numpy(dtype=float)])
+        if result.spatial_unit == "um":
+            record = self.controller.experiment.image(result.provenance["image_id"])
+            if record.pixel_size_x and record.pixel_size_y:
+                centers = centers / np.array([record.pixel_size_y, record.pixel_size_x])
+        if np.asarray(result.labels).ndim == 3 and "z_first" in frame.columns:
+            # On the object's middle slice, like its number.
+            middle = (frame["z_first"].to_numpy(dtype=float) + frame["z_last"].to_numpy(dtype=float)) / 2 - 1
+            centers = np.column_stack([np.round(middle), centers])
+        return centers
+
+    def center_on(self, center) -> None:
+        """Center the view on a point in pixels ((z,) row, column), on its slice in a stack."""
+
+        labels = self._review_panel._labels
+        if labels is None or labels not in self.viewer.layers:
+            return
+        point = np.asarray(center, dtype=float)
+        world = np.asarray(labels.data_to_world(np.concatenate([[0.0] * (labels.ndim - point.size), point])))
+        if point.size == 3:
+            self.viewer.dims.set_point(0, float(world[-3]))
+        self.viewer.camera.center = tuple(world[-2:])
+
+    def open_edit_cells(self) -> None:
+        """Step 5 Edit cells: call single objects positive or negative by hand (one window, reused)."""
+
+        from cellquant.gui.cell_calls_window import EditCellsWindow
+
+        if self._edit_cells is None:
+            self._edit_cells = EditCellsWindow(self, self._tabs)
+        self._edit_cells.show()
+        self._edit_cells.raise_()
+        self._edit_cells.activateWindow()
+
+    def refresh_edit_cells(self, result=None) -> None:
+        if self._edit_cells is not None:
+            self._edit_cells.refresh(result)
 
     def set_pixel_scale(self, record) -> None:
         """Give every layer the shown image's pixel size, so napari's scale bar reads in µm (px when unknown)."""
@@ -5727,6 +5761,10 @@ class ReviewPanel(QWidget):
         layout.addWidget(self._count_area_box())
         self.status_line = QLabel("")
         layout.addWidget(self.status_line)
+        self.edit_cells = QPushButton("Edit cells…")
+        self.edit_cells.setToolTip("Select single cells and call them positive or negative by hand, whatever the cutoff.")
+        self.edit_cells.clicked.connect(lambda _checked=False: self.shell.open_edit_cells())
+        layout.addWidget(self.edit_cells)
         self.approve_button = QPushButton("Approve")
         self.approve_button.clicked.connect(lambda _checked=False: self._set_status("approved"))
         layout.addWidget(self.approve_button)
@@ -6268,6 +6306,7 @@ class ReviewPanel(QWidget):
         self.qc.setText("")
         self.combined.show_no_result()
         self._show_strip()  # the bold row follows the image shown
+        self.shell.refresh_edit_cells()
 
     def show_result(self, result) -> None:
         self.update_status_line()
@@ -6300,6 +6339,7 @@ class ReviewPanel(QWidget):
             f"Touching border: {border_text}\n"
             f"Checks: {QC_WORDS.get(result.qc.status, result.qc.status)}"
         )
+        self.shell.refresh_edit_cells(result)
 
     def classification_id(self) -> str:
         """The one marker shown; empty for Objects and for All markers."""
@@ -6368,7 +6408,9 @@ class ReviewPanel(QWidget):
             self._show_examples(classification, image_id, result)
         else:
             self.shell.show_examples(result, {}, [])
-        counts = self.shell.controller.histogram(image_id, classification.measurement, cutoff, classification.comparison)
+        counts = self.shell.controller.histogram(
+            image_id, classification.measurement, cutoff, classification.comparison, classification.id
+        )
         percent = counts["percent_positive"]
         percent_text = "—" if percent != percent else f"{percent:.1f}%"
         shown = self.shell.controller.recipe.for_image(image_id)  # this image's own cutoff, if it has one

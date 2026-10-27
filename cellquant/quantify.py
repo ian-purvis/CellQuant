@@ -158,9 +158,14 @@ def classify_objects(
     classification stays missing and the ``unmeasured`` column is True. Such
     objects stay in the table but are left out of every count in
     ``summarize_image``. Changing a threshold only requires this step.
+
+    Objects called by hand (``cell_calls`` of the table's image) take that call
+    instead of the cutoff's, and ``<marker>_by_hand`` is True for them. The
+    column is added only for markers with calls in this image.
     """
 
     output = table.copy()
+    image_id = _table_image_id(output)
     for spec in classifications:
         if spec.measurement not in output.columns:
             raise RecipeValidationError(
@@ -172,9 +177,73 @@ def classify_objects(
         finite = np.isfinite(values)
         column.loc[finite] = _positive(values[finite], spec.threshold, spec.comparison)
         output[spec.id] = column
+        calls = hand_calls(spec.calls_for(image_id), output)
+        if calls:
+            rows = output["object_id"].astype(int).map(calls)
+            by_hand = rows.notna().to_numpy()
+            output.loc[by_hand, spec.id] = rows[by_hand].astype(bool).to_numpy()
+            output[f"{spec.id}_by_hand"] = by_hand
     ids = [spec.id for spec in classifications]
     output["unmeasured"] = _unmeasured_mask(output, ids) if ids else np.zeros(len(output), dtype=bool)
     return output
+
+
+def hand_calls(marks: dict, objects: pd.DataFrame) -> dict[int, bool]:
+    """The calls whose object is still there (same number, not deleted, about the same place):
+    object id -> positive."""
+
+    if not marks or "object_id" not in objects.columns:
+        return {}
+    frame = objects
+    if "excluded" in frame.columns:
+        frame = frame.loc[~frame["excluded"].astype(str).str.lower().isin(["true", "1"])]
+    rows = frame.drop_duplicates("object_id").set_index("object_id")
+    kept = {}
+    for key, mark in marks.items():
+        try:
+            object_id = int(key)
+            row = rows.loc[object_id]
+        except (KeyError, ValueError, TypeError):
+            continue
+        if _same_place(mark, row):
+            kept[object_id] = bool(mark.get("positive"))
+    return kept
+
+
+def hand_call(row: pd.Series, positive: bool) -> dict:
+    """One object's call by hand, with its centroid (see ``hand_calls``)."""
+
+    return {"positive": bool(positive), "x": float(row["centroid_x"]), "y": float(row["centroid_y"])}
+
+
+def count_by_hand(table: pd.DataFrame) -> int:
+    """Counted objects with at least one marker called by hand."""
+
+    columns = [column for column in table.columns if str(column).endswith("_by_hand")]
+    if table.empty or not columns:
+        return 0
+    flagged = table[columns].fillna(False).astype(bool).any(axis=1).to_numpy()
+    if "excluded" in table.columns:
+        flagged = flagged & ~table["excluded"].fillna(False).astype(bool).to_numpy()
+    flagged = flagged & ~outside(table)
+    return int(flagged.sum())
+
+
+def _table_image_id(table: pd.DataFrame) -> str | None:
+    if "image_id" not in table.columns or table.empty:
+        return None
+    values = table["image_id"].dropna().unique()
+    return str(values[0]) if len(values) == 1 else None
+
+
+def _same_place(mark: dict, row: pd.Series) -> bool:
+    if "x" not in mark or "y" not in mark or "centroid_x" not in row.index:
+        return True
+    area = float(row.get("area", np.nan))
+    # Within half the object's radius (same units as the table, so µm or px alike).
+    tolerance = 0.5 * np.sqrt(area / np.pi) if np.isfinite(area) and area > 0 else 1.0
+    distance = np.hypot(float(row["centroid_x"]) - float(mark["x"]), float(row["centroid_y"]) - float(mark["y"]))
+    return bool(distance <= max(tolerance, 1e-6))
 
 
 def count_unmeasured(table: pd.DataFrame) -> int:
@@ -317,6 +386,7 @@ def image_summary_row(
     metadata: dict | None = None,
     n_unmeasured: int = 0,
     count_area: float | None = None,
+    n_called_by_hand: int = 0,
 ) -> pd.DataFrame:
     row: dict[str, object] = {
         "sample_name": sample_name,
@@ -328,6 +398,7 @@ def image_summary_row(
         row["count_area"] = count_area  # in the object table's area unit (µm² or px²)
     row |= {
         "n_unmeasured": n_unmeasured,
+        "n_called_by_hand": n_called_by_hand,
         "qc_status": qc_status,
     }
     for key, value in (metadata or {}).items():
