@@ -617,6 +617,7 @@ class GraphSheetView(QWidget):
     def export(self, path, kind: str, dpi: int = 300, width=None, height=None, units=None) -> Path:
         if self.figure is None:
             raise CellQuantError('Graphs need matplotlib: pip install "cellquant[stats]"')
+        self.project.flush_fits()
         data = self.project.data[self.sheet.data_id]
         written = export_figure(data, self.sheet, self.linked_result(), path, kind, dpi, width, height, units, self.project.flags(data.id))
         self.window.status(f"Saved {written}")

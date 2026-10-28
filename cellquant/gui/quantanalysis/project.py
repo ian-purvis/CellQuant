@@ -37,6 +37,7 @@ from cellquant.stats.curvefit import nonlinear_regression
 from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
+from cellquant.stats.replicates import ReplicateTable
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
 
 LOG = logging.getLogger("cellquant.quantanalysis")
@@ -108,6 +109,7 @@ class DataSheet:
     process: dict = field(default_factory=dict)          # the processing: "kind" and its options (cellquant.stats.transforms)
     grouped: GroupedTable | None = None  # a grouped table (two factors); ``table`` is then its cells as columns ("Row: Data set")
     xy: XYTable | None = None           # an XY table (X and Y data sets); ``table`` is then X and each data set's row means
+    replicates: ReplicateTable | None = None  # every value with its biological replicate; ``table`` is then each replicate's mean (N)
     contingency: ContingencyTable | None = None  # counts in rows × columns; ``table`` is then one column of counts per outcome
 
 
@@ -450,6 +452,8 @@ class Project(QObject):
                 sheet.wide, sheet.warnings, sheet.methods = run_normality(data, sheet.options)
             if data is not None and data.pseudoreplicated and PSEUDO_WARNING not in sheet.warnings:
                 sheet.warnings.insert(0, PSEUDO_WARNING)
+            if data is not None and data.replicates is not None and sheet.kind != "pstack":
+                sheet.methods = f"{replicate_methods(data)} {sheet.methods}".strip()
         except CellQuantError as exc:
             sheet.error = str(exc)
         except Exception as exc:  # noqa: BLE001 - kept in the log; the sheet says it could not be computed
@@ -587,7 +591,7 @@ def run_two_way(data: DataSheet, options: dict) -> AnalysisResult:
 LINREG_KEYS = ("through_origin", "replicates", "ci", "alpha", "style", "df")
 XYCORR_KEYS = ("method", "replicates", "ci", "alpha", "style", "df")
 CURVEFIT_KEYS = ("model", "fixed", "replicates", "ci", "alpha", "style", "compare", "compare_model", "compare_fixed", "compare_parameter",
-                 "interpolate")
+                 "interpolate", "df")
 
 
 def _xy_of(data: DataSheet | None, what: str) -> XYTable:
@@ -617,7 +621,9 @@ def run_curve_fit(data: DataSheet, options: dict) -> AnalysisResult:
         if key in kwargs and not isinstance(kwargs[key], str):
             kwargs.pop(key)
     kwargs["interpolate"] = bool(kwargs.get("interpolate", False))
-    return nonlinear_regression(_xy_of(data, "Nonlinear regression"), **kwargs)
+    result = nonlinear_regression(_xy_of(data, "Nonlinear regression"), **kwargs)
+    _hand_set_notes(result, data.xy, options)
+    return result
 
 
 def run_xy_correlation(data: DataSheet, options: dict) -> AnalysisResult:
@@ -884,6 +890,35 @@ def set_contingency(sheet: DataSheet, table: ContingencyTable) -> None:
 def set_xy(sheet: DataSheet, xy: XYTable) -> None:
     sheet.xy = xy
     sheet.table = xy_columns(xy)
+
+
+def replicate_methods(data: DataSheet) -> str:
+    """The sentence a results sheet of a replicate table starts its methods with: what one value is, N and n."""
+
+    replicates = data.replicates
+    counts = replicates.counts()
+    sizes = "; ".join(f"{column.name} N={column.finite.size}, n={counts.get(column.name, 0)}" for column in data.table.columns)
+    return (f"Analyzed on one value per biological replicate (each replicate's {replicates.summary} of its values), "
+            f"not on the individual values ({sizes}).")
+
+
+def set_replicates(sheet: DataSheet, replicates: ReplicateTable | None, values: list | None = None) -> None:
+    """Give a column table a replicate per row (its analyses then use one value per replicate), or take it away
+    (``None``: the table holds every value again, ``values`` when given, else the replicate table's)."""
+
+    from cellquant.stats import Column
+
+    if replicates is None:
+        old = sheet.replicates
+        sheet.replicates = None
+        if old is not None:
+            sheet.table = ColumnTable(title=old.title, paired=old.paired,
+                                      columns=[Column(name, column) for name, column in zip(old.names, values if values is not None else old.values)])
+            sheet.row_labels = []
+        return
+    sheet.replicates = replicates
+    sheet.table = replicates.summary_table()
+    sheet.row_labels = replicates.replicates()
 
 
 def table_with(table: ColumnTable, names: list[str], values: list[np.ndarray], paired: bool) -> ColumnTable:

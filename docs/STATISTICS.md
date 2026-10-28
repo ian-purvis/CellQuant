@@ -53,7 +53,7 @@ Each analysis dialog has an **Advanced** tick box (off by default) that shows se
 
 | Setting | Analyses | Default |
 | --- | --- | --- |
-| Degrees of freedom | t tests (also **Conservative**: the smaller group's N − 1, for unpaired tests), one-way ANOVA (residual, used by the multiple comparisons too), Welch's ANOVA (denominator), repeated measures (before ε), two-way ANOVA (residual), linear regression (residual), correlation (t test of r) | computed |
+| Degrees of freedom | t tests (also **Conservative**: the smaller group's N − 1, for unpaired tests), one-way ANOVA (residual, used by the multiple comparisons too), Welch's ANOVA (denominator), repeated measures (before ε), two-way ANOVA (residual), linear regression (residual), nonlinear regression (residual, for the parameters' CIs and the bands only; the fit and its comparisons keep the computed df), correlation (t test of r) | computed |
 | Hypothesised difference | unpaired, Welch's and paired t tests: t = (difference − hypothesised) / SE; the CI does not change | 0 |
 | Sphericity correction ε | repeated-measures ANOVA, between 1/(k − 1) (lower bound) and 1 (none) | Geisser-Greenhouse ε |
 | SD for multiple comparisons | ordinary and repeated-measures ANOVA; the F test is unchanged | pooled SD |
@@ -146,7 +146,19 @@ Pooling a percent over a replicate's images:
 
 so an image with more cells weighs more within its replicate. This is not the mean of the images' percents. A per-object value is averaged over every counted object of the replicate.
 
-A **SuperPlot** shows both levels: each image as a small dot shaded by its replicate, each replicate's value as a large outlined marker in the same colour, and the mean ± SD of the replicates. The test uses the replicates.
+A **SuperPlot** (Lord et al., J Cell Biol 2020) shows both levels: every value (each cell, or each image of an import) as a small dot coloured by its replicate, each replicate's value as a large outlined marker in the same colour, and the mean ± SD of the replicates. The test uses the replicates.
+
+### Making a SuperPlot
+
+1. Give the table its replicates, one of three ways:
+   - **Your own values:** click **Replicates** above a column table (or **File → New table with replicates (SuperPlot)**). A **Replicate** column appears on the left. Lay the rows out in blocks: the first replicate's values (for example its cells) in every column, then the next replicate's, and type the replicate's name on the first row of its block; a blank continues the replicate above. Use the same names in every column. Pasting a block whose first column is words (Experiment 1, Experiment 2…) fills the Replicate column and turns it on.
+   - **A CSV file:** **File → Import CSV…** and choose the **Replicate** column (long files: one row per value with group and replicate columns; wide files: one column per group and a replicate column).
+   - **CellQuant results:** import with **Dot = biological replicate**. The small dots are then the images.
+2. **Graph → SuperPlot** (or pick SuperPlot under **Graph** in the format panel). The legend names the replicates.
+
+The table now holds every value (n), but its analyses use one value per replicate and column (N): the replicate's mean, or its median (the **Replicate mean** menu beside **Replicates**). Each replicate counts once however many values it has, so keep the number of values per replicate similar. The note above the grid gives N and n per column, and the axis labels show both. Tick **Paired** when every replicate was measured in every column (for example one experiment per day with all conditions): paired tests and repeated-measures ANOVA then compare each replicate with itself, which the original paper recommends for this design. Results sheets say so in their methods, with N and n. Turning **Replicates** on puts every existing value in Replicate 1 until other names are typed. Processed and cleaned copies of the table hold the replicate values only. **Replicates** clicked again removes the column; the analyses then use every value, which is pseudoreplication.
+
+The format panel's Graph section adds, for a SuperPlot: **Replicates** colours (bold, colour-blind safe or greys) and **Shapes** (a different symbol per replicate); **Values** together in one swarm or **By replicate** (each replicate in its own lane), and their opacity; and **Join each replicate** (a line joining each replicate's markers across the columns, for paired designs). **Error bars** and **Data sets** (marker size and symbol, the mean line, error bars) work as on other graphs and describe the replicates. SEM or a 95% CI of the replicates shows how repeatable the experiment is; SD shows how much the replicates vary.
 
 ## Error bars: SD, SEM and CI
 
@@ -431,7 +443,9 @@ With k fitted parameters and n points: df = n − k, Sy.x = √(SS_residual / df
 - **Does one curve fit every data set?**: one curve fitted to all the data sets together against a curve per data set (F test and AICc).
 - **Does one parameter differ between data sets?**: the chosen parameter (for example LogEC50) is shared by all data sets and the others are fitted per data set (a global fit), against a separate fit per data set. With a straight line and the slope, this is the slopes test of linear regression.
 
-**Unknowns** (ticked): for each row with Y but no X, the mean of its Y values is read off each data set's curve, within the range of X the curve was fitted on (a standard curve). A Y the curve does not reach there is reported as out of range, not extrapolated; when the curve passes it more than once (a peak), every X is listed. For log(dose), the dose is given too.
+Data sets are compared only when each one's own fit is sound. The shared fit starts from the median of the separate fits and from each data set's own values, and keeps the best. When the data sets differ strongly, forcing them to share a value can leave the shared fit's other parameters poorly determined (ambiguous); the comparison still holds, as the F test and AICc use only its sum of squares, and the sheet says so. A shared fit that did not converge is not compared; with two or more fitted data sets the sheet then lists them and says why (with fewer, a warning says so). A shared fit can never fit better than the separate fits; if it does, a separate fit is stuck, and the sheet marks the comparison as not reliable and prefers neither.
+
+**Unknowns** (ticked): for each row with Y but no X, the mean of its Y values is read off each data set's curve, within the range of X the curve was fitted on (a standard curve). A Y the curve does not reach there is reported as out of range, not extrapolated; when the curve passes it more than once (a peak), every X is listed. For log(dose), the dose is given too. The XY graph marks each unknown on its curve with an open diamond.
 
 ## Correlation (`xy_correlation(xy, method)`)
 

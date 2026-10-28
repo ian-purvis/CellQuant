@@ -3,6 +3,10 @@
 Blank cells are missing values. Paste a block from a spreadsheet (tab-separated) at the selected cell; a
 first line of words becomes the column titles. Double-click a title to rename it. Editing a table
 imported from CellQuant detaches it: it keeps its numbers but no longer follows the experiment.
+
+Replicates adds a first column naming each row's biological replicate (a blank continues the one above),
+so the table can hold every value (for example every cell) while its analyses use one value per replicate
+(N) and a SuperPlot shows both. A pasted block whose first column is words turns it on.
 """
 
 from __future__ import annotations
@@ -18,8 +22,10 @@ from qtpy.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
+    QComboBox,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -29,14 +35,16 @@ from qtpy.QtWidgets import (
 )
 
 from cellquant.gui.quantanalysis import graphs, tips
-from cellquant.gui.quantanalysis.project import DataSheet, Project, table_with
+from cellquant.gui.quantanalysis.project import DataSheet, Project, set_replicates, table_with
 from cellquant.stats import transforms
+from cellquant.stats.replicates import SUMMARIES, ReplicateTable
 
 SPARE_ROWS = 12
 WARNING_STYLE = "QLabel { background: rgba(217, 164, 0, 0.20); border-radius: 6px; padding: 6px; }"
 DANGER_STYLE = "QLabel { background: rgba(200, 50, 50, 0.28); border-radius: 6px; padding: 6px; }"
 NOTE_STYLE = "QLabel { color: #a8b0ba; }"
 OUTLIER_BACKGROUND = QColor(200, 60, 60, 120)
+REPLICATE_BACKGROUND = QColor(90, 130, 190, 45)
 
 
 def parse_cell(text: str) -> float:
@@ -93,9 +101,20 @@ class DataSheetView(QWidget):
         self.paired = QCheckBox("Paired")
         self.paired.setToolTip(tips.PAIRED)
         self.paired.toggled.connect(self._paired_toggled)
+        self.replicate_button = QPushButton("Replicates")
+        self.replicate_button.setCheckable(True)
+        self.replicate_button.setToolTip(tips.REPLICATES)
+        self.replicate_button.toggled.connect(self._replicates_toggled)
+        self.summary = QComboBox()
+        for key, name in SUMMARIES.items():
+            self.summary.addItem(f"Replicate {name.lower()}", key)
+        self.summary.setToolTip(tips.REPLICATE_VALUE)
+        self.summary.currentIndexChanged.connect(self._summary_changed)
         bar.addWidget(add)
         bar.addWidget(remove)
         bar.addWidget(self.paired)
+        bar.addWidget(self.replicate_button)
+        bar.addWidget(self.summary)
         bar.addStretch(1)
         for text, tip, slot in (
             ("Column statistics", "n, mean, SD, SEM, CI, median and percentiles of every column, on a new results sheet.", lambda: window.analyze("colstats")),
@@ -138,6 +157,9 @@ class DataSheetView(QWidget):
         graph.setMenu(menu)
         bar.addWidget(graph)
         layout.addLayout(bar)
+        self.replicate_note = QLabel()
+        self.replicate_note.setWordWrap(True)
+        layout.addWidget(self.replicate_note)
 
         self.grid = QTableWidget()
         self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -160,24 +182,44 @@ class DataSheetView(QWidget):
 
     # --- Showing the sheet ----------------------------------------------------------------------------------------
 
+    @property
+    def offset(self) -> int:
+        """1 while the Replicate column is shown (the data columns start after it), else 0."""
+
+        return 1 if self.sheet.replicates is not None else 0
+
     def fill(self) -> None:
         sheet = self.sheet
         table = sheet.table
+        replicates = sheet.replicates
+        offset = self.offset
+        names = replicates.names if replicates is not None else table.names
+        columns = replicates.values if replicates is not None else [column.values for column in table.columns]
         self._filling = True
-        rows = max([column.values.size for column in table.columns] + [0]) + SPARE_ROWS
+        rows = max([values.size for values in columns] + [len(replicates.labels) if replicates is not None else 0]) + SPARE_ROWS
         self.grid.clear()
-        self.grid.setColumnCount(len(table.columns))
+        self.grid.setColumnCount(len(names) + offset)
         self.grid.setRowCount(max(rows, 24))
-        self.grid.setHorizontalHeaderLabels(table.names)
-        labels = [sheet.row_labels[row] if row < len(sheet.row_labels) and sheet.row_labels[row] else str(row + 1)
+        self.grid.setHorizontalHeaderLabels((["Replicate"] if offset else []) + names)
+        if offset:
+            self.grid.horizontalHeaderItem(0).setToolTip(tips.REPLICATE_COLUMN)
+            owners = replicates.row_replicates()
+            for row in range(self.grid.rowCount()):
+                label = replicates.labels[row] if row < len(replicates.labels) else ""
+                item = QTableWidgetItem(label)
+                item.setBackground(QBrush(REPLICATE_BACKGROUND))
+                if not label and row < len(owners) and owners[row]:
+                    item.setToolTip(f"Blank: continues {owners[row]}.")
+                self.grid.setItem(row, 0, item)
+        labels = [sheet.row_labels[row] if not offset and row < len(sheet.row_labels) and sheet.row_labels[row] else str(row + 1)
                   for row in range(self.grid.rowCount())]
         self.grid.setVerticalHeaderLabels(labels)
-        for index, column in enumerate(table.columns):
-            for row, value in enumerate(column.values):
+        for index, values in enumerate(columns):
+            for row, value in enumerate(values):
                 if np.isfinite(value):
-                    self.grid.setItem(row, index, QTableWidgetItem(f"{value:.6g}"))
+                    self.grid.setItem(row, index + offset, QTableWidgetItem(f"{value:.6g}"))
         flagged = 0
-        for index, column in enumerate(table.columns):
+        for index, column in enumerate(table.columns if not offset else []):  # outliers of a replicate table are among the replicate values
             mask = self.project.flags(sheet.id).get(column.name)
             for row in (np.flatnonzero(mask[: column.values.size]) if mask is not None else []):
                 item = self.grid.item(int(row), index)
@@ -191,6 +233,14 @@ class DataSheetView(QWidget):
         self.paired.blockSignals(True)
         self.paired.setChecked(table.paired)
         self.paired.blockSignals(False)
+        self.replicate_button.blockSignals(True)
+        self.replicate_button.setChecked(bool(offset))
+        self.replicate_button.blockSignals(False)
+        self.summary.blockSignals(True)
+        self.summary.setCurrentIndex(max(0, self.summary.findData(replicates.summary if replicates is not None else "mean")))
+        self.summary.blockSignals(False)
+        self.summary.setVisible(bool(offset))
+        self._replicate_note()
         self._filling = False
         self.description.setText(sheet.description or "Type or paste values: one column per group, blank cells are missing values.")
         self.description.setToolTip("\n".join(sheet.notes))
@@ -203,11 +253,43 @@ class DataSheetView(QWidget):
         self.warnings.setStyleSheet(DANGER_STYLE if danger else WARNING_STYLE)
         self.warnings.setVisible(bool(text))
 
+    def _replicate_note(self) -> None:
+        replicates = self.sheet.replicates
+        if replicates is None:
+            self.replicate_note.setVisible(False)
+            return
+        found = replicates.replicates()
+        counts = replicates.counts()
+        summary = SUMMARIES[replicates.summary].lower()
+        if not found:
+            text = ("Type the name of each block's biological replicate in the Replicate column (for example Experiment 1 on the "
+                    "first row of its values); a blank continues the replicate above.")
+        else:
+            sizes = ", ".join(f"{column.name} N={column.finite.size}, n={counts.get(column.name, 0)}" for column in self.sheet.table.columns)
+            text = (f"{len(found)} biological replicate{'s' if len(found) != 1 else ''}. Analyses use each replicate's {summary} (N); "
+                    f"a SuperPlot also shows every value (n). {sizes}.")
+        left_out = replicates.unassigned()
+        if left_out:
+            text += f" {left_out} value{'s' if left_out != 1 else ''} above the first replicate name belong to no replicate and are left out."
+        self.replicate_note.setText(text)
+        self.replicate_note.setStyleSheet(WARNING_STYLE if left_out or not found else NOTE_STYLE)
+        self.replicate_note.setVisible(True)
+
     # --- Editing ------------------------------------------------------------------------------------------------
+
+    def _labels(self) -> list[str]:
+        """The Replicate column, row by row (blank rows at the end dropped)."""
+
+        if not self.offset:
+            return []
+        labels = [(self.grid.item(row, 0).text().strip() if self.grid.item(row, 0) is not None else "") for row in range(self.grid.rowCount())]
+        while labels and not labels[-1]:
+            labels.pop()
+        return labels
 
     def _column_values(self) -> list[np.ndarray]:
         out = []
-        for index in range(self.grid.columnCount()):
+        for index in range(self.offset, self.grid.columnCount()):
             values = []
             for row in range(self.grid.rowCount()):
                 item = self.grid.item(row, index)
@@ -221,18 +303,26 @@ class DataSheetView(QWidget):
 
     def _names(self) -> list[str]:
         return [self.grid.horizontalHeaderItem(index).text() if self.grid.horizontalHeaderItem(index) else f"Column {index + 1}"
-                for index in range(self.grid.columnCount())]
+                for index in range(self.offset, self.grid.columnCount())]
 
-    def commit(self, names: list[str] | None = None, values: list[np.ndarray] | None = None, paired: bool | None = None) -> None:
-        """Write the grid back to the sheet and recompute everything linked to it."""
+    def commit(self, names: list[str] | None = None, values: list[np.ndarray] | None = None, paired: bool | None = None,
+               labels: list[str] | None = None) -> None:
+        """Write the grid back to the sheet and recompute everything linked to it. ``labels`` (the Replicate column) makes
+        it a replicate table; a replicate table reads them from the grid."""
 
         sheet = self.sheet
         names = names if names is not None else self._names()
         values = [_trim(np.asarray(column, float)) for column in values] if values is not None else self._column_values()
         paired = self.paired.isChecked() if paired is None else paired
-        before = sheet.table.names
+        if labels is None and sheet.replicates is not None:
+            labels = self._labels()
+        before = list(sheet.replicates.names) if sheet.replicates is not None else sheet.table.names
         try:
-            sheet.table = table_with(sheet.table, names, values, paired)
+            if labels is not None:
+                summary = sheet.replicates.summary if sheet.replicates is not None else "mean"
+                set_replicates(sheet, ReplicateTable(sheet.table.title, names, values, labels, summary, paired))
+            else:
+                sheet.table = table_with(sheet.table, names, values, paired)
         except Exception as exc:  # noqa: BLE001 - a repeated title, for example; the grid shows the table as it was
             self.window.status(str(exc))
             self.fill()
@@ -251,11 +341,14 @@ class DataSheetView(QWidget):
             sheet.notes = [*sheet.notes, "Edited by hand: no longer follows the CellQuant results."]
         renamed = {old: new for old, new in zip(before, names) if old != new} if len(before) == len(names) else None
         self.project.data_changed(sheet.id, renamed)
+        self._replicate_note()
 
     def _edited(self, item: QTableWidgetItem) -> None:
         if self._filling:
             return
         text = item.text()
+        if self.offset and item.column() == 0:
+            text = ""  # a replicate name: any text
         if text.strip():
             try:
                 parse_cell(text)
@@ -273,6 +366,37 @@ class DataSheetView(QWidget):
     def _paired_toggled(self, on: bool) -> None:
         self.commit(paired=on)
 
+    def _replicates_toggled(self, on: bool) -> None:
+        """Add the Replicate column (the analyses then use one value per replicate), or remove it (every value again)."""
+
+        if on == bool(self.offset):
+            return
+        if on:
+            # Every value starts in one replicate (so no analysis goes blank); new names below split it.
+            values = self._column_values()
+            self.commit(labels=["Replicate 1"] if any(column.size for column in values) else [])
+            self.window.status("Name each block's biological replicate in the Replicate column; the analyses use the replicate means.")
+        else:
+            if any(self._labels()) and QMessageBox.question(
+                    self, "Remove the replicates",
+                    "Remove the Replicate column? The values stay, and the analyses then use every value (n) instead of one value "
+                    "per replicate (N).") != QMessageBox.Yes:
+                self.fill()
+                return
+            values, names = self._column_values(), self._names()
+            set_replicates(self.sheet, None, values)
+            self.commit(names, values)
+        self.fill()
+
+    def _summary_changed(self, _index: int) -> None:
+        replicates = self.sheet.replicates
+        if self._filling or replicates is None:
+            return
+        replicates.summary = self.summary.currentData()
+        set_replicates(self.sheet, replicates)
+        self.project.data_changed(self.sheet.id)
+        self._replicate_note()
+
     def add_column(self) -> None:
         names = self._names()
         number = len(names) + 1
@@ -282,7 +406,10 @@ class DataSheetView(QWidget):
         self.fill()
 
     def remove_column(self) -> None:
-        index = self.grid.currentColumn()
+        index = self.grid.currentColumn() - self.offset
+        if self.offset and index == -1:
+            self.window.status("Click Replicates to remove the Replicate column.")
+            return
         if index < 0:
             self.window.status("Click a cell of the column to remove first.")
             return
@@ -292,11 +419,14 @@ class DataSheetView(QWidget):
         self.commit(names, values)
         self.fill()
 
-    def _rename(self, index: int) -> None:
+    def _rename(self, section: int) -> None:
+        index = section - self.offset
+        if index < 0:
+            return
         header = self.grid.horizontalHeader()
         editor = QLineEdit(header)
         editor.setText(self._names()[index])
-        editor.setGeometry(header.sectionViewportPosition(index), 0, header.sectionSize(index), header.height())
+        editor.setGeometry(header.sectionViewportPosition(section), 0, header.sectionSize(section), header.height())
         editor.selectAll()
         editor.setFocus()
 
@@ -368,9 +498,26 @@ class DataSheetView(QWidget):
             except ValueError:
                 return False
 
-        if not all(is_number(cell) for cell in lines[0]):
+        if any(cell.strip() for cell in lines[0]) and not any(cell.strip() and is_number(cell) for cell in lines[0]):  # a line of words only
             titles, lines = lines[0], lines[1:]
             top = 0
+        # A first column of words names the replicates: into the Replicate column (turned on when it is off).
+        first = [line[0].strip() for line in lines if line and line[0].strip()]
+        words = (left == 0 and bool(first) and not any(is_number(cell) for cell in first)
+                 and any(is_number(cell) and cell.strip() for line in lines for cell in line[1:]))
+        labels = None
+        if (self.offset and left == 0) or words:
+            labels = self._labels()
+            for row, line in enumerate(lines):
+                while len(labels) <= top + row:
+                    labels.append("")
+                labels[top + row] = line[0].strip() if line else ""
+            lines = [line[1:] for line in lines]
+            titles = titles[1:] if titles else None
+            if not self.offset:
+                self.window.status("The first column names the biological replicates: Replicates is on, and the analyses use the replicate means.")
+        else:
+            left -= self.offset
         width = max([len(line) for line in lines] + [len(titles or [])])
         values = self._column_values()
         while len(names) < left + width:
@@ -396,5 +543,5 @@ class DataSheetView(QWidget):
                 except ValueError:
                     column[target] = np.nan
             values[left + offset] = np.asarray(column, float)
-        self.commit(names, values)
+        self.commit(names, values, labels=labels)
         self.fill()

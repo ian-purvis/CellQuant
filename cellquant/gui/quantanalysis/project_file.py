@@ -20,7 +20,19 @@ import numpy as np
 import pandas as pd
 
 from cellquant.errors import CellQuantError
-from cellquant.gui.quantanalysis.project import DataSheet, GraphSheet, LayoutSheet, Project, ResultSheet, reserve_ids, set_contingency, set_grouped, set_xy
+from cellquant.gui.quantanalysis.project import (
+    DataSheet,
+    GraphSheet,
+    LayoutSheet,
+    Project,
+    ResultSheet,
+    reserve_ids,
+    set_contingency,
+    set_grouped,
+    set_replicates,
+    set_xy,
+)
+from cellquant.stats.replicates import ReplicateTable
 from cellquant.stats import ColumnTable, transforms
 from cellquant.stats.contingency import ContingencyTable
 from cellquant.stats.grouped import GroupedTable
@@ -110,6 +122,9 @@ def _data(sheet: DataSheet, experiment_dir: str | None) -> dict:
         "xy": None if sheet.xy is None else {
             "x_title": sheet.xy.x_title, "x": _numbers(sheet.xy.x), "sets": list(sheet.xy.sets),
             "values": [[_numbers(cell) for cell in row] for row in sheet.xy.values]},
+        "replicates": None if sheet.replicates is None else {
+            "names": list(sheet.replicates.names), "values": [_numbers(column) for column in sheet.replicates.values],
+            "labels": list(sheet.replicates.labels), "summary": sheet.replicates.summary},
     }
 
 
@@ -147,6 +162,8 @@ def save(project: Project, path: str | Path, experiment_dir: str | Path | None =
     one is complete."""
 
     from cellquant import __version__
+
+    project.flush_fits()  # a fit still waiting for typing to pause is saved as it will be shown
 
     path = Path(path)
     if path.suffix.lower() != SUFFIX:
@@ -275,6 +292,15 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
                 set_xy(sheet, XYTable(table.title, str(xy.get("x_title") or "X"), x, list(xy["sets"]),
                                       np.array([[_values(cell) for cell in row] for row in xy["values"]], dtype=float)
                                       .reshape(x.size, len(xy["sets"]), -1)))
+            replicates = item.get("replicates")
+            if isinstance(replicates, dict):
+                try:
+                    set_replicates(sheet, ReplicateTable(table.title, [str(name) for name in replicates["names"]],
+                                                         [_values(column) for column in replicates["values"]],
+                                                         ["" if label is None else str(label) for label in replicates.get("labels") or []],
+                                                         str(replicates.get("summary") or "mean"), table.paired))
+                except (KeyError, TypeError, ValueError, OverflowError, CellQuantError) as exc:  # keep the replicate means
+                    notes.append(f"The values of {item.get('name', '?')} could not be read ({exc}); it keeps one value per replicate.")
         except (KeyError, TypeError, ValueError, OverflowError, CellQuantError) as exc:
             notes.append(f"A data table ({item.get('name', '?')}) could not be read: {exc}")
             continue

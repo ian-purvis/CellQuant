@@ -23,6 +23,7 @@ import pandas as pd
 from scipy import optimize, stats
 
 from cellquant.errors import StatisticsError
+from cellquant.stats._common import check_df, df_override, record_overrides
 from cellquant.stats.pvalues import format_p, p_summary
 from cellquant.stats.results import AnalysisResult, fmt, fmt_ci
 from cellquant.stats.xy import XYTable
@@ -361,7 +362,7 @@ def curve_band(fit: dict, xs, ci: float = 0.95, prediction: bool = False) -> tup
     xs = np.asarray(xs, float)
     g = _gradient(fit, xs)
     variance = np.einsum("ij,jk,ik->i", g, fit["cov"], g) + (fit["ms"] if prediction else 0.0)
-    half = stats.t.ppf(0.5 + ci / 2, fit["df"]) * np.sqrt(np.maximum(variance, 0.0))
+    half = stats.t.ppf(0.5 + ci / 2, fit.get("t_df", fit["df"])) * np.sqrt(np.maximum(variance, 0.0))
     center = predict(fit, xs)
     return center - half, center + half
 
@@ -420,6 +421,15 @@ def global_fit(model: str | Model, data: list[tuple[np.ndarray, np.ndarray]], sh
 
     start = np.asarray(start, float)
     found = _least_squares(residual, _starts(start, model.linear))
+    if len(starts) > 1 and shared and not model.linear:
+        # The median of the separate fits can sit between very different data sets; also start the shared values at each
+        # data set's own, and keep the best.
+        for item in starts:
+            other = start.copy()
+            other[: len(shared)] = [item[name] for name in shared]
+            candidate = _least_squares(residual, [other])
+            if candidate is not None and (found is None or candidate.cost < found.cost * (1 - 1e-12)):
+                found = candidate
     if found is None:
         raise StatisticsError(f"{model.name} could not be fitted to the data sets together (the fit did not converge).")
     with np.errstate(all="ignore"):
@@ -481,18 +491,23 @@ def compare_data_sets(model: str | Model, data: dict[str, tuple[np.ndarray, np.n
         raise StatisticsError(f"{parameter} is not a free parameter of the fit, so it cannot be compared.")
     shared = list(free) if parameter is None else [parameter]
     null = global_fit(model, [data[name] for name in names], shared, fixed, [fits[name]["params"] for name in names])
-    if not null["converged"] or null["ambiguous"]:
+    if not null["converged"]:
         raise StatisticsError("The fit with " + (f"{parameter} shared" if parameter else "one curve for every data set")
-                              + " is ambiguous or did not converge, so the data sets are not compared.")
+                              + " did not converge, so the data sets are not compared.")
+    # An ambiguous shared fit is still compared: when the data sets differ strongly, forcing them to share a value leaves the
+    # other parameters poorly determined, but the F test and AICc use only its sum of squares, which has settled.
     ss_separate = sum(fits[name]["ss_resid"] for name in names)
     df_separate = sum(fits[name]["df"] for name in names)
     k_separate = sum(len(fits[name]["free"]) for name in names)
     f, p, dfn, dfd = _f_test(null["ss_resid"], null["df"], ss_separate, df_separate)
     delta, probability = _aicc_choice(null["aicc"], aicc(ss_separate, null["n"], k_separate))
-    return {"parameter": parameter, "shared": null, "data_sets": names, "f": f, "p": p, "dfn": dfn, "dfd": dfd,
-            "f_prefers": None if not math.isfinite(p) else "separate" if p < alpha else "shared",
+    # The shared fit is a special case of the separate fits, so it can never fit better; when it does, a separate fit is stuck
+    # in a local optimum and neither test can be trusted.
+    unreliable = null["ss_resid"] < ss_separate * (1 - 1e-9)
+    return {"parameter": parameter, "shared": null, "data_sets": names, "f": f, "p": p, "dfn": dfn, "dfd": dfd, "unreliable": unreliable,
+            "f_prefers": None if unreliable or not math.isfinite(p) else "separate" if p < alpha else "shared",
             "aicc_delta": delta, "aicc_shared": probability,
-            "aicc_prefers": None if not math.isfinite(delta) else "shared" if delta >= 0 else "separate"}
+            "aicc_prefers": None if unreliable or not math.isfinite(delta) else "shared" if delta >= 0 else "separate"}
 
 
 # --- The results sheet ----------------------------------------------------------------------------------------
@@ -521,7 +536,7 @@ def _derived(fit: dict, ci_of: Callable[[str], tuple[float, float]]) -> list[tup
 
 
 def _fit_rows(fit: dict, model: Model, level: str, ci: float) -> dict:
-    t = stats.t.ppf(0.5 + ci / 2, fit["df"])
+    t = stats.t.ppf(0.5 + ci / 2, fit.get("t_df", fit["df"]))
 
     def ci_of(name):
         se = fit["se"].get(name, float("nan"))
@@ -589,7 +604,7 @@ def nonlinear_regression(table: XYTable, **options) -> AnalysisResult:
 def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", fixed: dict | None = None, replicates: str = "each",
                          ci: float = 0.95, alpha: float = 0.05, style: str = "classic", compare: str = "none",
                          compare_model: str | None = None, compare_fixed: dict | None = None, compare_parameter: str | None = None,
-                         interpolate: bool = False) -> AnalysisResult:
+                         interpolate: bool = False, df=None) -> AnalysisResult:
     """Fit ``model`` to each data set of an XY table.
 
     ``compare``: "none"; "model" (each data set fitted by ``compare_model``/``compare_fixed`` too, and the two fits
@@ -619,6 +634,9 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
                              "interpolate": interpolate})
     level = f"{100 * ci:g}% CI (asymptotic)"
     fits, data, out, comparisons, interpolated = {}, {}, {}, {}, {}
+    changes, larger = [], []
+    if df is not None:
+        check_df(df)
     for j, name in enumerate(table.sets):
         x, y = table.points(j, means=replicates == "mean")
         try:
@@ -628,6 +646,8 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
             continue
         fits[name], data[name] = fit, (x, y)
         fit["equation"] = fitted_model.equation
+        if df is not None:  # set by hand (Advanced): only the parameter CIs and the bands use it
+            fit["t_df"] = df_override(df, fit["df"], "Residual df" if len(table.sets) == 1 else f"Residual df ({name})", changes, larger)
         rows = _fit_rows(fit, fitted_model, level, ci)
         if not fit["converged"]:
             result.warnings.append(f"{name}: the fit stopped before converging; treat its values with care.")
@@ -693,11 +713,24 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
                 datasets = compare_data_sets(fitted_model, data, fits, compare_parameter or None, fixed, alpha)
             except StatisticsError as exc:
                 result.warnings.append(str(exc))
-        if datasets is not None:
+        if datasets is not None and datasets["shared"]["ambiguous"]:
+            result.warnings.append("The fit with " + (f"{compare_parameter} shared" if compare_parameter else "one curve for every data set")
+                                   + " is ambiguous: its parameters are poorly determined, as happens when the data sets differ "
+                                   "strongly. The comparison uses only how well it fits (its sum of squares), so it still holds.")
+        if datasets is not None and datasets["unreliable"]:
+            result.warnings.append("The shared fit fits better than the separate fits, which cannot happen at their best: a separate fit "
+                                   "may be stuck short of its best fit. The comparison is not reliable; check each fit, or fix a parameter.")
+        if len(fits) >= 2:
             skipped = [name for name in table.sets if name not in fits]
-            lines = _dataset_rows(datasets, style)
-            section_title = next(iter(lines))[0]
-            lines[(section_title, "Data sets compared")] = ", ".join(datasets["data_sets"])
+            if datasets is not None:
+                lines = _dataset_rows(datasets, style)
+                section_title = next(iter(lines))[0]
+            else:
+                section_title = (f"Is {compare_parameter} the same for every data set?" if compare_parameter
+                                 else "Does one curve fit every data set?")
+                lines = {(section_title, "Result"): "Not compared (see the warnings)"}
+            lines[(section_title, "Data sets compared" if datasets is not None else "Data sets")] = ", ".join(
+                datasets["data_sets"] if datasets is not None else fits)
             if skipped:
                 lines[(section_title, "Left out (no fit)")] = ", ".join(skipped)
             extra = pd.DataFrame({next(iter(fits)): lines})
@@ -724,7 +757,10 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
         left_out = [name for name in table.sets if name not in fits]
         what += f" ({', '.join(datasets['data_sets'])}; {', '.join(left_out)} could not be fitted and {'was' if len(left_out) == 1 else 'were'} left out)" if left_out else ""
         methods += (f" The null hypothesis that {what} was tested against separate fits by the extra sum-of-squares F test "
-                    f"(alpha = {alpha:g}) and AICc.")
+                    f"(alpha = {alpha:g}) and AICc; the shared fit was started from the median of the separate fits and from each "
+                    "data set's own fit, keeping the best.")
+        if datasets["shared"]["ambiguous"]:
+            methods += " Its parameters were poorly determined (ambiguous); the tests use only its sum of squares."
     if interpolate:
         methods += (" Unknown X values were read off each fitted curve within the range of its X values (no extrapolation); they have "
                     "no confidence intervals.")
@@ -732,6 +768,7 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
         methods += (" The EC50's CI is symmetric and asymptotic, so it can reach below 0; fitting log(dose) gives an asymmetric CI "
                     "that cannot.")
     result.methods = methods
+    record_overrides(result, changes, larger)
     if any(fit["n"] < 2 * len(fit["free"]) + 1 for fit in fits.values()):
         result.warnings.append("Few points per parameter in a data set: the fit, its CIs and R² are rough.")
     return result
@@ -777,7 +814,10 @@ def _dataset_rows(item: dict, style: str) -> dict:
     shared = "one shared value" if parameter else "one curve"
     rows = {}
     if parameter:
-        rows[(section, f"Shared {parameter}")] = fmt(item["shared"]["params"][0][parameter])
+        rows[(section, f"Shared {parameter}")] = fmt(item["shared"]["params"][0][parameter]) + (
+            " (shared fit poorly determined)" if item["shared"]["ambiguous"] else "")
+    if item.get("unreliable"):
+        rows[(section, "Reliable?")] = "No: the shared fit fits better than the separate fits, so a separate fit is stuck"
     rows[(section, "F (extra sum-of-squares)")] = fmt(item["f"])
     rows[(section, "DFn, DFd")] = f"{item['dfn']}, {item['dfd']}"
     rows[(section, "P value")] = format_p(item["p"], style=style)

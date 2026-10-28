@@ -43,6 +43,7 @@ from cellquant.stats.curvefit import MODELS, nonlinear_regression
 from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.grouped import COMPARE, FAMILIES, GroupedTable, two_way_anova
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
+from cellquant.stats.replicates import ReplicateTable, looks_like_replicate
 from cellquant.stats.multcomp import (
     ALL_PAIRS_ONLY,
     EQUAL_SD_METHODS,
@@ -483,6 +484,19 @@ class ImportCsvDialog(QDialog):
             self.group.setCurrentIndex(self.group.findData(text[0]))
         form.addRow("Values", self.value)
         form.addRow("Group", self.group)
+        self.replicate = QComboBox()
+        self.replicate.addItem("(none)", None)
+        for name in frame.columns:
+            self.replicate.addItem(str(name), name)
+        self.replicate.setToolTip(tips.CSV_REPLICATE)
+        guess = next((name for name in frame.columns if looks_like_replicate(name)), None)
+        if guess is not None:
+            self.replicate.setCurrentIndex(self.replicate.findData(guess))
+            if guess in text:
+                text.remove(guess)
+                if text:
+                    self.group.setCurrentIndex(self.group.findData(text[0]))
+        form.addRow("Replicate", self.replicate)
         layout.addLayout(form)
         _check(self.shape, "long" if text and len(numeric) <= 2 else "wide")
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -502,6 +516,19 @@ class ImportCsvDialog(QDialog):
             filled = [index for index, value in enumerate(values) if value == value]
             trimmed[name] = values[: filled[-1] + 1] if filled else values[:0]
         return ColumnTable.from_columns(trimmed, title=title)
+
+    def replicates(self, title: str) -> ReplicateTable | None:
+        """With a replicate column: every value with its replicate (the table's analyses then use the replicate means)."""
+
+        replicate = self.replicate.currentData()
+        if replicate is None:
+            return None
+        if _checked(self.shape) == "long":
+            if replicate in (self.value.currentData(), self.group.currentData()):
+                raise CellQuantError("Choose a replicate column other than the values and the group.")
+            return ReplicateTable.from_long(self.frame, value=self.value.currentData(), group=self.group.currentData(),
+                                            replicate=replicate, title=title)
+        return ReplicateTable.from_wide(self.frame, replicate, title=title)
 
 
 # --- Compare two columns --------------------------------------------------------------------------------------
@@ -1227,7 +1254,8 @@ class XYDialog(QDialog):
 
     def accept(self) -> None:
         try:
-            (linear_regression if self.kind == "linreg" else xy_correlation)(self.xy, **self.options())
+            options = {key: value for key, value in self.options().items() if key != "advanced_for"}  # the table it was set for: not an option
+            (linear_regression if self.kind == "linreg" else xy_correlation)(self.xy, **options)
         except CellQuantError as exc:
             self.note.setText(str(exc))
             self.note.setVisible(True)
@@ -1379,6 +1407,10 @@ class CurveFitDialog(QDialog):
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
         stats_form.addRow("P value style", self.style)
         layout.addLayout(stats_form)
+        self.advanced = AdvancedBox(self, layout)
+        self.advanced.basis = table_signature(xy)
+        self.advanced.add("df", "Residual degrees of freedom", tips.OVERRIDE_DF_CURVEFIT, 0.01, 1e6, 4, value=10)
+        self.advanced.set_values(options)
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setStyleSheet(WARNING_STYLE)
@@ -1434,11 +1466,11 @@ class CurveFitDialog(QDialog):
                 "compare_model": self.second_model.currentData() if compare == "model" else None,
                 "compare_fixed": self.second_fixed.values() if compare == "model" else {},
                 "compare_parameter": self.parameter.currentData() if compare == "parameter" else None,
-                "interpolate": self.interpolate.isChecked()}
+                "interpolate": self.interpolate.isChecked(), **self.advanced.values()}
 
     def accept(self) -> None:
         try:
-            nonlinear_regression(self.xy, **self.options())
+            nonlinear_regression(self.xy, **{key: value for key, value in self.options().items() if key != "advanced_for"})
         except CellQuantError as exc:
             self.note.setText(str(exc))
             self.note.setVisible(True)

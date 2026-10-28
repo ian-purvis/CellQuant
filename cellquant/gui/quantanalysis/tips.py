@@ -482,6 +482,41 @@ CURVE_COMPARE_DATASETS = ("Is one curve enough for every data set, or does each 
 CURVE_COMPARE_PARAMETER = ("Does this parameter (for example LogEC50) differ between data sets? Fits them with it shared and the "
                            "rest separate, and tests that against separate fits (F test and AICc).")
 
+# Replicates and SuperPlots
+REPLICATES = (
+    "Add a Replicate column that names each row's biological replicate (N), so the table can hold every value (for example "
+    "every cell, n) while its analyses use one value per replicate: its mean (or median) in each column. Lay the rows out in "
+    "blocks: the first replicate's values of every column, then the next replicate's. Graph → SuperPlot then shows both levels.\n"
+    "Click again to remove the column: the analyses then use every value, which treats cells of one sample as independent "
+    "(pseudoreplication)."
+)
+REPLICATE_COLUMN = (
+    "The biological replicate (N) each row belongs to, for example Experiment 1, Animal 2 or a date. Type it on the first row of "
+    "each block; a blank continues the replicate above. Use the same names in every column (spelled and capitalized the "
+    "same), so a replicate keeps one colour on "
+    "the SuperPlot (and, with Paired, is compared with itself). Paste a block whose first column is words to fill it."
+)
+REPLICATE_VALUE = (
+    "Each replicate's value in a column, which the analyses and the large markers of a SuperPlot use. Mean: the usual choice. "
+    "Median: when a few values (cells) of a replicate are far from the rest. Each replicate counts once however many "
+    "values it has, so keep the number of values per replicate similar."
+)
+NEW_REPLICATE_TABLE = (
+    "A column table with a Replicate column: paste every value (for example every cell) of each condition, in blocks by "
+    "biological replicate. Analyses use the replicate means (N) and Graph → SuperPlot shows both levels."
+)
+CSV_REPLICATE = (
+    "The column that names each row's biological replicate (N), if the file has one. The table then holds every value and "
+    "its analyses use one value per replicate (the replicate means), ready for a SuperPlot."
+)
+SUPERPLOT_COLORS = ("One colour per biological replicate, the same in every column: the small dots (values) and the large marker "
+                    "(the replicate's mean) share it. Greys suits print; use Shapes with it.")
+SUPERPLOT_SHAPES = "A different symbol for each replicate's marker too, so replicates can be told apart without colour."
+SUPERPLOT_LAYOUT = ("Together: every value of a column in one swarm, coloured by replicate (the usual SuperPlot). By replicate: each "
+                    "replicate's values in a lane of their own with its marker in the middle, which helps when one replicate hides another.")
+SUPERPLOT_ALPHA = "How opaque the small dots (values) are. Lower it when there are many values, so the replicate markers stand out."
+SUPERPLOT_LINK = ("A line joining each replicate's marker across the columns. For replicates measured in every condition (a paired "
+                  "design): shows whether every replicate moves the same way.")
 NEW_CONTINGENCY = ("A contingency table: counts of subjects, one row per group (or test result) and one column per outcome. For "
                    "chi-square and Fisher's exact tests, relative risk, odds ratio, and sensitivity and specificity.")
 CONTINGENCY_TABLE = ("Each cell is a number of subjects (whole numbers; 0 for none), never a percentage or a mean. Rows are groups "
@@ -520,6 +555,9 @@ OVERRIDE_DF_RM = ("The error degrees of freedom of the repeated-measures F test,
                   "they use this df only with the pooled error term (for example when an SD is set). A larger df gives a smaller P.")
 OVERRIDE_DF_LINREG = ("The residual degrees of freedom of the slope and intercept CIs and P values, the F test and the bands. Default: N − 2 "
                       "(N − 1 through the origin). The comparison of slopes and intercepts between data sets keeps the computed df.")
+OVERRIDE_DF_CURVEFIT = ("The residual degrees of freedom of the parameters' confidence intervals and of the confidence and prediction "
+                        "bands. Default: N − the number of fitted parameters. The fit, its standard errors and the comparisons (F test "
+                        "and AICc) keep the computed df.")
 OVERRIDE_DF_CORR = ("The degrees of freedom of the t test of r. Default: N − 2. For Spearman's r this is the usual t approximation; the "
                     "confidence interval (Fisher z) does not change.")
 OVERRIDE_DIFFERENCE = ("The difference (B − A) the test compares against. Default 0: are the means equal? Another value tests, for example, "
