@@ -338,6 +338,7 @@ class QuantAnalysisWindow(QMainWindow):
         help_menu = bar.addMenu("&Help")
         self._action(help_menu, "Statistics reference…", lambda: self.statistics_reference(), tips.REFERENCE)
         self._action(help_menu, "Statistics guide…", self.statistics_guide, "Definitions, equations and when to use each test.")
+        self._action(help_menu, "Check the engine…", self.check_engine, tips.CHECK_ENGINE)
         self._action(help_menu, "Help me choose…", self.help_choose, tips.GUIDE)
         self._action(help_menu, "Log…", self.show_log, "What QuantAnalysis did: imports, analyses, exports and any errors.")
         for menu in (file, analyze, graph, export, help_menu):
@@ -1257,6 +1258,18 @@ class QuantAnalysisWindow(QMainWindow):
         window.raise_()
         window.activateWindow()
         return window
+
+    def check_engine(self):
+        """Help → Check the engine…: the engine on published reference data sets. Made once and reused."""
+
+        from cellquant.gui.quantanalysis.engine_check import EngineCheckDialog
+
+        dialog = getattr(self, "_engine_check", None)
+        if dialog is None:
+            dialog = self._engine_check = EngineCheckDialog(self)
+        dialog.show()
+        dialog.raise_()
+        return dialog
 
     def open_example(self, name: str, data: dict, paired: bool = False) -> DataSheet:
         """A worked example from the statistics reference as a new data table, to analyze and compare."""

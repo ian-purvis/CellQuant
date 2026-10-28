@@ -4,7 +4,9 @@ warnings above it, and the methods sentence below."""
 from __future__ import annotations
 
 import html
+import logging
 
+import numpy as np
 import pandas as pd
 from qtpy.QtCore import Qt
 from qtpy.QtGui import QBrush, QColor, QFont
@@ -14,7 +16,10 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QCheckBox,
     QPushButton,
+    QSplitter,
+    QTextBrowser,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -24,8 +29,77 @@ from qtpy.QtWidgets import (
 from cellquant.gui.quantanalysis import reference, tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
 from cellquant.gui.quantanalysis.project import PSEUDO_WARNING, Project, ResultSheet
+from cellquant.stats import steps as working
+from cellquant.stats.results import fmt
 
 SECTION_BACKGROUND = QColor(60, 72, 88)
+LOG = logging.getLogger(__name__)
+ROW_LIMIT = 300  # rows of a working table shown; the CSV has them all
+WORKING_CSS = """<style>
+h3 { margin-top: 12px; margin-bottom: 2px; }
+table.steps td, table.steps th, table.detail td, table.detail th { padding: 1px 10px 1px 0; }
+th { text-align: left; }
+td.num { text-align: right; font-family: monospace; }
+.muted { color: #9a9a9a; }
+.bad { color: #ff8a80; }
+</style>"""
+
+
+def working_source(kind: str, data, options: dict):
+    """The table an analysis read: what cellquant.stats.steps recomputes from."""
+
+    if kind == "pstack":
+        return options
+    if data is None:
+        return None
+    if kind == "twoway":
+        return data.grouped
+    if kind == "nested":
+        return data.replicates
+    if kind in ("linreg", "xycorr", "curvefit", "survival"):
+        return data.xy
+    if kind == "contingency":
+        return data.contingency
+    return data.table
+
+
+def working_html(blocks: list) -> str:
+    """The steps of each block (quantity, how, value, the analysis's value and whether they agree), then its detail table."""
+
+    parts = [WORKING_CSS, "<p class='muted'>Each value is worked out again from the data, step by step. Where the analysis reports "
+                          "the same quantity, its value is beside it: ✓ agrees, ✗ differs.</p>"]
+    for block in blocks:
+        parts.append(f"<h3>{html.escape(block.title)}</h3>")
+        if block.note:
+            parts.append(f"<p class='muted'>{html.escape(block.note)}</p>")
+        if block.steps:
+            rows = "".join(
+                f"<tr><td>{html.escape(step.label)}</td><td>{html.escape(step.formula)}</td><td class='num'>{html.escape(_value(step.value))}</td>"
+                f"<td class='num'>{html.escape(_value(step.engine)) if step.engine is not None else ''}</td>"
+                f"<td>{'' if step.checked is None else ('✓' if step.checked else '<span class=bad>✗</span>')}</td></tr>"
+                for step in block.steps
+            )
+            parts.append("<table class='steps'><tr><th>Quantity</th><th>How</th><th>Value</th><th>Analysis</th><th></th></tr>" + rows + "</table>")
+        if block.table is not None and not block.table.empty:
+            frame = block.table
+            head = "".join(f"<th>{html.escape(str(name))}</th>" for name in frame.columns)
+            body = "".join(
+                "<tr>" + "".join(f"<td class='num'>{html.escape(_value(value))}</td>" for value in row) + "</tr>"
+                for row in frame.head(ROW_LIMIT).itertuples(index=False)
+            )
+            more = f"<p class='muted'>… {len(frame) - ROW_LIMIT} more rows in Export working CSV…</p>" if len(frame) > ROW_LIMIT else ""
+            parts.append(f"<table class='detail'><tr>{head}</tr>{body}</table>{more}")
+    return "".join(parts)
+
+
+def _value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (bool, np.bool_)):
+        return "Yes" if value else "No"
+    if isinstance(value, (float, np.floating)):
+        return fmt(float(value), 6)
+    return str(value)
 
 
 def result_rows(sheet: ResultSheet) -> tuple[list[str], list[tuple[str, list[str]]]]:
@@ -77,6 +151,8 @@ def result_text(sheet: ResultSheet) -> str:
 
 
 class ResultSheetView(QWidget):
+    show_working = False  # Show working stays ticked for every results sheet once ticked on one
+
     def __init__(self, window, project: Project, sheet: ResultSheet):
         super().__init__()
         self.window = window
@@ -103,8 +179,17 @@ class ResultSheetView(QWidget):
         export = QPushButton("Export results CSV…")
         export.setToolTip("Save this results sheet as a CSV file: section, label, value and the text shown.")
         export.clicked.connect(self.export_csv)
+        self.working_box = QCheckBox("Show working")
+        self.working_box.setToolTip(tips.SHOW_WORKING)
+        self.working_box.setChecked(ResultSheetView.show_working)
+        self.working_box.toggled.connect(self._working_toggled)
+        self.working_export = QPushButton("Export working CSV…")
+        self.working_export.setToolTip("Save the working as a CSV file: each step, its formula, the value worked out and the analysis's own value.")
+        self.working_export.clicked.connect(self.export_working)
         top.addWidget(self.options_button)
         top.addWidget(self.clean_button)
+        top.addWidget(self.working_box)
+        top.addWidget(self.working_export)
         top.addWidget(how)
         top.addWidget(copy)
         top.addWidget(export)
@@ -124,7 +209,13 @@ class ResultSheetView(QWidget):
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(False)
         self.table.cellDoubleClicked.connect(self._explain)
-        layout.addWidget(self.table, 1)
+        self.working = QTextBrowser()
+        self.working.setOpenLinks(False)
+        split = QSplitter(Qt.Vertical)
+        split.addWidget(self.table)
+        split.addWidget(self.working)
+        split.setSizes([500, 400])
+        layout.addWidget(split, 1)
         methods_title = QLabel("<b>Methods</b> (copy into your paper and add N and what a dot is)")
         layout.addWidget(methods_title)
         self.methods = QLabel()
@@ -182,6 +273,46 @@ class ResultSheetView(QWidget):
             header.setSectionResizeMode(column, QHeaderView.ResizeToContents if len(headers) > 2 else QHeaderView.Stretch)
         self.table.resizeRowsToContents()
         self.methods.setText(sheet.methods or "")
+        self._fill_working()
+
+    def blocks(self) -> list:
+        """The working of this sheet (cellquant.stats.steps), or [] when it has none or the sheet is not computed."""
+
+        sheet = self.sheet
+        if sheet.error or (sheet.result is None and sheet.wide is None):
+            return []
+        data = self.project.data.get(sheet.data_id)
+        source = working_source(sheet.kind, data, sheet.options)
+        try:
+            return working.working(sheet.kind, source, sheet.options, sheet.result if sheet.result is not None else sheet.wide)
+        except Exception:  # noqa: BLE001 - the working is an extra; the results sheet stays as it is
+            LOG.exception("show working failed for %s", sheet.name)
+            return []
+
+    def _working_toggled(self, on: bool) -> None:
+        ResultSheetView.show_working = on
+        self._fill_working()
+
+    def _fill_working(self) -> None:
+        available = working.has_working(self.sheet.kind)
+        self.working_box.setEnabled(available)
+        if not available:
+            self.working_box.setToolTip("This analysis has no working to show yet.")
+        on = available and self.working_box.isChecked()
+        self.working.setVisible(on)
+        self.working_export.setVisible(on)
+        if on:
+            blocks = self.blocks()
+            self.working.setHtml(working_html(blocks) if blocks else "<p>No working for this sheet (it could not be computed).</p>")
+
+    def export_working(self, path: str | None = None) -> str | None:
+        if not path:
+            path, _ = QFileDialog.getSaveFileName(self, "Export working", f"{self.sheet.name} working.csv", "CSV (*.csv)")
+        if not path:
+            return None
+        working.to_frame(self.blocks()).to_csv(path, index=False)
+        self.window.status(f"Saved {path}")
+        return path
 
     def _explain(self, row: int, _column: int) -> None:
         """Double-clicking a row label opens the term it names in the statistics reference."""
