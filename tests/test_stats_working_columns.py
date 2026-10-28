@@ -19,7 +19,7 @@ from cellquant.gui.quantanalysis.project import (  # noqa: E402
 from cellquant.stats import ColumnTable  # noqa: E402
 from cellquant.stats import compare as engine_compare  # noqa: E402
 from cellquant.stats.replicates import ReplicateTable  # noqa: E402
-from cellquant.stats.working import to_frame, working  # noqa: E402
+from cellquant.stats.steps import to_frame, working  # noqa: E402
 
 RNG = np.random.default_rng(11)
 A = [4.1, 5.3, 6.2, 5.8, 4.9, 6.6, 5.1, 5.5]

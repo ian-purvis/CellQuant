@@ -29,7 +29,7 @@ from qtpy.QtWidgets import (
 from cellquant.gui.quantanalysis import reference, tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
 from cellquant.gui.quantanalysis.project import PSEUDO_WARNING, Project, ResultSheet
-from cellquant.stats import working
+from cellquant.stats import steps as working
 from cellquant.stats.results import fmt
 
 SECTION_BACKGROUND = QColor(60, 72, 88)
@@ -46,7 +46,7 @@ td.num { text-align: right; font-family: monospace; }
 
 
 def working_source(kind: str, data, options: dict):
-    """The table an analysis read: what cellquant.stats.working recomputes from."""
+    """The table an analysis read: what cellquant.stats.steps recomputes from."""
 
     if kind == "pstack":
         return options
@@ -276,7 +276,7 @@ class ResultSheetView(QWidget):
         self._fill_working()
 
     def blocks(self) -> list:
-        """The working of this sheet (cellquant.stats.working), or [] when it has none or the sheet is not computed."""
+        """The working of this sheet (cellquant.stats.steps), or [] when it has none or the sheet is not computed."""
 
         sheet = self.sheet
         if sheet.error or (sheet.result is None and sheet.wide is None):

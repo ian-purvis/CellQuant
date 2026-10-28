@@ -12,7 +12,7 @@ from cellquant.gui.quantanalysis import project as qa
 from cellquant.gui.quantanalysis.project import DataSheet
 from cellquant.stats import ColumnTable
 from cellquant.stats.contingency import ContingencyTable
-from cellquant.stats.working import working, to_frame
+from cellquant.stats.steps import working, to_frame
 from cellquant.stats.xy import XYTable
 
 NAN = float("nan")

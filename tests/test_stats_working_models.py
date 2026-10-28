@@ -11,7 +11,7 @@ pytest.importorskip("PyQt6")
 from cellquant.gui.quantanalysis import project as qp  # noqa: E402
 from cellquant.stats import Column, ColumnTable  # noqa: E402
 from cellquant.stats.grouped import GroupedTable  # noqa: E402
-from cellquant.stats.working import to_frame, working  # noqa: E402
+from cellquant.stats.steps import to_frame, working  # noqa: E402
 from cellquant.stats.xy import XYTable  # noqa: E402
 
 NAN = np.nan
