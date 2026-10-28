@@ -56,6 +56,13 @@ ERRORS = {
     "none": ("No error bars", "Only the dots and the mean line."),
 }
 
+# Grouped tables. key: (menu name, tooltip)
+GROUPED_LAYOUTS = {
+    "interleaved": ("Interleaved", "Each row is a block with its data sets side by side, coloured by data set. Compares the data sets within each row."),
+    "separated": ("Separated", "One block per data set with its rows side by side, labelled under the axis. Compares the rows within each data set."),
+}
+GROUPED_KINDS = ("scatter", "bar", "box", "violin")
+
 # The first graph format's flat keys and defaults (GraphFormat reads and writes them).
 DEFAULT_FORMAT = {key: GraphFormat()[key] for key in LEGACY_KEYS}
 LOG_BASES = {"linear": None, "log10": 10.0, "log2": 2.0, "ln": math.e}
@@ -63,6 +70,28 @@ LOG_BASES = {"linear": None, "log10": 10.0, "log2": 2.0, "ln": math.e}
 
 def color_of(fmt, name: str, index: int) -> str:
     return as_format(fmt).color_of(name, index)
+
+
+def series_names(data) -> list[str]:
+    """The names a graph's data set formats and colours are keyed by: a grouped table's data sets, else its columns."""
+
+    grouped = getattr(data, "grouped", None)
+    return list(grouped.columns) if grouped is not None else list(data.table.names)
+
+
+def grouped_places(grouped, fmt) -> tuple[list[tuple[float, str, int]], list[tuple[str, float]]]:
+    """Where each cell of a grouped table goes, in cells_table order (row by row): (x, data set, data set number);
+    and each block: (label, centre x). Empty cells keep their place, so the blocks line up."""
+
+    r, c = len(grouped.rows), len(grouped.columns)
+    gap = min(5.0, max(0.0, float(fmt.cluster_gap)))
+    separated = fmt.grouped_layout == "separated"
+    places = [((j * (r + gap) + i) if separated else (i * (c + gap) + j), grouped.columns[j], j) for i in range(r) for j in range(c)]
+    if separated:
+        blocks = [(name, j * (r + gap) + (r - 1) / 2) for j, name in enumerate(grouped.columns)]
+    else:
+        blocks = [(name, i * (c + gap) + (c - 1) / 2) for i, name in enumerate(grouped.rows)]
+    return places, blocks
 
 
 def _jitter(values: np.ndarray, width: float) -> np.ndarray:
@@ -319,7 +348,7 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
     table = data.table
     columns = [column for column in table.columns if column.finite.size]
     if len(columns) < len(table.columns):
-        notes.append("Empty columns are not drawn.")
+        notes.append("Empty cells are left as gaps." if getattr(data, "grouped", None) is not None else "Empty columns are not drawn.")
     figure._cq_legend = None
     if not columns:
         ax = figure.add_subplot(111)
@@ -334,6 +363,10 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         notes.append("Values ≤ 0 cannot be shown on a log axis and are left out of the graph.")
     kind = graph.kind
     compared = _compared(result, table)
+    grouped = getattr(data, "grouped", None)
+    if grouped is not None and kind not in GROUPED_KINDS:
+        notes.append(f"A grouped table is drawn as a column scatter, bars, boxes or violins; {KINDS[kind][0].lower()} is for column tables.")
+        kind = "scatter"
     if kind == "estimation":
         if compared is None:
             notes.append("An estimation plot needs a comparison of two columns linked to this graph (Analyze → Compare two columns…, a t test).")
@@ -369,6 +402,12 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
     largest = max(column.finite.size for column in columns)
     positions = {column.name: index for index, column in enumerate(columns)}
     names = [column.name for column in columns]
+    places = blocks = None
+    if grouped is not None:
+        every, blocks = grouped_places(grouped, fmt)
+        by_name = dict(zip(table.names, every))
+        places = [by_name[column.name] for column in columns]
+        positions = {column.name: place[0] for column, place in zip(columns, places)}
     right = None
     if use_right:
         right = ax.twinx()
@@ -388,19 +427,26 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         elif kind == "superplot":
             _draw_superplot(segment, data, columns, fmt)
         else:
-            _draw_columns(segment, right if segment is ax else None, kind, table, columns, fmt, outliers, log, largest)
-    bottom.set_xticks([0, 1, 2.2] if kind == "estimation" else range(len(names)))
+            _draw_columns(segment, right if segment is ax else None, kind, table, columns, fmt, outliers, log, largest, places)
+    if grouped is not None:
+        _grouped_axis(bottom, grouped, fmt, font)
+    else:
+        bottom.set_xticks([0, 1, 2.2] if kind == "estimation" else range(len(names)))
     if fmt.show_n and kind != "estimation":
         labels = [f"{_wrap(name, fmt.x.label_wrap)}\n{_n_text(data, column)}" for name, column in zip(names, columns)]
     else:
         labels = [_wrap(name, fmt.x.label_wrap) for name in names]
     angle = float(fmt.x.label_angle)
-    bottom.set_xticklabels([] if fmt.x.hide_labels else [markup(label) for label in labels], rotation=angle,
-                           ha="right" if angle > 0 else "left" if angle < 0 else "center", rotation_mode="anchor" if angle else "default",
-                           **_text_kw(fmt.x.numbers, fmt, font, "#222222"))
+    if grouped is None:
+        bottom.set_xticklabels([] if fmt.x.hide_labels else [markup(label) for label in labels], rotation=angle,
+                               ha="right" if angle > 0 else "left" if angle < 0 else "center", rotation_mode="anchor" if angle else "default",
+                               **_text_kw(fmt.x.numbers, fmt, font, "#222222"))
     for segment in segments[:-1]:
         segment.tick_params(axis="x", which="both", bottom=False, labelbottom=False)
-    if kind != "estimation":
+    if grouped is not None:
+        xs = [place[0] for place in grouped_places(grouped, fmt)[0]]
+        bottom.set_xlim(min(xs) - 0.6, max(xs) + 0.6)
+    elif kind != "estimation":
         bottom.set_xlim(-0.6, len(names) - 0.4)
 
     # The Y range, split into segments when the axis has breaks.
@@ -424,7 +470,10 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         _tag(ax.set_title(markup(fmt.title), loc=fmt.title_loc, pad=pad, **_text_kw(fmt.title_style, fmt, font + 1)), "title")
     if kind != "estimation" and (fmt.bracket != "none" or fmt.letters):
         before = len(ax.lines), len(ax.texts)
-        if compared is not None:
+        if grouped is not None:
+            if result is not None and result.analysis == "Two-way ANOVA":
+                _grouped_marks(ax, result, grouped, table, positions, blocks, columns, fmt, log, font, notes)
+        elif compared is not None:
             first, second = compared[0], compared[1]
             if first in positions and second in positions:
                 _bracket(ax, positions[first], positions[second], result, fmt, log, font)
@@ -461,7 +510,7 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         right.tick_params(axis="y", which="both", left=False, right=fmt.right.visible, labelright=fmt.right.visible)
     legend = None
     if fmt.legend.show and kind != "estimation" and fmt.legend.position != "custom":
-        legend = _legend(ax, kind, columns, table, fmt, font, None)
+        legend = _legend(ax, kind, _series(columns, table, places), fmt, font, None)
     figure._cq_axes = {"main": ax, "segments": segments, "bottom": bottom, "right": right}
     if gaps:
         figure.align_ylabels(segments)  # the Y title clears the numbers of every segment
@@ -477,7 +526,7 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
     plot = plot_transform(figure, segments)
     figure._cq_plot = plot
     if fmt.legend.show and kind != "estimation" and fmt.legend.position == "custom":
-        legend = _legend(ax, kind, columns, table, fmt, font, plot)  # dragged: placed after the layout, which it does not change
+        legend = _legend(ax, kind, _series(columns, table, places), fmt, font, plot)  # dragged: placed after the layout, which it does not change
     figure._cq_legend = legend
     for note in fmt.annotations:
         _annotation(figure, note, fmt, font, plot)
@@ -520,18 +569,21 @@ def _break_marks(segments, fmt: GraphFormat) -> None:
                 segment.add_artist(_tag(mark, "axis", "y"))
 
 
-def _draw_columns(ax, right, kind: str, table, columns, fmt: GraphFormat, outliers, log: bool, largest: int) -> None:
+def _draw_columns(ax, right, kind: str, table, columns, fmt: GraphFormat, outliers, log: bool, largest: int, places=None) -> None:
+    """``places``: (x, data set name, colour number) of each column, for a grouped table; else column i at x = i."""
+
     error = fmt.error
-    centers: list[tuple[int, float]] = []
-    for index, column in enumerate(columns):
-        style = fmt.dataset(column.name)
+    centers: list[tuple[float, float, str]] = []
+    for number, column in enumerate(columns):
+        index, key, shade = places[number] if places else (number, column.name, table.names.index(column.name))
+        style = fmt.dataset(key)
         if not style.visible:
             continue
         target = right if right is not None and style.axis == "right" else ax
         values = column.finite[column.finite > 0] if log else column.finite
         flags = _flags(outliers, column, fmt, log)
-        color = fmt.color_of(column.name, table.names.index(column.name))
-        tag = ("dataset", column.name)
+        color = fmt.color_of(key, shade)
+        tag = ("dataset", key)
         if kind == "bar" and style.show_bar:
             center, _low, _high = _center_and_bars(values, "median_iqr" if error == "median_iqr" else error)
             border = style.bar_border or color
@@ -569,7 +621,7 @@ def _draw_columns(ax, right, kind: str, table, columns, fmt: GraphFormat, outlie
                 _dots(target, index + offsets, values, flags, style, color, area, 0.9 if values.size < 200 else 0.6, tag)
         if kind in ("scatter", "bar") and values.size:
             center, low, high = _center_and_bars(values, error)
-            centers.append((index, center))
+            centers.append((index, center, key))
             half = style.center_length / 2
             if style.show_center and (error != "none" or kind == "scatter"):
                 _tag(target.hlines(center, index - half, index + half, color=style.center_color, linewidth=style.center_width, zorder=4), *tag)
@@ -581,13 +633,16 @@ def _draw_columns(ax, right, kind: str, table, columns, fmt: GraphFormat, outlie
                     cap = style.error_cap / 2
                     _tag(target.hlines(caps, index - cap, index + cap, color=style.error_color, linewidth=style.error_width, zorder=4), *tag)
         elif kind in ("box", "violin", "before_after") and values.size:
-            centers.append((index, float(np.median(values))))
+            centers.append((index, float(np.median(values)), key))
     if kind == "before_after" and fmt.pair_lines:
         _draw_pairs(ax, table, [column for column in columns if fmt.dataset(column.name).visible], log, fmt)
-    if fmt.connect_means and len(centers) > 1:
-        xs, ys = zip(*centers)
-        line, = ax.plot(xs, ys, color=fmt.connect_color, linewidth=fmt.connect_width, linestyle=fmt.connect_style, zorder=4.5)
-        _tag(line, "connect")
+    # A grouped table joins each data set's means across the blocks (an interaction plot); a column table, all of them.
+    for key in dict.fromkeys(key for _x, _y, key in centers) if places else [None]:
+        line_points = [(x, y) for x, y, own in centers if key is None or own == key]
+        if fmt.connect_means and len(line_points) > 1:
+            xs, ys = zip(*line_points)
+            line, = ax.plot(xs, ys, color=fmt.connect_color, linewidth=fmt.connect_width, linestyle=fmt.connect_style, zorder=4.5)
+            _tag(line, "connect")
 
 
 def _n_text(data, column) -> str:
@@ -597,6 +652,86 @@ def _n_text(data, column) -> str:
     if spec is not None and getattr(spec, "dot", "") == "unit":
         return f"N={column.finite.size}"
     return f"n={column.finite.size}"
+
+
+def _grouped_axis(bottom, grouped, fmt: GraphFormat, font: float) -> None:
+    """Labels under a grouped graph: each row under its block (interleaved), or each row under its column and each
+    data set under its block (separated)."""
+
+    every, blocks = grouped_places(grouped, fmt)
+    separated = fmt.grouped_layout == "separated"
+    if separated:
+        ticks, labels = map(list, zip(*sorted((x, grouped.rows[n // len(grouped.columns)]) for n, (x, _key, _shade) in enumerate(every))))
+    else:
+        ticks, labels = [x for _name, x in blocks], [name for name, _x in blocks]
+    labels = [_wrap(label, fmt.x.label_wrap) for label in labels]
+    longest = max((len(part) for label in labels for part in label.split("\n")), default=0)
+    angle = float(fmt.x.label_angle)
+    xs = [x for x, _key, _shade in every]
+    room = size_inches(fmt)[0] * 72 * 0.8 / (max(xs) - min(xs) + 1.2)  # points per column, roughly
+    if separated and not angle and 0.6 * font * longest > room:
+        angle = 45.0  # row names wider than their columns would run into each other
+    bottom.set_xticks(ticks)
+    bottom.set_xticklabels([] if fmt.x.hide_labels else [markup(label) for label in labels], rotation=angle,
+                           ha="right" if angle > 0 else "left" if angle < 0 else "center", rotation_mode="anchor" if angle else "default",
+                           **_text_kw(fmt.x.numbers, fmt, font, "#222222"))
+    if not separated or fmt.x.hide_labels:
+        return
+    lines = max((label.count("\n") + 1 for label in labels), default=1)
+    drop = font * (1.3 * lines + 1.0) + (0.55 * font * longest * abs(math.sin(math.radians(angle))) if angle else 0.0)
+    for name, x in blocks:
+        _tag(bottom.annotate(markup(_wrap(name, fmt.x.label_wrap)), xy=(x, 0), xycoords=bottom.get_xaxis_transform(), xytext=(0, -drop),
+                             textcoords="offset points", ha="center", va="top", annotation_clip=False,
+                             **_text_kw(fmt.x.numbers, fmt, font, "#111111")), "axis", "x")
+
+
+def _grouped_marks(ax, result, grouped, table, positions: dict, blocks, columns, fmt: GraphFormat, log: bool, font: float,
+                   notes: list[str]) -> None:
+    """A two-way ANOVA's multiple comparisons on a grouped graph: brackets between cells (within a row or a data set)
+    or between blocks (row or data set means)."""
+
+    rows = result.values.get("comparisons") or []
+    if not rows:
+        notes.append("This two-way ANOVA has no multiple comparisons to show. Choose some with Change options… on its results sheet.")
+        return
+    if fmt.letters:
+        notes.append("Compact letters are drawn on column graphs; this grouped graph shows brackets.")
+        fmt = fmt.copy()
+        fmt.letters = False
+    compare, combined = result.options.get("compare"), result.options.get("family") == "combined"
+    c = len(grouped.columns)
+    cells = {(row, column): table.names[i * c + j] for i, row in enumerate(grouped.rows) for j, column in enumerate(grouped.columns)
+             if i * c + j < len(table.names)}
+    positions = dict(positions)
+    if compare in ("column_means", "row_means"):
+        if (compare == "column_means") != (fmt.grouped_layout == "separated"):
+            notes.append("Comparisons of data set means are drawn on the Separated arrangement, and of row means on Interleaved "
+                         "(each mean is one block).")
+            return
+        for name, x in blocks:
+            positions[f"\0block {name}"] = x
+        key = lambda _row, group: f"\0block {group}"  # noqa: E731
+    elif combined:
+        named = {f"{row}: {column}": name for (row, column), name in cells.items()}
+        key = lambda _row, group: named.get(group)  # noqa: E731
+    elif compare == "within_columns":
+        key = lambda row, group: cells.get((group, row.get("within")))  # noqa: E731
+    else:
+        key = lambda row, group: cells.get((row.get("within"), group))  # noqa: E731
+    mapped, skipped = [], 0
+    for row in rows:
+        first, second = key(row, row["group_1"]), key(row, row["group_2"])
+        if first is None or second is None:
+            skipped += 1
+            continue
+        reference = row.get("reference")
+        mapped.append(dict(row, group_1=first, group_2=second, reference=key(row, reference) if reference else None, color_reference=reference))
+    if skipped:
+        notes.append(f"{skipped} of {len(rows)} comparisons are not shown: the table's rows or data sets changed since the two-way ANOVA; "
+                     "run it again.")
+    if not mapped:
+        return
+    _multiple_marks(ax, result, table, positions, columns, fmt, log, font, notes, rows=mapped)
 
 
 ESTIMATION = {"Unpaired t test", "Welch's t test", "Paired t test"}
@@ -680,20 +815,28 @@ def _dots(ax, x, y, flags, style, color: str, area: float, alpha: float, tag) ->
 # --- Legend and annotations ---------------------------------------------------------------------------------------
 
 
-def _legend(ax, kind: str, columns, table, fmt: GraphFormat, font: float, plot):
+def _series(columns, table, places) -> dict[str, int]:
+    """The legend's entries: data set name -> colour number, in drawing order."""
+
+    if places:
+        return {key: shade for _x, key, shade in sorted(places, key=lambda place: place[2])}
+    return {column.name: table.names.index(column.name) for column in columns}
+
+
+def _legend(ax, kind: str, series: dict, fmt: GraphFormat, font: float, plot):
     from matplotlib.font_manager import FontProperties
     from matplotlib.legend import Legend
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
-    shown = [column.name for column in columns if fmt.dataset(column.name).visible]
+    shown = [name for name in series if fmt.dataset(name).visible]
     order = [name for name in fmt.legend.order if name in shown] + [name for name in shown if name not in fmt.legend.order]
     if not order:
         return None
     handles = []
     for name in order:
         style = fmt.dataset(name)
-        color = fmt.color_of(name, table.names.index(name))
+        color = fmt.color_of(name, series[name])
         if kind == "bar" and style.show_bar:
             handles.append(Patch(facecolor=_rgba(style.bar_fill or color, style.bar_alpha), edgecolor=style.bar_border or color,
                                  hatch=style.hatch or None, linewidth=style.bar_border_width))
@@ -721,6 +864,7 @@ def _legend(ax, kind: str, columns, table, fmt: GraphFormat, font: float, plot):
     else:
         options.update(loc=position if position in ("best", "upper right", "upper left", "lower right", "lower left") else "best")
     legend = Legend(ax, handles, [markup(name) for name in order], **options)
+    legend.set_clip_on(False)  # so the layout makes room for a legend outside the plot (right, or the row above)
     if fmt.legend.frame:
         legend.get_frame().set_edgecolor(fmt.axis_color)
         legend.get_frame().set_linewidth(fmt.axis_width)
@@ -770,17 +914,17 @@ def _label(row: dict, fmt: GraphFormat, style: str) -> str:
     return row["summary"]
 
 
-def _column_tops(ax, columns, fmt: GraphFormat, log: bool) -> dict[str, float]:
-    """The highest drawn point (dots and error bar) of each column."""
+def _column_tops(ax, columns, fmt: GraphFormat, log: bool, positions: dict | None = None) -> dict[str, float]:
+    """The highest drawn point (dots and error bar) of each column (column i at x = i unless ``positions`` says)."""
 
     tops: dict[str, float] = {}
     for collection in ax.collections:
         offsets = np.asarray(collection.get_offsets(), dtype=float)
         if offsets.size == 0 or offsets.ndim != 2:
             continue
-        index = np.rint(offsets[:, 0]).astype(int)
-        for position, column in enumerate(columns):
-            ys = offsets[index == position, 1]
+        for number, column in enumerate(columns):
+            x = positions.get(column.name, number) if positions else number
+            ys = offsets[np.abs(offsets[:, 0] - x) < 0.45, 1]
             ys = ys[np.isfinite(ys)]
             if ys.size:
                 tops[column.name] = max(tops.get(column.name, -np.inf), float(ys.max()))
@@ -797,19 +941,27 @@ def _reference_order(result, rows) -> list[str]:
     options = result.options.get("control")
     ordered = [options] if isinstance(options, str) else [str(name) for name in options or []]
     for row in rows:
-        if row.get("reference") and row["reference"] not in ordered:
-            ordered.append(row["reference"])
+        reference = _reference_of(row)
+        if reference and reference not in ordered:
+            ordered.append(reference)
     return ordered
 
 
-def _multiple_marks(ax, result, table, positions: dict, columns, fmt: GraphFormat, log: bool, font: float, notes: list[str]) -> None:
-    rows = [row for row in result.values.get("comparisons") or [] if row["group_1"] in positions and row["group_2"] in positions]
+def _reference_of(row: dict):
+    """The reference group a comparison's colour follows (a grouped table's cells keep their data set's or row's name)."""
+
+    return row.get("color_reference", row.get("reference"))
+
+
+def _multiple_marks(ax, result, table, positions: dict, columns, fmt: GraphFormat, log: bool, font: float, notes: list[str], rows=None) -> None:
+    rows = [row for row in (result.values.get("comparisons") or [] if rows is None else rows)
+            if row["group_1"] in positions and row["group_2"] in positions]
     if not rows:
         if "comparison_method" not in result.values:
             notes.append("This ANOVA has no multiple comparisons to show. Choose some with Change options… on its results sheet.")
         return
     style = result.options.get("style", "classic")
-    tops = _column_tops(ax, columns, fmt, log)
+    tops = _column_tops(ax, columns, fmt, log, positions)
     if not tops:
         return
     bottom, top = ax.get_ylim()
@@ -838,7 +990,7 @@ def _multiple_marks(ax, result, table, positions: dict, columns, fmt: GraphForma
     # One colour for both references (a black and white style): the 2nd reference's brackets are dashed instead.
     same = len(colors) > 1 and str(colors[0]).lower() == str(colors[1]).lower()
     for row, a, b, level in marks:
-        number = min(references.index(row["reference"]), len(colors) - 1) if row.get("reference") in references else -1
+        number = min(references.index(_reference_of(row)), len(colors) - 1) if _reference_of(row) in references else -1
         color = colors[number] if number >= 0 else "#222222"
         dashes = "--" if same and number == 1 else "-"
         label = _label(row, fmt, style)
@@ -852,7 +1004,7 @@ def _multiple_marks(ax, result, table, positions: dict, columns, fmt: GraphForma
             column = row["group_2"] if row["group_1"] == row.get("reference") else row["group_1"]
             y = t(tops.get(column, u(base))) + 0.03 * final + level * 0.075 * final
             ax.text(positions[column], u(y), label, ha="center", va="bottom", clip_on=False, **_star_kw(fmt, font, color))
-    used = [name for name in references if any(row.get("reference") == name for row in rows)]
+    used = [name for name in references if any(_reference_of(row) == name for row in rows)]
     if len(used) == 2 and marks:
         from matplotlib.lines import Line2D
 
@@ -870,7 +1022,7 @@ def _stack(rows, positions: dict, references: list[str], mode: str) -> list[tupl
     marks = []
     if mode == "columns":
         taken: dict[str, int] = {}
-        for row in sorted(rows, key=lambda r: references.index(r["reference"]) if r.get("reference") in references else 99):
+        for row in sorted(rows, key=lambda r: references.index(_reference_of(r)) if _reference_of(r) in references else 99):
             if not row.get("reference"):
                 continue
             column = row["group_2"] if row["group_1"] == row["reference"] else row["group_1"]

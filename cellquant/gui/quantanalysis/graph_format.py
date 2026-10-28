@@ -170,6 +170,9 @@ class GraphFormat:
     connect_color: str = "#111111"
     connect_width: float = 1.0
     connect_style: str = "-"
+    # Grouped tables
+    grouped_layout: str = "interleaved"  # "interleaved": each row's data sets side by side; "separated": one block per data set
+    cluster_gap: float = 0.8        # the space between blocks, in column widths
     # Axes
     frame: str = "plain"
     frame_offset: float = 6.0       # points, for the offset frame
@@ -236,6 +239,10 @@ class GraphFormat:
                 fmt[key] = value
             elif key in _FIELDS:
                 setattr(fmt, key, _load(_FIELDS[key], value, getattr(fmt, key)))
+        if fmt.grouped_layout not in ("interleaved", "separated"):
+            fmt.grouped_layout = "interleaved"
+        gap = fmt.cluster_gap
+        fmt.cluster_gap = min(5.0, max(0.0, float(gap))) if isinstance(gap, (int, float)) and math.isfinite(gap) else 0.8
         return fmt
 
     def copy(self) -> GraphFormat:

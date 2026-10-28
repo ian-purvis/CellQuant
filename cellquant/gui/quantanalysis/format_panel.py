@@ -59,11 +59,16 @@ def _no_buttons(widget):
     return widget
 
 
-def _row_visible(form: QFormLayout, widget: QWidget, visible: bool) -> None:
+def _row_visible(form: QFormLayout, widget, visible: bool) -> None:
+    """Show or hide a form row by its field: a widget or a layout of widgets."""
+
     if hasattr(form, "setRowVisible"):
         form.setRowVisible(widget, visible)
     else:  # Qt before 6.4
-        widget.setVisible(visible)
+        parts = [widget] if isinstance(widget, QWidget) else [widget.itemAt(i).widget() for i in range(widget.count())]
+        for part in parts:
+            if part is not None:
+                part.setVisible(visible)
         label = form.labelForField(widget)
         if label is not None:
             label.setVisible(visible)
@@ -229,7 +234,7 @@ class Section(QWidget):
 
     def names(self) -> list[str]:
         data = self.view.project.data.get(self.view.sheet.data_id)
-        return list(data.table.names) if data is not None else []
+        return graphs.series_names(data) if data is not None else []
 
     def build(self) -> None:
         raise NotImplementedError
@@ -389,6 +394,13 @@ class GraphSection(Section):
         self.error.setToolTip("\n\n".join(tips.ERROR[key] for key in ("sd", "sem", "ci", "median_iqr")))
         self.error.currentIndexChanged.connect(self.changed)
         form.addRow("Error bars", self.error)
+        self.arrangement = self.combo({key: name for key, (name, _tip) in graphs.GROUPED_LAYOUTS.items()}, tips.GROUPED_LAYOUT)
+        for index, (_name, tip) in enumerate(graphs.GROUPED_LAYOUTS.values()):
+            self.arrangement.setItemData(index, tip, Qt.ToolTipRole)
+        self.cluster_gap = self.number(0, 5, tips.CLUSTER_GAP, 0.1, 1)
+        self.cluster_gap.setMaximumWidth(48)
+        self.arrangement_row = _pair(self.arrangement, "gap", self.cluster_gap)
+        form.addRow("Arrangement", self.arrangement_row)
         self.comparison = QComboBox()
         self.comparison.setToolTip(tips.GRAPH_COMPARISON)
         self.comparison.currentIndexChanged.connect(self.changed)
@@ -422,9 +434,13 @@ class GraphSection(Section):
         self.comparison.clear()
         self.comparison.addItem("none", None)
         for result in self.view.project.results.values():
-            if result.data_id == sheet.data_id and result.kind in ("compare", "anova"):
+            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "twoway"):
                 self.comparison.addItem(result.name, result.id)
         self.comparison.setCurrentIndex(max(0, self.comparison.findData(sheet.result_id)))
+        data = self.view.project.data.get(sheet.data_id)
+        _row_visible(self.form, self.arrangement_row, data is not None and data.grouped is not None)
+        self.arrangement.setCurrentIndex(max(0, self.arrangement.findData(fmt.grouped_layout)))
+        self.cluster_gap.setValue(float(fmt.cluster_gap))
         self.show_outliers.setChecked(fmt.show_outliers)
         self.dot_size.setValue(float(fmt.dot_size))
         index = self.font_family.findData(fmt.font_family)
@@ -444,6 +460,7 @@ class GraphSection(Section):
         sheet.kind = self.kind.currentData()
         sheet.result_id = self.comparison.currentData()
         fmt.error = self.error.currentData()
+        fmt.grouped_layout, fmt.cluster_gap = self.arrangement.currentData(), self.cluster_gap.value()
         fmt.show_outliers = self.show_outliers.isChecked()
         fmt.dot_size = self.dot_size.value()
         fmt.font_family = self.font_family.currentData() or ""
@@ -1376,7 +1393,7 @@ class MagicDialog(QDialog):
         if graph is None:
             return None
         data = self.view.project.data.get(graph.data_id)
-        return gf.make_style(graph.format, data.table.names if data else [])
+        return gf.make_style(graph.format, graphs.series_names(data) if data else [])
 
 
 def confirm(parent, text: str) -> bool:

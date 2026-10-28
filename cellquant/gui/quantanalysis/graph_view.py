@@ -291,7 +291,7 @@ class GraphSheetView(QWidget):
 
     def names(self) -> list[str]:
         data = self.project.data.get(self.sheet.data_id)
-        return list(data.table.names) if data is not None else []
+        return graphs.series_names(data) if data is not None else []
 
     def apply_style(self, style: dict, groups=None, graph_ids=None) -> None:
         """Copy the chosen groups of ``style`` onto this graph (and the other graphs named)."""
@@ -301,7 +301,7 @@ class GraphSheetView(QWidget):
             if graph is None:
                 continue
             data = self.project.data.get(graph.data_id)
-            gf.apply_style(graph.format, style, data.table.names if data else [], groups)
+            gf.apply_style(graph.format, style, graphs.series_names(data) if data else [], groups)
             if graph is not self.sheet:
                 self.project.changed.emit(graph.id)
         self.format_changed(None)
