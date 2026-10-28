@@ -222,7 +222,8 @@ LETTERS = (
     "Needs comparisons of all pairs. Replaces brackets. Example: A, AB and B means A and B differ but neither differs from AB."
 )
 GRAPH_COMPARISON = ("The comparison whose P values the brackets show, and whose difference the estimation plot draws. A two-column test, an ANOVA "
-                    "with multiple comparisons, or (for a grouped table) a two-way ANOVA with multiple comparisons.")
+                    "with multiple comparisons, or (for a grouped table) a two-way ANOVA with multiple comparisons. For an XY table: the linear "
+                    "regression or curve fit whose lines or curves to draw.")
 LETTER_STYLE = "How the letters are written: A B C (the default), a b c, or numbers 1 2 3. Groups that share one are not significantly different."
 
 # --- Formatting graphs (Format graph, Format axes, styles) -----------------------------------------------------------
@@ -442,7 +443,8 @@ CLUSTER_GAP = "The space between blocks, in column widths (0: no gap)."
 NEW_XY = ("An XY table: one X column (dose, time, concentration…) and one or more Y data sets, each with replicates side by side. "
           "For regression, correlation and curves.")
 XY_TABLE = ("Each row is one X value; each data set's replicates sit side by side. Type or paste numbers (X first when pasting "
-            "into the X column); blank cells are missing values. Double-click a title to rename it.")
+            "into the X column); blank cells are missing values. Double-click a title to rename it. A row with Y but no X is an "
+            "unknown: a curve fit can read its X off the curve (a standard curve).")
 XY_ADD_SET = "Add a Y data set (another condition measured at the same X values)."
 XY_ADD_REPLICATE = "Add a replicate subcolumn to every data set (several Y values at the same X)."
 LINREG = ("A straight line through each data set: slope, intercept, their confidence intervals, R² and whether the slope differs "
@@ -454,6 +456,28 @@ XYCORR = ("How closely Y rises or falls with X in each data set: r from −1 to 
 XYCORR_METHOD = ("Pearson r assumes X and Y are both measured and roughly Gaussian. Spearman r works on ranks: use it for skewed "
                  "data, outliers or a relationship that is monotonic but not straight.")
 XY_REPLICATES = ("Each replicate is a point: every value counts (the usual choice when replicates are independent). Only the mean: "
-                 "one point per X, when replicates are repeated measurements of one sample.")
-XY_BAND = ("Around the regression line: the confidence band holds the true line with the chosen confidence; the prediction band "
-           "holds that share of new points, so it is wider.")
+                 "one point per X, when replicates are repeated measurements of one sample. This sets what the fit uses; how a "
+                 "graph shows the points is set separately on the graph (Points).")
+XY_GRAPH_POINTS = ("How the graph shows each data set; it does not change what a fit uses (set that in the analysis's options).")
+XY_BAND = ("Around the fitted line or curve: the confidence band holds the true line with the chosen confidence; the prediction band "
+           "holds that share of new points, so it is wider. When the fit used only each row's mean, the prediction band is for a new "
+           "mean of a row, not a single replicate.")
+
+CURVEFIT = ("Fit a curve to each data set by least squares: best-fit parameters with standard errors and confidence intervals, R², "
+            "and optionally a comparison with a second fit or between data sets, and X read off the curve for unknowns.")
+CURVE_MODEL = ("The equation to fit. Dose-response: a sigmoid from Bottom to Top with its midpoint at the EC50 (choose the X is log(dose) "
+               "form when X holds log concentrations). Michaelis-Menten: rate against substrate. One-phase exponential: decay or rise "
+               "to a plateau, with its half-life. Gaussian: a bell-shaped peak. Line and polynomials: for comparing with a curve or a "
+               "standard curve. Starting values are found from the data.")
+CURVE_FIX = ("Hold this parameter at a constant instead of fitting it: for example Bottom = 0 and Top = 100 for data normalized to "
+             "percent, or HillSlope = 1 for a standard slope. Fix a parameter only when theory or controls set it.")
+CURVE_INTERPOLATE = ("Rows with Y values and a blank X are unknowns (for example samples measured against a standard curve). Their X "
+                     "is read off each fitted curve within the range of X it was fitted on; outside it they are reported as out of "
+                     "range, not extrapolated.")
+CURVE_COMPARE_NONE = "Fit each data set and report its parameters."
+CURVE_COMPARE_MODEL = ("Fit each data set a second way (another model, or the same model with a parameter fixed) and say which "
+                       "fits better: by the extra sum-of-squares F test when one is a special case of the other, and by AICc.")
+CURVE_COMPARE_DATASETS = ("Is one curve enough for every data set, or does each need its own? Tests one shared curve against "
+                          "separate fits (F test and AICc).")
+CURVE_COMPARE_PARAMETER = ("Does this parameter (for example LogEC50) differ between data sets? Fits them with it shared and the "
+                           "rest separate, and tests that against separate fits (F test and AICc).")
