@@ -159,3 +159,17 @@ def test_edits_refit_once_typing_pauses(window, qtbot):
     fit.options.update(ci="wide", alpha=None, model=7, compare="datasets", compare_parameter="Nope")  # a damaged project file
     window.project.rerun(fit)
     assert fit.error == "" and any("not a free parameter" in text for text in fit.warnings)
+
+
+def test_dialog_and_name_survive_damaged_options(window):
+    from cellquant.gui.quantanalysis.dialogs import CurveFitDialog
+    from cellquant.gui.quantanalysis.window import result_name
+
+    sheet = _filled(window)
+    dialog = CurveFitDialog(window, sheet.xy, {"fixed": {"Bottom": "zero"}, "compare_fixed": [1]})
+    calls = []
+    dialog._fill_parameters = lambda *args: calls.append(args)
+    box = dialog.fixed.rows["Top"][0]
+    box.toggle()
+    assert dialog.fixed.rows["Bottom"][1].text() == "zero" and len(calls) == 1  # one connection per box
+    assert result_name("curvefit", {"model": ["x"]}, sheet).startswith("Nonlinear regression (Dose-response")

@@ -1130,7 +1130,7 @@ def result_name(kind: str, options: dict, data: DataSheet | None) -> str:
     if kind == "linreg":
         return f"Linear regression{where}"
     if kind == "curvefit":
-        return f"Nonlinear regression ({CURVE_MODELS.get(options.get('model'), CURVE_MODELS['log_dose_response']).name}){where}"
+        return f"Nonlinear regression ({CURVE_MODELS.get(str(options.get('model')), CURVE_MODELS['log_dose_response']).name}){where}"
     if kind == "xycorr":
         return f"Correlation ({'Spearman' if options.get('method') == 'spearman' else 'Pearson'}){where}"
     return {"colstats": "Column statistics", "normality": "Normality tests"}[kind] + where

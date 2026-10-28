@@ -1041,7 +1041,7 @@ class FixedParameters(QWidget):
         for row, name in enumerate(MODELS[key].params):
             box = QCheckBox(f"Fix {name} at")
             box.setToolTip(tips.CURVE_FIX)
-            value = QLineEdit("" if name not in fixed else f"{fixed[name]:g}")
+            value = QLineEdit("" if name not in fixed else f"{fixed[name]:g}" if isinstance(fixed[name], (int, float)) else str(fixed[name]))
             value.setPlaceholderText("value")
             value.setMaximumWidth(70)
             box.setChecked(name in fixed)
@@ -1073,6 +1073,9 @@ class CurveFitDialog(QDialog):
         self.xy = xy
         self.setWindowTitle("Nonlinear regression (curve fit)")
         options = {**CURVEFIT_DEFAULTS, **(options or {})}
+        for key in ("fixed", "compare_fixed"):  # a damaged project may hold anything here
+            if not isinstance(options[key], dict):
+                options[key] = {}
         compare = "parameter" if options["compare"] == "datasets" and options.get("compare_parameter") else options["compare"]
         layout = QVBoxLayout(self)
         layout.setSizeConstraint(QLayout.SetMinimumSize)  # the parameter rows change with the model; never squeeze them
@@ -1156,7 +1159,6 @@ class CurveFitDialog(QDialog):
         self._model_changed(options.get("fixed") or {}, options.get("compare_parameter"))
         self.second_fixed.set_model(self.second_model.currentData(), options.get("compare_fixed") or {})
         self.model.currentIndexChanged.connect(lambda _index: self._model_changed())
-        self.fixed_watch()
         self.second_model.currentIndexChanged.connect(lambda _index: self.second_fixed.set_model(self.second_model.currentData()))
         self.compare.currentIndexChanged.connect(lambda _index: self._compare_changed())
         self._compare_changed()
