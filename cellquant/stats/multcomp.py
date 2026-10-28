@@ -184,6 +184,18 @@ def _critical(cdf, level: float) -> float:
 # ---------------------------------------------------------------------------------------------
 
 ADJUSTMENTS = ("bonferroni", "sidak", "holm", "holm_sidak", "bh", "by", "bky", "none")
+M_METHODS = ("bonferroni", "sidak", "holm", "holm_sidak")  # adjustments whose m can be set by hand
+M_COMPARISON_METHODS = ("bonferroni", "sidak", "holm_sidak", "dunn")  # multiple comparisons methods whose m can be set by hand
+
+
+def check_m(m_set, comparisons: int) -> int:
+    """The number of comparisons to correct for: an integer of at least the number of comparisons actually made."""
+
+    if isinstance(m_set, (bool, np.bool_)) or not isinstance(m_set, (int, np.integer)) and not (isinstance(m_set, (float, np.floating)) and float(m_set).is_integer()):
+        raise StatisticsError(f"The number of comparisons m must be a whole number, not {m_set!r}.")
+    if int(m_set) < comparisons:
+        raise StatisticsError(f"The number of comparisons m cannot be less than the {comparisons} comparison(s) actually made in the family; got {int(m_set)}.")
+    return int(m_set)
 
 
 def _bh(p: np.ndarray) -> np.ndarray:
@@ -243,7 +255,7 @@ def _bky(p: np.ndarray, q: float) -> tuple[np.ndarray, np.ndarray, int]:
     return np.minimum(qv, 1.0), discovered, n_true
 
 
-def adjust_p(pvalues: Iterable[float], method: str, q: float = 0.05) -> dict:
+def adjust_p(pvalues: Iterable[float], method: str, q: float = 0.05, *, m_total: int | None = None) -> dict:
     """Multiplicity-adjusted P values (or FDR q values) for a list of P values.
 
     - ``bonferroni``: min(1, m·P). ``sidak``: 1 - (1 - P)^m.
@@ -259,6 +271,10 @@ def adjust_p(pvalues: Iterable[float], method: str, q: float = 0.05) -> dict:
       discovery (N_true changes with Q, so it is found interval by interval; see ``_bky``).
       Discoveries at the chosen Q are those with q ≤ Q.
 
+    ``m_total`` (``bonferroni``, ``sidak``, ``holm``, ``holm_sidak`` only) is the number of comparisons
+    to correct for when it is more than the P values given: m in the formulas above is replaced by
+    ``m_total``, and Holm's step factors become m_total - r + 1 for the r-th smallest P.
+
     Returns ``{"adjusted": array, "significant": array, "m0": ...}``; blanks (NaN) are left out of m
     and stay blank."""
 
@@ -273,6 +289,11 @@ def adjust_p(pvalues: Iterable[float], method: str, q: float = 0.05) -> dict:
         raise StatisticsError("P values must be between 0 and 1.")
     p = p_all[keep]
     m = p.size
+    if m_total is not None:
+        if method not in M_METHODS:
+            raise StatisticsError(f"The number of comparisons applies only to the Bonferroni, Šidák, Holm and Holm-Šidák adjustments, not {method!r}.")
+        check_m(m_total, m)
+    big = m if m_total is None else int(m_total)
     out = np.full(p_all.shape, np.nan)
     info: dict = {"m": m, "m0": np.nan}
     if m == 0:
@@ -281,13 +302,13 @@ def adjust_p(pvalues: Iterable[float], method: str, q: float = 0.05) -> dict:
     if method == "none":
         adj = p.copy()
     elif method == "bonferroni":
-        adj = np.minimum(1.0, m * p)
+        adj = np.minimum(1.0, big * p)
     elif method == "sidak":
-        adj = -np.expm1(m * np.log1p(-np.minimum(p, 1 - 1e-300))) if m else p
+        adj = -np.expm1(big * np.log1p(-np.minimum(p, 1 - 1e-300))) if m else p
         adj = np.where(p >= 1, 1.0, adj)
     elif method in ("holm", "holm_sidak"):
         sorted_p = p[order]
-        factors = m - np.arange(m)
+        factors = big - np.arange(m)
         if method == "holm":
             step = np.minimum(1.0, factors * sorted_p)
         else:
@@ -514,9 +535,13 @@ def _contrast(est: Estimates, i: int, j: int) -> tuple[float, float, float, np.n
     return diff, se, df, vec
 
 
-def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05, ci: float = 0.95, style: str = "classic") -> dict:
+def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05, ci: float = 0.95, style: str = "classic", m: int | None = None) -> dict:
     """Make the comparisons in ``plan`` from ``est``. Returns ``{"rows": [...], "method": ..., ...}``;
-    each row is a dict (see docs/STATISTICS.md, "Multiple comparisons")."""
+    each row is a dict (see docs/STATISTICS.md, "Multiple comparisons").
+
+    ``m`` (Bonferroni, Šidák, Holm-Šidák and Dunn's test only) is the number of comparisons the
+    correction counts in each family, at least the number made; the adjusted P values and the
+    Bonferroni/Šidák CI levels use it in place of the number of comparisons in the family."""
 
     if plan.goal not in GOALS:
         raise StatisticsError(f"Unknown comparison goal {plan.goal!r}; choose one of {', '.join(GOALS)} (or use the test for trend).")
@@ -532,6 +557,10 @@ def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05
                               f"{' or Dunnett' if est.kind == 'pooled' else ''}.")
     if method == "dunnett" and plan.goal != "control":
         raise StatisticsError("Dunnett's test compares each group with a reference (control) group; use comparisons='control'.")
+    m_set = m
+    if m_set is not None and method not in M_COMPARISON_METHODS:
+        raise StatisticsError("The number of comparisons (m) applies only to the Bonferroni, Šidák, Holm-Šidák and Dunn's multiple comparisons "
+                              f"methods, not {METHOD_NAMES[method]}.")
     families = _families(plan, est.names)
     if method == "dunnett" and plan.family == "combined" and len(plan.references()) == 2:
         raise StatisticsError("Dunnett's test is defined for one reference group per family. With two references, use family='per_reference' "
@@ -541,8 +570,9 @@ def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05
     rows: list[dict] = []
     warnings: list[str] = []
     for number, family in enumerate(families, start=1):
-        m = len(family.pairs)
-        tags = getattr(family, "tags", [family.reference] * m)
+        m_made = len(family.pairs)
+        m = m_made if m_set is None else check_m(m_set, m_made)
+        tags = getattr(family, "tags", [family.reference] * m_made)
         data = [(*_contrast(est, i, j), i, j) for i, j in family.pairs]
         diffs = np.array([d[0] for d in data])
         ses = np.array([d[1] for d in data])
@@ -553,11 +583,11 @@ def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05
             warnings.append("Some comparisons have zero standard error (no variation), so their statistic and P are undefined.")
         raw = np.array([2 * stats.norm.sf(abs(x)) if not np.isfinite(_df(d)) else 2 * stats.t.sf(abs(x), d) for x, d in zip(t, dfs)])
         raw = np.where(np.isfinite(t), np.minimum(raw, 1.0), np.nan)
-        adjusted = np.full(m, np.nan)
-        half = np.full(m, np.nan)
+        adjusted = np.full(m_made, np.nan)
+        half = np.full(m_made, np.nan)
         stat_name = "z" if est.kind == "rank" else "t"
         statistic = t.copy()
-        significant = np.zeros(m, bool)
+        significant = np.zeros(m_made, bool)
         if method in ("tukey", "games_howell"):
             stat_name = "q"
             statistic = np.abs(t) * math.sqrt(2)
@@ -583,15 +613,15 @@ def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05
             crit = _critical(lambda c: max_abs_t_cdf(c, corr, df0, maxpts=20_000), ci)
             half = crit * ses
         elif method in ("sidak", "tamhane_t2"):
-            adjusted = adjust_p(raw, "sidak")["adjusted"]
+            adjusted = adjust_p(raw, "sidak", m_total=m_set)["adjusted"]
             level = ci ** (1.0 / m)
             half = np.array([stats.t.ppf(0.5 + level / 2, d) if np.isfinite(_df(d)) else stats.norm.ppf(0.5 + level / 2) for d in dfs]) * ses
         elif method == "bonferroni":
-            adjusted = adjust_p(raw, "bonferroni")["adjusted"]
+            adjusted = adjust_p(raw, "bonferroni", m_total=m_set)["adjusted"]
             level = 1 - (1 - ci) / m
             half = np.array([stats.t.ppf(0.5 + level / 2, d) if np.isfinite(_df(d)) else stats.norm.ppf(0.5 + level / 2) for d in dfs]) * ses
         elif method == "holm_sidak":
-            adjusted = adjust_p(raw, "holm_sidak")["adjusted"]
+            adjusted = adjust_p(raw, "holm_sidak", m_total=m_set)["adjusted"]
         elif method == "fisher_lsd":
             adjusted = raw.copy()
             half = np.array([stats.t.ppf(0.5 + ci / 2, d) for d in dfs]) * ses
@@ -599,7 +629,7 @@ def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05
             adjusted = np.array([1 - smm_cdf(abs(x), m, d) if np.isfinite(x) else np.nan for x, d in zip(t, dfs)])
             half = np.array([_critical(lambda c, d=d: smm_cdf(c, m, d), ci) for d in dfs]) * ses
         elif method == "dunn":
-            adjusted = adjust_p(raw, "bonferroni")["adjusted"]
+            adjusted = adjust_p(raw, "bonferroni", m_total=m_set)["adjusted"]
         elif method == "dunn_uncorrected":
             adjusted = raw.copy()
         else:  # FDR
@@ -622,7 +652,7 @@ def run_comparisons(est: Estimates, plan: ComparisonPlan, *, alpha: float = 0.05
             })
     sizes = [len(f.pairs) for f in families]
     return {"rows": rows, "method": method, "name": METHOD_NAMES[method], "fdr": fdr, "n_families": len(families),
-            "per_family": sizes, "alpha": alpha, "ci": ci, "warnings": warnings, "kind": est.kind, "goal": plan.goal,
+            "per_family": sizes, "m": m_set, "alpha": alpha, "ci": ci, "warnings": warnings, "kind": est.kind, "goal": plan.goal,
             "references": plan.references(), "family_mode": plan.family}
 
 
