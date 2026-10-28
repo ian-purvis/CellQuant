@@ -200,7 +200,7 @@ def survival(table: SurvivalTable, *, trend: bool = False, ci: float = 0.95, alp
     level = f"{100 * ci:g}% CI"
     result = AnalysisResult("Survival", table.title, {"trend": trend, "ci": ci, "alpha": alpha, "style": style})
     rows: dict[tuple[str, str], str] = {}
-    curves, medians = {}, {}
+    curves, medians, median_rows = {}, {}, {}
     for name, (t, e) in zip(names, data):
         curve = kaplan_meier(t, e, ci)
         curves[name] = curve
@@ -214,7 +214,8 @@ def survival(table: SurvivalTable, *, trend: bool = False, ci: float = 0.95, alp
             upper = "∞" if math.isinf(high) else fmt(high)
             ci_text = "" if math.isnan(low) else f" ({level} {fmt(low)} to {upper})"
             text = f"{fmt(median)}{ci_text}"
-        rows[("Median survival", name)] = text
+        median_rows[("Median survival", name)] = text
+    rows.update(median_rows)  # every group's subjects, then every group's median, so each section is one block
 
     values: dict = {"curves": curves, "medians": medians, "groups": names}
     if len(data) >= 2:

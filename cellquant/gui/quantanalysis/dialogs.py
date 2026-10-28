@@ -41,6 +41,7 @@ from cellquant.stats import sources, transforms
 from cellquant.stats.contingency import TESTS as CONTINGENCY_TESTS, ContingencyTable, contingency
 from cellquant.stats.curvefit import MODELS, nonlinear_regression
 from cellquant.stats.diagnostic import bland_altman, roc_curve
+from cellquant.stats.survival import SurvivalTable, survival
 from cellquant.stats.grouped import COMPARE, FAMILIES, GroupedTable, two_way_anova
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
 from cellquant.stats.replicates import ReplicateTable, looks_like_replicate
@@ -1725,6 +1726,58 @@ class BlandAltmanDialog(QDialog):
         try:
             options = self.options()
             bland_altman(*paired(self.table[options["a"]].values, self.table[options["b"]].values), method=options["method"], ci=options["ci"])
+        except CellQuantError as exc:
+            self.note.setText(str(exc))
+            self.note.setVisible(True)
+            return
+        super().accept()
+
+
+# --- Survival curves ---------------------------------------------------------------------------------------------
+
+SURVIVAL_DEFAULTS = {"trend": False, "ci": 0.95, "alpha": 0.05, "style": "classic"}
+
+
+class SurvivalDialog(QDialog):
+    """Survival curves (Kaplan-Meier) of an XY table: the interval, alpha and P value style, and whether the groups are in order."""
+
+    def __init__(self, parent, xy, options: dict | None = None):
+        super().__init__(parent)
+        self.xy = xy
+        options = {**SURVIVAL_DEFAULTS, **(options or {})}
+        layout, form = _two_column_dialog(self, "Survival curves (Kaplan-Meier)",
+                                          f"{tips.SURVIVAL} The table has {len(xy.sets)} group{'s' if len(xy.sets) != 1 else ''} (data sets).")
+        self.trend = QCheckBox("Groups are in order (test for trend)")
+        self.trend.setToolTip(tips.SURVIVAL_TREND)
+        self.trend.setEnabled(len(xy.sets) >= 3)
+        self.trend.setChecked(bool(options["trend"]) and len(xy.sets) >= 3)
+        form.addRow(self.trend)
+        self.ci = _ci_combo(options["ci"], tips.SURVIVAL_CI)
+        form.addRow("Confidence interval", self.ci)
+        self.alpha = QDoubleSpinBox()
+        self.alpha.setRange(0.0001, 0.5)
+        self.alpha.setDecimals(4)
+        self.alpha.setSingleStep(0.01)
+        self.alpha.setToolTip(tips.ALPHA)
+        self.alpha.setValue(float(options["alpha"]))
+        form.addRow("Alpha", self.alpha)
+        self.style = QComboBox()
+        for name in STYLES:
+            self.style.addItem(name, name)
+        self.style.setToolTip(tips.P_STYLE)
+        self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
+        form.addRow("P value style", self.style)
+        self.note = _dialog_footer(self, layout)
+
+    def options(self) -> dict:
+        return {"trend": self.trend.isEnabled() and self.trend.isChecked(), "ci": self.ci.currentData(),
+                "alpha": round(self.alpha.value(), 6), "style": self.style.currentData()}
+
+    def accept(self) -> None:
+        try:
+            options = self.options()
+            table = SurvivalTable.from_columns(self.xy.x, {name: self.xy.values[:, j, 0] for j, name in enumerate(self.xy.sets)}, self.xy.title)
+            survival(table, **options)
         except CellQuantError as exc:
             self.note.setText(str(exc))
             self.note.setVisible(True)

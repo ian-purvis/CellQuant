@@ -599,3 +599,12 @@ BLAND_ALTMAN_MEASURE = ("How the disagreement is expressed. Difference (A − B)
                         "Ratio (A / B) or % difference suit errors that grow with the size of the measurement; the ratio needs "
                         "positive values.")
 BLAND_ALTMAN_CI = "The confidence level of the intervals around the bias and around each limit of agreement."
+NEW_SURVIVAL = ("A table for survival (time to an event). One row per subject: its time in the Time column, then 1 in its group's column if "
+                "the event happened (death, relapse…) or 0 if it was censored (still event-free when last seen). Leave the other groups' "
+                "cells in that row blank.")
+SURVIVAL = ("How long until an event, and do the groups differ? Draws a Kaplan-Meier curve for each group, gives the median survival, and "
+            "compares the curves with the log-rank test. Each row of the XY table is one subject: its time, and 1 (event) or 0 (censored) "
+            "in its group's column, the other groups blank.")
+SURVIVAL_TREND = ("Tick when the data sets are in a meaningful order (increasing dose, age band, grade) to add a test for a trend in "
+                  "survival across them. Needs three or more groups; leave it off for unordered groups such as genotypes.")
+SURVIVAL_CI = "The confidence level of the band around each survival curve and of the interval around each median and the hazard ratio."

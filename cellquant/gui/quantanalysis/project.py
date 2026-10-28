@@ -35,6 +35,7 @@ from cellquant.stats import transforms
 from cellquant.stats.contingency import ContingencyTable, contingency
 from cellquant.stats.curvefit import nonlinear_regression
 from cellquant.stats.diagnostic import bland_altman, roc_curve
+from cellquant.stats.survival import SurvivalTable, survival
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
 from cellquant.stats.replicates import ReplicateTable
@@ -431,8 +432,8 @@ class Project(QObject):
                 sheet.wide = sheet.result.values["wide"]
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
-            elif sheet.kind in ("roc", "blandaltman"):
-                sheet.result = (run_roc if sheet.kind == "roc" else run_bland_altman)(data, sheet.options)
+            elif sheet.kind in ("roc", "blandaltman", "survival"):
+                sheet.result = {"roc": run_roc, "blandaltman": run_bland_altman, "survival": run_survival}[sheet.kind](data, sheet.options)
                 sheet.wide = sheet.result.values["wide"]
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
@@ -658,6 +659,7 @@ def run_contingency(data: DataSheet, options: dict) -> AnalysisResult:
 
 ROC_KEYS = ("controls", "patients", "direction", "ci", "alpha", "style")
 BLAND_ALTMAN_KEYS = ("a", "b", "method", "ci")
+SURVIVAL_KEYS = ("trend", "ci", "alpha", "style")
 
 
 def _pick_column(table: ColumnTable, value, default: int):
@@ -702,6 +704,22 @@ def run_roc(data: DataSheet, options: dict) -> AnalysisResult:
     for key in ("controls", "patients"):
         kwargs.pop(key, None)
     return roc_curve(controls.values, patients.values, names=(controls.name, patients.name), **kwargs)
+
+
+def run_survival(data: DataSheet, options: dict) -> AnalysisResult:
+    """Kaplan-Meier curves of an XY table: X is the time and each data set one group, a subject's status (1 = event, 0 = censored) in its
+    group's column on its own row. Only the first replicate is read."""
+
+    if data is None or data.xy is None:
+        raise CellQuantError("Survival curves need an XY table: File → New survival table.")
+    xy = data.xy
+    table = SurvivalTable.from_columns(xy.x, {name: xy.values[:, j, 0] for j, name in enumerate(xy.sets)}, xy.title)
+    kwargs = _common_kwargs(options, SURVIVAL_KEYS)
+    kwargs["trend"] = options.get("trend") is True
+    result = survival(table, **kwargs)
+    if xy.replicates > 1 and np.isfinite(xy.values[:, :, 1:]).any():
+        result.warnings.append("Only the first replicate column of each data set is used; a survival table has one status per subject.")
+    return result
 
 
 def paired(a, b) -> tuple[np.ndarray, np.ndarray]:
