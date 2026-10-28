@@ -31,7 +31,7 @@ SECTION_BACKGROUND = QColor(60, 72, 88)
 def result_rows(sheet: ResultSheet) -> tuple[list[str], list[tuple[str, list[str]]]]:
     """(column headers, rows). A row whose values are all None is a section title."""
 
-    if sheet.result is not None:
+    if sheet.result is not None and sheet.wide is None:
         rows = []
         for section in sheet.result.sections:
             rows.append((section.title, None))
@@ -52,7 +52,7 @@ def result_rows(sheet: ResultSheet) -> tuple[list[str], list[tuple[str, list[str
 def result_frame(sheet: ResultSheet) -> pd.DataFrame:
     """What Export results CSV writes."""
 
-    if sheet.result is not None:
+    if sheet.result is not None and sheet.wide is None:
         return sheet.result.to_frame()
     frame = sheet.wide.reset_index() if sheet.wide is not None else pd.DataFrame()
     extra = [{"section": "Warnings", "statistic": text} for text in sheet.warnings]
@@ -132,7 +132,7 @@ class ResultSheetView(QWidget):
         sheet = self.sheet
         data = self.project.data.get(sheet.data_id)
         self.source.setText(f"From data table: {data.name}" if data else "")
-        self.options_button.setVisible(sheet.kind in ("compare", "anova", "outliers", "pstack"))
+        self.options_button.setVisible(sheet.kind in ("compare", "anova", "outliers", "pstack", "twoway", "linreg", "xycorr"))
         self.clean_button.setVisible(sheet.kind == "outliers")
         self.clean_button.setEnabled(sheet.result is not None)
         self.error.setText(f"⚠ {sheet.error}" if sheet.error else "")

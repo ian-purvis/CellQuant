@@ -35,6 +35,7 @@ from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTL
 from cellquant.stats import STYLES, ColumnTable
 from cellquant.stats import sources, transforms
 from cellquant.stats.grouped import COMPARE, FAMILIES, GroupedTable, two_way_anova
+from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
 from cellquant.stats.multcomp import (
     ALL_PAIRS_ONLY,
     EQUAL_SD_METHODS,
@@ -902,6 +903,94 @@ class TwoWayDialog(QDialog):
     def accept(self) -> None:
         try:
             two_way_anova(self.grouped, **{key: value for key, value in self.options().items() if value is not None})
+        except CellQuantError as exc:
+            self.note.setText(str(exc))
+            self.note.setVisible(True)
+            return
+        super().accept()
+
+
+# --- XY tables: linear regression and correlation -------------------------------------------------------------
+
+LINREG_DEFAULTS = {"through_origin": False, "replicates": "each", "ci": 0.95, "alpha": 0.05, "style": "classic"}
+XYCORR_DEFAULTS = {"method": "pearson", "replicates": "each", "ci": 0.95, "alpha": 0.05, "style": "classic"}
+
+
+class XYDialog(QDialog):
+    """Linear regression (``kind`` "linreg") or correlation ("xycorr") of an XY table's data sets with X."""
+
+    def __init__(self, parent, xy: XYTable, kind: str, options: dict | None = None):
+        super().__init__(parent)
+        self.xy, self.kind = xy, kind
+        self.setWindowTitle("Linear regression" if kind == "linreg" else "Correlation")
+        options = {**(LINREG_DEFAULTS if kind == "linreg" else XYCORR_DEFAULTS), **(options or {})}
+        layout = QVBoxLayout(self)
+        intro = QLabel(f"{len(xy.sets)} data set(s) against {xy.x_title}. {tips.LINREG if kind == 'linreg' else tips.XYCORR}")
+        intro.setWordWrap(True)
+        intro.setStyleSheet(NOTE_STYLE)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        if kind == "linreg":
+            self.origin = QCheckBox("Force the line through X = 0, Y = 0")
+            self.origin.setToolTip(tips.LINREG_ORIGIN)
+            self.origin.setChecked(bool(options["through_origin"]))
+            form.addRow("Model", self.origin)
+        else:
+            self.method = QComboBox()
+            self.method.addItem("Pearson r (Gaussian data)", "pearson")
+            self.method.addItem("Spearman r (ranks, no Gaussian assumption)", "spearman")
+            self.method.setToolTip(tips.XYCORR_METHOD)
+            self.method.setCurrentIndex(max(0, self.method.findData(options["method"])))
+            form.addRow("Method", self.method)
+        self.replicates = QComboBox()
+        self.replicates.addItem("Each replicate is a point", "each")
+        self.replicates.addItem("Only the mean of each row", "mean")
+        self.replicates.setToolTip(tips.XY_REPLICATES)
+        self.replicates.setCurrentIndex(max(0, self.replicates.findData(options["replicates"])))
+        self.replicates.setEnabled(xy.replicates > 1)
+        form.addRow("Replicates", self.replicates)
+        self.alpha = QDoubleSpinBox()
+        self.alpha.setRange(0.0001, 0.5)
+        self.alpha.setDecimals(4)
+        self.alpha.setSingleStep(0.01)
+        self.alpha.setToolTip(tips.ANOVA_ALPHA)
+        self.alpha.setValue(float(options["alpha"]))
+        form.addRow("Alpha", self.alpha)
+        self.ci = QComboBox()
+        for value in (0.90, 0.95, 0.99):
+            self.ci.addItem(f"{100 * value:g}%", value)
+        self.ci.setToolTip(tips.ANOVA_CI)
+        self.ci.setCurrentIndex(max(0, self.ci.findData(options["ci"])))
+        form.addRow("Confidence interval", self.ci)
+        self.style = QComboBox()
+        for name in STYLES:
+            self.style.addItem(name, name)
+        self.style.setToolTip(tips.ANOVA_STYLE)
+        self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
+        form.addRow("P value style", self.style)
+        layout.addLayout(form)
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet(WARNING_STYLE)
+        self.note.setVisible(False)
+        layout.addWidget(self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def options(self) -> dict:
+        out = {"replicates": self.replicates.currentData(), "ci": self.ci.currentData(), "alpha": round(self.alpha.value(), 6),
+               "style": self.style.currentData()}
+        if self.kind == "linreg":
+            out["through_origin"] = self.origin.isChecked()
+        else:
+            out["method"] = self.method.currentData()
+        return out
+
+    def accept(self) -> None:
+        try:
+            (linear_regression if self.kind == "linreg" else xy_correlation)(self.xy, **self.options())
         except CellQuantError as exc:
             self.note.setText(str(exc))
             self.note.setVisible(True)

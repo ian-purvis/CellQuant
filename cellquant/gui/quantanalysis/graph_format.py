@@ -173,6 +173,9 @@ class GraphFormat:
     # Grouped tables
     grouped_layout: str = "interleaved"  # "interleaved": each row's data sets side by side; "separated": one block per data set
     cluster_gap: float = 0.8        # the space between blocks, in column widths
+    # XY tables
+    xy_replicates: str = "mean"     # "mean": each row's mean with its error bar; "each": every replicate as a point
+    xy_band: str = "none"           # around a linked regression line: "none", "confidence" or "prediction"
     # Axes
     frame: str = "plain"
     frame_offset: float = 6.0       # points, for the offset frame
@@ -241,6 +244,10 @@ class GraphFormat:
                 setattr(fmt, key, _load(_FIELDS[key], value, getattr(fmt, key)))
         if fmt.grouped_layout not in ("interleaved", "separated"):
             fmt.grouped_layout = "interleaved"
+        if fmt.xy_replicates not in ("mean", "each"):
+            fmt.xy_replicates = "mean"
+        if fmt.xy_band not in ("none", "confidence", "prediction"):
+            fmt.xy_band = "none"
         gap = fmt.cluster_gap
         fmt.cluster_gap = min(5.0, max(0.0, float(gap))) if isinstance(gap, (int, float)) and math.isfinite(gap) else 0.8
         return fmt

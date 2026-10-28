@@ -34,6 +34,7 @@ from cellquant.stats import (
 from cellquant.stats import transforms
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
+from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
 
 LOG = logging.getLogger("cellquant.quantanalysis")
 
@@ -103,6 +104,7 @@ class DataSheet:
     processed_from: str | None = None   # the data table this one is computed from (transform, normalize…); follows it
     process: dict = field(default_factory=dict)          # the processing: "kind" and its options (cellquant.stats.transforms)
     grouped: GroupedTable | None = None  # a grouped table (two factors); ``table`` is then its cells as columns ("Row: Data set")
+    xy: XYTable | None = None           # an XY table (X and Y data sets); ``table`` is then X and each data set's row means
 
 
 @dataclass
@@ -390,6 +392,11 @@ class Project(QObject):
                 sheet.result = run(data, sheet.options)
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
+            elif sheet.kind in ("linreg", "xycorr"):
+                sheet.result = (run_linear_regression if sheet.kind == "linreg" else run_xy_correlation)(data, sheet.options)
+                sheet.wide = sheet.result.values["wide"]
+                sheet.warnings = list(sheet.result.warnings)
+                sheet.methods = sheet.result.methods
             elif sheet.kind == "pstack":
                 sheet.result = run_pstack(sheet.options)
                 sheet.warnings = list(sheet.result.warnings)
@@ -484,6 +491,26 @@ def run_two_way(data: DataSheet, options: dict) -> AnalysisResult:
         if kwargs.get("control") not in inner:
             raise CellQuantError(f"The reference {kwargs.get('control')!r} is gone; choose it again (Change options…).")
     return two_way_anova(grouped, **kwargs)
+
+
+LINREG_KEYS = ("through_origin", "replicates", "ci", "alpha", "style")
+XYCORR_KEYS = ("method", "replicates", "ci", "alpha", "style")
+
+
+def _xy_of(data: DataSheet | None, what: str) -> XYTable:
+    if data is None or data.xy is None:
+        raise CellQuantError(f"{what} needs an XY table (X and Y data sets). Make one with File → New XY table.")
+    return data.xy
+
+
+def run_linear_regression(data: DataSheet, options: dict) -> AnalysisResult:
+    kwargs = {key: options[key] for key in LINREG_KEYS if key in options and options[key] is not None}
+    return linear_regression(_xy_of(data, "Linear regression"), **kwargs)
+
+
+def run_xy_correlation(data: DataSheet, options: dict) -> AnalysisResult:
+    kwargs = {key: options[key] for key in XYCORR_KEYS if key in options and options[key] is not None}
+    return xy_correlation(_xy_of(data, "Correlation of X with Y"), **kwargs)
 
 
 def _as_list(value) -> list:
@@ -630,6 +657,23 @@ def cells_table(grouped: GroupedTable) -> ColumnTable:
 def set_grouped(sheet: DataSheet, grouped: GroupedTable) -> None:
     sheet.grouped = grouped
     sheet.table = cells_table(grouped)
+
+
+def xy_columns(xy: XYTable) -> ColumnTable:
+    """An XY table as columns: X, then each data set's mean per row (blank rows dropped from the end)."""
+
+    from cellquant.stats import Column
+
+    with np.errstate(invalid="ignore"):
+        counts = np.isfinite(xy.values).sum(axis=2)
+        means = np.where(counts > 0, np.nansum(xy.values, axis=2) / np.maximum(counts, 1), np.nan)
+    names = [xy.x_title] + [name if name != xy.x_title else f"{name} (Y)" for name in xy.sets]
+    return ColumnTable(title=xy.title, columns=[Column(name, values) for name, values in zip(names, [xy.x, *means.T])])
+
+
+def set_xy(sheet: DataSheet, xy: XYTable) -> None:
+    sheet.xy = xy
+    sheet.table = xy_columns(xy)
 
 
 def table_with(table: ColumnTable, names: list[str], values: list[np.ndarray], paired: bool) -> ColumnTable:

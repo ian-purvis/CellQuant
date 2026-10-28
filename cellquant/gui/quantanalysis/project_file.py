@@ -20,9 +20,10 @@ import numpy as np
 import pandas as pd
 
 from cellquant.errors import CellQuantError
-from cellquant.gui.quantanalysis.project import DataSheet, GraphSheet, LayoutSheet, Project, ResultSheet, reserve_ids, set_grouped
+from cellquant.gui.quantanalysis.project import DataSheet, GraphSheet, LayoutSheet, Project, ResultSheet, reserve_ids, set_grouped, set_xy
 from cellquant.stats import ColumnTable, transforms
 from cellquant.stats.grouped import GroupedTable
+from cellquant.stats.xy import XYTable
 from cellquant.stats.sources import ImportSpec
 from cellquant.stats.tables import Column
 
@@ -30,7 +31,7 @@ SUFFIX = ".cqstats"
 FORMAT = "cellquant-quantanalysis-project"
 VERSION = 1
 MEMBER = "project.json"
-RESULT_KINDS = {"compare", "anova", "colstats", "normality", "outliers", "pstack", "twoway"}
+RESULT_KINDS = {"compare", "anova", "colstats", "normality", "outliers", "pstack", "twoway", "linreg", "xycorr"}
 
 
 # --- Writing -------------------------------------------------------------------------------------------------------------
@@ -102,6 +103,9 @@ def _data(sheet: DataSheet, experiment_dir: str | None) -> dict:
         "grouped": None if sheet.grouped is None else {
             "rows": list(sheet.grouped.rows), "columns": list(sheet.grouped.columns),
             "values": [[_numbers(cell) for cell in row] for row in sheet.grouped.values]},
+        "xy": None if sheet.xy is None else {
+            "x_title": sheet.xy.x_title, "x": _numbers(sheet.xy.x), "sets": list(sheet.xy.sets),
+            "values": [[_numbers(cell) for cell in row] for row in sheet.xy.values]},
     }
 
 
@@ -257,6 +261,12 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
                 set_grouped(sheet, GroupedTable(table.title, list(grouped["rows"]), list(grouped["columns"]),
                                                 np.array([[_values(cell) for cell in row] for row in grouped["values"]], dtype=float)
                                                 .reshape(len(grouped["rows"]), len(grouped["columns"]), -1)))
+            xy = item.get("xy")
+            if isinstance(xy, dict):
+                x = _values(xy["x"])
+                set_xy(sheet, XYTable(table.title, str(xy.get("x_title") or "X"), x, list(xy["sets"]),
+                                      np.array([[_values(cell) for cell in row] for row in xy["values"]], dtype=float)
+                                      .reshape(x.size, len(xy["sets"]), -1)))
         except (KeyError, TypeError, ValueError, OverflowError, CellQuantError) as exc:
             notes.append(f"A data table ({item.get('name', '?')}) could not be read: {exc}")
             continue

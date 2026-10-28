@@ -401,6 +401,11 @@ class GraphSection(Section):
         self.cluster_gap.setMaximumWidth(48)
         self.arrangement_row = _pair(self.arrangement, "gap", self.cluster_gap)
         form.addRow("Arrangement", self.arrangement_row)
+        self.xy_replicates = self.combo({key: name for key, (name, _tip) in graphs.XY_REPLICATES.items()},
+                                        "\n".join(f"{name}: {tip}" for name, tip in graphs.XY_REPLICATES.values()))
+        self.xy_band = self.combo(graphs.XY_BANDS, tips.XY_BAND)
+        self.xy_row = _pair(self.xy_replicates, self.xy_band)
+        form.addRow("Points", self.xy_row)
         self.comparison = QComboBox()
         self.comparison.setToolTip(tips.GRAPH_COMPARISON)
         self.comparison.currentIndexChanged.connect(self.changed)
@@ -434,11 +439,14 @@ class GraphSection(Section):
         self.comparison.clear()
         self.comparison.addItem("none", None)
         for result in self.view.project.results.values():
-            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "twoway"):
+            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "twoway", "linreg"):
                 self.comparison.addItem(result.name, result.id)
         self.comparison.setCurrentIndex(max(0, self.comparison.findData(sheet.result_id)))
         data = self.view.project.data.get(sheet.data_id)
         _row_visible(self.form, self.arrangement_row, data is not None and data.grouped is not None)
+        _row_visible(self.form, self.xy_row, data is not None and data.xy is not None)
+        self.xy_replicates.setCurrentIndex(max(0, self.xy_replicates.findData(fmt.xy_replicates)))
+        self.xy_band.setCurrentIndex(max(0, self.xy_band.findData(fmt.xy_band)))
         self.arrangement.setCurrentIndex(max(0, self.arrangement.findData(fmt.grouped_layout)))
         self.cluster_gap.setValue(float(fmt.cluster_gap))
         self.show_outliers.setChecked(fmt.show_outliers)
@@ -461,6 +469,7 @@ class GraphSection(Section):
         sheet.result_id = self.comparison.currentData()
         fmt.error = self.error.currentData()
         fmt.grouped_layout, fmt.cluster_gap = self.arrangement.currentData(), self.cluster_gap.value()
+        fmt.xy_replicates, fmt.xy_band = self.xy_replicates.currentData(), self.xy_band.currentData()
         fmt.show_outliers = self.show_outliers.isChecked()
         fmt.dot_size = self.dot_size.value()
         fmt.font_family = self.font_family.currentData() or ""

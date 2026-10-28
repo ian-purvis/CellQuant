@@ -45,6 +45,8 @@ KINDS = {
     "violin": ("Violin and dots", "The shape of each column's distribution, with the median and quartiles. Useful with many values (n > 20)."),
     "before_after": ("Before-after (paired)", "One line per row, joining a subject's values across columns. For paired data: the same replicate in each condition."),
     "estimation": ("Estimation plot", "Two columns and, on a right axis, their difference with its confidence interval (from a t test). Shows how big the effect is, not only whether P is small."),
+    "xy": ("XY", "Each data set of an XY table against X: points (or means with error bars) and, with a linear regression as its "
+           "comparison, the fitted line and its confidence or prediction band."),
     "superplot": ("SuperPlot", "Images shaded by biological replicate (small dots), each replicate's value as a large outlined marker, and the mean ± SD of the replicates. Tests use the replicates (N), not the images (n)."),
 }
 
@@ -55,6 +57,11 @@ ERRORS = {
     "median_iqr": ("Median with interquartile range", "Median and the 25th to 75th percentiles. For skewed data, or with a rank test."),
     "none": ("No error bars", "Only the dots and the mean line."),
 }
+
+# XY graphs. key: (menu name, tooltip)
+XY_REPLICATES = {"mean": ("Mean and error bar", "One point per X: the mean of its replicates with the error bar chosen above."),
+                 "each": ("Every replicate", "Every replicate as its own point.")}
+XY_BANDS = {"none": "No band", "confidence": "Confidence band", "prediction": "Prediction band"}
 
 # Grouped tables. key: (menu name, tooltip)
 GROUPED_LAYOUTS = {
@@ -73,10 +80,10 @@ def color_of(fmt, name: str, index: int) -> str:
 
 
 def series_names(data) -> list[str]:
-    """The names a graph's data set formats and colours are keyed by: a grouped table's data sets, else its columns."""
+    """The names a graph's data set formats and colours are keyed by: a grouped or XY table's data sets, else its columns."""
 
-    grouped = getattr(data, "grouped", None)
-    return list(grouped.columns) if grouped is not None else list(data.table.names)
+    grouped, xy = getattr(data, "grouped", None), getattr(data, "xy", None)
+    return list(grouped.columns) if grouped is not None else list(xy.sets) if xy is not None else list(data.table.names)
 
 
 def grouped_places(grouped, fmt) -> tuple[list[tuple[float, str, int]], list[tuple[str, float]]]:
@@ -345,6 +352,11 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
     figure.set_size_inches(*size_inches(fmt), forward=False)
     font = float(fmt.font_size)
     notes: list[str] = []
+    figure._cq_legend = None
+    if getattr(data, "xy", None) is not None:
+        if graph.kind != "xy":
+            notes.append(f"An XY table is drawn as an XY graph; {KINDS[graph.kind][0].lower()} is for column tables.")
+        return _draw_xy(figure, data, result, fmt, font, notes)
     table = data.table
     columns = [column for column in table.columns if column.finite.size]
     if len(columns) < len(table.columns):
@@ -362,6 +374,9 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
     if log and any(np.any(column.finite <= 0) for column in columns):
         notes.append("Values ≤ 0 cannot be shown on a log axis and are left out of the graph.")
     kind = graph.kind
+    if kind == "xy":
+        notes.append("An XY graph needs an XY table (File → New XY table); this table is drawn as a column scatter.")
+        kind = "scatter"
     compared = _compared(result, table)
     grouped = getattr(data, "grouped", None)
     if grouped is not None and kind not in GROUPED_KINDS:
@@ -1115,6 +1130,111 @@ def _draw_estimation(ax, figure, columns, compared, result, fmt: GraphFormat, fo
     ax.set_xlim(-0.6, x + 0.6)
     names = [first, second, "Difference"]
     return names, {first: 0, second: 1}
+
+
+def _draw_xy(figure, data, result, fmt: GraphFormat, font: float, notes: list[str]) -> list[str]:
+    """An XY table: each data set's points (or row means with error bars) against X, and a linked linear regression's
+    lines with their bands."""
+
+    from cellquant.stats.xy import band
+
+    xy = data.xy
+    ax = figure.add_subplot(111)
+    _style_frame(ax, fmt)
+    x_base, y_base = LOG_BASES.get(fmt.x.scale), LOG_BASES.get(fmt.y.scale)
+    if x_base:
+        ax.set_xscale("log", base=x_base)
+    _apply_scale(ax, fmt.y)
+    if fmt.y.breaks:
+        notes.append("Axis breaks are drawn on column graphs only.")
+    fits = result.values.get("fits") if result is not None and getattr(result, "analysis", "") == "Linear regression" else None
+    if fmt.xy_band != "none" and not fits:
+        notes.append("A band is drawn around a fitted line: choose a linear regression of this table as the graph's comparison.")
+    left_out = 0
+    for j, name in enumerate(xy.sets):
+        style = fmt.dataset(name)
+        if not style.visible:
+            continue
+        color, tag = fmt.color_of(name, j), ("dataset", name)
+        rows = []  # (x, center, low, high) per row
+        for i in range(xy.x.size):
+            values = xy.values[i, j]
+            values = values[np.isfinite(values)]
+            if y_base:
+                values = values[values > 0]
+            if not np.isfinite(xy.x[i]) or values.size == 0 or (x_base and xy.x[i] <= 0):
+                left_out += int(values.size > 0 and np.isfinite(xy.x[i]))
+                continue
+            rows.append((xy.x[i], values))
+        if not rows:
+            continue
+        each = fmt.xy_replicates == "each" or xy.replicates == 1
+        area = style.symbol_size or _dot_area(fmt, sum(values.size for _x, values in rows) if each else len(rows))
+        if each:
+            xs = np.concatenate([np.full(values.size, x) for x, values in rows])
+            ys = np.concatenate([values for _x, values in rows])
+        else:
+            bars = [(x, *_center_and_bars(values, fmt.error)) for x, values in rows]
+            xs, ys = np.array([b[0] for b in bars]), np.array([b[1] for b in bars])
+            if style.show_error and fmt.error != "none":
+                for x, center, low, high in bars:
+                    if np.isfinite(low) and np.isfinite(high) and high > low:
+                        start = center if style.error_direction == "above" else low
+                        _tag(ax.vlines(x, start, high, color=style.error_color, linewidth=style.error_width, zorder=4), *tag)
+                        if style.error_cap > 0:
+                            caps = [high] if style.error_direction == "above" else [low, high]
+                            _tag(ax.plot([x] * len(caps), caps, linestyle="none", marker="_", markersize=style.error_cap * 14,
+                                         markeredgewidth=style.error_width, color=style.error_color, zorder=4)[0], *tag)
+        if style.show_symbols:
+            _dots(ax, xs, ys, np.zeros(xs.size, bool), style, color, area, 0.9 if xs.size < 200 else 0.6, tag)
+        if fmt.connect_means:  # each data set's means joined in X order
+            means = [float(np.mean(ys[xs == x])) for x in np.unique(xs)]
+            _tag(ax.plot(np.unique(xs), means, color=color, linewidth=fmt.connect_width, linestyle=fmt.connect_style, zorder=2)[0], *tag)
+        fit = (fits or {}).get(name)
+        if fit is not None:
+            low_x, high_x = fit["x_min"], fit["x_max"]
+            grid = (np.geomspace(low_x, high_x, 200) if x_base and low_x > 0 else np.linspace(low_x, high_x, 200))
+            ys = fit["slope"] * grid + fit["intercept"]
+            if fmt.xy_band != "none":
+                low, high = band(fit, grid, result.options.get("ci", 0.95), prediction=fmt.xy_band == "prediction")
+                _tag(ax.fill_between(grid, low, high, color=color, alpha=0.15, linewidth=0, zorder=1), *tag)
+            _tag(ax.plot(grid, ys, color=color, linewidth=max(0.8, style.center_width * 0.75), zorder=4.5)[0], *tag)
+    if left_out:
+        notes.append(f"{left_out} value(s) cannot be shown on a log axis (≤ 0) and are left out of the graph.")
+    if fmt.x.min is not None or fmt.x.max is not None:
+        low, high = ax.get_xlim()
+        ax.set_xlim(fmt.x.min if fmt.x.min is not None else low, fmt.x.max if fmt.x.max is not None else high)
+    _limits(ax, fmt.y, bool(y_base))
+    if fmt.y.reverse:
+        ax.set_ylim(*reversed(ax.get_ylim()))
+    if fmt.x.reverse:
+        ax.set_xlim(*reversed(ax.get_xlim()))
+    y_title = fmt.y.title if fmt.y.title is not None else xy.title
+    _tag(ax.set_ylabel(markup(y_title), **_text_kw(fmt.y.title_style, fmt, font)), "axis", "y")
+    _tag(ax.set_xlabel(markup(fmt.x.title or xy.x_title), **_text_kw(fmt.x.title_style, fmt, font)), "axis", "x")
+    if fmt.title:
+        pad = 6 + (font * 1.8 if fmt.legend.show and fmt.legend.position == "master" else 0)
+        _tag(ax.set_title(markup(fmt.title), loc=fmt.title_loc, pad=pad, **_text_kw(fmt.title_style, fmt, font + 1)), "title")
+    for which, axis in (("y", fmt.y), ("x", fmt.x)):
+        _locators(ax.yaxis if which == "y" else ax.xaxis, axis, notes)
+        _style_ticks(ax, which, axis, fmt)
+    series = {name: j for j, name in enumerate(xy.sets)}
+    legend = None
+    if fmt.legend.show and fmt.legend.position != "custom":
+        legend = _legend(ax, "scatter", series, fmt, font, None)
+    figure._cq_axes = {"main": ax, "segments": [ax], "bottom": ax, "right": None}
+    try:
+        figure.tight_layout(pad=0.6)
+    except (ValueError, np.linalg.LinAlgError):
+        pass
+    plot = plot_transform(figure, [ax])
+    figure._cq_plot = plot
+    if fmt.legend.show and fmt.legend.position == "custom":
+        legend = _legend(ax, "scatter", series, fmt, font, plot)
+    figure._cq_legend = legend
+    for note in fmt.annotations:
+        _annotation(figure, note, fmt, font, plot)
+    return notes
 
 
 UNIT_PALETTE = ["#2F7FC1", "#D1495B", "#3A9D78", "#E3A33B", "#7E5BA6", "#4BA3C3", "#A0522D", "#C9629D", "#6B8E23", "#5B6770"]
