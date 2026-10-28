@@ -37,6 +37,7 @@ from cellquant.stats.curvefit import nonlinear_regression
 from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.survival import SurvivalTable, survival
 from cellquant.stats.grouped import GroupedTable, two_way_anova
+from cellquant.stats.multivariate import correlation_matrix, pca
 from cellquant.stats.nested import nested
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
 from cellquant.stats.replicates import ReplicateTable
@@ -119,7 +120,7 @@ class DataSheet:
 class ResultSheet:
     name: str
     data_id: str
-    kind: str                           # "compare", "anova", "nested", "colstats", "normality", "outliers" or "pstack" (no data table)
+    kind: str                           # "compare", "anova", "nested", "colstats", "normality", "outliers", "corrmatrix", "pca" or "pstack" (no data table)
     options: dict = field(default_factory=dict)
     id: str = field(default_factory=lambda: next_id("result"))
     result: AnalysisResult | None = None   # compare, anova, outliers, pstack
@@ -433,8 +434,9 @@ class Project(QObject):
                 sheet.wide = sheet.result.values["wide"]
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
-            elif sheet.kind in ("roc", "blandaltman", "survival"):
-                sheet.result = {"roc": run_roc, "blandaltman": run_bland_altman, "survival": run_survival}[sheet.kind](data, sheet.options)
+            elif sheet.kind in ("roc", "blandaltman", "survival", "corrmatrix", "pca"):
+                run = {"roc": run_roc, "blandaltman": run_bland_altman, "survival": run_survival, "corrmatrix": run_correlation_matrix, "pca": run_pca}
+                sheet.result = run[sheet.kind](data, sheet.options)
                 sheet.wide = sheet.result.values["wide"]
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
@@ -760,6 +762,71 @@ def run_survival(data: DataSheet, options: dict) -> AnalysisResult:
     result = survival(table, **kwargs)
     if xy.replicates > 1 and np.isfinite(xy.values[:, :, 1:]).any():
         result.warnings.append("Only the first replicate column of each data set is used; a survival table has one status per subject.")
+    return result
+
+
+CORRELATION_MATRIX_KEYS = ("method", "missing", "adjust", "ci", "alpha", "style")
+PCA_KEYS = ("standardize", "select", "variance", "number", "simulations", "seed")
+NEEDS_COLUMNS = "{} needs a column table with a variable in each column and a case in each row."
+
+
+def _variables(data: DataSheet | None, options: dict, what: str) -> dict[str, np.ndarray]:
+    """The columns of a column table as the variables of a multiple-variable analysis: all of them, or those the "variables" option names
+    (a name no longer in the table is ignored). Row i of every column is the same case."""
+
+    if data is None or data.contingency is not None or data.xy is not None or data.grouped is not None:
+        raise CellQuantError(NEEDS_COLUMNS.format(what))
+    table = data.table
+    chosen = options.get("variables")
+    names = table.names if not isinstance(chosen, (list, tuple)) else [name for name in table.names if name in chosen]
+    if not names and table.names:
+        raise CellQuantError("The columns this analysis used are gone; tick the variables again (Change options…).")
+    return {name: table[name].values for name in names}
+
+
+def _replicate_note(result: AnalysisResult, data: DataSheet) -> None:
+    if data.replicates is not None:
+        result.warnings.insert(0, "Each row is one biological replicate (the mean of its values), not one cell or image, so n is the number of replicates.")
+
+
+def _float_option(kwargs: dict, key: str) -> None:
+    try:
+        kwargs[key] = float(kwargs[key])
+    except (KeyError, TypeError, ValueError):
+        kwargs.pop(key, None)
+
+
+def run_correlation_matrix(data: DataSheet, options: dict) -> AnalysisResult:
+    """The correlation of every pair of columns of a column table (the rows being the cases), by the options of the dialog."""
+
+    variables = _variables(data, options, "A correlation matrix")
+    kwargs = {key: options[key] for key in CORRELATION_MATRIX_KEYS if key in options and options[key] is not None}
+    for key in ("ci", "alpha"):
+        _float_option(kwargs, key)
+    for key in ("method", "missing", "adjust", "style"):
+        if key in kwargs and not isinstance(kwargs[key], str):
+            kwargs.pop(key)
+    result = correlation_matrix(variables, **kwargs)
+    _replicate_note(result, data)
+    return result
+
+
+def run_pca(data: DataSheet, options: dict) -> AnalysisResult:
+    """Principal component analysis of the columns of a column table (the rows being the cases), by the options of the dialog."""
+
+    variables = _variables(data, options, "A principal component analysis")
+    kwargs = {key: options[key] for key in PCA_KEYS if key in options and options[key] is not None}
+    kwargs["standardize"] = kwargs.get("standardize", True) is not False
+    _float_option(kwargs, "variance")
+    for key in ("number", "simulations", "seed"):
+        try:
+            kwargs[key] = int(kwargs[key])
+        except (KeyError, TypeError, ValueError):
+            kwargs.pop(key, None)
+    if not isinstance(kwargs.get("select", ""), str):
+        kwargs.pop("select")
+    result = pca(variables, **kwargs)
+    _replicate_note(result, data)
     return result
 
 

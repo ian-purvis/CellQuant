@@ -50,6 +50,20 @@ def _layout(table: ReplicateTable) -> tuple[list[str], list[list[np.ndarray]], l
     return names, groups, units
 
 
+def _gaps(table: ReplicateTable) -> int:
+    """Blank cells with a value below them in the same replicate's block of the same column (blanks at the end of a block are
+    just a shorter replicate, not missing values)."""
+
+    owners, count = table.row_replicates(), 0
+    for column in table.values:
+        for unit in dict.fromkeys(owner for owner in owners if owner):
+            rows = [row for row, owner in enumerate(owners) if owner == unit and row < column.size]
+            finite = [row for row in rows if np.isfinite(column[row])]
+            if finite:
+                count += sum(1 for row in rows if row < finite[-1] and not np.isfinite(column[row]))
+    return count
+
+
 def nested_core(groups: list[list[np.ndarray]]) -> dict:
     """The nested ANOVA of values in replicates in groups (method of moments)."""
 
@@ -192,6 +206,10 @@ def nested(table: ReplicateTable, *, alternative: str = "two-sided", comparisons
         est = Estimates(names, core["group_means"], core["n_units"], np.diag(core["var_means"]), core["df_den"], "pooled",
                         error_label="SEs from the variance components, denominator df")
         result.methods += _follow_up(result, est, comparisons, method, control, pairs, family, False, alpha, ci, style, m=m, changes=changes)
+    gaps = _gaps(table)
+    if gaps:
+        result.warnings.append(f"{gaps} blank cell{'s' if gaps != 1 else ''} between values of a replicate {'were' if gaps != 1 else 'was'} "
+                               "left out.")
     if table.unassigned():
         result.warnings.append(f"{table.unassigned()} value(s) above the first replicate name belong to no replicate and were left out.")
     blanks = [name for name in table.names if name not in names]

@@ -38,6 +38,7 @@ from cellquant.stats.descriptive import (
 from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.multcomp import ComparisonPlan, adjust_p, compact_letter_display, p_value_stack
+from cellquant.stats.multivariate import correlation_matrix, pca
 from cellquant.stats.nested import nested
 from cellquant.stats.normality import lognormality, normality
 from cellquant.stats.outliers import grubbs_fit, identify_outliers, rout_fit
@@ -89,6 +90,7 @@ __all__ = [
     "compact_letter_display",
     "compare",
     "contingency",
+    "correlation_matrix",
     "describe",
     "effect_sizes",
     "fit_curve",
@@ -120,6 +122,7 @@ __all__ = [
     "p_value_stack",
     "paired_effect_sizes",
     "paired_t",
+    "pca",
     "percentiles",
     "process",
     "ratio_paired_t",
