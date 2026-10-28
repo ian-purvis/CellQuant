@@ -214,3 +214,24 @@ def test_check_the_engine_window(qtbot, tmp_path):
     assert "values agree" in dialog.summary.text() and dialog.table.rowCount() == len(dialog.rows)
     assert window.check_engine() is dialog
     assert Path(dialog.export_csv(str(tmp_path / "check.csv"))).exists()
+
+
+def test_show_working_waits_for_a_pending_curve_fit(qtbot):
+    pytest.importorskip("pytestqt")
+    pytest.importorskip("matplotlib")
+    from cellquant.gui.quantanalysis.results_view import ResultSheetView
+    from cellquant.gui.quantanalysis.window import QuantAnalysisWindow
+
+    window = QuantAnalysisWindow()
+    qtbot.addWidget(window)
+    window.open_example("Example", {"Control": [3, 5, 7], "Treated": [9, 11, 13]})
+    sheet = window.analyze("compare", {"test": "unpaired_t", "first": 0, "second": 1, "alternative": "two-sided", "ci": 0.95, "alpha": 0.05, "style": "classic"})
+    view = window.stack.currentWidget()
+    window.project._pending_fits.add(sheet.id)  # as when a curve fit's table has just changed
+    view.working_box.setChecked(True)
+    assert "Recomputing" in view.working.toPlainText() and "✓" not in view.working.toPlainText()
+    window.project._pending_fits.clear()
+    view.fill()
+    assert "✓" in view.working.toPlainText()
+    view.working_box.setChecked(False)
+    assert ResultSheetView.show_working is False

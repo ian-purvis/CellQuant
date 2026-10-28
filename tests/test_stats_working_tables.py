@@ -178,3 +178,14 @@ def test_no_result_gives_working_without_engine():
     sheet = _column_sheet(C=CONTROLS, P=PATIENTS)
     blocks = working("roc", sheet.table, {}, None)
     assert blocks and all(s.checked is None for s in _steps(blocks))
+
+
+def test_kaplan_meier_table_names_the_greenwood_sum_and_leaves_undefined_blank():
+    x = np.array([2.0, 3.0, 5.0])  # every subject has the event, so S reaches 0 at the last time
+    values = np.full((3, 1, 1), 1.0)
+    sheet = DataSheet("t", ColumnTable.from_columns({"x": [1.0]}))
+    sheet.xy = XYTable("Trial", "Time", x, ["Control"], values)
+    result = qa.run_survival(sheet, {})
+    km = next(b for b in working("survival", sheet.xy, {}, result) if b.title.startswith("Kaplan-Meier")).table
+    assert "Greenwood Σ" in km.columns and "G" not in km.columns
+    assert not np.isinf(km.select_dtypes("number").to_numpy()).any() and math.isnan(km["Greenwood Σ"].iloc[-1])

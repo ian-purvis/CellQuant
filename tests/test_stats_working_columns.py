@@ -370,3 +370,19 @@ def test_normality():
     assert blocks
     assert any(step.label.endswith("P value") for block in blocks for step in block.steps)
     assert any(b.title.startswith("Lognormality") for b in blocks)
+
+
+def test_anova_without_comparisons_says_so_and_brown_forsythe_df_are_both_shown():
+    from cellquant.gui.quantanalysis import project as qa
+    from cellquant.gui.quantanalysis.project import DataSheet
+    from cellquant.stats import ColumnTable
+    from cellquant.stats.steps import working
+
+    sheet = DataSheet("t", ColumnTable.from_columns({"C": [4.1, 5.0, 5.9, 5.2], "A": [6.2, 7.1, 8.3, 7.0], "B": [5.0, 6.1, 5.5, 6.6]}))
+    result = qa.run_anova(sheet, {"test": "ordinary"})
+    blocks = working("anova", sheet.table, {"test": "ordinary"}, result)
+    note = next(b for b in blocks if b.title == "Multiple comparisons")
+    assert not note.steps and "None were asked for" in note.note
+    bf = next(b for b in blocks if b.title.startswith("Brown-Forsythe"))
+    df = {step.label: step for step in bf.steps if step.label.startswith("df")}
+    assert df["df between"].value == 2 and df["df between"].checked and df["df within"].value == 9 and df["df within"].checked
