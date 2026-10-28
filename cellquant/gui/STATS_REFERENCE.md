@@ -1,6 +1,6 @@
 # Statistics reference
 
-Every number QuantAnalysis reports can be checked. Each analysis has a page that says, in plain words, what is done to your data, then how each number is calculated, with a small worked example you can redo by hand or with a calculator. **Run it with the engine** under an example runs it again and shows the page's numbers beside the engine's. **Open as a data table** puts the example into your project so you can run the analysis yourself and compare the results sheet line by line. The terms used on results sheets (P value, degrees of freedom, confidence interval…) have their own pages under Terms.
+Every number QuantAnalysis reports can be checked. Each analysis has a page that says, in plain words, what is done to your data, then how each number is calculated, with a small worked example you can redo by hand or with a calculator. **Run it with the engine** under an example runs it again and shows the page's numbers beside the engine's. **Open as a data table** puts the example into your project so you can run the analysis yourself and compare the results sheet line by line. The terms used on results sheets (P value, degrees of freedom, confidence interval…) have their own pages under Terms. For your own data, tick **Show working** on a results sheet: every intermediate quantity is worked out again from your values, step by step, beside the analysis's own number. **Help → Check the engine…** runs the engine on published reference data sets and compares every number.
 
 On a results sheet, **How is this calculated?** opens the page for that analysis, and double-clicking a row label opens the term it names. The full equations are in the statistics guide (Help → Statistics guide…); each page shows the matching part under **Full equations**.
 
@@ -16,11 +16,12 @@ On a results sheet, **How is this calculated?** opens the page for that analysis
 
 - Open the page for the analysis (**How is this calculated?** on the results sheet).
 - Read **What is done to your data**: which values are used, and what each one stands for (a biological replicate, an image or an object).
+- Tick **Show working** on the results sheet. It lists each step for your own data (group sizes, means, sums of squares, ranks, standard errors, degrees of freedom, the distribution call for P) with the formula and the numbers filled in, and the analysis's own value beside it (✓ agrees, ✗ differs). **Export working CSV…** saves the steps. Where a step is not redone by hand (an exact permutation P, an iterative fit), the working says how the engine gets it.
 - Work through the worked example. Each step names the quantity it computes, and the results sheet shows most of them, so you can see where a difference first appears.
 - Repeat with your own numbers. Means, SDs and sums of squares need only a calculator. For a P value, look the test statistic up in a table or use a distribution function (for example `scipy.stats.t.sf(t, df)` in Python, or `pt()` in R).
 - Small differences in the last digit come from rounding the intermediate steps. Keep at least 6 digits while you work.
 
-**Checked against:** The engine is tested against R, scipy and statsmodels, published tables and independent code. The statistics guide lists every check under "Checked against", and the analyses not yet compared with other packages under "Not yet checked against other packages".
+**Checked against:** The engine is tested against R, scipy and statsmodels, published tables and independent code. **Help → Check the engine…** runs 40 of these reference analyses (R's documented outputs on its example data sets, published critical-value tables, textbook examples) and shows each published value beside the engine's; **Export CSV…** saves the table, for example for a methods supplement. The statistics guide lists every check under "Checked against", and the analyses not yet compared with other packages under "Not yet checked against other packages".
 
 **Learn more:** [NIST/SEMATECH e-Handbook of Statistical Methods](https://www.itl.nist.gov/div898/handbook/) (formulas with worked sample output), [NIST Statistical Reference Datasets](https://www.itl.nist.gov/div898/strd/) (data with certified results for checking software), [Handbook of Biological Statistics](https://www.biostathandbook.com/) (each test explained for biologists), [Seeing Theory](https://seeing-theory.brown.edu/) (interactive pictures of the basic ideas), [StatQuest](https://statquest.org/video-index/) (short videos explaining each method).
 
@@ -2172,7 +2173,7 @@ By hand, for Area and Intensity:
 - Each eigenvector is signed so that its largest coefficient is positive, because a component's sign is arbitrary.
 - Loadings = eigenvector × √eigenvalue. With scaling on, a loading is the correlation of a variable with a component.
 - Scores = z × eigenvector: each case's position along each component kept.
-- Components to keep: **parallel analysis** keeps the components whose eigenvalue is above the 95th percentile of the same eigenvalue in random normal data of the same size (1000 data sets, seed 0, so it is repeatable); **eigenvalue > 1** (Kaiser); a **share of the variance**; or a number set by hand. At least one component is always kept.
+- Components to keep: **parallel analysis** compares PC1, PC2… in order with the 95th percentile of the same eigenvalue in random normal data of the same size (1000 data sets, seed 0, so it is repeatable) and keeps components until the first one that is not above it; **eigenvalue > 1** (Kaiser; with scaling off, above the mean eigenvalue, Σλ / k); a **share of the variance**; or a number set by hand. At least one component is always kept.
 
 **Worked example:** Two variables on four cases.
 

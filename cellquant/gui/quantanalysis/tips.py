@@ -578,6 +578,11 @@ HOW_CALCULATED = ("Open this analysis's page in the statistics reference: what i
                   "example to check the numbers. Double-click a row label to see what it means.")
 HOW_CALCULATED_DIALOG = ("Open the statistics reference at the analysis chosen here: what is done to your data, the equations, "
                          "and a worked example. The dialog stays open.")
+SHOW_WORKING = ("Show how each number on this sheet is reached: the intermediate quantities (means, sums of squares, ranks, "
+                "standard errors, degrees of freedom…) worked out again from the data, step by step, with the analysis's own value beside "
+                "each one. Stays ticked for every results sheet.")
+CHECK_ENGINE = ("Run the statistics engine on published reference data sets (R's documented outputs, textbook and published tables) "
+                "and compare every number with the published value.")
 GUIDE = "Answer a few questions about your experiment; the guide recommends a test, works out its degrees of freedom and fills its dialog."
 GUIDE_GOAL = "What the experiment asks. The table you selected sets the first answer; change it if the table is not the right kind yet."
 GUIDE_DOT = ("What one value in the table is. The test's sample size N must count independent samples (biological replicates): animals, "

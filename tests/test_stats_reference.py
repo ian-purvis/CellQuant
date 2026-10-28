@@ -179,3 +179,38 @@ def test_dialog_button_opens_the_chosen_test(qtbot):
     qtbot.addWidget(anova)
     next(item for item in anova.findChildren(QPushButton) if item.text() == "How is it calculated?").click()
     assert anova._reference.title.text() == "Ordinary one-way ANOVA"
+
+
+def test_show_working_on_a_results_sheet(qtbot, tmp_path):
+    pytest.importorskip("pytestqt")
+    pytest.importorskip("matplotlib")
+    from cellquant.gui.quantanalysis.window import QuantAnalysisWindow
+
+    window = QuantAnalysisWindow()
+    qtbot.addWidget(window)
+    window.show()
+    window.open_example("Example", {"Control": [3, 5, 7], "Treated": [9, 11, 13]})
+    window.analyze("compare", {"test": "unpaired_t", "first": 0, "second": 1, "alternative": "two-sided", "ci": 0.95, "alpha": 0.05, "style": "classic"})
+    view = window.stack.currentWidget()
+    assert not view.working.isVisibleTo(view)  # off by default
+    view.working_box.setChecked(True)
+    assert view.working.isVisibleTo(view) and view.working_export.isVisibleTo(view)
+    text = view.working.toPlainText()
+    assert "Pooled" in text and "✓" in text and text.count("✗") == 1  # only in the key above the steps
+    frame = __import__("pandas").read_csv(view.export_working(str(tmp_path / "w.csv")))
+    assert {"block", "quantity", "formula", "value", "engine", "agrees"} <= set(frame.columns)
+    view.working_box.setChecked(False)
+
+
+def test_check_the_engine_window(qtbot, tmp_path):
+    pytest.importorskip("pytestqt")
+    pytest.importorskip("matplotlib")
+    from cellquant.gui.quantanalysis.window import QuantAnalysisWindow
+
+    window = QuantAnalysisWindow()
+    qtbot.addWidget(window)
+    dialog = window.check_engine()
+    assert dialog.rows and all(row.ok for row in dialog.rows)
+    assert "values agree" in dialog.summary.text() and dialog.table.rowCount() == len(dialog.rows)
+    assert window.check_engine() is dialog
+    assert Path(dialog.export_csv(str(tmp_path / "check.csv"))).exists()
