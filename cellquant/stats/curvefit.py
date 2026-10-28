@@ -420,6 +420,15 @@ def global_fit(model: str | Model, data: list[tuple[np.ndarray, np.ndarray]], sh
 
     start = np.asarray(start, float)
     found = _least_squares(residual, _starts(start, model.linear))
+    if len(starts) > 1 and shared and not model.linear:
+        # The median of the separate fits can sit between very different data sets; also start the shared values at each
+        # data set's own, and keep the best.
+        for item in starts:
+            other = start.copy()
+            other[: len(shared)] = [item[name] for name in shared]
+            candidate = _least_squares(residual, [other])
+            if candidate is not None and (found is None or candidate.cost < found.cost * (1 - 1e-12)):
+                found = candidate
     if found is None:
         raise StatisticsError(f"{model.name} could not be fitted to the data sets together (the fit did not converge).")
     with np.errstate(all="ignore"):
@@ -481,9 +490,11 @@ def compare_data_sets(model: str | Model, data: dict[str, tuple[np.ndarray, np.n
         raise StatisticsError(f"{parameter} is not a free parameter of the fit, so it cannot be compared.")
     shared = list(free) if parameter is None else [parameter]
     null = global_fit(model, [data[name] for name in names], shared, fixed, [fits[name]["params"] for name in names])
-    if not null["converged"] or null["ambiguous"]:
+    if not null["converged"]:
         raise StatisticsError("The fit with " + (f"{parameter} shared" if parameter else "one curve for every data set")
-                              + " is ambiguous or did not converge, so the data sets are not compared.")
+                              + " did not converge, so the data sets are not compared.")
+    # An ambiguous shared fit is still compared: when the data sets differ strongly, forcing them to share a value leaves the
+    # other parameters poorly determined, but the F test and AICc use only its sum of squares, which has settled.
     ss_separate = sum(fits[name]["ss_resid"] for name in names)
     df_separate = sum(fits[name]["df"] for name in names)
     k_separate = sum(len(fits[name]["free"]) for name in names)
@@ -693,11 +704,21 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
                 datasets = compare_data_sets(fitted_model, data, fits, compare_parameter or None, fixed, alpha)
             except StatisticsError as exc:
                 result.warnings.append(str(exc))
-        if datasets is not None:
+        if datasets is not None and datasets["shared"]["ambiguous"]:
+            result.warnings.append("The fit with " + (f"{compare_parameter} shared" if compare_parameter else "one curve for every data set")
+                                   + " is ambiguous: its parameters are poorly determined, as happens when the data sets differ "
+                                   "strongly. The comparison uses only how well it fits (its sum of squares), so it still holds.")
+        if len(fits) >= 2:
             skipped = [name for name in table.sets if name not in fits]
-            lines = _dataset_rows(datasets, style)
-            section_title = next(iter(lines))[0]
-            lines[(section_title, "Data sets compared")] = ", ".join(datasets["data_sets"])
+            if datasets is not None:
+                lines = _dataset_rows(datasets, style)
+                section_title = next(iter(lines))[0]
+            else:
+                section_title = (f"Is {compare_parameter} the same for every data set?" if compare_parameter
+                                 else "Does one curve fit every data set?")
+                lines = {(section_title, "Result"): "Not compared (see the warnings)"}
+            lines[(section_title, "Data sets compared" if datasets is not None else "Data sets")] = ", ".join(
+                datasets["data_sets"] if datasets is not None else fits)
             if skipped:
                 lines[(section_title, "Left out (no fit)")] = ", ".join(skipped)
             extra = pd.DataFrame({next(iter(fits)): lines})
@@ -777,7 +798,8 @@ def _dataset_rows(item: dict, style: str) -> dict:
     shared = "one shared value" if parameter else "one curve"
     rows = {}
     if parameter:
-        rows[(section, f"Shared {parameter}")] = fmt(item["shared"]["params"][0][parameter])
+        rows[(section, f"Shared {parameter}")] = fmt(item["shared"]["params"][0][parameter]) + (
+            " (poorly determined: the data sets differ too much to share it)" if item["shared"]["ambiguous"] else "")
     rows[(section, "F (extra sum-of-squares)")] = fmt(item["f"])
     rows[(section, "DFn, DFd")] = f"{item['dfn']}, {item['dfd']}"
     rows[(section, "P value")] = format_p(item["p"], style=style)

@@ -144,6 +144,8 @@ def test_edits_refit_once_typing_pauses(window, qtbot):
     before = fit.result
     window.select(sheet.id)
     graph = window.new_graph("xy")
+    ax = window.stack.currentWidget().figure._cq_axes["main"]
+    assert [line for line in ax.lines if line.get_marker() == "D"]  # the unknowns read off the curve
     redrawn = []
     window.project.changed.connect(redrawn.append)
     for k in range(3):  # three quick edits: one refit
@@ -159,6 +161,28 @@ def test_edits_refit_once_typing_pauses(window, qtbot):
     fit.options.update(ci="wide", alpha=None, model=7, compare="datasets", compare_parameter="Nope")  # a damaged project file
     window.project.rerun(fit)
     assert fit.error == "" and any("not a free parameter" in text for text in fit.warnings)
+
+
+def test_save_and_export_wait_for_no_pending_fit(window, tmp_path):
+    from cellquant.gui.quantanalysis import project_file
+    from cellquant.gui.quantanalysis.dialogs import CURVEFIT_DEFAULTS
+    from cellquant.gui.quantanalysis.results_view import ResultSheetView
+
+    sheet = _filled(window)
+    fit = window.analyze("curvefit", dict(CURVEFIT_DEFAULTS))
+    view = window.stack.currentWidget()
+    assert isinstance(view, ResultSheetView)
+    before = fit.result
+    sheet.xy.values[0, 0, :] = 30.0
+    window.project.data_changed(sheet.id)
+    assert fit.result is before  # waiting for typing to pause
+    view.export_csv(str(tmp_path / "fit.csv"))  # exporting refits first
+    assert fit.result is not before and not window.project._pending_fits
+    before = fit.result
+    sheet.xy.values[0, 0, :] = 40.0
+    window.project.data_changed(sheet.id)
+    project_file.save(window.project, tmp_path / "fit.cqstats")  # so does saving
+    assert fit.result is not before
 
 
 def test_dialog_and_name_survive_damaged_options(window):

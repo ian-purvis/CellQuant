@@ -177,6 +177,7 @@ class ResultSheetView(QWidget):
         self.methods.setText(sheet.methods or "")
 
     def copy(self) -> None:
+        self.project.flush_fits()
         QApplication.clipboard().setText(result_text(self.sheet))
         self.window.status("Results copied.")
 
@@ -185,6 +186,7 @@ class ResultSheetView(QWidget):
             path, _ = QFileDialog.getSaveFileName(self, "Export results", f"{self.sheet.name}.csv", "CSV (*.csv)")
         if not path:
             return None
+        self.project.flush_fits()
         result_frame(self.sheet).to_csv(path, index=False)
         self.window.status(f"Saved {path}")
         return path

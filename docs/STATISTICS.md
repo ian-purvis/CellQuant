@@ -392,7 +392,9 @@ With k fitted parameters and n points: df = n − k, Sy.x = √(SS_residual / df
 - **Does one curve fit every data set?**: one curve fitted to all the data sets together against a curve per data set (F test and AICc).
 - **Does one parameter differ between data sets?**: the chosen parameter (for example LogEC50) is shared by all data sets and the others are fitted per data set (a global fit), against a separate fit per data set. With a straight line and the slope, this is the slopes test of linear regression.
 
-**Unknowns** (ticked): for each row with Y but no X, the mean of its Y values is read off each data set's curve, within the range of X the curve was fitted on (a standard curve). A Y the curve does not reach there is reported as out of range, not extrapolated; when the curve passes it more than once (a peak), every X is listed. For log(dose), the dose is given too.
+Data sets are compared only when each one's own fit is sound. The shared fit starts from the median of the separate fits and from each data set's own values, and keeps the best. When the data sets differ strongly, forcing them to share a value can leave the shared fit's other parameters poorly determined (ambiguous); the comparison still holds, as the F test and AICc use only its sum of squares, and the sheet says so. A shared fit that did not converge is not compared; the sheet then lists the data sets and the reason.
+
+**Unknowns** (ticked): for each row with Y but no X, the mean of its Y values is read off each data set's curve, within the range of X the curve was fitted on (a standard curve). A Y the curve does not reach there is reported as out of range, not extrapolated; when the curve passes it more than once (a peak), every X is listed. For log(dose), the dose is given too. The XY graph marks each unknown on its curve with an open diamond.
 
 ## Correlation (`xy_correlation(xy, method)`)
 

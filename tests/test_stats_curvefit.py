@@ -204,7 +204,10 @@ def test_comparisons_name_their_data_sets_and_refuse_bad_shared_fits(monkeypatch
     real = curvefit.global_fit
     monkeypatch.setattr(curvefit, "global_fit", lambda *args, **kwargs: {**real(*args, **kwargs), "converged": False})
     result = nonlinear_regression(table, model="line", compare="datasets", compare_parameter="Slope")
-    assert result.values["datasets"] is None and any("Slope shared is ambiguous" in text for text in result.warnings)
+    assert result.values["datasets"] is None and any("Slope shared did not converge" in text for text in result.warnings)
+    wide = result.values["wide"]  # not compared, but the sheet still says which data sets and why
+    assert wide.loc[("Is Slope the same for every data set?", "Result"), "A"].startswith("Not compared")
+    assert wide.loc[("Is Slope the same for every data set?", "Data sets"), "A"] == "A, B"
     monkeypatch.setattr(curvefit, "_CACHE", {})
     result = nonlinear_regression(table, model="line", compare="datasets", compare_parameter="Top")  # no such parameter: a warning
     assert result.values["datasets"] is None and any("not a free parameter" in text for text in result.warnings)
@@ -224,3 +227,19 @@ def test_labels_for_unranked_models_growth_and_ambiguity_rows():
                                         (100 / (1 + 1 / np.geomspace(0.01, 100, 8)) + RNG.normal(0, 1, 8)).reshape(8, 1, 1)),
                                 model="dose_response")
     assert "can reach below 0" in dose.methods
+
+
+def test_strongly_different_data_sets_are_still_compared():
+    # Sharing LogEC50 between curves three log units apart leaves the shared fit's other parameters poorly determined; the
+    # comparison only needs its sum of squares, so it reports a tiny P (and says the shared fit is ambiguous) instead of skipping.
+    rng = np.random.default_rng(1)
+    xs = np.linspace(-9, -3, 9)
+    values = np.empty((9, 2, 3))
+    for j, ec in enumerate((-7, -4)):
+        values[:, j, :] = (100 / (1 + 10 ** (ec - xs)))[:, None] + rng.normal(0, 5, (9, 3))
+    table = XYTable("Response", "log[dose]", xs, ["Low", "High"], values)
+    result = nonlinear_regression(table, model="log_dose_response", compare="datasets", compare_parameter="LogEC50")
+    datasets = result.values["datasets"]
+    assert datasets is not None and datasets["p"] < 1e-6 and datasets["f_prefers"] == "separate" and datasets["shared"]["ambiguous"]
+    assert any("ambiguous" in text and "still holds" in text for text in result.warnings)
+    assert "poorly determined" in result.values["wide"].loc[("Is LogEC50 the same for every data set?", "Shared LogEC50"), "Low"]

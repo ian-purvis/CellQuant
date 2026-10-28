@@ -1167,7 +1167,7 @@ def _draw_xy(figure, data, result, fmt: GraphFormat, font: float, notes: list[st
     if fmt.xy_band != "none" and not fits:
         notes.append("A band is drawn around a fitted line or curve: choose a regression or curve fit of this table as the graph's "
                      "comparison.")
-    no_band, no_curve = [], []
+    no_band, no_curve, read_off = [], [], []
     left_out = 0
     for j, name in enumerate(xy.sets):
         style = fmt.dataset(name)
@@ -1224,6 +1224,15 @@ def _draw_xy(figure, data, result, fmt: GraphFormat, font: float, notes: list[st
                 no_curve.append(name)
             _tag(ax.plot(grid, ys, color=color, linewidth=max(0.8, style.center_width * 0.75), linestyle="--" if unsure else "-",
                          zorder=4.5)[0], *tag)
+            unknowns = [item for item in (result.values.get("interpolated") or {}).get(name, [])
+                        if np.isfinite(item["x"]) and (not x_base or item["x"] > 0) and (not y_base or item["y"] > 0)]
+            if curves and unknowns:  # the unknowns read off the curve, so a standard curve shows where each sample fell
+                read_off.append(name)
+                _tag(ax.plot([item["x"] for item in unknowns], [item["y"] for item in unknowns], linestyle="none", marker="D",
+                             markersize=max(4.0, math.sqrt(area) * 0.9), markerfacecolor="none", markeredgecolor=color,
+                             markeredgewidth=1.2, zorder=5)[0], *tag)
+    if read_off:
+        notes.append("Open diamonds: unknowns of " + ", ".join(read_off) + " at the X read off the curve.")
     if no_curve:
         notes.append(f"The fit of {', '.join(no_curve)} is ambiguous or did not converge (see its results), so its curve is dashed.")
     if no_band:
