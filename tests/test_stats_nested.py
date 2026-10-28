@@ -118,3 +118,12 @@ def test_conservative_df_never_exceeds_computed_and_trend_refused():
     assert nested(table, df="conservative").values["dfd"] == pytest.approx(min(8, computed))
     with pytest.raises(StatisticsError, match="trend"):
         nested(_table(3, 4, lambda r, i: 5), comparisons="trend")
+
+
+def test_gaps_inside_a_replicate_are_counted():
+    table = _table(2, 4, lambda r, i: 6)
+    table.values[0][1] = np.nan  # a gap inside replicate 1 of G1
+    result = nested(table)
+    assert any("1 blank cell between values of a replicate was left out" in w for w in result.warnings)
+    padded = _table(2, 4, lambda r, i: 4 + i)  # G1's shorter blocks end in blanks: not gaps
+    assert not any("blank cell" in w for w in nested(padded).warnings)

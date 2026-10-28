@@ -531,9 +531,10 @@ def recommend(answers: Answers, facts: Facts | None = None) -> Recommendation:
         rec.warnings.append(f"A group has {min(counts)} biological replicate(s). Three is a practical minimum, and subtle differences need "
                             "more: adding replicates raises power far more than measuring more cells in each.")
     if answers.dot != "replicate" and not answers.independent and not facts.replicate_means:
-        rec.alternatives.append("Nested t test or nested one-way ANOVA (on a table with replicates): keeps every value, tests the groups "
-                                "against the variation among replicates and shows how much of the variation lies among them; with the same "
-                                "number of values per replicate its test equals the test on replicate means")
+        rec.alternatives.append("Nested t test or nested one-way ANOVA (first tick Replicates above the table and name each row's replicate, "
+                                "or import with a replicate column): keeps every value, tests the groups against the variation among "
+                                "replicates and shows how much of the variation lies among them; with the same number of values per "
+                                "replicate its test equals the test on replicate means")
     small = [name for name, p in facts.normality.items() if p < 0.05]
     if small and answers.gaussian in ("yes", "unsure") and rec.kind in ("compare", "anova"):
         rec.warnings.append(f"Shapiro-Wilk P < 0.05 for {', '.join(small)}: those values may not be Gaussian (with large N this can be a "
