@@ -1155,8 +1155,9 @@ def _draw_estimation(ax, figure, columns, compared, result, fmt: GraphFormat, fo
 
 def _draw_xy(figure, data, result, fmt: GraphFormat, font: float, notes: list[str]) -> list[str]:
     """An XY table: each data set's points (or row means with error bars) against X, and a linked linear regression's
-    lines with their bands."""
+    lines (or curve fit's curves) with their bands."""
 
+    from cellquant.stats.curvefit import curve_band, predict
     from cellquant.stats.xy import band
 
     xy = data.xy
@@ -1168,9 +1169,13 @@ def _draw_xy(figure, data, result, fmt: GraphFormat, font: float, notes: list[st
     _apply_scale(ax, fmt.y)
     if fmt.y.breaks:
         notes.append("Axis breaks are drawn on column graphs only.")
-    fits = result.values.get("fits") if result is not None and getattr(result, "analysis", "") == "Linear regression" else None
+    analysis = getattr(result, "analysis", "") if result is not None else ""
+    fits = result.values.get("fits") if analysis in ("Linear regression", "Nonlinear regression") else None
+    curves = analysis == "Nonlinear regression"
     if fmt.xy_band != "none" and not fits:
-        notes.append("A band is drawn around a fitted line: choose a linear regression of this table as the graph's comparison.")
+        notes.append("A band is drawn around a fitted line or curve: choose a regression or curve fit of this table as the graph's "
+                     "comparison.")
+    no_band, no_curve = [], []
     left_out = 0
     for j, name in enumerate(xy.sets):
         style = fmt.dataset(name)
@@ -1215,11 +1220,25 @@ def _draw_xy(figure, data, result, fmt: GraphFormat, font: float, notes: list[st
         if fit is not None:
             low_x, high_x = fit["x_min"], fit["x_max"]
             grid = (np.geomspace(low_x, high_x, 200) if x_base and low_x > 0 else np.linspace(low_x, high_x, 200))
-            ys = fit["slope"] * grid + fit["intercept"]
+            ys = predict(fit, grid) if curves else fit["slope"] * grid + fit["intercept"]
             if fmt.xy_band != "none":
-                low, high = band(fit, grid, result.options.get("ci", 0.95), prediction=fmt.xy_band == "prediction")
-                _tag(ax.fill_between(grid, low, high, color=color, alpha=0.15, linewidth=0, zorder=1), *tag)
-            _tag(ax.plot(grid, ys, color=color, linewidth=max(0.8, style.center_width * 0.75), zorder=4.5)[0], *tag)
+                low, high = (curve_band if curves else band)(fit, grid, result.options.get("ci", 0.95), prediction=fmt.xy_band == "prediction")
+                if np.isfinite(low).any():
+                    _tag(ax.fill_between(grid, low, high, color=color, alpha=0.15, linewidth=0, zorder=1), *tag)
+                else:
+                    no_band.append(name)
+            unsure = curves and (fit["ambiguous"] or not fit["converged"])
+            if unsure:
+                no_curve.append(name)
+            _tag(ax.plot(grid, ys, color=color, linewidth=max(0.8, style.center_width * 0.75), linestyle="--" if unsure else "-",
+                         zorder=4.5)[0], *tag)
+    if no_curve:
+        notes.append(f"The fit of {', '.join(no_curve)} is ambiguous or did not converge (see its results), so its curve is dashed.")
+    if no_band:
+        notes.append(f"No band for {', '.join(no_band)}: its fit has no confidence intervals (it is ambiguous or has no residual "
+                     "degrees of freedom).")
+    if fits and fmt.xy_band == "prediction" and result.options.get("replicates") == "mean":
+        notes.append("The fit used each row's mean, so the prediction band is for a new row mean, not a single replicate.")
     if left_out:
         notes.append(f"{left_out} value(s) cannot be shown on a log axis (≤ 0) and are left out of the graph.")
     if fmt.x.min is not None or fmt.x.max is not None:

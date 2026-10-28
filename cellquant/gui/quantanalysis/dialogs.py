@@ -16,9 +16,12 @@ from qtpy.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
@@ -26,6 +29,7 @@ from qtpy.QtWidgets import (
     QRadioButton,
     QTextBrowser,
     QVBoxLayout,
+    QWidget,
 )
 
 from cellquant.errors import CellQuantError
@@ -34,6 +38,7 @@ from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNI
 from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, parse_p_values
 from cellquant.stats import STYLES, ColumnTable
 from cellquant.stats import sources, transforms
+from cellquant.stats.curvefit import MODELS, nonlinear_regression
 from cellquant.stats.grouped import COMPARE, FAMILIES, GroupedTable, two_way_anova
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
 from cellquant.stats.replicates import ReplicateTable, looks_like_replicate
@@ -1018,6 +1023,217 @@ class XYDialog(QDialog):
     def accept(self) -> None:
         try:
             (linear_regression if self.kind == "linreg" else xy_correlation)(self.xy, **self.options())
+        except CellQuantError as exc:
+            self.note.setText(str(exc))
+            self.note.setVisible(True)
+            return
+        super().accept()
+
+
+# --- XY tables: nonlinear regression (curve fit) --------------------------------------------------------------
+
+CURVEFIT_DEFAULTS = {"model": "log_dose_response", "fixed": {}, "replicates": "each", "ci": 0.95, "alpha": 0.05, "style": "classic",
+                     "compare": "none", "compare_model": None, "compare_fixed": {}, "compare_parameter": None, "interpolate": False}
+CURVE_COMPARE = {"none": ("No comparison", tips.CURVE_COMPARE_NONE), "model": ("With a second fit", tips.CURVE_COMPARE_MODEL),
+                 "datasets": ("Does one curve fit every data set?", tips.CURVE_COMPARE_DATASETS),
+                 "parameter": ("Does one parameter differ between data sets?", tips.CURVE_COMPARE_PARAMETER)}
+
+
+def _model_combo(current: str) -> QComboBox:
+    combo = QComboBox()
+    for key, model in MODELS.items():
+        combo.addItem(model.name, key)
+        combo.setItemData(combo.count() - 1, model.equation, Qt.ToolTipRole)
+    combo.setToolTip(tips.CURVE_MODEL)
+    combo.setCurrentIndex(max(0, combo.findData(current)))
+    return combo
+
+
+class FixedParameters(QWidget):
+    """A Fix box per parameter of a model and the constant it is held at, two to a row."""
+
+    def __init__(self):
+        super().__init__()
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.rows: dict[str, tuple[QCheckBox, QLineEdit]] = {}
+
+    def set_model(self, key: str, fixed: dict | None = None) -> None:
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self.rows = {}
+        fixed = fixed or {}
+        for row, name in enumerate(MODELS[key].params):
+            box = QCheckBox(f"Fix {name} at")
+            box.setToolTip(tips.CURVE_FIX)
+            value = QLineEdit("" if name not in fixed else f"{fixed[name]:g}" if isinstance(fixed[name], (int, float)) else str(fixed[name]))
+            value.setPlaceholderText("value")
+            value.setMaximumWidth(70)
+            box.setChecked(name in fixed)
+            value.setEnabled(name in fixed)
+            box.toggled.connect(value.setEnabled)
+            self.grid.addWidget(box, row // 2, 2 * (row % 2))  # two per row keeps the dialog short
+            self.grid.addWidget(value, row // 2, 2 * (row % 2) + 1)
+            self.rows[name] = (box, value)
+        self.setMinimumHeight(self.grid.sizeHint().height())  # a form beside a group box can otherwise squeeze the rows together
+
+    def values(self) -> dict:
+        """The ticked parameters and their constants. Raises CellQuantError for a value that is not a number."""
+
+        out = {}
+        for name, (box, value) in self.rows.items():
+            if box.isChecked():
+                try:
+                    out[name] = float(value.text().strip())
+                except ValueError:
+                    raise CellQuantError(f"Type the number to hold {name} at (or untick Fix {name}).") from None
+        return out
+
+
+class CurveFitDialog(QDialog):
+    """Nonlinear regression of an XY table's data sets: the model, fixed parameters, a comparison and interpolation."""
+
+    def __init__(self, parent, xy: XYTable, options: dict | None = None):
+        super().__init__(parent)
+        self.xy = xy
+        self.setWindowTitle("Nonlinear regression (curve fit)")
+        options = {**CURVEFIT_DEFAULTS, **(options or {})}
+        for key in ("fixed", "compare_fixed"):  # a damaged project may hold anything here
+            if not isinstance(options[key], dict):
+                options[key] = {}
+        compare = "parameter" if options["compare"] == "datasets" and options.get("compare_parameter") else options["compare"]
+        layout = QVBoxLayout(self)
+        layout.setSizeConstraint(QLayout.SetMinimumSize)  # the parameter rows change with the model; never squeeze them
+        intro = QLabel(f"{len(xy.sets)} data set(s) against {xy.x_title}. {tips.CURVEFIT}")
+        intro.setWordWrap(True)
+        intro.setStyleSheet(NOTE_STYLE)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        self.model = _model_combo(options["model"])
+        form.addRow("Model", self.model)
+        self.equation = QLabel()
+        self.equation.setWordWrap(True)
+        self.equation.setStyleSheet(NOTE_STYLE)
+        form.addRow("", self.equation)
+        self.fixed = FixedParameters()
+        form.addRow("Constraints", self.fixed)
+        self.replicates = QComboBox()
+        self.replicates.addItem("Each replicate is a point", "each")
+        self.replicates.addItem("Only the mean of each row", "mean")
+        self.replicates.setToolTip(tips.XY_REPLICATES)
+        self.replicates.setCurrentIndex(max(0, self.replicates.findData(options["replicates"])))
+        self.replicates.setEnabled(xy.replicates > 1)
+        form.addRow("Replicates", self.replicates)
+        self.interpolate = QCheckBox("Read X off the curve for rows with Y but no X")
+        self.interpolate.setToolTip(tips.CURVE_INTERPOLATE)
+        self.interpolate.setChecked(bool(options["interpolate"]))
+        form.addRow("Unknowns", self.interpolate)
+        self.compare = QComboBox()
+        for key, (name, tip) in CURVE_COMPARE.items():
+            self.compare.addItem(name, key)
+            self.compare.setItemData(self.compare.count() - 1, tip, Qt.ToolTipRole)
+        self.compare.setToolTip("\n".join(f"{name}: {tip}" for name, tip in CURVE_COMPARE.values()))
+        self.compare.setCurrentIndex(max(0, self.compare.findData(compare)))
+        form.addRow("Compare", self.compare)
+        layout.addLayout(form)
+        self.second = QGroupBox("Second fit")
+        second = QFormLayout(self.second)
+        self.second_model = _model_combo(options.get("compare_model") or options["model"])
+        second.addRow("Model", self.second_model)
+        self.second_fixed = FixedParameters()
+        second.addRow("Constraints", self.second_fixed)
+        layout.addWidget(self.second)
+        self.parameter_box = QWidget()
+        row = QHBoxLayout(self.parameter_box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QLabel("Parameter"))
+        self.parameter = QComboBox()
+        self.parameter.setToolTip(tips.CURVE_COMPARE_PARAMETER)
+        row.addWidget(self.parameter, 1)
+        layout.addWidget(self.parameter_box)
+        stats_form = QFormLayout()
+        self.alpha = QDoubleSpinBox()
+        self.alpha.setRange(0.0001, 0.5)
+        self.alpha.setDecimals(4)
+        self.alpha.setSingleStep(0.01)
+        self.alpha.setToolTip(tips.ANOVA_ALPHA)
+        self.alpha.setValue(float(options["alpha"]))
+        stats_form.addRow("Alpha", self.alpha)
+        self.ci = QComboBox()
+        for value in (0.90, 0.95, 0.99):
+            self.ci.addItem(f"{100 * value:g}%", value)
+        self.ci.setToolTip(tips.ANOVA_CI)
+        self.ci.setCurrentIndex(max(0, self.ci.findData(options["ci"])))
+        stats_form.addRow("Confidence interval", self.ci)
+        self.style = QComboBox()
+        for name in STYLES:
+            self.style.addItem(name, name)
+        self.style.setToolTip(tips.ANOVA_STYLE)
+        self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
+        stats_form.addRow("P value style", self.style)
+        layout.addLayout(stats_form)
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet(WARNING_STYLE)
+        self.note.setVisible(False)
+        layout.addWidget(self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._model_changed(options.get("fixed") or {}, options.get("compare_parameter"))
+        self.second_fixed.set_model(self.second_model.currentData(), options.get("compare_fixed") or {})
+        self.model.currentIndexChanged.connect(lambda _index: self._model_changed())
+        self.second_model.currentIndexChanged.connect(lambda _index: self.second_fixed.set_model(self.second_model.currentData()))
+        self.compare.currentIndexChanged.connect(lambda _index: self._compare_changed())
+        self._compare_changed()
+
+    def fixed_watch(self) -> None:
+        for box, _value in self.fixed.rows.values():
+            box.toggled.connect(lambda _checked: self._fill_parameters())
+
+    def _model_changed(self, fixed: dict | None = None, parameter: str | None = None) -> None:
+        key = self.model.currentData()
+        self.equation.setText(MODELS[key].equation)
+        self.fixed.set_model(key, fixed)
+        self.fixed_watch()
+        self._fill_parameters(parameter)
+
+    def _fill_parameters(self, parameter: str | None = None) -> None:
+        """The parameters the data sets can be compared on: the free ones."""
+
+        current = parameter or self.parameter.currentData()
+        self.parameter.clear()
+        for name in MODELS[self.model.currentData()].params:
+            box, _value = self.fixed.rows[name]
+            if not box.isChecked():
+                self.parameter.addItem(name, name)
+        self.parameter.setCurrentIndex(max(0, self.parameter.findData(current)))
+
+    def _compare_changed(self) -> None:
+        compare = self.compare.currentData()
+        self.second.setVisible(compare == "model")
+        self.parameter_box.setVisible(compare == "parameter")
+        if self.isVisible():  # before it is shown, the dialog sizes itself to what is visible
+            self.adjustSize()
+
+    def options(self) -> dict:
+        """The chosen options. Raises CellQuantError when a fixed value is not a number."""
+
+        compare = self.compare.currentData()
+        return {"model": self.model.currentData(), "fixed": self.fixed.values(), "replicates": self.replicates.currentData(),
+                "ci": self.ci.currentData(), "alpha": round(self.alpha.value(), 6), "style": self.style.currentData(),
+                "compare": "datasets" if compare == "parameter" else compare,
+                "compare_model": self.second_model.currentData() if compare == "model" else None,
+                "compare_fixed": self.second_fixed.values() if compare == "model" else {},
+                "compare_parameter": self.parameter.currentData() if compare == "parameter" else None,
+                "interpolate": self.interpolate.isChecked()}
+
+    def accept(self) -> None:
+        try:
+            nonlinear_regression(self.xy, **self.options())
         except CellQuantError as exc:
             self.note.setText(str(exc))
             self.note.setVisible(True)

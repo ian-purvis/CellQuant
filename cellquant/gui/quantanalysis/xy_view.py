@@ -64,7 +64,8 @@ class XYSheetView(QWidget):
             button.clicked.connect(lambda _checked=False, slot=slot: slot())
             bar.addWidget(button)
         bar.addStretch(1)
-        for text, tip, kind in (("Linear regression…", tips.LINREG, "linreg"), ("Correlation…", tips.XYCORR, "xycorr")):
+        for text, tip, kind in (("Linear regression…", tips.LINREG, "linreg"), ("Fit a curve…", tips.CURVEFIT, "curvefit"),
+                                ("Correlation…", tips.XYCORR, "xycorr")):
             button = QPushButton(text)
             button.setToolTip(tip)
             button.clicked.connect(lambda _checked=False, kind=kind: window.analyze(kind))
@@ -111,7 +112,8 @@ class XYSheetView(QWidget):
         self._filling = False
         self.description.setText(self.sheet.description or tips.XY_TABLE)
         missing = int((~np.isfinite(xy.x) & np.isfinite(xy.values).any(axis=(1, 2))).sum())
-        self.warnings.setText(html.escape(f"⚠ {missing} row(s) have Y values but no X; they are left out of the analyses.") if missing else "")
+        self.warnings.setText(html.escape(f"⚠ {missing} row(s) have Y values but no X; they are left out of the fits (a curve fit can interpolate their X as "
+                                                f"unknowns).") if missing else "")
         self.warnings.setVisible(bool(missing))
         self.notes.setText(" ".join(self.sheet.notes))
 
