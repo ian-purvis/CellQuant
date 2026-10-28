@@ -47,6 +47,7 @@ from cellquant.gui.quantanalysis.dialogs import (
     DEFAULT_OPTIONS,
     AnovaDialog,
     CompareDialog,
+    ContingencyDialog,
     CurveFitDialog,
     ImportCsvDialog,
     ImportDialog,
@@ -68,10 +69,12 @@ from cellquant.gui.quantanalysis.project import (
     Project,
     ResultSheet,
     set_grouped,
+    set_contingency,
     set_xy,
 )
 from cellquant.gui.quantanalysis.results_view import ResultSheetView
 from cellquant.stats import ColumnTable, sources, transforms
+from cellquant.stats.contingency import ContingencyTable
 from cellquant.stats.curvefit import MODELS as CURVE_MODELS
 from cellquant.stats.grouped import GroupedTable
 from cellquant.stats.xy import XYTable
@@ -238,6 +241,7 @@ class QuantAnalysisWindow(QMainWindow):
             ("New column table", "An empty table to type or paste values into.", self.new_table),
             ("New grouped table", tips.NEW_GROUPED, self.new_grouped_table),
             ("New XY table", tips.NEW_XY, self.new_xy_table),
+            ("New contingency table", tips.NEW_CONTINGENCY, self.new_contingency_table),
             ("Open project…", "A QuantAnalysis project file (.cqstats) saved before: its tables, analyses and graphs.", self.open_project_dialog),
         ):
             button = QPushButton(label)
@@ -264,6 +268,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(file, "New column table", self.new_table, "An empty table: one column per group.")
         self._action(file, "New grouped table", self.new_grouped_table, tips.NEW_GROUPED)
         self._action(file, "New XY table", self.new_xy_table, tips.NEW_XY)
+        self._action(file, "New contingency table", self.new_contingency_table, tips.NEW_CONTINGENCY)
         self._action(file, "Import CSV…", self.import_csv_dialog, "A CSV file, wide (one column per group) or long (value and group columns).")
         file.addSeparator()
         self._action(file, "Import from the open experiment…", self.import_experiment, "The experiment open in CellQuant, at its current cutoffs.")
@@ -282,6 +287,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(analyze, "Linear regression…", lambda: self.analyze("linreg"), tips.LINREG)
         self._action(analyze, "Nonlinear regression (curve fit)…", lambda: self.analyze("curvefit"), tips.CURVEFIT)
         self._action(analyze, "Correlation (XY)…", lambda: self.analyze("xycorr"), tips.XYCORR)
+        self._action(analyze, "Contingency table…", lambda: self.analyze("contingency"), tips.CONTINGENCY)
         analyze.addSeparator()
         self._action(analyze, "Identify outliers…", lambda: self.analyze("outliers"),
                      "ROUT, Grubbs' and iterative Grubbs' tests. Flagged values are shaded in the table and hollow on graphs; the table is not changed.")
@@ -399,6 +405,7 @@ class QuantAnalysisWindow(QMainWindow):
             return
         view = self.views.get(sheet_id)
         if view is None:
+            from cellquant.gui.quantanalysis.contingency_view import ContingencySheetView
             from cellquant.gui.quantanalysis.graph_view import GraphSheetView
             from cellquant.gui.quantanalysis.grouped_view import GroupedSheetView
             from cellquant.gui.quantanalysis.layout_view import LayoutSheetView
@@ -406,6 +413,7 @@ class QuantAnalysisWindow(QMainWindow):
 
             kind = (GroupedSheetView if isinstance(sheet, DataSheet) and sheet.grouped is not None
                     else XYSheetView if isinstance(sheet, DataSheet) and sheet.xy is not None
+                    else ContingencySheetView if isinstance(sheet, DataSheet) and sheet.contingency is not None
                     else DataSheetView if isinstance(sheet, DataSheet) else ResultSheetView if isinstance(sheet, ResultSheet)
                     else LayoutSheetView if isinstance(sheet, LayoutSheet) else GraphSheetView)
             view = kind(self, self.project, sheet)
@@ -664,6 +672,15 @@ class QuantAnalysisWindow(QMainWindow):
         self.select(sheet.id)
         return sheet
 
+    def new_contingency_table(self) -> DataSheet:
+        """An empty 2 × 2 contingency table to type counts into."""
+
+        sheet = DataSheet(f"Data {len(self.project.data) + 1}", ColumnTable())
+        set_contingency(sheet, ContingencyTable("", ["Group A", "Group B"], ["Outcome", "No outcome"], np.full((2, 2), np.nan)))
+        self.project.add_data(sheet)
+        self.select(sheet.id)
+        return sheet
+
     def import_csv_dialog(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Import CSV", str(Path.home()), "CSV files (*.csv *.txt);;All files (*)")
         if path:
@@ -869,6 +886,9 @@ class QuantAnalysisWindow(QMainWindow):
         if data is None:
             self.status("Select a data table first (or import one: File → Open CellQuant results folder…).")
             return None
+        if data.contingency is not None and kind != "contingency":
+            self.status("A contingency table is analyzed with Contingency table…; the other analyses need a column, grouped or XY table.")
+            return None
         if data.xy is not None and kind in ("compare", "anova", "outliers", "twoway"):
             self.status("An XY table is analyzed with Linear regression…, Nonlinear regression… or Correlation (XY)…; the column analyses need a "
                         "column table.")
@@ -891,6 +911,11 @@ class QuantAnalysisWindow(QMainWindow):
                             "data set factor.")
                 return None
             dialog = lambda: TwoWayDialog(self, data.grouped)  # noqa: E731
+        elif kind == "contingency":
+            if data.contingency is None:
+                self.status("Contingency analyses need a contingency table of counts: File → New contingency table.")
+                return None
+            dialog = lambda: ContingencyDialog(self, data.contingency)  # noqa: E731
         elif kind in ("linreg", "xycorr", "curvefit"):
             if data.xy is None:
                 self.status("Regression, curve fits and correlation of X with Y need an XY table: File → New XY table.")
@@ -899,7 +924,7 @@ class QuantAnalysisWindow(QMainWindow):
         else:
             dialog = None
         sheet = self._add_result(data, kind, options, dialog)
-        if sheet is not None and kind in ("compare", "anova", "linreg", "curvefit"):
+        if sheet is not None and kind in ("compare", "anova", "linreg", "curvefit", "contingency"):
             for graph in self.project.graphs.values():
                 if graph.data_id == data.id and graph.result_id is None:
                     graph.result_id = sheet.id
@@ -929,7 +954,8 @@ class QuantAnalysisWindow(QMainWindow):
                    "twoway": lambda: TwoWayDialog(self, data.grouped, sheet.options),
                    "linreg": lambda: XYDialog(self, data.xy, "linreg", sheet.options),
                    "xycorr": lambda: XYDialog(self, data.xy, "xycorr", sheet.options),
-                   "curvefit": lambda: CurveFitDialog(self, data.xy, sheet.options)}[sheet.kind]()
+                   "curvefit": lambda: CurveFitDialog(self, data.xy, sheet.options),
+                   "contingency": lambda: ContingencyDialog(self, data.contingency, sheet.options)}[sheet.kind]()
             if not box.exec():
                 return
             # The guide's answer that the values are not independent stays with the analysis.
@@ -946,8 +972,8 @@ class QuantAnalysisWindow(QMainWindow):
         if data is None:
             self.status("Select a data table first (in the list on the left).")
             return None
-        if data.grouped is not None or data.xy is not None:
-            self.status("Data processing works on column tables; a grouped or XY table cannot be processed yet.")
+        if data.grouped is not None or data.xy is not None or data.contingency is not None:
+            self.status("Data processing works on column tables; a grouped, XY or contingency table cannot be processed yet.")
             return None
         if options is None:
             dialog = ProcessDialog(self, data.table, kind)
@@ -1033,9 +1059,9 @@ class QuantAnalysisWindow(QMainWindow):
             self.status("Select a data table first.")
             return None
         result = next((item for item in reversed(list(self.project.results.values()))
-                       if item.data_id == data.id and item.kind in ("compare", "anova", "twoway", "linreg", "curvefit")), None)
+                       if item.data_id == data.id and item.kind in ("compare", "anova", "twoway", "linreg", "curvefit", "contingency")), None)
         # A grouped graph colours its cells by data set (and an XY graph its data sets), so its legend is on from the start.
-        several = data.grouped is not None or (data.xy is not None and len(data.xy.sets) > 1)
+        several = data.grouped is not None or data.contingency is not None or (data.xy is not None and len(data.xy.sets) > 1)
         sheet = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {data.name}", data.id, kind,
                                                   {"legend": {"show": True, "position": "master"}} if several else {}, result.id if result else None))
         self.select(sheet.id)
@@ -1143,6 +1169,8 @@ def result_name(kind: str, options: dict, data: DataSheet | None) -> str:
         return f"Two-way ANOVA{where}"
     if kind == "linreg":
         return f"Linear regression{where}"
+    if kind == "contingency":
+        return f"Contingency{where}"
     if kind == "curvefit":
         return f"Nonlinear regression ({CURVE_MODELS.get(str(options.get('model')), CURVE_MODELS['log_dose_response']).name}){where}"
     if kind == "xycorr":
