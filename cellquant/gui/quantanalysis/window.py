@@ -42,11 +42,11 @@ from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import graphs
 from cellquant.gui.quantanalysis import project_file, tips
 from cellquant.gui.quantanalysis.datagrid import DataSheetView
+from cellquant.gui.quantanalysis.guide import AnalysisGuideDialog, facts_for
 from cellquant.gui.quantanalysis.dialogs import (
     DEFAULT_OPTIONS,
     AnovaDialog,
     BlandAltmanDialog,
-    ChooseTestDialog,
     CompareDialog,
     ContingencyDialog,
     CurveFitDialog,
@@ -303,7 +303,7 @@ class QuantAnalysisWindow(QMainWindow):
         for kind, name in transforms.PROCESSES.items():
             self._action(processing, f"{name}…", lambda kind=kind: self.process_data(kind), tips.PROCESS[kind])
         analyze.addSeparator()
-        self._action(analyze, "Help me choose…", self.help_choose, "Answer a few questions; the guide recommends a test and fills its dialog.")
+        self._action(analyze, "Help me choose…", self.help_choose, tips.GUIDE)
         graph = bar.addMenu("&Graph")
         for key, (name, tip) in graphs.KINDS.items():
             self._action(graph, name, lambda key=key: self.new_graph(key), tip)
@@ -323,7 +323,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(export, "Copy results", self.copy_results, "The results sheet shown, as tab-separated text.")
         help_menu = bar.addMenu("&Help")
         self._action(help_menu, "Statistics guide…", self.statistics_guide, "Definitions, equations and when to use each test.")
-        self._action(help_menu, "Help me choose…", self.help_choose)
+        self._action(help_menu, "Help me choose…", self.help_choose, tips.GUIDE)
         self._action(help_menu, "Log…", self.show_log, "What QuantAnalysis did: imports, analyses, exports and any errors.")
         for menu in (file, analyze, graph, export, help_menu):
             menu.setToolTipsVisible(True)
@@ -901,12 +901,12 @@ class QuantAnalysisWindow(QMainWindow):
             if len(data.table) < 2:
                 self.status("Comparing needs at least two columns.")
                 return None
-            dialog = lambda: CompareDialog(self, data.table)  # noqa: E731
+            dialog = lambda: CompareDialog(self, data.table, sheet=data)  # noqa: E731
         elif kind == "anova":
             if len(data.table) < 3:
                 self.status("Comparing three or more columns needs at least three columns. For two, use Compare two columns….")
                 return None
-            dialog = lambda: AnovaDialog(self, data.table)  # noqa: E731
+            dialog = lambda: AnovaDialog(self, data.table, sheet=data)  # noqa: E731
         elif kind == "outliers":
             dialog = lambda: OutlierDialog(self, data.table)  # noqa: E731
         elif kind == "twoway":
@@ -964,7 +964,8 @@ class QuantAnalysisWindow(QMainWindow):
         if data is None and sheet.kind != "pstack":
             return
         if options is None:
-            box = {"compare": lambda: CompareDialog(self, data.table, sheet.options), "anova": lambda: AnovaDialog(self, data.table, sheet.options),
+            box = {"compare": lambda: CompareDialog(self, data.table, sheet.options, sheet=data),
+                   "anova": lambda: AnovaDialog(self, data.table, sheet.options, sheet=data),
                    "outliers": lambda: OutlierDialog(self, data.table, sheet.options), "pstack": lambda: PStackDialog(self, sheet.options),
                    "twoway": lambda: TwoWayDialog(self, data.grouped, sheet.options),
                    "linreg": lambda: XYDialog(self, data.xy, "linreg", sheet.options),
@@ -975,7 +976,8 @@ class QuantAnalysisWindow(QMainWindow):
                    "blandaltman": lambda: BlandAltmanDialog(self, data.table, sheet.options)}[sheet.kind]()
             if not box.exec():
                 return
-            options = box.options()
+            # The guide's answer that the values are not independent stays with the analysis.
+            options = {**box.options(), **{key: sheet.options[key] for key in ("not_independent",) if key in sheet.options}}
         sheet.options = options
         sheet.name = result_name(sheet.kind, options, data)
         self.sheet_renamed(sheet)
@@ -1037,25 +1039,37 @@ class QuantAnalysisWindow(QMainWindow):
             self.log(f"{cleaned.name} created from {sheet.name}: {sheet.result.values['n_outliers']} value(s) blank")
         return cleaned
 
-    def help_choose(self) -> None:
-        dialog = ChooseTestDialog(self)
-        if not dialog.exec():
-            return
-        choice = dialog.choice()
+    def help_choose(self) -> AnalysisGuideDialog | None:
+        """The analysis guide on the selected table; Run this analysis opens the recommended analysis filled in."""
+
         data = self.current_data()
-        many = choice["kind"] == "anova"
-        if data is None or len(data.table) < (3 if many else 2):
-            self.status(f"Select a data table with {'three or more' if many else 'two'} columns, then run the recommended test.")
-            return
-        options = {key: value for key, value in choice.items() if key != "kind"}
-        if many:
-            anova = AnovaDialog(self, data.table, options)
-            if anova.exec():
-                self.analyze("anova", anova.options())
+        dialog = AnalysisGuideDialog(self, facts_for(data))
+        if not dialog.exec():
+            return dialog
+        rec, options = dialog.recommendation(), dialog.options()
+        kind = rec.kind
+        need = {"compare": (lambda d: d.xy is None and len(d.table) >= 2, "a data table with two or more columns"),
+                "anova": (lambda d: d.xy is None and len(d.table) >= 3, "a data table with three or more columns"),
+                "twoway": (lambda d: d.grouped is not None, "a grouped table (File → New grouped table)"),
+                "linreg": (lambda d: d.xy is not None, "an XY table (File → New XY table)"),
+                "xycorr": (lambda d: d.xy is not None, "an XY table (File → New XY table)")}[kind]
+        if data is None or not need[0](data):
+            self.status(f"{rec.name} needs {need[1]}. Select or make one, then run it.")
+            return dialog
+        if kind == "compare":
+            box = CompareDialog(self, data.table, {**DEFAULT_OPTIONS, **options}, sheet=data)
+        elif kind == "anova":
+            box = AnovaDialog(self, data.table, options, sheet=data)
+        elif kind == "twoway":
+            box = TwoWayDialog(self, data.grouped, {**TWO_WAY_DEFAULTS, **options})
         else:
-            compare = CompareDialog(self, data.table, {**DEFAULT_OPTIONS, **options})
-            if compare.exec():
-                self.analyze("compare", compare.options())
+            box = XYDialog(self, data.xy, kind, options)
+        if box.exec():
+            chosen = box.options()
+            if rec.pseudoreplicated and not data.pseudoreplicated:
+                chosen["not_independent"] = "images" if dialog.answers().dot == "image" else "cells"
+            self.analyze(kind, chosen)
+        return dialog
 
     def new_graph(self, kind: str) -> GraphSheet | None:
         data = self.current_data()

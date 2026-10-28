@@ -17,12 +17,12 @@ from cellquant.errors import CellQuantError  # noqa: E402
 from cellquant.gui.quantanalysis import tips  # noqa: E402
 from cellquant.gui.quantanalysis.dialogs import (  # noqa: E402
     AnovaDialog,
-    ChooseTestDialog,
     OutlierDialog,
     PStackDialog,
     _check,
     methods_for,
 )
+from cellquant.gui.quantanalysis.guide import AnalysisGuideDialog  # noqa: E402
 from cellquant.gui.quantanalysis.project import DataSheet, parse_p_values  # noqa: E402
 from cellquant.stats import ColumnTable, compact_letter_display  # noqa: E402
 
@@ -141,26 +141,28 @@ def test_outlier_and_pstack_dialogs(qtbot):
 
 
 def test_help_me_choose_recommends_for_three_or_more_groups(qtbot):
-    guide = ChooseTestDialog(None, groups=3)
+    from cellquant.stats.advisor import Answers
+
+    guide = AnalysisGuideDialog(None, answers=Answers(groups=3))
     qtbot.addWidget(guide)
     text = guide.answer.toPlainText()
-    assert "next update" not in text and "Kruskal" not in text.split("Suggested analysis")[0]  # Gaussian yes, SDs not assumed equal
-    assert guide.choice() == {"kind": "anova", "test": "welch", "comparisons": "control", "method": None}
-    assert "Welch" in text and "Dunnett" in text
+    assert guide.recommendation().options == {"test": "welch", "comparisons": "control", "method": None}
+    assert "Welch" in text and "Kruskal" not in text.split("Alternatives")[0]
     _check(guide.equal, True)
-    assert guide.choice()["test"] == "ordinary"
+    assert guide.recommendation().options["test"] == "ordinary" and "Dunnett" in guide.answer.toPlainText()
     _check(guide.gaussian, "no")
-    assert guide.choice()["test"] == "kruskal_wallis" and "Dunn's tests compare each group" in guide.answer.toPlainText()
+    assert guide.recommendation().options["test"] == "kruskal_wallis" and "Dunn's tests compare each group" in guide.answer.toPlainText()
     _check(guide.paired, True)
-    assert guide.choice()["test"] == "friedman"
+    assert guide.recommendation().options["test"] == "friedman"
     _check(guide.gaussian, "yes")
-    assert guide.choice()["test"] == "repeated_measures"
-    _check(guide.goal, "none")
-    assert guide.choice()["comparisons"] is None and not guide.tails.property("box").isEnabled() and guide.goal.property("box").isEnabled()
+    assert guide.recommendation().options["test"] == "repeated_measures"
+    _check(guide.comparisons, "none")
+    assert guide.recommendation().options["comparisons"] is None
+    assert guide.tails.property("box").isHidden() and not guide.comparisons.property("box").isHidden()
     _check(guide.groups, 2)
-    assert guide.choice()["kind"] == "compare" and guide.goal.property("box").isEnabled() is False
-    assert "Kruskal-Wallis with Dunn's tests against the chosen reference group" in guide.answer.toPlainText()
-    for button in guide.goal.buttons():
+    assert guide.recommendation().kind == "compare" and guide.comparisons.property("box").isHidden()
+    assert "How to report it" in guide.answer.toPlainText()
+    for button in guide.comparisons.buttons():
         assert button.toolTip()
 
 
@@ -169,11 +171,10 @@ def test_help_me_choose_fills_the_anova_dialog(window, monkeypatch):
     answers = {}
 
     def fake_guide(self):
-        _check(self.groups, 3)
         _check(self.gaussian, "no")
         return 1
 
-    monkeypatch.setattr(ChooseTestDialog, "exec", fake_guide)
+    monkeypatch.setattr(AnalysisGuideDialog, "exec", fake_guide)
     monkeypatch.setattr(AnovaDialog, "exec", lambda self: answers.setdefault("options", self.options()) and 1)
     window.help_choose()
     assert answers["options"]["test"] == "kruskal_wallis" and answers["options"]["comparisons"] == "control"

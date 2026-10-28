@@ -1,5 +1,6 @@
 """QuantAnalysis dialogs: import CellQuant results, import a CSV, compare two columns, compare three or
-more columns, identify outliers, a stack of P values, data processing, and the "Help me choose" test guide."""
+more columns, two-way ANOVA, XY analyses, identify outliers, a stack of P values and data processing. Each analysis dialog has an
+Advanced box of settings that are normally computed (degrees of freedom and the like); the analysis guide is in guide.py."""
 
 from __future__ import annotations
 
@@ -27,7 +28,6 @@ from qtpy.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
-    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -35,7 +35,7 @@ from qtpy.QtWidgets import (
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
-from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, paired, parse_p_values
+from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, paired, parse_p_values, table_signature
 from cellquant.stats import STYLES, ColumnTable
 from cellquant.stats import sources, transforms
 from cellquant.stats.contingency import TESTS as CONTINGENCY_TESTS, ContingencyTable, contingency
@@ -80,6 +80,158 @@ def _check(group: QButtonGroup, key) -> None:
     for button in group.buttons():
         if button.property("key") == key:
             button.setChecked(True)
+
+
+# --- Advanced: settings set by hand ---------------------------------------------------------------------------
+
+
+class AdvancedBox:
+    """The Advanced checkbox and the box it shows: settings the analysis normally works out (degrees of freedom, ε…),
+    each Default or set by hand. A setting is used only while Advanced is ticked and the field is shown; the results
+    then list it as changed from the default."""
+
+    def __init__(self, parent, layout):
+        self.toggle = QCheckBox("Advanced")
+        self.toggle.setToolTip(tips.ADVANCED)
+        self.box = QGroupBox("Advanced")
+        self.box.setToolTip(tips.ADVANCED)
+        self.box.setVisible(False)
+        self.toggle.toggled.connect(self.box.setVisible)
+        self.form = QFormLayout(self.box)
+        note = QLabel(tips.ADVANCED_NOTE)
+        note.setWordWrap(True)
+        note.setStyleSheet(NOTE_STYLE)
+        self.form.addRow(note)
+        self.stale = QLabel()
+        self.stale.setWordWrap(True)
+        self.stale.setStyleSheet(WARNING_STYLE)
+        self.stale.setVisible(False)
+        self.form.addRow(self.stale)
+        self.fields: dict[str, tuple] = {}
+        self.basis = None  # the table the settings are chosen for (project.table_signature); saved with them
+        layout.addWidget(self.toggle)
+        layout.addWidget(self.box)
+
+    def add(self, key: str, label: str, tip: str, minimum: float, maximum: float, decimals: int = 2, step: float = 1.0,
+            modes=(), default_text: str = "Default (computed)", value: float | None = None) -> None:
+        mode = QComboBox()
+        mode.addItem(default_text, None)
+        for data, text in modes:
+            mode.addItem(text, data)
+        mode.addItem("Set by hand", "custom")
+        spin = QDoubleSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setDecimals(decimals)
+        spin.setSingleStep(step)
+        spin.setValue(minimum if value is None else value)
+        spin.setEnabled(False)
+        mode.currentIndexChanged.connect(lambda _index: spin.setEnabled(mode.currentData() == "custom"))
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.addWidget(mode, 1)
+        row_layout.addWidget(spin)
+        name = QLabel(label)
+        for widget in (name, mode, spin, row):
+            widget.setToolTip(tip)
+        self.form.addRow(name, row)
+        self.fields[key] = (mode, spin, name, row, decimals)
+
+    def show_field(self, key: str, visible: bool) -> None:
+        _mode, _spin, name, row, _decimals = self.fields[key]
+        name.setVisible(visible)
+        row.setVisible(visible)
+
+    def set_default_text(self, key: str, text: str) -> None:
+        self.fields[key][0].setItemText(0, text)
+
+    def set_label(self, key: str, text: str, tip: str | None = None) -> None:
+        mode, spin, name, row, _decimals = self.fields[key]
+        name.setText(text)
+        if tip:
+            for widget in (name, mode, spin, row):
+                widget.setToolTip(tip)
+
+    def values(self) -> dict:
+        """The settings set by hand, by key: a number, or a mode such as "conservative"."""
+
+        if not self.toggle.isChecked():
+            return {}
+        out = {}
+        for key, (mode, spin, _name, row, decimals) in self.fields.items():
+            if row.isHidden() or mode.currentData() is None:
+                continue
+            if mode.currentData() != "custom":
+                out[key] = mode.currentData()
+            else:
+                out[key] = int(round(spin.value())) if decimals == 0 else round(spin.value(), decimals)
+        if out and self.basis is not None:
+            out["advanced_for"] = self.basis
+        return out
+
+    def set_values(self, options: dict) -> None:
+        changed = False
+        for key, (mode, spin, _name, _row, _decimals) in self.fields.items():
+            value = options.get(key)
+            if value is None:
+                mode.setCurrentIndex(0)
+                continue
+            if isinstance(value, str):
+                found = mode.findData(value)
+                mode.setCurrentIndex(max(0, found))
+                changed = changed or found > 0
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):  # a damaged saved option: back to Default
+                mode.setCurrentIndex(0)
+                continue
+            changed = True
+            mode.setCurrentIndex(mode.findData("custom"))
+            spin.setValue(number)
+        self.toggle.setChecked(changed)
+        was = options.get("advanced_for")
+        stale = changed and was is not None and self.basis is not None and list(was) != list(self.basis)
+        self.stale.setText(f"These settings were set for a different table ({_basis_text(was)}; now {_basis_text(self.basis)}). Check them."
+                           if stale else "")
+        self.stale.setVisible(stale)
+
+
+def _basis_text(basis) -> str:
+    return "values per group " + ", ".join(str(item) for item in basis) if basis else "no table"
+
+
+# Keys of the Advanced settings; an analysis's options carry only those set by hand (and the table they were set for).
+OVERRIDE_KEYS = ("df", "difference", "epsilon", "sd", "m", "advanced_for")
+# The corrections whose number of comparisons can be set by hand.
+M_METHODS = ("bonferroni", "sidak", "holm_sidak", "dunn")
+
+
+def _has_blank_rows(table: ColumnTable) -> bool:
+    """A paired table with a row that misses a value in some column (repeated measures then fits a mixed model)."""
+
+    import numpy as np
+
+    if not table.columns:
+        return False
+    rows = max(column.values.size for column in table.columns)
+    filled = [np.isfinite(np.concatenate([column.values, np.full(rows - column.values.size, np.nan)])) for column in table.columns]
+    present = np.any(filled, axis=0)
+    return bool(np.any(present & ~np.all(filled, axis=0)))
+
+
+def _check_run(kind: str, table: ColumnTable, options: dict, note: QLabel) -> bool:
+    """Run the analysis once with the Advanced settings, so a value it cannot take is caught in the dialog."""
+
+    from cellquant.gui.quantanalysis.project import DataSheet, run_anova, run_compare
+
+    try:
+        (run_compare if kind == "compare" else run_anova)(DataSheet("", table), options)
+    except CellQuantError as exc:
+        note.setText(str(exc))
+        note.setVisible(True)
+        return False
+    return True
 
 
 # --- Import CellQuant results ---------------------------------------------------------------------------------
@@ -359,16 +511,20 @@ TEST_TIPS = {
     "kolmogorov_smirnov": tips.KS, "paired_t": "Paired t test: is the mean of the within-replicate differences zero?",
     "ratio_paired_t": tips.RATIO, "wilcoxon": tips.WILCOXON,
 }
+T_TESTS = ("welch_t", "unpaired_t", "lognormal_t", "paired_t", "ratio_paired_t")
+DIFFERENCE_TESTS = ("welch_t", "unpaired_t", "paired_t")
 DEFAULT_OPTIONS = {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided", "ci": 0.95, "alpha": 0.05, "style": "classic"}
 
 
 class CompareDialog(QDialog):
-    """The t test dialog: columns, design, distribution, test, tails and P value options."""
+    """The t test dialog: columns, design, distribution, test, tails and P value options. ``sheet`` (the data sheet)
+    lets Help me choose… know how the table was imported."""
 
-    def __init__(self, parent, table: ColumnTable, options: dict | None = None):
+    def __init__(self, parent, table: ColumnTable, options: dict | None = None, sheet=None):
         super().__init__(parent)
         self.setWindowTitle("Compare two columns")
         self.table = table
+        self.sheet = sheet
         options = {**DEFAULT_OPTIONS, **({"test": "paired_t"} if table.paired and not options else {}), **(options or {})}
         layout = QVBoxLayout(self)
         columns = QGroupBox("Columns")
@@ -420,13 +576,18 @@ class CompareDialog(QDialog):
         self.style.setToolTip(tips.P_STYLE)
         form.addRow("P value style", self.style)
         layout.addLayout(form)
+        self.advanced = AdvancedBox(self, layout)
+        self.advanced.basis = table_signature(table)
+        self.advanced.add("df", "Degrees of freedom", tips.OVERRIDE_DF_T, 0.01, 1e6, 4,
+                          modes=(("conservative", "Conservative (smaller N − 1)"),), value=10)
+        self.advanced.add("difference", "Hypothesised difference", tips.OVERRIDE_DIFFERENCE, -1e9, 1e9, 4, 0.1, default_text="0 (no difference)")
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setStyleSheet(WARNING_STYLE)
         layout.addWidget(self.note)
         bottom = QHBoxLayout()
         guide = QPushButton("Help me choose…")
-        guide.setToolTip("Answer a few questions about your experiment; the guide picks the test and fills this dialog.")
+        guide.setToolTip(tips.GUIDE)
         guide.clicked.connect(self._guide)
         bottom.addWidget(guide)
         bottom.addStretch(1)
@@ -456,6 +617,8 @@ class CompareDialog(QDialog):
         self.alpha.setValue(float(options["alpha"]))
         self.ci.setCurrentIndex(max(0, self.ci.findData(options["ci"])))
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
+        self.advanced.set_values(options)
+        self._test_changed()
 
     def _fill_tests(self) -> None:
         paired, family = _checked(self.design), _checked(self.family)
@@ -476,6 +639,13 @@ class CompareDialog(QDialog):
         key = self.test.currentData()
         self.test.setToolTip(TEST_TIPS.get(key, ""))
         self.ci.setEnabled(key != "kolmogorov_smirnov")
+        self.advanced.show_field("df", key in T_TESTS)
+        self.advanced.show_field("difference", key in DIFFERENCE_TESTS)
+        df_mode = self.advanced.fields["df"][0]
+        conservative = df_mode.findData("conservative")
+        df_mode.model().item(conservative).setEnabled(not _checked(self.design))
+        if _checked(self.design) and df_mode.currentData() == "conservative":
+            df_mode.setCurrentIndex(0)
         notes = []
         if _checked(self.design) and not self.table.paired:
             notes.append("The table is not marked Paired. A paired test lines up row i of each column; tick Paired on the data table if that is right.")
@@ -490,25 +660,33 @@ class CompareDialog(QDialog):
         self.note.setVisible(bool(notes))
 
     def _guide(self) -> None:
-        dialog = ChooseTestDialog(self, paired=bool(_checked(self.design)))
-        choice = dialog.choice() if dialog.exec() else None
-        if choice and choice["kind"] == "compare":
-            self.set_options({**self.options(), **{key: value for key, value in choice.items() if key != "kind"}})
-        elif choice:
-            self.note.setText("Three or more groups use Analyze → Compare three or more columns….")
+        from cellquant.gui.quantanalysis.guide import AnalysisGuideDialog, facts_for
+        from cellquant.stats.advisor import Answers, suggested
+
+        facts = facts_for(self.sheet, [self.first.currentData(), self.second.currentData()], self.table)
+        dialog = AnalysisGuideDialog(self, facts, suggested(facts, Answers(groups=2, paired=bool(_checked(self.design)))))
+        if not dialog.exec():
+            return
+        if dialog.recommendation().kind == "compare":
+            options = {**self.options(), **{key: None for key in OVERRIDE_KEYS}, **dialog.options()}
+            self.set_options(options)
+        else:
+            self.note.setText(f"The guide recommends {dialog.recommendation().name}: use Analyze → Help me choose… on the data table.")
             self.note.setVisible(True)
 
     def options(self) -> dict:
         return {
             "test": self.test.currentData(), "first": self.first.currentData(), "second": self.second.currentData(),
             "alternative": self.tails.currentData(), "alpha": round(self.alpha.value(), 6), "ci": self.ci.currentData(),
-            "style": self.style.currentData(),
+            "style": self.style.currentData(), **self.advanced.values(),
         }
 
     def accept(self) -> None:
         if self.first.currentIndex() == self.second.currentIndex():
             self.note.setText("Choose two different columns.")
             self.note.setVisible(True)
+            return
+        if self.advanced.values() and not _check_run("compare", self.table, self.options(), self.note):
             return
         super().accept()
 
@@ -537,10 +715,11 @@ class AnovaDialog(QDialog):
     """The one-way ANOVA dialog: design, Gaussian or not, the test, multiple comparisons (with one or two
     reference groups), alpha, CI level and P value style."""
 
-    def __init__(self, parent, table: ColumnTable, options: dict | None = None):
+    def __init__(self, parent, table: ColumnTable, options: dict | None = None, sheet=None):
         super().__init__(parent)
         self.setWindowTitle("Compare three or more columns")
         self.table = table
+        self.sheet = sheet
         options = {**ANOVA_DEFAULTS, **({"test": "repeated_measures"} if table.paired and not options else {}), **(options or {})}
         layout = QVBoxLayout(self)
         columns = QHBoxLayout()
@@ -618,13 +797,20 @@ class AnovaDialog(QDialog):
         columns.addLayout(left, 1)
         columns.addLayout(right, 1)
         layout.addLayout(columns)
+        self.advanced = AdvancedBox(self, layout)
+        self.advanced.basis = table_signature(table)
+        self.advanced.add("df", "Residual degrees of freedom", tips.OVERRIDE_DF, 0.01, 1e6, 4, value=10)
+        self.advanced.add("epsilon", "Sphericity correction ε", tips.OVERRIDE_EPSILON, 0.0, 1.0, 4, 0.01, default_text="Default (Geisser-Greenhouse)",
+                          value=1)
+        self.advanced.add("sd", "SD for multiple comparisons", tips.OVERRIDE_SD, 1e-12, 1e12, 6, 0.1, default_text="Default (pooled SD)", value=1)
+        self.advanced.add("m", "Comparisons the correction counts", tips.OVERRIDE_M, 1, 100000, 0, default_text="Default (comparisons made)")
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setStyleSheet(WARNING_STYLE)
         layout.addWidget(self.note)
         bottom = QHBoxLayout()
         guide = QPushButton("Help me choose…")
-        guide.setToolTip("Answer a few questions about your experiment; the guide picks the test and the comparisons and fills this dialog.")
+        guide.setToolTip(tips.GUIDE)
         guide.clicked.connect(self._guide)
         bottom.addWidget(guide)
         bottom.addStretch(1)
@@ -641,6 +827,8 @@ class AnovaDialog(QDialog):
         self.control.currentIndexChanged.connect(lambda _index: self._fill_second())
         self.control2.currentIndexChanged.connect(lambda _index: self._goal_changed())
         self.family_mode.currentIndexChanged.connect(lambda _index: self._fill_methods())
+        self.method.currentIndexChanged.connect(lambda _index: self._advanced_fields())
+        self.greenhouse.toggled.connect(lambda _checked: self._advanced_fields())
         self._quiet = False
         self.set_options(options)
 
@@ -671,6 +859,8 @@ class AnovaDialog(QDialog):
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
         self._quiet = False
         self._fill_tests(options["test"], options["method"])
+        self.advanced.set_values(options)
+        self._advanced_fields()
 
     def _fill_tests(self, keep: str | None = None, method: str | None = None) -> None:
         if self._quiet:
@@ -739,6 +929,26 @@ class AnovaDialog(QDialog):
         self.method.setCurrentIndex(max(0, self.method.findData(keep)))
         self.method.blockSignals(False)
         self.method.setToolTip(tips.METHOD_TIPS.get(self.method.currentData(), tips.METHOD))
+        self._advanced_fields()
+
+    def _advanced_fields(self) -> None:
+        """Show only the Advanced settings the chosen test and comparisons use."""
+
+        if self._quiet or not hasattr(self, "advanced"):
+            return
+        test, goal = self.test.currentData(), _checked(self.goal)
+        compares = goal in ("all", "control", "selected")
+        # Repeated measures with blanks is fitted as a mixed-effects model, which takes none of these.
+        mixed = test == "repeated_measures" and _has_blank_rows(self.table)
+        self.advanced.show_field("df", test in ("ordinary", "welch", "repeated_measures") and not mixed)
+        self.advanced.show_field("epsilon", test == "repeated_measures" and self.greenhouse.isChecked() and not mixed)
+        self.advanced.show_field("sd", test in ("ordinary", "repeated_measures") and compares and not mixed)
+        self.advanced.show_field("m", compares and self.method.currentData() in M_METHODS)
+        self.advanced.set_default_text("df", "Default (Welch, from the SDs)" if test == "welch" else "Default (computed)")
+        label, tip = {"welch": ("Denominator degrees of freedom (Welch)", tips.OVERRIDE_DF),
+                      "repeated_measures": ("Error degrees of freedom (before ε)", tips.OVERRIDE_DF_RM)}.get(
+            test, ("Residual degrees of freedom", tips.OVERRIDE_DF))
+        self.advanced.set_label("df", label, tip)
 
     def _notes(self) -> None:
         notes = []
@@ -750,10 +960,18 @@ class AnovaDialog(QDialog):
         self.note.setVisible(bool(notes))
 
     def _guide(self) -> None:
-        dialog = ChooseTestDialog(self, paired=bool(_checked(self.design)), groups=3)
-        choice = dialog.choice() if dialog.exec() else None
-        if choice and choice["kind"] == "anova":
-            self.set_options({**self.options(), **{key: value for key, value in choice.items() if key != "kind"}})
+        from cellquant.gui.quantanalysis.guide import AnalysisGuideDialog, facts_for
+        from cellquant.stats.advisor import Answers, suggested
+
+        facts = facts_for(self.sheet, None, self.table)
+        dialog = AnalysisGuideDialog(self, facts, suggested(facts, Answers(groups=3, paired=bool(_checked(self.design)))))
+        if not dialog.exec():
+            return
+        if dialog.recommendation().kind == "anova":
+            self.set_options({**self.options(), **{key: None for key in OVERRIDE_KEYS}, **dialog.options()})
+        else:
+            self.note.setText(f"The guide recommends {dialog.recommendation().name}: use Analyze → Help me choose… on the data table.")
+            self.note.setVisible(True)
 
     def options(self) -> dict:
         goal = _checked(self.goal)
@@ -766,7 +984,7 @@ class AnovaDialog(QDialog):
             "pairs": [list(self.pairs.item(row).data(Qt.UserRole)) for row in range(self.pairs.count())
                       if self.pairs.item(row).checkState() == Qt.Checked] if goal == "selected" else [],
             "family": self.family_mode.currentData(), "alpha": round(self.alpha.value(), 6), "ci": self.ci.currentData(),
-            "style": self.style.currentData(),
+            "style": self.style.currentData(), **self.advanced.values(),
         }
 
     def accept(self) -> None:
@@ -777,6 +995,8 @@ class AnovaDialog(QDialog):
         if goal == "selected" and not options["pairs"]:
             self.note.setText("Tick at least one pair to compare.")
             self.note.setVisible(True)
+            return
+        if self.advanced.values() and not _check_run("anova", self.table, options, self.note):
             return
         super().accept()
 
@@ -852,6 +1072,10 @@ class TwoWayDialog(QDialog):
         self.style.setToolTip(tips.ANOVA_STYLE)
         form.addRow("P value style", self.style)
         layout.addLayout(form)
+        self.advanced = AdvancedBox(self, layout)
+        self.advanced.basis = table_signature(grouped)
+        self.advanced.add("df", "Residual degrees of freedom", tips.OVERRIDE_DF, 0.01, 1e6, 4, value=10)
+        self.advanced.set_values(options)
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setStyleSheet(WARNING_STYLE)
@@ -905,6 +1129,7 @@ class TwoWayDialog(QDialog):
             "control": self.control.currentData() if compare and self.goal.currentData() == "control" else None,
             "family": self.family.currentData() if compare in TWO_WAY_SIMPLE else "per_group",
             "alpha": round(self.alpha.value(), 6), "ci": self.ci.currentData(), "style": self.style.currentData(),
+            **self.advanced.values(),
         }
 
     def accept(self) -> None:
@@ -976,6 +1201,11 @@ class XYDialog(QDialog):
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
         form.addRow("P value style", self.style)
         layout.addLayout(form)
+        self.advanced = AdvancedBox(self, layout)
+        self.advanced.basis = table_signature(xy)
+        self.advanced.add("df", "Residual degrees of freedom" if kind == "linreg" else "Degrees of freedom (t test of r)",
+                          tips.OVERRIDE_DF_LINREG if kind == "linreg" else tips.OVERRIDE_DF_CORR, 0.01, 1e6, 4, value=10)
+        self.advanced.set_values(options)
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setStyleSheet(WARNING_STYLE)
@@ -993,7 +1223,7 @@ class XYDialog(QDialog):
             out["through_origin"] = self.origin.isChecked()
         else:
             out["method"] = self.method.currentData()
-        return out
+        return {**out, **self.advanced.values()}
 
     def accept(self) -> None:
         try:
@@ -1798,191 +2028,3 @@ class PStackDialog(QDialog):
             self.note.setVisible(True)
             return
         super().accept()
-
-
-# --- Help me choose -------------------------------------------------------------------------------------------
-
-GUIDE_CSS = "<style>p { margin: 4px 0; } .muted { color: #9aa3ad; } h3 { margin: 8px 0 2px 0; }</style>"
-
-
-class ChooseTestDialog(QDialog):
-    """A few questions, a recommended test with its reason and a worked example, and the image-data preset.
-    Two groups fill Compare two columns; three or more fill Compare three or more columns."""
-
-    def __init__(self, parent, paired: bool = False, groups: int = 2):
-        super().__init__(parent)
-        self.setWindowTitle("Help me choose a test")
-        self.resize(740, 800)
-        layout = QVBoxLayout(self)
-        self.groups = self._question(layout, "1. How many groups (columns) do you compare?", [
-            ("Two", 2, "Two conditions, for example control and treated."),
-            ("Three or more", 3,
-             "Three or more conditions, for example a negative control, a positive control and two treatments. "
-             "One ANOVA or Kruskal-Wallis test asks whether the groups differ; multiple comparisons then say which. "
-             "Testing every pair with t tests instead inflates false positives."),
-        ])
-        self.paired = self._question(layout, "2. Was the same biological replicate measured in every condition?", [
-            ("No: different replicates in each group (unpaired)", False, tips.PAIRED),
-            ("Yes: each replicate gives a value in every group (paired)", True, tips.PAIRED),
-        ])
-        self.gaussian = self._question(layout, "3. Can you assume the values come from a Gaussian (normal) distribution?", [
-            ("Yes", "yes", "Typical for percentages that are not near 0 or 100, and for means of many cells."),
-            ("No", "no", "For example ranks or scores, or values bounded near 0 with a long tail."),
-            ("Not sure", "unsure", "Look at the graph and think about the measurement. With N below about 10, a normality test cannot tell."),
-        ])
-        self.equal = self._question(layout, "4. Unpaired and Gaussian: can you assume every group has the same SD?", [
-            ("Don't assume it (Welch's t test, or Welch and Brown-Forsythe ANOVA)", False, tips.WELCH),
-            ("Assume equal SDs (Student's t test, or ordinary ANOVA)", True, tips.POOLED),
-        ])
-        self.tails = self._question(layout, "5. Two groups: one or two tails?", [
-            ("Two-tailed (recommended)", "two-sided", tips.TAILS),
-            ("One-tailed: I predicted B > A before collecting the data", "greater", tips.TAILS),
-        ])
-        self.goal = self._question(layout, "6. Three or more groups: which comparisons?", [
-            ("Each group against one or two reference groups (for example a negative and a positive control)", "control",
-             tips.COMPARISONS_GOAL["control"]),
-            ("Every pair of groups", "all", tips.COMPARISONS_GOAL["all"]),
-            ("None: only whether the groups differ at all", "none", tips.COMPARISONS_GOAL["none"]),
-        ])
-        _check(self.groups, groups)
-        _check(self.paired, paired)
-        _check(self.gaussian, "yes")
-        _check(self.equal, False)
-        _check(self.tails, "two-sided")
-        _check(self.goal, "control")
-        self.answer = QTextBrowser()
-        self.answer.setOpenExternalLinks(False)
-        layout.addWidget(self.answer, 1)
-        buttons = QDialogButtonBox()
-        self.use = buttons.addButton("Use this test", QDialogButtonBox.AcceptRole)
-        buttons.addButton(QDialogButtonBox.Close)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        for group in (self.groups, self.paired, self.gaussian, self.equal, self.tails, self.goal):
-            group.buttonToggled.connect(lambda *_args: self._update())
-        self._update()
-
-    def _question(self, layout, title: str, choices) -> QButtonGroup:
-        box = QGroupBox(title)
-        row = QVBoxLayout(box)
-        row.setSpacing(2)
-        group = QButtonGroup(self)
-        for text, key, tip in choices:
-            _radio(group, row, text, key, tip)
-        layout.addWidget(box)
-        group.setProperty("box", box)
-        return group
-
-    def choice(self) -> dict:
-        """What the answers recommend. ``kind`` is "compare" (options of Compare two columns) or "anova"
-        (options of Compare three or more columns)."""
-
-        groups, paired, gaussian, equal = _checked(self.groups), _checked(self.paired), _checked(self.gaussian), _checked(self.equal)
-        if groups != 2:
-            goal = _checked(self.goal)
-            if paired:
-                test = "repeated_measures" if gaussian != "no" else "friedman"
-            elif gaussian == "no":
-                test = "kruskal_wallis"
-            else:
-                test = "ordinary" if equal else "welch"
-            return {"kind": "anova", "test": test, "comparisons": None if goal == "none" else goal, "method": None}
-        if paired:
-            test = "paired_t" if gaussian != "no" else "wilcoxon"
-        elif gaussian == "no":
-            test = "mann_whitney"
-        else:
-            test = "unpaired_t" if equal else "welch_t"
-        return {"kind": "compare", "test": test, "alternative": _checked(self.tails)}
-
-    def _update(self) -> None:
-        many = _checked(self.groups) != 2
-        self.equal.property("box").setEnabled(not _checked(self.paired) and _checked(self.gaussian) != "no")
-        self.tails.property("box").setEnabled(not many)
-        self.goal.property("box").setEnabled(many)
-        choice = self.choice()
-        parts = [GUIDE_CSS]
-        if many:
-            parts.append(self._many_text(choice))
-        else:
-            parts.append(self._two_text(choice))
-        parts.append(
-            "<h3>Suggested analysis for image data</h3>"
-            "<p>Measure: % of target, or % of segmented cells. Dot: one per <b>biological replicate (N)</b>, pooled from its images "
-            "(technical replicates, n). Graph: a SuperPlot with mean ± SD of the replicates. Two groups: Welch's t test with the difference "
-            "and 95% CI and an estimation plot, or Mann-Whitney (watch the small-N warning). Three or more groups: "
-            "Kruskal-Wallis with Dunn's tests against the chosen reference group(s), for example a negative and a positive control; "
-            "with Gaussian values and enough replicates, ANOVA with Dunnett's tests.</p>"
-            "<p><b>Why the replicate?</b> A claim about a condition is a claim about independent samples. Images and cells from one sample share "
-            "its biology and handling, so counting them as independent makes n large and P falsely small (pseudoreplication). "
-            "Import CellQuant results → <b>Use suggested setup</b> sets this up.</p>"
-            "<p class='muted'>Definitions and equations: Help → Statistics guide…</p>"
-        )
-        self.answer.setHtml("".join(parts))
-
-    def _two_text(self, choice: dict) -> str:
-        test = choice["test"]
-        name = COMPARE_TESTS[test][0]
-        reason = {
-            "welch_t": "Two unpaired groups, Gaussian values, and no need to assume equal SDs. Welch's test stays correct when the SDs differ "
-                       "and loses almost nothing when they are equal.",
-            "unpaired_t": "Two unpaired groups, Gaussian values with the same SD in both.",
-            "mann_whitney": "Two unpaired groups, and you cannot assume a Gaussian distribution: the test compares ranks.",
-            "paired_t": "The same replicate was measured in both conditions, so the test looks at each replicate's difference.",
-            "wilcoxon": "Paired data that you cannot assume are Gaussian: the test ranks each replicate's difference.",
-        }[test]
-        example = {
-            "welch_t": "Example: % of target in 5 control and 6 treated replicates. Welch's test gives the difference of the means with "
-                       "its 95% CI; report “difference 8.2 percentage points (95% CI 2.1 to 14.3), Welch's t test, P = 0.014, N = 5 and 6”.",
-            "unpaired_t": "Example: % of segmented cells in 6 replicates per group, with similar SDs.",
-            "mann_whitney": "Example: a score from 6 control and 7 treated replicates. At 3 vs 3 the smallest possible two-tailed P is 0.10, "
-                            "so it needs N ≥ 4 per group to reach P < 0.05.",
-            "paired_t": "Example: each of 5 replicates measured untreated and treated (or left and right half); the test asks whether the mean "
-                        "within-replicate difference is 0.",
-            "wilcoxon": "Example: 7 replicates, each scored before and after. With 5 pairs or fewer, it cannot reach P < 0.05.",
-        }[test]
-        text = f"<h3>Recommended: {name}</h3><p>{reason}</p><p class='muted'>{example}</p>"
-        if _checked(self.gaussian) == "unsure":
-            text += ("<p><b>Not sure about Gaussian?</b> Look at the dots: roughly symmetric, no long tail, no values piled at 0 or 100%? "
-                     "Means of many cells per replicate are usually close to Gaussian. With small N a normality test has almost no "
-                     "power, and with large N it flags tiny departures that do not matter, so do not rely on it alone.</p>")
-        if choice["alternative"] != "two-sided":
-            text += ("<p><b>One-tailed:</b> only if the direction was predicted before the experiment, and a change the other way "
-                     "would be reported as no effect.</p>")
-        return text
-
-    def _many_text(self, choice: dict) -> str:
-        test, goal = choice["test"], choice["comparisons"]
-        name = ANOVA_NAMES[test][0]
-        reason = {
-            "ordinary": "Three or more unpaired groups, Gaussian values with similar SDs. One test asks whether any group mean differs, "
-                        "instead of a t test for every pair (with three groups the chance of at least one false positive is about 14%, not 5%).",
-            "welch": "Three or more unpaired groups, Gaussian values, and the SDs may differ between groups. Welch's and Brown-Forsythe ANOVA "
-                     "do not assume equal SDs, and lose little when they are equal.",
-            "repeated_measures": "The same replicate was measured in every condition, so the analysis compares conditions within each replicate. "
-                                 "Keep the Geisser-Greenhouse correction on unless you know the differences between conditions vary equally.",
-            "kruskal_wallis": "Three or more unpaired groups, and you cannot assume a Gaussian distribution: the test compares ranks.",
-            "friedman": "Matched replicates, and you cannot assume a Gaussian distribution: each replicate's values are ranked across the conditions.",
-        }[test]
-        example = {
-            "ordinary": "Example: % of target in a negative control, a positive control and two treatments, 6 replicates each.",
-            "welch": "Example: % of segmented cells where the control varies little (near 0%) and a treated group varies a lot.",
-            "repeated_measures": "Example: each of 5 replicates measured in 4 conditions; the replicates are the rows.",
-            "kruskal_wallis": "Example: a score from 5 replicates in each of 4 conditions. With groups of 2, no Dunn comparison can reach P < 0.05.",
-            "friedman": "Example: 6 replicates each scored in 3 conditions.",
-        }[test]
-        follow = {
-            "control": {"rank": "Dunn's tests compare each group with the reference group(s). With two references, such as a negative and a positive control, "
-                                "each reference is its own family by default and its stars get their own colour on a graph.",
-                        "ordinary": "Dunnett's test compares each group with the reference group(s). With two references, such as a negative and a positive control, "
-                                    "each reference is its own family by default and its stars get their own colour on a graph."},
-            "all": {"rank": "Dunn's tests compare every pair; a compact letter display summarises them on a graph.",
-                    "ordinary": "Tukey's test compares every pair (Games-Howell when SDs differ); a compact letter display summarises them on a graph."},
-            "none": {"rank": "Only the overall test; it does not say which groups differ.", "ordinary": "Only the overall test; it does not say which groups differ."},
-        }[goal or "none"]["rank" if test in ("kruskal_wallis", "friedman") else "ordinary"]
-        text = f"<h3>Recommended: {name}</h3><p>{reason}</p><p class='muted'>{example}</p><p><b>Then:</b> {follow}</p>"
-        if _checked(self.gaussian) == "unsure":
-            text += ("<p><b>Not sure about Gaussian?</b> With few replicates per group a normality test cannot tell, so Kruskal-Wallis is the safe choice, "
-                     "but it needs more replicates to reach a small P; with 3 per group Dunn's tests can rarely be significant.</p>")
-        return text

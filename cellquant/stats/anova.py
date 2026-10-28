@@ -28,7 +28,7 @@ import pandas as pd
 from scipy import stats
 
 from cellquant.errors import StatisticsError
-from cellquant.stats._common import p_rows
+from cellquant.stats._common import df_override, p_rows, record_overrides
 from cellquant.stats._rank import tie_sum
 from cellquant.stats.multcomp import Estimates, comparison_rows, plan_from, run_comparisons
 from cellquant.stats.pvalues import format_p, p_summary
@@ -119,16 +119,47 @@ def _check_alpha(alpha: float, ci: float) -> None:
         raise StatisticsError("The confidence level must be between 0 and 1 (for example 0.95).")
 
 
+def _check_sd(sd) -> float:
+    try:
+        value = float(sd)
+    except (TypeError, ValueError):
+        raise StatisticsError(f"sd must be a positive number, not {sd!r}.") from None
+    if isinstance(sd, (bool, np.bool_)) or not np.isfinite(value) or value <= 0:
+        raise StatisticsError(f"sd must be a finite number greater than 0, not {sd!r}.")
+    return value
+
+
+def _sd_change(sd, computed: float, changes: list, comparisons, trend) -> float:
+    """Validate an SD override for the multiple comparisons; it needs comparisons (or the trend test, which uses the same error term)."""
+
+    value = _check_sd(sd)
+    if comparisons in (None, False) and not trend:
+        raise StatisticsError("sd is the SD the multiple comparisons use; ask for multiple comparisons (or the test for trend) to use it.")
+    changes.append(("SD for multiple comparisons", fmt(value), fmt(computed)))
+    return value
+
+
+def _m_change(out: dict, changes: list | None) -> None:
+    if out["m"] is not None and changes is not None:
+        sizes = out["per_family"]
+        changes.append(("Number of comparisons (m)", str(int(out["m"])), str(sizes[0]) if len(set(sizes)) == 1 else ", ".join(map(str, sizes))))
+
+
 def _follow_up(result: AnalysisResult, est: Estimates, comparisons, method, control, pairs, family, trend, alpha, ci, style,
-               ss_total: float | None = None, ss_between: float | None = None, rank: bool = False) -> str:
-    """Multiple comparisons and the test for trend; returns text for the methods sentence."""
+               ss_total: float | None = None, ss_between: float | None = None, rank: bool = False, m: int | None = None,
+               changes: list | None = None) -> str:
+    """Multiple comparisons and the test for trend; returns text for the methods sentence.
+    ``m`` is the number of comparisons for the Bonferroni-type corrections; it is added to ``changes`` when set."""
 
     text = ""
     if comparisons == "trend":
         comparisons, trend = None, True
     plan = plan_from(comparisons, method, control, pairs, family)
+    if m is not None and plan is None:
+        raise StatisticsError("The number of comparisons (m) is used by multiple comparisons; ask for comparisons to use it.")
     if plan is not None:
-        out = run_comparisons(est, plan, alpha=alpha, ci=ci, style=style)
+        out = run_comparisons(est, plan, alpha=alpha, ci=ci, style=style, m=m)
+        _m_change(out, changes)
         comparison_rows(result, out, style, rank=rank)
         families = "" if out["n_families"] == 1 else f", one family per reference group ({', '.join(out['references'])})"
         level = f"Q = {100 * alpha:g}%" if out["fdr"] else f"family-wise alpha = {alpha:g}"
@@ -198,7 +229,7 @@ def _dunn_floor(result: AnalysisResult, est: Estimates, out: dict, alpha: float)
         best = row["_max_z"] if "_max_z" in row else None
         if best is None:
             continue
-        m = out["per_family"][row["family"] - 1]
+        m = out["m"] if out.get("m") is not None else out["per_family"][row["family"] - 1]
         floor = 2 * stats.norm.sf(best) * (m if out["method"] == "dunn" else 1)
         if min(1.0, floor) >= alpha:
             blocked += 1
@@ -269,16 +300,26 @@ def _anova_core(samples) -> dict:
 
 def ordinary_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None,
                    control=None, pairs=None, family: str = "per_reference", trend: bool = False, alpha: float = 0.05, ci: float = 0.95,
-                   style: str = "classic") -> AnalysisResult:
+                   style: str = "classic", df=None, sd: float | None = None, m: int | None = None) -> AnalysisResult:
     """Ordinary one-way ANOVA: F = MS_between / MS_within with (k - 1, N - k) df, where
     SS_between = Σ n_i (ȳ_i - ȳ)² and SS_within = Σ Σ (y - ȳ_i)². R² = SS_between / SS_total.
-    Also the Brown-Forsythe and Bartlett tests of equal SDs."""
+    Also the Brown-Forsythe and Bartlett tests of equal SDs.
+
+    Advanced overrides (keyword-only, recorded in "Changed from the default"): ``df`` replaces the
+    error df N - k in the F test's P, the ANOVA table and the multiple comparisons; ``sd`` replaces
+    the pooled SD √MS_within in the multiple comparisons (V = sd²·diag(1/n_i); the F test is
+    unchanged); ``m`` is the number of comparisons the Bonferroni-type corrections count."""
 
     _check_alpha(alpha, ci)
     names, samples, dropped = _independent(table, groups, "Ordinary one-way ANOVA")
     core = _anova_core(samples)
     if core["df_within"] < 1:
         raise StatisticsError("Ordinary one-way ANOVA needs more values than groups (some group needs at least 2 values).")
+    changes, larger = [], []
+    if df is not None:
+        df_used = df_override(df, core["df_within"], "Error df", changes, larger)
+        core = {**core, "df_within": df_used, "p": float(stats.f.sf(core["f"], core["df_between"], df_used)) if np.isfinite(core["f"]) else np.nan}
+    cov_sd = _sd_change(sd, math.sqrt(core["ms_within"]), changes, comparisons, trend) if sd is not None else None
     result = _start("Ordinary one-way ANOVA", table, names, {"alpha": alpha, "ci": ci, "style": style, "comparisons": comparisons, "method": method,
                                                              "control": control, "family": family, "trend": trend})
     summary = result.section("ANOVA summary")
@@ -320,10 +361,11 @@ def ordinary_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, c
     _small_note(result, core["n"], "ANOVA")
     _replicate_note(result, core["n"])
     _blank_note(result, dropped)
-    est = Estimates(names, core["means"], core["n"], core["ms_within"] * np.diag(1 / core["n"]), core["df_within"], "pooled",
-                    error_label="pooled SD from the ANOVA")
-    more = _follow_up(result, est, comparisons, method, control, pairs, family, trend, alpha, ci, style, core["ss_total"], core["ss_between"])
+    est = Estimates(names, core["means"], core["n"], (core["ms_within"] if cov_sd is None else cov_sd**2) * np.diag(1 / core["n"]), core["df_within"], "pooled",
+                    error_label="pooled SD from the ANOVA" if cov_sd is None else "SD set by hand")
+    more = _follow_up(result, est, comparisons, method, control, pairs, family, trend, alpha, ci, style, core["ss_total"], core["ss_between"], m=m, changes=changes)
     result.methods = f"Ordinary one-way ANOVA ({len(names)} groups, {int(core['n'].sum())} values; alpha = {alpha:g}).{more}"
+    record_overrides(result, changes, larger)
     return result
 
 
@@ -373,16 +415,23 @@ def welch_anova_core(samples) -> dict:
 
 
 def welch_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None, control=None,
-                pairs=None, family: str = "per_reference", alpha: float = 0.05, ci: float = 0.95, style: str = "classic") -> AnalysisResult:
+                pairs=None, family: str = "per_reference", alpha: float = 0.05, ci: float = 0.95, style: str = "classic", df=None, m: int | None = None) -> AnalysisResult:
     """Brown-Forsythe and Welch ANOVA tests, for groups whose SDs may differ (both are reported).
     ``values["p"]`` is Welch's P. Multiple comparisons default to Games-Howell (all pairs) or
-    Dunnett's T3 (other goals); Tamhane's T2 is also available."""
+    Dunnett's T3 (other goals); Tamhane's T2 is also available.
+
+    Advanced overrides: ``df`` replaces the denominator df of Welch's W (Brown-Forsythe F* is
+    unchanged); ``m`` is the number of comparisons the Bonferroni-type corrections count."""
 
     _check_alpha(alpha, ci)
     names, samples, dropped = _independent(table, groups, "Welch's and Brown-Forsythe ANOVA", min_each=2)
     if any(np.var(s, ddof=1) <= 0 for s in samples):
         raise StatisticsError("Welch's and Brown-Forsythe ANOVA need some spread (SD > 0) in every group.")
     core = welch_anova_core(samples)
+    changes, larger = [], []
+    if df is not None:
+        df_used = df_override(df, core["welch_dfd"], "Welch denominator df", changes, larger)
+        core = {**core, "welch_dfd": df_used, "welch_p": float(stats.f.sf(core["welch_f"], core["welch_dfn"], df_used))}
     result = _start("Brown-Forsythe and Welch ANOVA", table, names, {"alpha": alpha, "ci": ci, "style": style, "comparisons": comparisons,
                                                                      "method": method, "control": control, "family": family})
     for title, key, symbol in (("Brown-Forsythe ANOVA test", "bf_anova", "F*"), ("Welch's ANOVA test", "welch", "W")):
@@ -400,8 +449,9 @@ def welch_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, comp
     _replicate_note(result, core["n"])
     _blank_note(result, dropped)
     est = Estimates(names, core["means"], core["n"], None, np.nan, "welch", sd=core["sds"], error_label="each comparison uses its own SDs and Welch's df")
-    more = _follow_up(result, est, comparisons, method, control, pairs, family, False, alpha, ci, style)
+    more = _follow_up(result, est, comparisons, method, control, pairs, family, False, alpha, ci, style, m=m, changes=changes)
     result.methods = f"Brown-Forsythe and Welch one-way ANOVA (equal SDs not assumed; {len(names)} groups; alpha = {alpha:g}).{more}"
+    record_overrides(result, changes, larger)
     return result
 
 
@@ -421,6 +471,19 @@ def geisser_greenhouse_epsilon(Y: np.ndarray) -> float:
     Sc = C @ S @ C
     denom = (k - 1) * np.trace(Sc @ Sc)
     return float(np.trace(Sc) ** 2 / denom) if denom > 0 else np.nan
+
+
+def _check_epsilon(epsilon, k: int) -> float:
+    """A fixed sphericity epsilon, between 1/(k - 1) and 1."""
+
+    try:
+        value = float(epsilon)
+    except (TypeError, ValueError):
+        raise StatisticsError(f"epsilon must be a number between 1/(k-1) and 1, not {epsilon!r}.") from None
+    low = 1.0 / (k - 1)
+    if isinstance(epsilon, (bool, np.bool_)) or not np.isfinite(value) or not low - 1e-12 <= value <= 1.0:
+        raise StatisticsError(f"epsilon must be between 1/(k-1) = {low:.4g} and 1 for {k} treatments, not {epsilon!r}.")
+    return min(1.0, max(low, value))
 
 
 def _rm_core(Y: np.ndarray) -> dict:
@@ -444,7 +507,8 @@ def _rm_core(Y: np.ndarray) -> dict:
 
 def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, geisser_greenhouse: bool = True, missing: str = "mixed",
                             comparisons=None, method: str | None = None, control=None, pairs=None, family: str = "per_reference",
-                            rm_error: str | None = None, trend: bool = False, alpha: float = 0.05, ci: float = 0.95, style: str = "classic") -> AnalysisResult:
+                            rm_error: str | None = None, trend: bool = False, alpha: float = 0.05, ci: float = 0.95, style: str = "classic",
+                            epsilon: float | None = None, df=None, sd: float | None = None, m: int | None = None) -> AnalysisResult:
     """Repeated-measures one-way ANOVA. Each row is one subject (matched across columns).
 
     SS_total = SS_treatment + SS_subjects + SS_residual; F = MS_treatment / MS_residual with
@@ -461,7 +525,14 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     assumes sphericity) or "separate" (each comparison uses only its two columns: SE = SD of the
     differences/√n, df = n - 1, essentially a paired t test; Maxwell and Delaney pp. 552-555). The
     default is: pooled when sphericity is assumed, separate with the Geisser-Greenhouse
-    correction (which is then applied only to the main P)."""
+    correction (which is then applied only to the main P).
+
+    Advanced overrides (not available with blanks, which fit the mixed model): ``epsilon`` is a
+    fixed sphericity ε in [1/(k - 1), 1] used instead of the estimated Geisser-Greenhouse ε (it
+    implies the correction is applied); ``df`` replaces the error df (n - 1)(k - 1) before ε is
+    applied (and the pooled comparisons' df); ``sd`` replaces the pooled SD √MS_residual in the multiple
+    comparisons (a pooled error term, V = sd²·I/n, with df as above); ``m`` is the number of comparisons
+    the Bonferroni-type corrections count."""
 
     _check_alpha(alpha, ci)
     if missing not in ("mixed", "exclude"):
@@ -471,8 +542,12 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     Y = Y[present.any(axis=1)]
     complete = np.isfinite(Y).all(axis=1)
     if not complete.all() and missing == "mixed":
+        for label, value in (("df", df), ("epsilon", epsilon), ("sd", sd)):
+            if value is not None:
+                raise StatisticsError(f"{label} is not available with blanks (mixed model); fill or remove the rows with a blank (or use missing=\"exclude\"), "
+                                      f"or leave {label} at its default.")
         result = mixed_effects_anova(table, groups=groups, geisser_greenhouse=geisser_greenhouse, comparisons=comparisons, method=method,
-                                     control=control, pairs=pairs, family=family, trend=trend, alpha=alpha, ci=ci, style=style)
+                                     control=control, pairs=pairs, family=family, trend=trend, alpha=alpha, ci=ci, style=style, m=m)
         result.warnings.insert(0, f"{int((~complete).sum())} row(s) have a blank, so a mixed-effects model was fitted instead of repeated-measures ANOVA.")
         return result
     dropped = int((~complete).sum())
@@ -483,7 +558,15 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     n, k = Y.shape
     eps = geisser_greenhouse_epsilon(Y) if k > 2 else 1.0
     scale = eps if geisser_greenhouse and np.isfinite(eps) else 1.0
-    dfn, dfd = core["df_treatment"] * scale, core["df_residual"] * scale
+    changes, larger = [], []
+    df_err = core["df_residual"]
+    if df is not None:
+        df_err = df_override(df, df_err, "Error df (before epsilon)", changes, larger)
+    if epsilon is not None:
+        eps_set = _check_epsilon(epsilon, k)
+        changes.append(("Epsilon", fmt(eps_set), fmt(scale)))
+        scale, geisser_greenhouse = eps_set, True
+    dfn, dfd = core["df_treatment"] * scale, df_err * scale
     p = float(stats.f.sf(core["f"], dfn, dfd)) if np.isfinite(core["f"]) else np.nan
     r2 = core["ss_treatment"] / (core["ss_treatment"] + core["ss_residual"]) if core["ss_treatment"] + core["ss_residual"] > 0 else np.nan
     r2_matching = core["ss_subjects"] / core["ss_total"] if core["ss_total"] > 0 else np.nan
@@ -512,8 +595,8 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     data.add("Number of subjects (rows)", n)
     _group_section(result, names, [Y[:, j] for j in range(k)])
     result.values.update(names=names, n_subjects=n, means=core["means"].tolist(), f=core["f"], dfn=dfn, dfd=dfd, p=p, epsilon=eps,
-                         dfn_uncorrected=core["df_treatment"], dfd_uncorrected=core["df_residual"],
-                         p_uncorrected=float(stats.f.sf(core["f"], core["df_treatment"], core["df_residual"])) if np.isfinite(core["f"]) else np.nan,
+                         dfn_uncorrected=core["df_treatment"], dfd_uncorrected=df_err,
+                         p_uncorrected=float(stats.f.sf(core["f"], core["df_treatment"], df_err)) if np.isfinite(core["f"]) else np.nan,
                          p_geisser_greenhouse=float(stats.f.sf(core["f"], core["df_treatment"] * eps, core["df_residual"] * eps)) if np.isfinite(core["f"]) else np.nan,
                          r_squared=r2, r_squared_matching=r2_matching, **{key: core[key] for key in ("ss_treatment", "ss_subjects", "ss_residual", "ss_total", "ms_treatment", "ms_subjects",
                                                                      "ms_residual", "f_subjects", "p_subjects")})
@@ -524,19 +607,28 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     if n < 3:
         result.warnings.append("With fewer than 3 subjects, power is very low and sphericity cannot be judged.")
     _replicate_note(result, [n])
-    rm_error = rm_error or ("separate" if geisser_greenhouse else "pooled")
+    cov_sd = _sd_change(sd, math.sqrt(core["ms_residual"]), changes, comparisons, trend) if sd is not None else None
+    if cov_sd is not None and rm_error == "separate":
+        raise StatisticsError('sd replaces the pooled error term, so it cannot be combined with rm_error="separate".')
+    if cov_sd is not None and rm_error is None and geisser_greenhouse:
+        changes.append(("Multiple comparisons error term", "pooled (a set SD replaces it)", "each pair's own differences"))
+    rm_error = rm_error or ("separate" if geisser_greenhouse and cov_sd is None else "pooled")
     if rm_error == "pooled":
-        est = Estimates(names, core["means"], np.full(k, n), core["ms_residual"] / n * np.eye(k), core["df_residual"], "pooled",
-                        error_label="pooled repeated-measures error term")
+        est = Estimates(names, core["means"], np.full(k, n), (core["ms_residual"] if cov_sd is None else cov_sd**2) / n * np.eye(k), df_err, "pooled",
+                        error_label="pooled repeated-measures error term" if cov_sd is None else "SD set by hand")
     elif rm_error == "separate":
         est = Estimates(names, core["means"], np.full(k, n), np.cov(Y, rowvar=False, ddof=1) / n, n - 1, "pooled",
                         error_label="each comparison uses only the two columns compared (sphericity not assumed)")
     else:
         raise StatisticsError('rm_error must be "pooled" or "separate".')
     more = _follow_up(result, est, comparisons, method, control, pairs, family, trend, alpha, ci, style, core["ss_total"],
-                      core["ss_treatment"] if rm_error == "pooled" else None)
+                      core["ss_treatment"] if rm_error == "pooled" else None, m=m, changes=changes)
     gg = f"Geisser-Greenhouse corrected (epsilon = {eps:.3f})" if geisser_greenhouse else "sphericity assumed"
+    if epsilon is not None:
+        gg = f"sphericity correction with epsilon = {scale:.3f} set by hand"
+        result.values["epsilon_used"] = scale
     result.methods = f"Repeated-measures one-way ANOVA ({k} treatments, {n} subjects; {gg}; alpha = {alpha:g}).{more}"
+    record_overrides(result, changes, larger)
     return result
 
 
@@ -565,7 +657,7 @@ def _gls_covariance(long: pd.DataFrame, k: int, var_subject: float, var_resid: f
 
 def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = None, geisser_greenhouse: bool = True, comparisons=None, method: str | None = None, control=None,
                         pairs=None, family: str = "per_reference", trend: bool = False, alpha: float = 0.05, ci: float = 0.95,
-                        style: str = "classic") -> AnalysisResult:
+                        style: str = "classic", m: int | None = None) -> AnalysisResult:
     """Mixed-effects model for repeated measures with missing values: value = group mean + subject
     effect + error, with a random intercept per subject (row), fitted by REML (statsmodels MixedLM).
 
@@ -590,6 +682,7 @@ def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = No
     it equals repeated-measures ANOVA when nothing is missing. The denominator df is a choice;
     this engine uses the between-within df above. The multiple comparisons
     stay model-based (they do not switch to two-column comparisons under Geisser-Greenhouse).
+    ``m`` is the number of comparisons the Bonferroni-type corrections count.
     """
 
     _check_alpha(alpha, ci)
@@ -680,9 +773,11 @@ def mixed_effects_anova(table: ColumnTable, *, groups: Sequence[str] | None = No
     counts_arr = counts.to_numpy().astype(float)
     est = Estimates(names, beta, counts_arr, V, float(dfd), "pooled", error_label="mixed-model SEs, between-within df")
     ss_total = float(np.sum((long["value"] - long["value"].mean()) ** 2))
-    more = _follow_up(result, est, comparisons, method, control, pairs, family, trend, alpha, ci, style, ss_total, None)
+    changes: list = []
+    more = _follow_up(result, est, comparisons, method, control, pairs, family, trend, alpha, ci, style, ss_total, None, m=m, changes=changes)
     result.methods = (f"Mixed-effects model (REML; random intercept per subject; {k} treatments, {subjects} subjects, {n_obs} values), "
                       f"Wald F test with between-within df{f', Geisser-Greenhouse corrected (epsilon = {eps:.3f})' if gg_on else ''} (alpha = {alpha:g}).{more}")
+    record_overrides(result, changes)
     return result
 
 
@@ -816,7 +911,8 @@ def _kw_min_p(sizes: list[int]) -> float:
 
 
 def kruskal_wallis(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None, control=None,
-                   pairs=None, family: str = "per_reference", exact: bool | None = None, alpha: float = 0.05, style: str = "classic") -> AnalysisResult:
+                   pairs=None, family: str = "per_reference", exact: bool | None = None, alpha: float = 0.05, style: str = "classic",
+                   m: int | None = None) -> AnalysisResult:
     """Kruskal-Wallis test. All values are ranked together (ties get the average rank).
     H = [12 / (N(N+1)) · Σ R_i²/n_i - 3(N+1)] / [1 - Σ(t³ - t)/(N³ - N)] (tie-corrected).
 
@@ -825,7 +921,7 @@ def kruskal_wallis(table: ColumnTable, *, groups: Sequence[str] | None = None, c
     for example 5 groups of 3 or 4 groups of 4, a few seconds at most); otherwise it is the
     chi-square approximation with k - 1 df. The cutoff is this engine's choice. ``exact=False`` forces
     chi-square, ``exact=True`` refuses when enumeration is too large. Multiple comparisons: Dunn's
-    test on the mean ranks."""
+    test on the mean ranks. ``m`` is the number of comparisons Dunn's Bonferroni-type correction counts."""
 
     _check_alpha(alpha, 0.95)
     names, samples, dropped = _independent(table, groups, "The Kruskal-Wallis test")
@@ -879,16 +975,21 @@ def kruskal_wallis(table: ColumnTable, *, groups: Sequence[str] | None = None, c
     variance = N * (N + 1) / 12 - ties / (12 * (N - 1))
     est = Estimates(names, sums / n, n, variance * np.diag(1 / n), np.inf, "rank", error_label="mean ranks, ties corrected")
     plan = plan_from(comparisons, method, control, pairs, family)
-    more = _rank_follow_up(result, est, plan, alpha, style, lambda i, j: (N - (n[i] + n[j]) / 2) / math.sqrt(N * (N + 1) / 12 * (1 / n[i] + 1 / n[j])))
+    changes: list = []
+    more = _rank_follow_up(result, est, plan, alpha, style, lambda i, j: (N - (n[i] + n[j]) / 2) / math.sqrt(N * (N + 1) / 12 * (1 / n[i] + 1 / n[j])), m, changes)
     how = "exact permutation P" if p_exact is not None else f"approximate P from chi-square with {k - 1} df"
     result.methods = f"Kruskal-Wallis test ({k} groups, {N} values; tie-corrected H, {how}; alpha = {alpha:g}).{more}"
+    record_overrides(result, changes)
     return result
 
 
-def _rank_follow_up(result, est, plan, alpha, style, max_z) -> str:
+def _rank_follow_up(result, est, plan, alpha, style, max_z, m=None, changes=None) -> str:
     if plan is None:
+        if m is not None:
+            raise StatisticsError("The number of comparisons (m) is used by multiple comparisons; ask for comparisons to use it.")
         return ""
-    out = run_comparisons(est, plan, alpha=alpha, ci=0.95, style=style)
+    out = run_comparisons(est, plan, alpha=alpha, ci=0.95, style=style, m=m)
+    _m_change(out, changes)
     index = {name: i for i, name in enumerate(est.names)}
     for row in out["rows"]:
         row["_max_z"] = max_z(index[row["group_1"]], index[row["group_2"]])
@@ -902,13 +1003,15 @@ def _rank_follow_up(result, est, plan, alpha, style, max_z) -> str:
 
 
 def friedman(table: ColumnTable, *, groups: Sequence[str] | None = None, comparisons=None, method: str | None = None, control=None,
-             pairs=None, family: str = "per_reference", exact: bool | None = None, alpha: float = 0.05, style: str = "classic") -> AnalysisResult:
+             pairs=None, family: str = "per_reference", exact: bool | None = None, alpha: float = 0.05, style: str = "classic",
+             m: int | None = None) -> AnalysisResult:
     """Friedman test for matched rows. Values are ranked within each row (ties get the average
     rank); R_j is the rank sum of column j. With tie correction (as R's friedman.test):
     Q = 12 Σ (R_j - n(k+1)/2)² / [n k (k+1) - Σ(t³ - t)/(k - 1)]. P is exact (permutation of the
     ranks within rows, ties included) unless (k!)^n > 10⁹, the usual rule; then it is the chi-square
     approximation with k - 1 df. ``exact=False`` forces chi-square. Rows with a blank are left out. Multiple comparisons: Dunn's test on the mean
-    ranks R_j/n with SE √(k(k+1)/(6n)) (no tie correction)."""
+    ranks R_j/n with SE √(k(k+1)/(6n)) (no tie correction). ``m`` is the number of comparisons Dunn's
+    Bonferroni-type correction counts."""
 
     _check_alpha(alpha, 0.95)
     names, Y = _matrix(table, groups)
@@ -960,9 +1063,11 @@ def friedman(table: ColumnTable, *, groups: Sequence[str] | None = None, compari
         result.warnings.append("The table is not marked as paired; the Friedman test assumes row i of each column is the same subject.")
     est = Estimates(names, sums / n, np.full(k, n), k * (k + 1) / (12 * n) * np.eye(k), np.inf, "rank", error_label="mean ranks within rows")
     plan = plan_from(comparisons, method, control, pairs, family)
-    more = _rank_follow_up(result, est, plan, alpha, style, lambda i, j: (k - 1) / math.sqrt(k * (k + 1) / (6 * n)))
+    changes: list = []
+    more = _rank_follow_up(result, est, plan, alpha, style, lambda i, j: (k - 1) / math.sqrt(k * (k + 1) / (6 * n)), m, changes)
     how = "exact permutation P" if p_exact is not None else f"approximate P from chi-square with {k - 1} df"
     result.methods = f"Friedman test ({k} treatments, {n} subjects; {how}; alpha = {alpha:g}).{more}"
+    record_overrides(result, changes)
     return result
 
 

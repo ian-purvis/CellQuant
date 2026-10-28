@@ -504,6 +504,43 @@ CONTINGENCY_TREND = ("Tick only when the groups have a natural order (doses, age
 CONTINGENCY_GROUP = ("The row compared with the other one (treated, exposed, test positive). Relative risk, odds ratio and the "
                      "difference are this row versus the other; choosing the other row gives their reciprocals.")
 CONTINGENCY_OUTCOME = "The outcome whose risk is compared (death, response, condition present)."
+ADVANCED = ("Settings that are normally worked out from the data. Leave them at Default unless you have a reason; anything set by hand "
+            "is listed on the results sheet and in the methods text so it is reported.")
+ADVANCED_NOTE = "Used only while Advanced is ticked. Anything set by hand is listed on the results sheet."
+OVERRIDE_DF = ("The degrees of freedom the P values (and confidence intervals) use. Default: worked out from the data (N − k for ANOVA, the "
+               "Welch df for Welch's ANOVA, N − rc for two-way ANOVA); the multiple comparisons that use the pooled error term use it too. "
+               "Set it by hand only with a reason, for example df counted from the biological replicates of a nested design rather than from "
+               "the values. A larger df gives a smaller P. The ANOVA table keeps the computed DF and MS.")
+OVERRIDE_DF_T = ("The degrees of freedom the P value and the confidence interval use. Default: worked out from the data (Welch-Satterthwaite "
+                 "for Welch's test, N − 2 or pairs − 1 otherwise). Conservative: the smaller group's N − 1, a cautious choice when the SDs and "
+                 "the Ns both differ. Set it by hand only with a reason, for example df counted from the biological replicates of a nested "
+                 "design rather than from the values. A larger df gives a smaller P.")
+OVERRIDE_DF_RM = ("The error degrees of freedom of the repeated-measures F test, before ε multiplies them. Default: (k − 1)(N − 1). With the "
+                  "Geisser-Greenhouse correction on, the multiple comparisons use each pair's own differences (N − 1 df) and do not change; "
+                  "they use this df only with the pooled error term (for example when an SD is set). A larger df gives a smaller P.")
+OVERRIDE_DF_LINREG = ("The residual degrees of freedom of the slope and intercept CIs and P values, the F test and the bands. Default: N − 2 "
+                      "(N − 1 through the origin). The comparison of slopes and intercepts between data sets keeps the computed df.")
+OVERRIDE_DF_CORR = ("The degrees of freedom of the t test of r. Default: N − 2. For Spearman's r this is the usual t approximation; the "
+                    "confidence interval (Fisher z) does not change.")
+OVERRIDE_DIFFERENCE = ("The difference (B − A) the test compares against. Default 0: are the means equal? Another value tests, for example, "
+                       "whether the treatment changes the value by more than 5 percentage points. The confidence interval does not change.")
+OVERRIDE_EPSILON = ("The sphericity correction ε (between 1/(k − 1) and 1) that multiplies both degrees of freedom. Default: Geisser-"
+                    "Greenhouse ε estimated from the data. 1/(k − 1) is the most conservative (lower-bound) choice; 1 is no correction.")
+OVERRIDE_SD = ("The SD the multiple comparisons use. Default: the pooled SD of every group from the ANOVA. Set it, for example, to an SD "
+               "known from many earlier experiments. The overall F test is unchanged.")
+OVERRIDE_M = ("How many comparisons the correction counts (Bonferroni, Šidák, Holm-Šidák, Dunn). Default: the comparisons made. Set it higher "
+              "when these comparisons are part of a larger planned set, for example the same comparisons in other figures.")
+GUIDE = "Answer a few questions about your experiment; the guide recommends a test, works out its degrees of freedom and fills its dialog."
+GUIDE_GOAL = "What the experiment asks. The table you selected sets the first answer; change it if the table is not the right kind yet."
+GUIDE_DOT = ("What one value in the table is. The test's sample size N must count independent samples (biological replicates): animals, "
+             "explants, cultures or independent experiments. Cells or images of one sample are technical replicates (n).")
+GUIDE_INDEPENDENT = ("Tick only if each image or cell was treated or assigned on its own (for example each cell injected separately), so "
+                     "each one is an independent test of the treatment.")
+GUIDE_PAIRED = ("Paired when each replicate gave a value in every group: the same animal before and after, or each experiment run with "
+                "every condition side by side on the same day. Pairing removes run-to-run variation; ignoring it misses real differences.")
+GUIDE_GAUSSIAN = ("Means of many cells per replicate are usually close to Gaussian. Positive values with a long right tail (intensities, "
+                  "areas) are often lognormal. Scores and ranks are not Gaussian.")
+GUIDE_RUN = "Opens the recommended analysis with these settings filled in, to check before it runs."
 
 ROC = ("How well does a measurement tell two groups apart? An ROC curve plots sensitivity against 100% − specificity for every possible "
        "cutoff, and the area under it (0.5 = no better than chance, 1 = perfect) summarizes it. Needs the controls (without the "
