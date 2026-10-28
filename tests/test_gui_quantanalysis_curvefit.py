@@ -144,6 +144,8 @@ def test_edits_refit_once_typing_pauses(window, qtbot):
     before = fit.result
     window.select(sheet.id)
     graph = window.new_graph("xy")
+    ax = window.stack.currentWidget().figure._cq_axes["main"]
+    assert [line for line in ax.lines if line.get_marker() == "D"]  # the unknowns read off the curve
     redrawn = []
     window.project.changed.connect(redrawn.append)
     for k in range(3):  # three quick edits: one refit
@@ -159,6 +161,59 @@ def test_edits_refit_once_typing_pauses(window, qtbot):
     fit.options.update(ci="wide", alpha=None, model=7, compare="datasets", compare_parameter="Nope")  # a damaged project file
     window.project.rerun(fit)
     assert fit.error == "" and any("not a free parameter" in text for text in fit.warnings)
+
+
+def test_save_and_export_wait_for_no_pending_fit(window, tmp_path):
+    from cellquant.gui.quantanalysis import project_file
+    from cellquant.gui.quantanalysis.dialogs import CURVEFIT_DEFAULTS
+    from cellquant.gui.quantanalysis.results_view import ResultSheetView
+
+    sheet = _filled(window)
+    fit = window.analyze("curvefit", dict(CURVEFIT_DEFAULTS))
+    view = window.stack.currentWidget()
+    assert isinstance(view, ResultSheetView)
+    before = fit.result
+    sheet.xy.values[0, 0, :] = 30.0
+    window.project.data_changed(sheet.id)
+    assert fit.result is before  # waiting for typing to pause
+    view.export_csv(str(tmp_path / "fit.csv"))  # exporting refits first
+    assert fit.result is not before and not window.project._pending_fits
+    before = fit.result
+    sheet.xy.values[0, 0, :] = 40.0
+    window.project.data_changed(sheet.id)
+    project_file.save(window.project, tmp_path / "fit.cqstats")  # so does saving
+    assert fit.result is not before
+
+
+def test_advanced_residual_df(window):
+    from scipy import stats
+
+    from cellquant.gui.quantanalysis.dialogs import CURVEFIT_DEFAULTS, CurveFitDialog, XYDialog
+
+    sheet = _filled(window)
+    dialog = CurveFitDialog(window, sheet.xy, dict(CURVEFIT_DEFAULTS))
+    dialog.advanced.toggle.setChecked(True)
+    mode, spin, *_ = dialog.advanced.fields["df"]
+    mode.setCurrentIndex(mode.findData("custom"))
+    spin.setValue(4)
+    options = dialog.options()
+    assert options["df"] == 4 and "advanced_for" in options
+    dialog.accept()
+    assert dialog.result() == 1  # the table the settings were made for is not passed to the analysis
+    fit = window.analyze("curvefit", options)
+    plain = window.analyze("curvefit", dict(CURVEFIT_DEFAULTS))
+    a, b = fit.result.values["fits"]["A"], plain.result.values["fits"]["A"]
+    assert a["params"] == b["params"] and a["t_df"] == 4  # the fit is unchanged; only its CIs use the df set by hand
+    low, high = a["ci"]["LogEC50"]
+    assert (high - low) / 2 == pytest.approx(stats.t.ppf(0.975, 4) * a["se"]["LogEC50"])
+    assert any(text.startswith("Set by hand: Residual df") for text in fit.warnings) and "Changed from the default" in fit.methods
+    linreg = XYDialog(window, sheet.xy, "linreg")  # the same Advanced box on linear regression
+    linreg.advanced.toggle.setChecked(True)
+    mode, spin, *_ = linreg.advanced.fields["df"]
+    mode.setCurrentIndex(mode.findData("custom"))
+    spin.setValue(4)
+    linreg.accept()
+    assert linreg.result() == 1
 
 
 def test_dialog_and_name_survive_damaged_options(window):

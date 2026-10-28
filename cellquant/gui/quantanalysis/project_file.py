@@ -163,6 +163,8 @@ def save(project: Project, path: str | Path, experiment_dir: str | Path | None =
 
     from cellquant import __version__
 
+    project.flush_fits()  # a fit still waiting for typing to pause is saved as it will be shown
+
     path = Path(path)
     if path.suffix.lower() != SUFFIX:
         path = path.with_name(path.name + SUFFIX)

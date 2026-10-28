@@ -240,6 +240,7 @@ def export(layout, project, path: str | Path, kind: str, dpi: int = 600) -> Path
 
     if kind not in EXPORT_FORMATS:
         raise CellQuantError(f"Page layouts export as {', '.join(EXPORT_FORMATS)}, not {kind}.")
+    project.flush_fits()
     path = Path(path)
     try:
         if kind == "svg":
