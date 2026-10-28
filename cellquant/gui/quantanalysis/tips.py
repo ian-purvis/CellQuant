@@ -473,7 +473,8 @@ REPLICATE_COLUMN = (
 )
 REPLICATE_VALUE = (
     "Each replicate's value in a column, which the analyses and the large markers of a SuperPlot use. Mean: the usual choice. "
-    "Median: when a few values (cells) of a replicate are far from the rest."
+    "Median: when a few values (cells) of a replicate are far from the rest. Each replicate counts once however many "
+    "values it has, so keep the number of values per replicate similar."
 )
 NEW_REPLICATE_TABLE = (
     "A column table with a Replicate column: paste every value (for example every cell) of each condition, in blocks by "
