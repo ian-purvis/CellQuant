@@ -371,6 +371,9 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         if graph.kind != "bar":
             notes.append(f"A contingency table is drawn as bars; {KINDS[graph.kind][0].lower()} is for column tables.")
         return _draw_contingency(figure, data, result, fmt, font, notes)
+    analysis = getattr(result, "analysis", "") if result is not None else ""
+    if analysis in ("ROC curve", "Bland-Altman") and getattr(data, "xy", None) is None and getattr(data, "grouped", None) is None:
+        return (_draw_roc if analysis == "ROC curve" else _draw_bland_altman)(figure, data, result, fmt, font, notes)
     if getattr(data, "xy", None) is not None:
         if graph.kind != "xy":
             notes.append(f"An XY table is drawn as an XY graph; {KINDS[graph.kind][0].lower()} is for column tables.")
@@ -1397,6 +1400,105 @@ def _draw_contingency(figure, data, result, fmt: GraphFormat, font: float, notes
     return notes
 
 
+def _short_number(value: float) -> str:
+    text = f"{value:.3g}"
+    return "−" + text[1:] if text.startswith("-") else text
+
+
+def _series_style(fmt: GraphFormat, data, name: str):
+    names = list(data.table.names)
+    return fmt.dataset(name), fmt.color_of(name, names.index(name) if name in names else 0)
+
+
+def _finish_diagnostic(figure, ax, fmt: GraphFormat, font: float, notes: list[str], title: str, x_title: str, y_title: str) -> None:
+    """Axis limits, titles, ticks, annotations and the plot transform shared by the ROC and Bland-Altman graphs."""
+
+    if fmt.x.min is not None or fmt.x.max is not None:
+        low, high = ax.get_xlim()
+        ax.set_xlim(fmt.x.min if fmt.x.min is not None else low, fmt.x.max if fmt.x.max is not None else high)
+    if fmt.y.min is not None or fmt.y.max is not None:
+        low, high = ax.get_ylim()
+        ax.set_ylim(fmt.y.min if fmt.y.min is not None else low, fmt.y.max if fmt.y.max is not None else high)
+    if fmt.y.reverse:
+        ax.set_ylim(*reversed(ax.get_ylim()))
+    if fmt.x.reverse:
+        ax.set_xlim(*reversed(ax.get_xlim()))
+    _tag(ax.set_ylabel(markup(fmt.y.title if fmt.y.title is not None else y_title), **_text_kw(fmt.y.title_style, fmt, font)), "axis", "y")
+    _tag(ax.set_xlabel(markup(fmt.x.title or x_title), **_text_kw(fmt.x.title_style, fmt, font)), "axis", "x")
+    if title:
+        _tag(ax.set_title(markup(title), loc=fmt.title_loc, pad=6, **_text_kw(fmt.title_style, fmt, font + 1)), "title")
+    for which, axis in (("y", fmt.y), ("x", fmt.x)):
+        _locators(ax.yaxis if which == "y" else ax.xaxis, axis, notes)
+        _style_ticks(ax, which, axis, fmt)
+    figure._cq_axes = {"main": ax, "segments": [ax], "bottom": ax, "right": None}
+    try:
+        figure.tight_layout(pad=0.6)
+    except (ValueError, np.linalg.LinAlgError):
+        pass
+    plot = plot_transform(figure, [ax])
+    figure._cq_plot = plot
+    figure._cq_legend = None
+    for note in fmt.annotations:
+        _annotation(figure, note, fmt, font, plot)
+
+
+def _draw_roc(figure, data, result, fmt: GraphFormat, font: float, notes: list[str]) -> list[str]:
+    """A linked ROC curve: sensitivity against 100% − specificity, the line of identity, and the area with its P value."""
+
+    curve = result.values["curve"]
+    ax = figure.add_subplot(111)
+    _style_frame(ax, fmt)
+    name = str(result.options.get("names", ("", ""))[1])
+    style, color = _series_style(fmt, data, name)
+    ax.plot([0, 100], [0, 100], linestyle=":", color=fmt.axis_color, linewidth=max(0.8, fmt.axis_width), zorder=1)
+    if style.visible:
+        _tag(ax.plot(curve["fpr_percent"].to_numpy(), curve["sensitivity"].to_numpy(), color=color, linewidth=max(1.0, style.center_width * 0.75),
+                     solid_joinstyle="miter", zorder=3)[0], "dataset", name)
+    best = int(result.values.get("best", -1))
+    if style.visible and 0 <= best < len(curve):  # the best cutoff (Youden's J), labelled with its value
+        x0, y0 = float(curve["fpr_percent"].iloc[best]), float(curve["sensitivity"].iloc[best])
+        _tag(ax.plot([x0], [y0], linestyle="none", marker="o", markersize=6, markerfacecolor="white", markeredgecolor=color,
+                     markeredgewidth=1.5, zorder=4)[0], "dataset", name)
+        sign = ">" if result.values.get("direction") == ">" else "<"
+        ax.annotate(f"{sign} {_short_number(result.values['best_cutoff'])}", xy=(x0, y0), xytext=(6, -10), textcoords="offset points",
+                    fontsize=font * 0.85, color=fmt.axis_color, ha="left", va="top")
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    ax.set_box_aspect(1)
+    if fmt.x.scale != "linear" or fmt.y.scale != "linear":
+        notes.append("An ROC curve is drawn on linear axes.")
+    line = (f"Area = {result.values['auc']:.2f}, {p_text(result.values['p'], style=result.options.get('style', 'classic'))}"
+            f" (N = {result.values['n_controls']} / {result.values['n_patients']})")
+    _finish_diagnostic(figure, ax, fmt, font, notes, f"{fmt.title}\n{line}" if fmt.title else line, "100% − Specificity (%)", "Sensitivity (%)")
+    return notes
+
+
+def _draw_bland_altman(figure, data, result, fmt: GraphFormat, font: float, notes: list[str]) -> list[str]:
+    """A linked Bland-Altman analysis: each pair's measure against the average of the pair, the bias and the limits of agreement."""
+
+    values = result.values
+    ax = figure.add_subplot(111)
+    _style_frame(ax, fmt)
+    first, second = (str(name) for name in result.options.get("names", ("A", "B")))
+    style, color = _series_style(fmt, data, first)
+    x, y = np.asarray(values["average"], float), np.asarray(values["measure"], float)
+    if style.visible:
+        _dots(ax, x, y, np.zeros(x.size, bool), style, color, style.symbol_size or _dot_area(fmt, x.size), 0.9 if x.size < 200 else 0.6, ("dataset", first))
+    line = fmt.axis_color
+    width = max(0.8, fmt.axis_width)
+    ax.axhline(values["bias"], color=line, linewidth=width * 1.2, linestyle="-", zorder=2)
+    for limit in (values["low"], values["high"]):
+        ax.axhline(limit, color=line, linewidth=width, linestyle="--", zorder=2)
+    for level, text in ((values["bias"], "Bias"), (values["high"], "Upper limit"), (values["low"], "Lower limit")):
+        ax.annotate(f"{text} {_short_number(level)}", xy=(1, level), xycoords=ax.get_yaxis_transform(), xytext=(-2, 2), textcoords="offset points",
+                    va="bottom", ha="right", fontsize=font * 0.85, color=fmt.axis_color, annotation_clip=False)  # inside, so never cut off
+    if fmt.x.scale != "linear" or fmt.y.scale != "linear":
+        notes.append("A Bland-Altman graph is drawn on linear axes.")
+    measure = {"difference": f"{first} − {second}", "ratio": f"{first} / {second}", "percent": f"% difference ({first} − {second})"}.get(
+        result.options.get("method"), f"{first} − {second}")
+    count = f"N = {values['n']} pairs"
+    _finish_diagnostic(figure, ax, fmt, font, notes, f"{fmt.title}\n{count}" if fmt.title else count, f"Average of {first} and {second}", measure)
+    return notes
 
 
 def replicate_style(levels, fmt: GraphFormat) -> list[tuple[str, str, str | None]]:

@@ -579,3 +579,23 @@ GUIDE_PAIRED = ("Paired when each replicate gave a value in every group: the sam
 GUIDE_GAUSSIAN = ("Means of many cells per replicate are usually close to Gaussian. Positive values with a long right tail (intensities, "
                   "areas) are often lognormal. Scores and ranks are not Gaussian.")
 GUIDE_RUN = "Opens the recommended analysis with these settings filled in, to check before it runs."
+
+ROC = ("How well does a measurement tell two groups apart? An ROC curve plots sensitivity against 100% − specificity for every possible "
+       "cutoff, and the area under it (0.5 = no better than chance, 1 = perfect) summarizes it. Needs the controls (without the "
+       "condition) and the patients (with it), or any two groups, one with and one without the condition, as separate columns.")
+ROC_CONTROLS = ("The column of measurements from the group without the condition (healthy controls, untreated, negative). "
+                "Each column is one group; the values need not be paired.")
+ROC_PATIENTS = ("The column of measurements from the group with the condition (patients, treated, positive). It must be a "
+                "different column from the controls.")
+ROC_DIRECTION = ("Which side of the cutoff is called positive. Auto picks higher values when the patients' values tend to be higher "
+                 "than the controls', and lower values otherwise. Choose a direction yourself if you know it in advance.")
+ROC_CI = "The confidence level of the interval around the area under the curve and around each sensitivity and specificity."
+BLAND_ALTMAN = ("Do two ways of measuring the same thing agree? Plots each item's difference against the average of the two "
+                "measurements, with the average difference (bias) and the limits within which 95% of differences are expected. "
+                "Needs the same items measured two ways, as two columns paired by row.")
+BLAND_ALTMAN_A = "The column of the first way of measuring (method A). Row i must be the same item as row i of method B."
+BLAND_ALTMAN_B = "The column of the second way of measuring (method B). It must be a different column from method A."
+BLAND_ALTMAN_MEASURE = ("How the disagreement is expressed. Difference (A − B) suits errors that are the same size at every level. "
+                        "Ratio (A / B) or % difference suit errors that grow with the size of the measurement; the ratio needs "
+                        "positive values.")
+BLAND_ALTMAN_CI = "The confidence level of the intervals around the bias and around each limit of agreement."

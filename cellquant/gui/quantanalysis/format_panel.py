@@ -453,7 +453,7 @@ class GraphSection(Section):
         self.comparison.clear()
         self.comparison.addItem("none", None)
         for result in self.view.project.results.values():
-            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "twoway", "linreg", "curvefit", "contingency"):
+            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "twoway", "linreg", "curvefit", "contingency", "roc", "blandaltman"):
                 self.comparison.addItem(result.name, result.id)
         self.comparison.setCurrentIndex(max(0, self.comparison.findData(sheet.result_id)))
         data = self.view.project.data.get(sheet.data_id)

@@ -262,3 +262,15 @@ def test_a_shared_fit_better_than_separate_fits_is_flagged(monkeypatch):
     assert datasets["unreliable"] and datasets["f_prefers"] is None and datasets["aicc_prefers"] is None
     assert any("not reliable" in text for text in result.warnings)
     assert result.values["wide"].loc[("Does one curve fit every data set?", "Reliable?"), "A"].startswith("No")
+
+
+def test_a_simpler_model_better_than_the_fuller_one_is_flagged():
+    from cellquant.stats.curvefit import compare_models, fit_curve
+
+    x = np.linspace(0, 10, 12)
+    y = 1 + 2 * x + RNG.normal(0, 0.3, 12)
+    line, quadratic = fit_curve("line", x, y), fit_curve("polynomial_2", x, y)
+    assert not compare_models(line, quadratic)["unreliable"]
+    stuck = {**quadratic, "ss_resid": line["ss_resid"] * 2}  # a fuller fit stuck short of its best
+    item = compare_models(line, stuck)
+    assert item["unreliable"] and item["f_prefers"] is None

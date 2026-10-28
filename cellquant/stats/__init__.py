@@ -35,6 +35,7 @@ from cellquant.stats.descriptive import (
     skewness,
     wilcoxon_signed_rank,
 )
+from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.multcomp import ComparisonPlan, adjust_p, compact_letter_display, p_value_stack
 from cellquant.stats.normality import lognormality, normality
@@ -77,6 +78,7 @@ __all__ = [
     "XYTable",
     "adjust_p",
     "bartlett_test",
+    "bland_altman",
     "brown_forsythe_test",
     "column_math",
     "column_statistics",
@@ -118,6 +120,7 @@ __all__ = [
     "ratio_paired_t",
     "remove_baseline",
     "repeated_measures_anova",
+    "roc_curve",
     "rout_fit",
     "skewness",
     "transform",
