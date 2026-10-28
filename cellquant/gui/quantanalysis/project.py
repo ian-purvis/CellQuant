@@ -37,6 +37,7 @@ from cellquant.stats.curvefit import nonlinear_regression
 from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.survival import SurvivalTable, survival
 from cellquant.stats.grouped import GroupedTable, two_way_anova
+from cellquant.stats.nested import nested
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
 from cellquant.stats.replicates import ReplicateTable
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
@@ -118,7 +119,7 @@ class DataSheet:
 class ResultSheet:
     name: str
     data_id: str
-    kind: str                           # "compare", "anova", "colstats", "normality", "outliers" or "pstack" (no data table)
+    kind: str                           # "compare", "anova", "nested", "colstats", "normality", "outliers" or "pstack" (no data table)
     options: dict = field(default_factory=dict)
     id: str = field(default_factory=lambda: next_id("result"))
     result: AnalysisResult | None = None   # compare, anova, outliers, pstack
@@ -422,8 +423,8 @@ class Project(QObject):
         data = self.data.get(sheet.data_id)
         sheet.result, sheet.wide, sheet.warnings, sheet.methods, sheet.error = None, None, [], "", ""
         try:
-            if sheet.kind in ("compare", "anova", "outliers", "twoway"):
-                run = {"compare": run_compare, "anova": run_anova, "outliers": run_outliers, "twoway": run_two_way}[sheet.kind]
+            if sheet.kind in ("compare", "anova", "nested", "outliers", "twoway"):
+                run = {"compare": run_compare, "anova": run_anova, "nested": run_nested, "outliers": run_outliers, "twoway": run_two_way}[sheet.kind]
                 sheet.result = run(data, sheet.options)
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
@@ -451,9 +452,10 @@ class Project(QObject):
                 sheet.wide, sheet.warnings, sheet.methods = run_column_statistics(data, sheet.options)
             elif sheet.kind == "normality":
                 sheet.wide, sheet.warnings, sheet.methods = run_normality(data, sheet.options)
-            if data is not None and data.pseudoreplicated and PSEUDO_WARNING not in sheet.warnings:
+            # A nested analysis uses every value with its replicate, so neither "one value per replicate" nor pseudoreplication applies.
+            if data is not None and data.pseudoreplicated and PSEUDO_WARNING not in sheet.warnings and sheet.kind != "nested":
                 sheet.warnings.insert(0, PSEUDO_WARNING)
-            if data is not None and data.replicates is not None and sheet.kind != "pstack":
+            if data is not None and data.replicates is not None and sheet.kind not in ("pstack", "nested"):
                 sheet.methods = f"{replicate_methods(data)} {sheet.methods}".strip()
         except CellQuantError as exc:
             sheet.error = str(exc)
@@ -561,6 +563,45 @@ def run_anova(data: DataSheet, options: dict) -> AnalysisResult:
         kwargs.pop("family", None)
     result = one_way(table, test, **kwargs)
     _hand_set_notes(result, table, options)
+    return result
+
+
+NESTED_KEYS = ("alternative", "alpha", "ci", "style", "comparisons", "method", "family", "df", "m")
+NESTED_NEEDS_REPLICATES = "Nested analyses need a table with replicates: tick Replicates above the table (or File → New table with replicates)."
+
+
+def run_nested(data: DataSheet, options: dict) -> AnalysisResult:
+    """Nested t test (two columns) or nested one-way ANOVA (three or more) of a table with replicates, by the options of the Nested dialog.
+    Every value is used, with its replicate; ``advanced_for`` and other keys the engine does not take are dropped here."""
+
+    if data is None or data.replicates is None or data.xy is not None or data.grouped is not None or data.contingency is not None:
+        raise CellQuantError(NESTED_NEEDS_REPLICATES)
+    table = data.replicates
+    if len(table.names) < 2:
+        raise CellQuantError("A nested analysis compares groups: it needs a table with at least two columns.")
+    two = len(table.names) == 2
+    control = [name for name in _as_list(options.get("control")) if name]
+    gone = [name for name in [*control, *(name for pair in options.get("pairs") or [] for name in pair)] if name not in table.names]
+    if gone:
+        raise CellQuantError(f"A column this comparison used is gone ({', '.join(gone)}); choose the groups again (Change options…).")
+    kwargs = {key: options[key] for key in NESTED_KEYS if key in options and options[key] is not None}
+    goal = None if two else kwargs.get("comparisons")
+    if two:  # two groups: the tails, no multiple comparisons
+        for key in ("comparisons", "method", "family", "m"):
+            kwargs.pop(key, None)
+    else:
+        kwargs.pop("alternative", None)
+    if goal == "control":
+        kwargs["control"] = control if len(control) != 1 else control[0]
+    if goal == "selected":
+        kwargs["pairs"] = [tuple(pair) for pair in options.get("pairs") or []]
+    if goal in (None, "none"):
+        for key in ("comparisons", "method", "m"):
+            kwargs.pop(key, None)
+    if goal != "control":
+        kwargs.pop("family", None)
+    result = nested(table, **kwargs)
+    _hand_set_notes(result, data.table, options)
     return result
 
 

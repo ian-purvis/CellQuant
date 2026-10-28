@@ -99,7 +99,7 @@ def nested(table: ReplicateTable, *, alternative: str = "two-sided", comparisons
     """Nested t test (two groups) or nested one-way ANOVA (three or more) of a replicate table.
 
     Advanced overrides (keyword-only, recorded in "Changed from the default"): ``df`` replaces the denominator df of the group
-    test, the t test and the comparisons (a positive number, or "conservative" = replicates − groups); ``m`` is the number of
+    test, the t test and the comparisons (a positive number, or "conservative" = the smaller of replicates − groups and the computed df); ``m`` is the number of
     comparisons the Bonferroni-type corrections count."""
 
     alternative = check_options(alternative, ci, alpha)
@@ -112,11 +112,13 @@ def nested(table: ReplicateTable, *, alternative: str = "two-sided", comparisons
     if core["df_e"] < 1:
         raise StatisticsError("Every replicate has one value, so there is nothing nested: analyze the values as they are (one per replicate).")
     two = len(names) == 2
+    if comparisons == "trend":
+        raise StatisticsError("The test for linear trend is not part of the nested analyses; compare the groups instead.")
     if not two and alternative != "two-sided":
         raise StatisticsError("A one-tailed P applies to two groups only.")
     changes, larger = [], []
     if df is not None:
-        core["df_den"] = df_override(df, core["df_den"], "Denominator df", changes, larger, conservative=float(core["df_r"]))
+        core["df_den"] = df_override(df, core["df_den"], "Denominator df", changes, larger, conservative=min(float(core["df_r"]), core["df_den"]))
         core["p_g"] = float(stats.f.sf(core["f_g"], core["df_g"], core["df_den"])) if np.isfinite(core["f_g"]) else np.nan
     analysis = "Nested t test" if two else "Nested one-way ANOVA"
     result = AnalysisResult(analysis, table.title, {"alternative": alternative, "comparisons": comparisons, "method": method, "control": control,

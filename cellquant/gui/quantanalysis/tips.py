@@ -550,6 +550,10 @@ OVERRIDE_DF_T = ("The degrees of freedom the P value and the confidence interval
                  "for Welch's test, N − 2 or pairs − 1 otherwise). Conservative: the smaller group's N − 1, a cautious choice when the SDs and "
                  "the Ns both differ. Set it by hand only with a reason, for example df counted from the biological replicates of a nested "
                  "design rather than from the values. A larger df gives a smaller P.")
+OVERRIDE_DF_NESTED = ("The degrees of freedom of the test of the groups, of the confidence interval and of the multiple comparisons. Default: "
+                      "worked out from the replicates (the replicates − groups of the mean square among replicates; Satterthwaite's when "
+                      "replicates have different numbers of values). Conservative: replicates − groups (or the computed df if smaller). Set it by hand only with a reason. "
+                      "A larger df gives a smaller P. The ANOVA table keeps the computed DF and MS.")
 OVERRIDE_DF_RM = ("The error degrees of freedom of the repeated-measures F test, before ε multiplies them. Default: (k − 1)(N − 1). With the "
                   "Geisser-Greenhouse correction on, the multiple comparisons use each pair's own differences (N − 1 df) and do not change; "
                   "they use this df only with the pooled error term (for example when an SD is set). A larger df gives a smaller P.")
@@ -580,6 +584,11 @@ GUIDE_GAUSSIAN = ("Means of many cells per replicate are usually close to Gaussi
                   "areas) are often lognormal. Scores and ranks are not Gaussian.")
 GUIDE_RUN = "Opens the recommended analysis with these settings filled in, to check before it runs."
 
+NESTED = ("Nested t test (two groups) or nested one-way ANOVA (three or more): uses every value (for example every cell) and knows which "
+          "biological replicate it came from. \"Nested\" means the cells are inside the replicates, and the replicates inside the groups. The "
+          "groups are compared against the variation among replicates, so many cells from few replicates do not make P falsely small. With "
+          "the same number of values per replicate it gives the same P as a test on the replicate means; it also shows how much of the "
+          "variation lies among replicates. Needs a table with replicates (the Replicates button above the table).")
 ROC = ("How well does a measurement tell two groups apart? An ROC curve plots sensitivity against 100% − specificity for every possible "
        "cutoff, and the area under it (0.5 = no better than chance, 1 = perfect) summarizes it. Needs the controls (without the "
        "condition) and the patients (with it), or any two groups, one with and one without the condition, as separate columns.")

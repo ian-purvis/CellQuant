@@ -110,3 +110,11 @@ def test_refusals():
 def test_few_replicates_warn():
     result = nested(_table(2, 2, lambda r, i: 6))
     assert any("Add biological replicates" in w for w in result.warnings)
+
+
+def test_conservative_df_never_exceeds_computed_and_trend_refused():
+    table = _table(2, 5, lambda r, i: 2 if r == 0 else 30)
+    computed = nested(table).values["dfd"]
+    assert nested(table, df="conservative").values["dfd"] == pytest.approx(min(8, computed))
+    with pytest.raises(StatisticsError, match="trend"):
+        nested(_table(3, 4, lambda r, i: 5), comparisons="trend")

@@ -191,13 +191,14 @@ class AnalysisGuideDialog(QDialog):
 
     def _update(self) -> None:
         a = self.answers()
-        groups, xy, two = a.goal == "groups", a.goal == "xy", a.goal == "two_factors"
+        groups, xy, two, survival = a.goal == "groups", a.goal == "xy", a.goal == "two_factors", a.goal == "survival"
         self.independent.setVisible(a.dot != "replicate")
+        self._show(self.dot, not survival)  # survival curves count subjects (one row each): the other questions do not apply
         self._show(self.groups, groups)
         self._show(self.paired, groups or two)
         self._show(self.xy, xy)
         self._show(self.xy_replicates, xy and self.facts.y_per_x > 1)
-        self._show(self.gaussian, not xy or a.xy == "correlation")
+        self._show(self.gaussian, not survival and (not xy or a.xy == "correlation"))
         self._show(self.equal, groups and not a.paired and a.gaussian in ("yes", "unsure"))
         self._show(self.comparisons, groups and a.groups != 2)
         self._show(self.tails, groups and a.groups == 2)
