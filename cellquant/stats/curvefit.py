@@ -23,6 +23,7 @@ import pandas as pd
 from scipy import optimize, stats
 
 from cellquant.errors import StatisticsError
+from cellquant.stats._common import check_df, df_override, record_overrides
 from cellquant.stats.pvalues import format_p, p_summary
 from cellquant.stats.results import AnalysisResult, fmt, fmt_ci
 from cellquant.stats.xy import XYTable
@@ -361,7 +362,7 @@ def curve_band(fit: dict, xs, ci: float = 0.95, prediction: bool = False) -> tup
     xs = np.asarray(xs, float)
     g = _gradient(fit, xs)
     variance = np.einsum("ij,jk,ik->i", g, fit["cov"], g) + (fit["ms"] if prediction else 0.0)
-    half = stats.t.ppf(0.5 + ci / 2, fit["df"]) * np.sqrt(np.maximum(variance, 0.0))
+    half = stats.t.ppf(0.5 + ci / 2, fit.get("t_df", fit["df"])) * np.sqrt(np.maximum(variance, 0.0))
     center = predict(fit, xs)
     return center - half, center + half
 
@@ -535,7 +536,7 @@ def _derived(fit: dict, ci_of: Callable[[str], tuple[float, float]]) -> list[tup
 
 
 def _fit_rows(fit: dict, model: Model, level: str, ci: float) -> dict:
-    t = stats.t.ppf(0.5 + ci / 2, fit["df"])
+    t = stats.t.ppf(0.5 + ci / 2, fit.get("t_df", fit["df"]))
 
     def ci_of(name):
         se = fit["se"].get(name, float("nan"))
@@ -603,7 +604,7 @@ def nonlinear_regression(table: XYTable, **options) -> AnalysisResult:
 def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", fixed: dict | None = None, replicates: str = "each",
                          ci: float = 0.95, alpha: float = 0.05, style: str = "classic", compare: str = "none",
                          compare_model: str | None = None, compare_fixed: dict | None = None, compare_parameter: str | None = None,
-                         interpolate: bool = False) -> AnalysisResult:
+                         interpolate: bool = False, df=None) -> AnalysisResult:
     """Fit ``model`` to each data set of an XY table.
 
     ``compare``: "none"; "model" (each data set fitted by ``compare_model``/``compare_fixed`` too, and the two fits
@@ -633,6 +634,9 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
                              "interpolate": interpolate})
     level = f"{100 * ci:g}% CI (asymptotic)"
     fits, data, out, comparisons, interpolated = {}, {}, {}, {}, {}
+    changes, larger = [], []
+    if df is not None:
+        check_df(df)
     for j, name in enumerate(table.sets):
         x, y = table.points(j, means=replicates == "mean")
         try:
@@ -642,6 +646,8 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
             continue
         fits[name], data[name] = fit, (x, y)
         fit["equation"] = fitted_model.equation
+        if df is not None:  # set by hand (Advanced): only the parameter CIs and the bands use it
+            fit["t_df"] = df_override(df, fit["df"], "Residual df" if len(table.sets) == 1 else f"Residual df ({name})", changes, larger)
         rows = _fit_rows(fit, fitted_model, level, ci)
         if not fit["converged"]:
             result.warnings.append(f"{name}: the fit stopped before converging; treat its values with care.")
@@ -762,6 +768,7 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
         methods += (" The EC50's CI is symmetric and asymptotic, so it can reach below 0; fitting log(dose) gives an asymmetric CI "
                     "that cannot.")
     result.methods = methods
+    record_overrides(result, changes, larger)
     if any(fit["n"] < 2 * len(fit["free"]) + 1 for fit in fits.values()):
         result.warnings.append("Few points per parameter in a data set: the fit, its CIs and R² are rough.")
     return result

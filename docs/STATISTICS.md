@@ -53,7 +53,7 @@ Each analysis dialog has an **Advanced** tick box (off by default) that shows se
 
 | Setting | Analyses | Default |
 | --- | --- | --- |
-| Degrees of freedom | t tests (also **Conservative**: the smaller group's N − 1, for unpaired tests), one-way ANOVA (residual, used by the multiple comparisons too), Welch's ANOVA (denominator), repeated measures (before ε), two-way ANOVA (residual), linear regression (residual), correlation (t test of r) | computed |
+| Degrees of freedom | t tests (also **Conservative**: the smaller group's N − 1, for unpaired tests), one-way ANOVA (residual, used by the multiple comparisons too), Welch's ANOVA (denominator), repeated measures (before ε), two-way ANOVA (residual), linear regression (residual), nonlinear regression (residual, for the parameters' CIs and the bands only; the fit and its comparisons keep the computed df), correlation (t test of r) | computed |
 | Hypothesised difference | unpaired, Welch's and paired t tests: t = (difference − hypothesised) / SE; the CI does not change | 0 |
 | Sphericity correction ε | repeated-measures ANOVA, between 1/(k − 1) (lower bound) and 1 (none) | Geisser-Greenhouse ε |
 | SD for multiple comparisons | ordinary and repeated-measures ANOVA; the F test is unchanged | pooled SD |

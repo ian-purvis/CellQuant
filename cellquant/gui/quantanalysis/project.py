@@ -581,7 +581,7 @@ def run_two_way(data: DataSheet, options: dict) -> AnalysisResult:
 LINREG_KEYS = ("through_origin", "replicates", "ci", "alpha", "style", "df")
 XYCORR_KEYS = ("method", "replicates", "ci", "alpha", "style", "df")
 CURVEFIT_KEYS = ("model", "fixed", "replicates", "ci", "alpha", "style", "compare", "compare_model", "compare_fixed", "compare_parameter",
-                 "interpolate")
+                 "interpolate", "df")
 
 
 def _xy_of(data: DataSheet | None, what: str) -> XYTable:
@@ -611,7 +611,9 @@ def run_curve_fit(data: DataSheet, options: dict) -> AnalysisResult:
         if key in kwargs and not isinstance(kwargs[key], str):
             kwargs.pop(key)
     kwargs["interpolate"] = bool(kwargs.get("interpolate", False))
-    return nonlinear_regression(_xy_of(data, "Nonlinear regression"), **kwargs)
+    result = nonlinear_regression(_xy_of(data, "Nonlinear regression"), **kwargs)
+    _hand_set_notes(result, data.xy, options)
+    return result
 
 
 def run_xy_correlation(data: DataSheet, options: dict) -> AnalysisResult:

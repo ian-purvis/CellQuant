@@ -1226,7 +1226,8 @@ class XYDialog(QDialog):
 
     def accept(self) -> None:
         try:
-            (linear_regression if self.kind == "linreg" else xy_correlation)(self.xy, **self.options())
+            options = {key: value for key, value in self.options().items() if key != "advanced_for"}  # the table it was set for: not an option
+            (linear_regression if self.kind == "linreg" else xy_correlation)(self.xy, **options)
         except CellQuantError as exc:
             self.note.setText(str(exc))
             self.note.setVisible(True)
@@ -1378,6 +1379,10 @@ class CurveFitDialog(QDialog):
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
         stats_form.addRow("P value style", self.style)
         layout.addLayout(stats_form)
+        self.advanced = AdvancedBox(self, layout)
+        self.advanced.basis = table_signature(xy)
+        self.advanced.add("df", "Residual degrees of freedom", tips.OVERRIDE_DF_CURVEFIT, 0.01, 1e6, 4, value=10)
+        self.advanced.set_values(options)
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setStyleSheet(WARNING_STYLE)
@@ -1433,11 +1438,11 @@ class CurveFitDialog(QDialog):
                 "compare_model": self.second_model.currentData() if compare == "model" else None,
                 "compare_fixed": self.second_fixed.values() if compare == "model" else {},
                 "compare_parameter": self.parameter.currentData() if compare == "parameter" else None,
-                "interpolate": self.interpolate.isChecked()}
+                "interpolate": self.interpolate.isChecked(), **self.advanced.values()}
 
     def accept(self) -> None:
         try:
-            nonlinear_regression(self.xy, **self.options())
+            nonlinear_regression(self.xy, **{key: value for key, value in self.options().items() if key != "advanced_for"})
         except CellQuantError as exc:
             self.note.setText(str(exc))
             self.note.setVisible(True)

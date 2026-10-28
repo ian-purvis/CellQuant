@@ -520,6 +520,9 @@ OVERRIDE_DF_RM = ("The error degrees of freedom of the repeated-measures F test,
                   "they use this df only with the pooled error term (for example when an SD is set). A larger df gives a smaller P.")
 OVERRIDE_DF_LINREG = ("The residual degrees of freedom of the slope and intercept CIs and P values, the F test and the bands. Default: N − 2 "
                       "(N − 1 through the origin). The comparison of slopes and intercepts between data sets keeps the computed df.")
+OVERRIDE_DF_CURVEFIT = ("The residual degrees of freedom of the parameters' confidence intervals and of the confidence and prediction "
+                        "bands. Default: N − the number of fitted parameters. The fit, its standard errors and the comparisons (F test "
+                        "and AICc) keep the computed df.")
 OVERRIDE_DF_CORR = ("The degrees of freedom of the t test of r. Default: N − 2. For Spearman's r this is the usual t approximation; the "
                     "confidence interval (Fisher z) does not change.")
 OVERRIDE_DIFFERENCE = ("The difference (B − A) the test compares against. Default 0: are the means equal? Another value tests, for example, "
