@@ -617,3 +617,38 @@ SURVIVAL = ("How long until an event, and do the groups differ? Draws a Kaplan-M
 SURVIVAL_TREND = ("Tick when the data sets are in a meaningful order (increasing dose, age band, grade) to add a test for a trend in "
                   "survival across them. Needs three or more groups; leave it off for unordered groups such as genotypes.")
 SURVIVAL_CI = "The confidence level of the band around each survival curve and of the interval around each median and the hazard ratio."
+CORRELATION_MATRIX = ("Which of your measurements rise and fall together? A correlation matrix gives the correlation coefficient r of every pair of "
+                      "columns (variables), shown as a grid of coloured cells: red when both rise together, blue when one rises as the other "
+                      "falls, white for no relation. Each row of the table must be one case (a cell, an image, an experiment) measured on every "
+                      "variable. A correlation shows that two measurements go together, not that one causes the other: a third factor can drive both.")
+PCA = ("Can many measurements be summarized by a few? Principal component analysis combines the columns (variables) into new axes, the "
+       "components, ordered by how much of the variation among the cases each one holds. The first two often show groups, gradients or outliers "
+       "that no single column reveals, and the loadings show which measurements drive each component. Each row of the table must be one case "
+       "measured on every variable (rows with a blank are left out).")
+MV_VARIABLES = ("Tick the columns to include. Every column is a variable and every row a case; row i of each column must be the same case. "
+                "At least two variables are needed. Columns left unticked are ignored.")
+CORR_METHOD = ("Pearson's r measures a straight-line relation and suits roughly Gaussian values. Spearman's rₛ uses ranks, so it also finds "
+               "steadily rising or falling curves and is not thrown off by outliers or skewed values; choose it for scores, counts and "
+               "skewed intensities.")
+CORR_MISSING = ("What to do with a row that misses a value. Each pair uses every case with both values keeps as much data as possible, so n "
+                "differs between pairs. Only cases with every variable uses the same cases for every pair, so the correlations can be "
+                "compared with each other.")
+CORR_ADJUST = ("A matrix tests many pairs at once (10 variables make 45), so some P values below 0.05 appear by chance alone. A correction "
+               "counts all the pairs and raises the P values to make up for it. Use one whenever you look for pairs that correlate. Holm "
+               "is a safe default; FDR methods are less strict when there are many pairs.")
+CORR_CI = "The confidence level of the interval around each r (by Fisher's z transformation)."
+CORR_ALPHA = ("Pairs with a P value (adjusted, if you chose a correction) below alpha are marked with an asterisk on the graph. 0.05 is "
+              "usual.")
+PCA_STANDARDIZE = ("Scale each variable to unit variance before the analysis. Needed when the variables have different units or sizes "
+                   "(an area in µm² next to a percentage), otherwise the variable with the largest numbers dominates the first component. "
+                   "Untick only when all the variables share one unit and their sizes carry meaning.")
+PCA_SELECT = ("How many components to keep and plot. Parallel analysis (recommended) keeps a component only if its eigenvalue beats what random "
+              "data of the same size would give. Eigenvalue greater than 1 keeps the components that explain more than one variable's worth "
+              "of variance (it tends to keep too many). Share of the variance keeps enough to reach a target. You can also set the number.")
+PCA_VARIANCE = "Keep the fewest components that together explain at least this share of the total variance (80% is a common target)."
+PCA_NUMBER = "How many components to keep. The scores plot needs at least two."
+PCA_SIMULATIONS = ("How many random data sets parallel analysis compares your eigenvalues with. More is slower but steadier; 1000 is plenty. "
+                   "The random numbers are seeded, so the same data always give the same answer.")
+PCA_SEED = "The starting value of the random numbers of parallel analysis. Change it only to check that the result does not depend on it."
+PCA_VIEW = ("Which graph of the principal component analysis to draw. Scree plot: the eigenvalue of each component, to see how many are worth "
+            "keeping. Scores and loadings: each case on the first two components, with an arrow for each variable showing which way it pulls.")

@@ -49,11 +49,13 @@ from cellquant.gui.quantanalysis.dialogs import (
     BlandAltmanDialog,
     CompareDialog,
     ContingencyDialog,
+    CorrelationMatrixDialog,
     CurveFitDialog,
     ImportCsvDialog,
     ImportDialog,
     NestedDialog,
     OutlierDialog,
+    PcaDialog,
     TWO_WAY_DEFAULTS,
     ProcessDialog,
     PStackDialog,
@@ -302,6 +304,8 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(analyze, "ROC curve…", lambda: self.analyze("roc"), tips.ROC)
         self._action(analyze, "Bland-Altman…", lambda: self.analyze("blandaltman"), tips.BLAND_ALTMAN)
         self._action(analyze, "Survival curves (Kaplan-Meier)…", lambda: self.analyze("survival"), tips.SURVIVAL)
+        self._action(analyze, "Correlation matrix…", lambda: self.analyze("corrmatrix"), tips.CORRELATION_MATRIX)
+        self._action(analyze, "Principal component analysis (PCA)…", lambda: self.analyze("pca"), tips.PCA)
         analyze.addSeparator()
         self._action(analyze, "Identify outliers…", lambda: self.analyze("outliers"),
                      "ROUT, Grubbs' and iterative Grubbs' tests. Flagged values are shaded in the table and hollow on graphs; the table is not changed.")
@@ -929,7 +933,7 @@ class QuantAnalysisWindow(QMainWindow):
         if data.contingency is not None and kind != "contingency":
             self.status("A contingency table is analyzed with Contingency table…; the other analyses need a column, grouped or XY table.")
             return None
-        if data.xy is not None and kind in ("compare", "anova", "outliers", "twoway", "roc", "blandaltman"):
+        if data.xy is not None and kind in ("compare", "anova", "outliers", "twoway", "roc", "blandaltman", "corrmatrix", "pca"):
             self.status("An XY table is analyzed with Linear regression…, Nonlinear regression… or Correlation (XY)…; the column analyses need a "
                         "column table.")
             return None
@@ -976,6 +980,15 @@ class QuantAnalysisWindow(QMainWindow):
                 self.status("Survival curves need an XY table with one row per subject: File → New survival table.")
                 return None
             dialog = lambda: SurvivalDialog(self, data.xy)  # noqa: E731
+        elif kind in ("corrmatrix", "pca"):
+            name = "A correlation matrix" if kind == "corrmatrix" else "A principal component analysis"
+            if data.grouped is not None:
+                self.status(f"{name} needs a column table with a variable in each column and a case in each row; a grouped table has two factors.")
+                return None
+            if len(data.table) < 2:
+                self.status(f"{name} needs at least two columns (variables).")
+                return None
+            dialog = (lambda: CorrelationMatrixDialog(self, data.table)) if kind == "corrmatrix" else (lambda: PcaDialog(self, data.table))
         elif kind == "contingency":
             if data.contingency is None:
                 self.status("Contingency analyses need a contingency table of counts: File → New contingency table.")
@@ -992,6 +1005,13 @@ class QuantAnalysisWindow(QMainWindow):
         if sheet is not None and kind in ("roc", "blandaltman") and not sheet.error:
             # An ROC curve or Bland-Altman plot is its own graph; the table's column graphs stay as they are.
             self.project.add_graph(GraphSheet(f"{sheet.name} (graph)", data.id, "scatter", {}, sheet.id))
+        if sheet is not None and kind == "corrmatrix" and not sheet.error:
+            # The correlation matrix is its own graph, a heat map; the table's column graphs stay as they are.
+            self.project.add_graph(GraphSheet(f"{sheet.name} (graph)", data.id, "scatter", {}, sheet.id))
+        if sheet is not None and kind == "pca" and not sheet.error:
+            # A PCA makes two graphs: the scree plot (how many components) and the scores with the loadings (what they mean).
+            self.project.add_graph(GraphSheet(f"{sheet.name} (scree)", data.id, "scatter", {"pca_view": "scree"}, sheet.id))
+            self.project.add_graph(GraphSheet(f"{sheet.name} (scores)", data.id, "scatter", {"pca_view": "scores"}, sheet.id))
         if sheet is not None and kind == "survival" and not sheet.error:
             # The survival curves are their own graph, with the legend on (the groups are told apart by colour).
             self.project.add_graph(GraphSheet(f"{sheet.name} (graph)", data.id, "xy", {"legend": {"show": True}}, sheet.id))
@@ -1033,7 +1053,9 @@ class QuantAnalysisWindow(QMainWindow):
                    "contingency": lambda: ContingencyDialog(self, data.contingency, sheet.options),
                    "roc": lambda: RocDialog(self, data.table, sheet.options),
                    "blandaltman": lambda: BlandAltmanDialog(self, data.table, sheet.options),
-                   "survival": lambda: SurvivalDialog(self, data.xy, sheet.options)}[sheet.kind]()
+                   "survival": lambda: SurvivalDialog(self, data.xy, sheet.options),
+                   "corrmatrix": lambda: CorrelationMatrixDialog(self, data.table, sheet.options),
+                   "pca": lambda: PcaDialog(self, data.table, sheet.options)}[sheet.kind]()
             if not box.exec():
                 return
             # The guide's answer that the values are not independent stays with the analysis.
@@ -1267,6 +1289,10 @@ def result_name(kind: str, options: dict, data: DataSheet | None) -> str:
         return f"Bland-Altman{where}"
     if kind == "survival":
         return f"Survival{where}"
+    if kind == "corrmatrix":
+        return f"Correlation matrix{where}"
+    if kind == "pca":
+        return f"PCA{where}"
     if kind == "curvefit":
         return f"Nonlinear regression ({CURVE_MODELS.get(str(options.get('model')), CURVE_MODELS['log_dose_response']).name}){where}"
     if kind == "xycorr":
