@@ -50,6 +50,7 @@ class ReplicateTable:
                 raise StatisticsError(f"The table has no column {name!r}.")
         frame = frame.loc[frame[group].notna() & frame[replicate].notna()]
         numbers = pd.to_numeric(frame[value], errors="coerce")
+        frame = frame.assign(**{replicate: frame[replicate].map(_name)})
         groups = [str(name) for name in pd.unique(frame[group].astype(str))]
         replicates = [str(name) for name in pd.unique(frame[replicate].astype(str))]
         if not groups or not replicates:
@@ -75,7 +76,7 @@ class ReplicateTable:
                    if name != replicate and pd.to_numeric(frame[name], errors="coerce").notna().any()}
         if not columns:
             raise StatisticsError("The file has no column of numbers.")
-        labels = ["" if pd.isna(label) else str(label) for label in frame[replicate]]
+        labels = ["" if pd.isna(label) else _name(label) for label in frame[replicate]]
         return cls(title, list(columns), list(columns.values()), labels)
 
     # --- Rows and replicates ---------------------------------------------------------------------------------------
@@ -142,6 +143,14 @@ class ReplicateTable:
 
         long = self.long()
         return {name: int((long["group"] == name).sum()) for name in self.names}
+
+
+def _name(value) -> str:
+    """A replicate name from a file: 2.0 (a numeric column with blanks) reads as 2."""
+
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
 
 
 def looks_like_replicate(name: str) -> bool:

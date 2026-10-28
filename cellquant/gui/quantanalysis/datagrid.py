@@ -372,7 +372,9 @@ class DataSheetView(QWidget):
         if on == bool(self.offset):
             return
         if on:
-            self.commit(labels=[])
+            # Every value starts in one replicate (so no analysis goes blank); new names below split it.
+            values = self._column_values()
+            self.commit(labels=["Replicate 1"] if any(column.size for column in values) else [])
             self.window.status("Name each block's biological replicate in the Replicate column; the analyses use the replicate means.")
         else:
             if any(self._labels()) and QMessageBox.question(
@@ -496,7 +498,7 @@ class DataSheetView(QWidget):
             except ValueError:
                 return False
 
-        if not all(is_number(cell) for cell in lines[0]):
+        if any(cell.strip() for cell in lines[0]) and not any(cell.strip() and is_number(cell) for cell in lines[0]):  # a line of words only
             titles, lines = lines[0], lines[1:]
             top = 0
         # A first column of words names the replicates: into the Replicate column (turned on when it is off).

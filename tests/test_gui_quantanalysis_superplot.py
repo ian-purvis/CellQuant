@@ -46,6 +46,7 @@ def test_pasting_replicate_names_turns_replicates_on(window):
     result = window.analyze("compare", {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided", "ci": 0.95,
                                         "alpha": 0.05, "style": "classic"})
     assert result.error == "" and result.result is not None  # on the replicate means: N = 3 per column
+    assert result.methods.startswith("Analyzed on one value per biological replicate") and "Control N=3, n=6" in result.methods
     view = window.views[sheet.id]
     from qtpy.QtWidgets import QTableWidgetItem
 
@@ -60,6 +61,16 @@ def test_pasting_replicate_names_turns_replicates_on(window):
     assert sheet.table.names == ["Control", "Treated"]  # the Replicate column is not removed as a data column
 
 
+def test_pasting_replicate_names_without_titles(window):
+    sheet = window.new_table()
+    view = window.stack.currentWidget()
+    view.grid.setCurrentCell(0, 0)
+    view.paste("Exp 1\t1\t4\n\t2\t5\nExp 2\t10\t30")
+    assert sheet.replicates is not None and sheet.replicates.labels == ["Exp 1", "", "Exp 2"]
+    assert sheet.table.names == ["Group A", "Group B"]
+    np.testing.assert_allclose(sheet.table["Group A"].values, [1.5, 10])
+
+
 def test_replicates_button_and_typing(window, monkeypatch):
     from qtpy.QtWidgets import QMessageBox, QTableWidgetItem
 
@@ -69,8 +80,8 @@ def test_replicates_button_and_typing(window, monkeypatch):
     view.paste("Control\tTreated\n1\t4\n2\t5\n10\t30")
     assert sheet.replicates is None and sheet.table["Control"].values.size == 3
     view.replicate_button.click()
-    assert sheet.replicates is not None and view.offset == 1 and sheet.table["Control"].values.size == 0
-    assert "Type the name" in view.replicate_note.text()
+    assert sheet.replicates is not None and view.offset == 1 and sheet.replicates.labels == ["Replicate 1"]
+    np.testing.assert_allclose(sheet.table["Control"].values, [13 / 3])  # every value in one replicate until names are typed
     view.grid.setItem(0, 0, QTableWidgetItem("A"))
     view.grid.setItem(2, 0, QTableWidgetItem("B"))
     np.testing.assert_allclose(sheet.table["Treated"].values, [4.5, 30])

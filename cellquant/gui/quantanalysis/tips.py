@@ -492,7 +492,8 @@ REPLICATES = (
 )
 REPLICATE_COLUMN = (
     "The biological replicate (N) each row belongs to, for example Experiment 1, Animal 2 or a date. Type it on the first row of "
-    "each block; a blank continues the replicate above. Use the same names in every column, so a replicate keeps one colour on "
+    "each block; a blank continues the replicate above. Use the same names in every column (spelled and capitalized the "
+    "same), so a replicate keeps one colour on "
     "the SuperPlot (and, with Paired, is compared with itself). Paste a block whose first column is words to fill it."
 )
 REPLICATE_VALUE = (

@@ -273,10 +273,13 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
                                       .reshape(x.size, len(xy["sets"]), -1)))
             replicates = item.get("replicates")
             if isinstance(replicates, dict):
-                set_replicates(sheet, ReplicateTable(table.title, [str(name) for name in replicates["names"]],
-                                                     [_values(column) for column in replicates["values"]],
-                                                     ["" if label is None else str(label) for label in replicates.get("labels") or []],
-                                                     str(replicates.get("summary") or "mean"), table.paired))
+                try:
+                    set_replicates(sheet, ReplicateTable(table.title, [str(name) for name in replicates["names"]],
+                                                         [_values(column) for column in replicates["values"]],
+                                                         ["" if label is None else str(label) for label in replicates.get("labels") or []],
+                                                         str(replicates.get("summary") or "mean"), table.paired))
+                except (KeyError, TypeError, ValueError, OverflowError, CellQuantError) as exc:  # keep the replicate means
+                    notes.append(f"The values of {item.get('name', '?')} could not be read ({exc}); it keeps one value per replicate.")
         except (KeyError, TypeError, ValueError, OverflowError, CellQuantError) as exc:
             notes.append(f"A data table ({item.get('name', '?')}) could not be read: {exc}")
             continue

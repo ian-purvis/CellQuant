@@ -63,6 +63,8 @@ def test_from_wide_and_checks():
     frame = pd.DataFrame({"Experiment": ["A", None, "B"], "Control": [1, 2, 3], "Treated": [4, None, 6]})
     table = ReplicateTable.from_wide(frame, "Experiment")
     assert table.names == ["Control", "Treated"] and table.labels == ["A", "", "B"]
+    numbered = ReplicateTable.from_wide(pd.DataFrame({"Run": [1, None, 2], "Control": [1, 2, 3]}), "Run")
+    assert numbered.labels == ["1", "", "2"]
     np.testing.assert_allclose(table.summary_table()["Control"].values, [1.5, 3])
     with pytest.raises(StatisticsError):
         ReplicateTable("", ["A", "A"], [[1], [2]], [])

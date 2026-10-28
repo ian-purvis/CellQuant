@@ -439,6 +439,8 @@ class Project(QObject):
                 sheet.wide, sheet.warnings, sheet.methods = run_normality(data, sheet.options)
             if data is not None and data.pseudoreplicated and PSEUDO_WARNING not in sheet.warnings:
                 sheet.warnings.insert(0, PSEUDO_WARNING)
+            if data is not None and data.replicates is not None and sheet.kind != "pstack":
+                sheet.methods = f"{replicate_methods(data)} {sheet.methods}".strip()
         except CellQuantError as exc:
             sheet.error = str(exc)
         except Exception as exc:  # noqa: BLE001 - kept in the log; the sheet says it could not be computed
@@ -725,6 +727,16 @@ def xy_columns(xy: XYTable) -> ColumnTable:
 def set_xy(sheet: DataSheet, xy: XYTable) -> None:
     sheet.xy = xy
     sheet.table = xy_columns(xy)
+
+
+def replicate_methods(data: DataSheet) -> str:
+    """The sentence a results sheet of a replicate table starts its methods with: what one value is, N and n."""
+
+    replicates = data.replicates
+    counts = replicates.counts()
+    sizes = "; ".join(f"{column.name} N={column.finite.size}, n={counts.get(column.name, 0)}" for column in data.table.columns)
+    return (f"Analyzed on one value per biological replicate (each replicate's {replicates.summary} of its values), "
+            f"not on the individual values ({sizes}).")
 
 
 def set_replicates(sheet: DataSheet, replicates: ReplicateTable | None, values: list | None = None) -> None:
