@@ -70,6 +70,7 @@ from cellquant.gui.quantanalysis.project import (
     ResultSheet,
     set_grouped,
     set_contingency,
+    set_replicates,
     set_xy,
 )
 from cellquant.gui.quantanalysis.results_view import ResultSheetView
@@ -77,6 +78,7 @@ from cellquant.stats import ColumnTable, sources, transforms
 from cellquant.stats.contingency import ContingencyTable
 from cellquant.stats.curvefit import MODELS as CURVE_MODELS
 from cellquant.stats.grouped import GroupedTable
+from cellquant.stats.replicates import ReplicateTable
 from cellquant.stats.xy import XYTable
 
 INSTALL = 'pip install "cellquant[stats]"'
@@ -266,6 +268,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(file, "Save project as…", self.save_project_as, "Save the project in a new file.").setShortcut(QKeySequence.SaveAs)
         file.addSeparator()
         self._action(file, "New column table", self.new_table, "An empty table: one column per group.")
+        self._action(file, "New table with replicates (SuperPlot)", self.new_replicate_table, tips.NEW_REPLICATE_TABLE)
         self._action(file, "New grouped table", self.new_grouped_table, tips.NEW_GROUPED)
         self._action(file, "New XY table", self.new_xy_table, tips.NEW_XY)
         self._action(file, "New contingency table", self.new_contingency_table, tips.NEW_CONTINGENCY)
@@ -654,6 +657,15 @@ class QuantAnalysisWindow(QMainWindow):
         self.select(sheet.id)
         return sheet
 
+    def new_replicate_table(self) -> DataSheet:
+        """An empty column table with a Replicate column, to paste every value (for example every cell) into by replicate."""
+
+        sheet = DataSheet(f"Data {len(self.project.data) + 1}", ColumnTable())
+        set_replicates(sheet, ReplicateTable("", ["Group A", "Group B"], [np.zeros(0), np.zeros(0)], []))
+        self.project.add_data(sheet)
+        self.select(sheet.id)
+        return sheet
+
     def new_grouped_table(self) -> DataSheet:
         """An empty grouped table: two rows × two data sets × three replicates, to type or paste into."""
 
@@ -686,7 +698,8 @@ class QuantAnalysisWindow(QMainWindow):
         if path:
             self.import_csv(path)
 
-    def import_csv(self, path: str, shape: str | None = None, value: str | None = None, group: str | None = None) -> DataSheet | None:
+    def import_csv(self, path: str, shape: str | None = None, value: str | None = None, group: str | None = None,
+                   replicate: str | None = None) -> DataSheet | None:
         try:
             frame = pd.read_csv(path, sep=None, engine="python")
         except (OSError, ValueError) as exc:
@@ -701,14 +714,19 @@ class QuantAnalysisWindow(QMainWindow):
                 dialog.value.setCurrentIndex(dialog.value.findData(value))
             if group is not None:
                 dialog.group.setCurrentIndex(dialog.group.findData(group))
+            dialog.replicate.setCurrentIndex(max(0, dialog.replicate.findData(replicate)))
         elif not dialog.exec():
             return None
         try:
             table = dialog.table(Path(path).stem)
+            replicates = dialog.replicates(Path(path).stem)
         except CellQuantError as exc:
             self.status(str(exc))
             return None
-        sheet = self.project.add_data(DataSheet(Path(path).stem, table, description=f"From {path}"))
+        sheet = DataSheet(Path(path).stem, table, description=f"From {path}")
+        if replicates is not None:
+            set_replicates(sheet, replicates)
+        sheet = self.project.add_data(sheet)
         self.select(sheet.id)
         return sheet
 
@@ -802,8 +820,10 @@ class QuantAnalysisWindow(QMainWindow):
             result = self.project.add_result(ResultSheet(f"Welch's t test: {sheet.name}", sheet.id, "compare",
                                                          {"test": "welch_t", "first": 0, "second": 1, "alternative": "two-sided",
                                                           "ci": 0.95, "alpha": 0.05, "style": "classic"}))
-        kind = "superplot" if sheet.units is not None else "scatter"
-        graph = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {sheet.name}", sheet.id, kind, {"error": "sd"},
+        superplot = sheet.units is not None or sheet.replicates is not None
+        kind = "superplot" if superplot else "scatter"
+        graph = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {sheet.name}", sheet.id, kind,
+                                                  {"error": "sd", **({"legend": {"show": True, "position": "right"}} if superplot else {})},
                                                   result.id if result else None))
         if result is not None:
             self.project.add_graph(GraphSheet(f"Estimation plot: {sheet.name}", sheet.id, "estimation", {"error": "sd"}, result.id))
@@ -1062,8 +1082,10 @@ class QuantAnalysisWindow(QMainWindow):
                        if item.data_id == data.id and item.kind in ("compare", "anova", "twoway", "linreg", "curvefit", "contingency")), None)
         # A grouped graph colours its cells by data set (and an XY graph its data sets), so its legend is on from the start.
         several = data.grouped is not None or data.contingency is not None or (data.xy is not None and len(data.xy.sets) > 1)
-        sheet = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {data.name}", data.id, kind,
-                                                  {"legend": {"show": True, "position": "master"}} if several else {}, result.id if result else None))
+        # A SuperPlot colours by biological replicate: its legend names them.
+        legend = ({"legend": {"show": True, "position": "master"}} if several else
+                  {"legend": {"show": True, "position": "right"}} if kind == "superplot" and graphs.superplot_levels(data) is not None else {})
+        sheet = self.project.add_graph(GraphSheet(f"{graphs.KINDS[kind][0]}: {data.name}", data.id, kind, legend, result.id if result else None))
         self.select(sheet.id)
         return sheet
 

@@ -42,6 +42,7 @@ from cellquant.stats.contingency import TESTS as CONTINGENCY_TESTS, ContingencyT
 from cellquant.stats.curvefit import MODELS, nonlinear_regression
 from cellquant.stats.grouped import COMPARE, FAMILIES, GroupedTable, two_way_anova
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
+from cellquant.stats.replicates import ReplicateTable, looks_like_replicate
 from cellquant.stats.multcomp import (
     ALL_PAIRS_ONLY,
     EQUAL_SD_METHODS,
@@ -482,6 +483,19 @@ class ImportCsvDialog(QDialog):
             self.group.setCurrentIndex(self.group.findData(text[0]))
         form.addRow("Values", self.value)
         form.addRow("Group", self.group)
+        self.replicate = QComboBox()
+        self.replicate.addItem("(none)", None)
+        for name in frame.columns:
+            self.replicate.addItem(str(name), name)
+        self.replicate.setToolTip(tips.CSV_REPLICATE)
+        guess = next((name for name in frame.columns if looks_like_replicate(name)), None)
+        if guess is not None:
+            self.replicate.setCurrentIndex(self.replicate.findData(guess))
+            if guess in text:
+                text.remove(guess)
+                if text:
+                    self.group.setCurrentIndex(self.group.findData(text[0]))
+        form.addRow("Replicate", self.replicate)
         layout.addLayout(form)
         _check(self.shape, "long" if text and len(numeric) <= 2 else "wide")
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -501,6 +515,19 @@ class ImportCsvDialog(QDialog):
             filled = [index for index, value in enumerate(values) if value == value]
             trimmed[name] = values[: filled[-1] + 1] if filled else values[:0]
         return ColumnTable.from_columns(trimmed, title=title)
+
+    def replicates(self, title: str) -> ReplicateTable | None:
+        """With a replicate column: every value with its replicate (the table's analyses then use the replicate means)."""
+
+        replicate = self.replicate.currentData()
+        if replicate is None:
+            return None
+        if _checked(self.shape) == "long":
+            if replicate in (self.value.currentData(), self.group.currentData()):
+                raise CellQuantError("Choose a replicate column other than the values and the group.")
+            return ReplicateTable.from_long(self.frame, value=self.value.currentData(), group=self.group.currentData(),
+                                            replicate=replicate, title=title)
+        return ReplicateTable.from_wide(self.frame, replicate, title=title)
 
 
 # --- Compare two columns --------------------------------------------------------------------------------------
