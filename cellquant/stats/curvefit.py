@@ -470,9 +470,13 @@ def compare_models(fit_a: dict, fit_b: dict, alpha: float = 0.05) -> dict:
 
     first, second = (fit_a, fit_b) if len(fit_a["free"]) <= len(fit_b["free"]) else (fit_b, fit_a)
     out = {"simple": first, "complex": second, "nested": nested((first["model"], first["fixed"]), (second["model"], second["fixed"]))}
+    # A special case can never fit better than the model it is a case of; when it does, the complex fit is stuck short of
+    # its best fit, and the F test (whose numerator would be negative) cannot be trusted.
+    out["unreliable"] = bool(out["nested"] and first["ss_resid"] < second["ss_resid"] * (1 - 1e-9))
     if out["nested"]:
         f, p, dfn, dfd = _f_test(first["ss_resid"], first["df"], second["ss_resid"], second["df"])
-        out.update(f=f, p=p, dfn=dfn, dfd=dfd, f_prefers=None if not math.isfinite(p) else "complex" if p < alpha else "simple")
+        out.update(f=f, p=p, dfn=dfn, dfd=dfd,
+                   f_prefers=None if out["unreliable"] or not math.isfinite(p) else "complex" if p < alpha else "simple")
     delta, probability = _aicc_choice(first["aicc"], second["aicc"])
     out.update(aicc_delta=delta, aicc_simple=probability,
                aicc_prefers=None if not math.isfinite(delta) else "simple" if delta >= 0 else "complex")
@@ -671,6 +675,9 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
             if second is not None:
                 item = compare_models(fit, second, alpha)
                 comparisons[name] = item
+                if item["unreliable"]:
+                    result.warnings.append(f"{name}: the simpler fit fits better than the fuller one, which cannot happen at their best: the "
+                                           "fuller fit may be stuck short of its best fit. The F test is not reliable; check the fits.")
                 label = _fit_label(other, compare_fixed)
                 for parameter in other.params:
                     value = second["params"][parameter]
@@ -797,6 +804,8 @@ def _model_rows(item: dict, model: Model, fixed: dict, other: Model, other_fixed
         if item["f_prefers"]:
             rows[(section, "Preferred (F test)")] = (f"{complex_label} ({p_summary(item['p'], style)})" if item["f_prefers"] == "complex"
                                                      else f"{simple_label} (the extra parameters do not help: {p_summary(item['p'], style)})")
+        if item.get("unreliable"):
+            rows[(section, "Reliable?")] = "No: the simpler fit fits better than the fuller one, so the fuller fit is stuck"
     else:
         rows[(section, "F (extra sum-of-squares)")] = "not nested: compared by AICc only"
     rows[(section, "AICc difference (complex − simple)" if ranked else "AICc difference (B − A)")] = fmt(item["aicc_delta"])
