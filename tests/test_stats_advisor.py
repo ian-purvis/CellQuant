@@ -78,7 +78,7 @@ def test_pseudoreplication_is_flagged_and_replicate_tables_are_not():
     assert suggested(cells).dot == "cell"
     rec = recommend(suggested(cells), cells)
     assert rec.warnings[0].startswith("Pseudoreplication") and "3 and 3 biological replicates" in rec.warnings[0]
-    assert any("nested" in text for text in rec.alternatives)
+    assert any(text.startswith("Nested t test") for text in rec.alternatives)
     own = recommend(Answers(dot="cell", independent=True), cells)
     assert not any(w.startswith("Pseudoreplication") for w in own.warnings)
     means = facts_of(_table(), replicate_means=True)
@@ -154,3 +154,9 @@ def test_two_groups_point_to_roc_and_bland_altman():
     paired = recommend(Answers(groups=2, paired=True))
     assert any(text.startswith("Bland-Altman") for text in paired.alternatives)
     assert not any(text.startswith("ROC curve") for text in paired.alternatives)
+
+
+def test_survival_goal():
+    rec = recommend(Answers(goal="survival"))
+    assert rec.kind == "survival" and "Kaplan-Meier" in rec.name and "subjects" in rec.unit
+    assert any("New survival table" in w for w in rec.warnings)

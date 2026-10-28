@@ -1029,6 +1029,243 @@ class AnovaDialog(QDialog):
         super().accept()
 
 
+# --- Nested t test and nested one-way ANOVA ---------------------------------------------------------------------
+
+NESTED_DEFAULTS = {"alternative": "two-sided", "comparisons": "all", "method": None, "control": [], "pairs": [], "family": "per_reference",
+                   "alpha": 0.05, "ci": 0.95, "style": "classic"}
+NESTED_GOALS = tuple(goal for goal in GOALS if goal[0] != "trend")
+
+
+def _check_nested(table: ColumnTable, replicates: ReplicateTable, options: dict, note: QLabel) -> bool:
+    """Run the nested analysis once (with the Advanced settings, minus the table they were chosen for), so an error is caught in the dialog."""
+
+    from cellquant.gui.quantanalysis.project import DataSheet, run_nested
+
+    try:
+        run_nested(DataSheet("", table, replicates=replicates), options)
+    except CellQuantError as exc:
+        note.setText(str(exc))
+        note.setVisible(True)
+        return False
+    return True
+
+
+class NestedDialog(QDialog):
+    """Nested t test (two columns) or nested one-way ANOVA (three or more) of a table with replicates: every value is used, with
+    the replicate it came from. Tails for two groups; multiple comparisons for three or more; alpha, CI level and P value style;
+    Advanced: the denominator df and the number of comparisons the correction counts."""
+
+    def __init__(self, parent, table: ColumnTable, replicates: ReplicateTable, options: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Nested t test / ANOVA")
+        self.setMinimumWidth(640)
+        self.table = table
+        self.replicates = replicates
+        self.two = len(table) == 2
+        options = {**NESTED_DEFAULTS, **(options or {})}
+        layout = QVBoxLayout(self)
+        counts = replicates.counts()
+        intro = QLabel(f"Every value is used, with the replicate it came from; the groups are compared against the variation among replicates. "
+                       f"The table has {len(table)} groups and {sum(counts.values())} values.")
+        intro.setToolTip(tips.NESTED)
+        intro.setWordWrap(True)
+        intro.setStyleSheet(NOTE_STYLE)
+        layout.addWidget(intro)
+        columns = QHBoxLayout()
+        left, right = QVBoxLayout(), QVBoxLayout()
+        form = self.form = QFormLayout()
+        self.tails = QComboBox()
+        self.tails.addItem("Two-tailed", "two-sided")
+        self.tails.addItem("One-tailed, predicting B > A", "greater")
+        self.tails.addItem("One-tailed, predicting B < A", "less")
+        self.tails.setToolTip(tips.TAILS)
+        form.addRow("P value", self.tails)
+        self.alpha = QDoubleSpinBox()
+        self.alpha.setRange(0.0001, 0.5)
+        self.alpha.setDecimals(4)
+        self.alpha.setSingleStep(0.01)
+        self.alpha.setToolTip(tips.ALPHA if self.two else tips.ANOVA_ALPHA)
+        form.addRow("Alpha", self.alpha)
+        self.ci = QComboBox()
+        for value in (0.90, 0.95, 0.99):
+            self.ci.addItem(f"{100 * value:g}%", value)
+        self.ci.setToolTip(tips.CI_LEVEL)
+        form.addRow("Confidence interval", self.ci)
+        self.style = QComboBox()
+        for name in STYLES:
+            self.style.addItem(name, name)
+        self.style.setToolTip(tips.P_STYLE)
+        form.addRow("P value style", self.style)
+        left.addLayout(form)
+        left.addStretch(1)
+        self.compare = QGroupBox("Multiple comparisons")
+        compare_layout = QVBoxLayout(self.compare)
+        self.goal = QButtonGroup(self)
+        for key, text in NESTED_GOALS:
+            _radio(self.goal, compare_layout, text, key, tips.COMPARISONS_GOAL[key])
+        compare_form = QFormLayout()
+        self.method = QComboBox()
+        self.method.setToolTip(tips.METHOD)
+        compare_form.addRow("Method", self.method)
+        self.control = QComboBox()
+        self.control.setToolTip(tips.CONTROL)
+        self.control2 = QComboBox()
+        self.control2.setToolTip(tips.CONTROL2)
+        compare_form.addRow("Reference group", self.control)
+        compare_form.addRow("Second reference", self.control2)
+        self.family_mode = QComboBox()
+        self.family_mode.addItem("Each reference is its own family", "per_reference")
+        self.family_mode.addItem("Both references as one family", "combined")
+        self.family_mode.setToolTip(tips.FAMILY)
+        compare_form.addRow("Families", self.family_mode)
+        compare_layout.addLayout(compare_form)
+        self.pairs = QListWidget()
+        self.pairs.setToolTip(tips.PAIRS)
+        self.pairs.setMaximumHeight(110)
+        names = table.names
+        for i, a in enumerate(names):
+            for b in names[i + 1:]:
+                item = QListWidgetItem(f"{a} vs. {b}")
+                item.setData(Qt.UserRole, (a, b))
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Unchecked)
+                self.pairs.addItem(item)
+        compare_layout.addWidget(self.pairs)
+        right.addWidget(self.compare)
+        columns.addLayout(left, 1)
+        columns.addLayout(right, 1)
+        layout.addLayout(columns)
+        self.advanced = AdvancedBox(self, layout)
+        self.advanced.basis = table_signature(table)
+        self.advanced.add("df", "Denominator degrees of freedom", tips.OVERRIDE_DF_NESTED, 0.01, 1e6, 4,
+                          modes=(("conservative", "Conservative (replicates − groups)"),), value=10)
+        self.advanced.add("m", "Comparisons the correction counts", tips.OVERRIDE_M, 1, 100000, 0, default_text="Default (comparisons made)")
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet(WARNING_STYLE)
+        self.note.setVisible(False)
+        layout.addWidget(self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Run")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.goal.buttonToggled.connect(lambda *_args: self._goal_changed())
+        self.control.currentIndexChanged.connect(lambda _index: self._fill_second())
+        self.control2.currentIndexChanged.connect(lambda _index: self._goal_changed())
+        self.family_mode.currentIndexChanged.connect(lambda _index: self._fill_methods())
+        self.method.currentIndexChanged.connect(lambda _index: self._advanced_fields())
+        self._quiet = False
+        self.set_options(options)
+
+    def set_options(self, options: dict) -> None:
+        options = {**NESTED_DEFAULTS, **options}
+        self._quiet = True
+        self.control.clear()
+        for name in self.table.names:
+            self.control.addItem(name, name)
+        control = [name for name in options["control"] if name in self.table.names]
+        goal = options["comparisons"] or "none"
+        if goal == "trend":
+            goal = "all"
+        if goal == "control" and not control and self.table.names:
+            control = [self.table.names[0]]
+        self.control.setCurrentIndex(max(0, self.control.findData(control[0] if control else None)))
+        self._fill_second(control[1] if len(control) > 1 else None)
+        self.family_mode.setCurrentIndex(max(0, self.family_mode.findData(options["family"])))
+        _check(self.goal, goal)
+        chosen = {tuple(pair) for pair in options["pairs"]}
+        for row in range(self.pairs.count()):
+            item = self.pairs.item(row)
+            item.setCheckState(Qt.Checked if item.data(Qt.UserRole) in chosen else Qt.Unchecked)
+        self.tails.setCurrentIndex(max(0, self.tails.findData(options["alternative"])))
+        self.alpha.setValue(float(options["alpha"]))
+        self.ci.setCurrentIndex(max(0, self.ci.findData(options["ci"])))
+        self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
+        self._quiet = False
+        self.tails.setVisible(self.two)
+        self.form.labelForField(self.tails).setVisible(self.two)
+        self.compare.setVisible(not self.two)
+        self._goal_changed(options["method"])
+        self.advanced.set_values(options)
+        self._advanced_fields()
+
+    def _fill_second(self, keep: str | None = None) -> None:
+        keep = keep if keep is not None else self.control2.currentData()
+        self.control2.blockSignals(True)
+        self.control2.clear()
+        self.control2.addItem("none", None)
+        for name in self.table.names:
+            if name != self.control.currentData():
+                self.control2.addItem(name, name)
+        self.control2.setCurrentIndex(max(0, self.control2.findData(keep)))
+        self.control2.blockSignals(False)
+        self._goal_changed()
+
+    def _goal_changed(self, method: str | None = None) -> None:
+        if self._quiet:
+            return
+        goal = _checked(self.goal)
+        for widget in (self.control, self.control2):
+            widget.setEnabled(goal == "control")
+        self.family_mode.setEnabled(goal == "control" and self.control2.currentData() is not None)
+        self.pairs.setEnabled(goal == "selected")
+        self.method.setEnabled(goal in ("all", "control", "selected"))
+        self._fill_methods(method)
+
+    def _fill_methods(self, keep: str | None = None) -> None:
+        if self._quiet:
+            return
+        goal = _checked(self.goal)
+        keep = keep or self.method.currentData()
+        combined = self.family_mode.isEnabled() and self.family_mode.currentData() == "combined"
+        methods = methods_for("ordinary", goal, combined) if goal in ("all", "control", "selected") else []
+        self.method.blockSignals(True)
+        self.method.clear()
+        for number, name in enumerate(methods):
+            self.method.addItem(METHOD_NAMES[name] + (" (recommended)" if number == 0 else ""), name)
+            self.method.setItemData(self.method.count() - 1, tips.METHOD_TIPS[name], Qt.ToolTipRole)
+        self.method.setCurrentIndex(max(0, self.method.findData(keep)))
+        self.method.blockSignals(False)
+        self.method.setToolTip(tips.METHOD_TIPS.get(self.method.currentData(), tips.METHOD))
+        self._advanced_fields()
+
+    def _advanced_fields(self) -> None:
+        """The denominator df always; the number of comparisons only for a correction that counts them."""
+
+        if self._quiet or not hasattr(self, "advanced"):
+            return
+        compares = not self.two and _checked(self.goal) in ("all", "control", "selected")
+        self.advanced.show_field("df", True)
+        self.advanced.show_field("m", compares and self.method.currentData() in M_METHODS)
+
+    def options(self) -> dict:
+        goal = _checked(self.goal)
+        if self.two:
+            return {"alternative": self.tails.currentData(), "alpha": round(self.alpha.value(), 6), "ci": self.ci.currentData(),
+                    "style": self.style.currentData(), **self.advanced.values()}
+        control = [box.currentData() for box in (self.control, self.control2) if box.currentData() is not None]
+        return {
+            "comparisons": None if goal == "none" else goal,
+            "method": self.method.currentData() if goal in ("all", "control", "selected") else None,
+            "control": control if goal == "control" else [],
+            "pairs": [list(self.pairs.item(row).data(Qt.UserRole)) for row in range(self.pairs.count())
+                      if self.pairs.item(row).checkState() == Qt.Checked] if goal == "selected" else [],
+            "family": self.family_mode.currentData(), "alpha": round(self.alpha.value(), 6), "ci": self.ci.currentData(),
+            "style": self.style.currentData(), **self.advanced.values(),
+        }
+
+    def accept(self) -> None:
+        options = self.options()
+        if not self.two and _checked(self.goal) == "selected" and not options["pairs"]:
+            self.note.setText("Tick at least one pair to compare.")
+            self.note.setVisible(True)
+            return
+        if not _check_nested(self.table, self.replicates, options, self.note):
+            return
+        super().accept()
+
+
 # --- Two-way ANOVA --------------------------------------------------------------------------------------------
 
 TWO_WAY_DEFAULTS = {"interaction": True, "compare": "within_rows", "goal": "all", "method": "tukey", "control": None,

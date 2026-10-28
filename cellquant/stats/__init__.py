@@ -38,6 +38,7 @@ from cellquant.stats.descriptive import (
 from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.multcomp import ComparisonPlan, adjust_p, compact_letter_display, p_value_stack
+from cellquant.stats.nested import nested
 from cellquant.stats.normality import lognormality, normality
 from cellquant.stats.outliers import grubbs_fit, identify_outliers, rout_fit
 from cellquant.stats.pvalues import STYLES, format_p, p_summary, p_text
@@ -108,6 +109,7 @@ __all__ = [
     "lognormality",
     "mann_whitney",
     "mixed_effects_anova",
+    "nested",
     "normality",
     "normalize",
     "one_sample_t",

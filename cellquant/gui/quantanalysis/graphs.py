@@ -786,6 +786,9 @@ def _compared(result, table):
 
     if result is None or getattr(result, "analysis", None) is None:
         return None
+    if result.analysis == "Nested t test":  # two groups: the bracket joins them, first to second
+        names = result.values.get("names") or []
+        return (names[0], names[1], result.analysis) if len(names) == 2 and all(name in table.names for name in names) else None
     try:
         comparison = result.row("Table analyzed", "Comparison").value
     except KeyError:

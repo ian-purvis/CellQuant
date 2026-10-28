@@ -38,14 +38,14 @@ Graphs need matplotlib, and two normality tests need statsmodels: `pip install "
 
 **Analyze → Help me choose…** (also in Help, and as a button in the analysis dialogs) asks about the experiment and recommends an analysis. It reads the selected table first, so most answers are already filled in: the kind of question (a column table compares groups, a grouped table has two factors, an XY table relates X and Y), what one value is (from the import's **Dot =**), the number of groups and whether the table is marked Paired. Only the questions that apply are shown:
 
-- **What do you want to know?** Whether groups differ; how two factors affect a measure and whether they interact; or how one measure changes with another.
+- **What do you want to know?** Whether groups differ; how two factors affect a measure and whether they interact; how one measure changes with another; or how long until an event (survival). Choosing survival hides the questions that do not apply (what one value is, groups, paired, Gaussian…): the answer is Kaplan-Meier curves with the log-rank test, and **Run this analysis…** opens the survival dialog on the selected table when it is an XY table (otherwise it says to make one with **File → New survival table**).
 - **What is one value?** A biological replicate, an image or a cell. For images or cells the guide warns about pseudoreplication and says how many replicates are behind them, unless each image or cell was treated or assigned on its own (for example each cell injected separately), which makes it its own replicate. A table of replicate means (as for a SuperPlot) is analysed with N = the replicates.
 - **Paired?** Yes when each replicate gave a value in every group, including each experiment run with every condition side by side on the same day. Pairing removes run-to-run variation; ignoring it makes the test too conservative.
 - **Gaussian?** Yes, no, the logarithms are (positive values with a long right tail), or not sure. **Same SD?** (unpaired Gaussian groups; Welch's tests by default). **Which comparisons?** (three or more groups). **Direction predicted before the experiment?** (one or two tails). **Interaction?** (two factors). **Line or correlation**, and whether several Y values per X are independent (XY).
 
 The answer gives the test and why, what N is, the degrees of freedom worked out from the table (for example the Welch-Satterthwaite df, k − 1 and N − k for ANOVA, (k − 1)(N − 1) for repeated measures, N − rc for two-way ANOVA, N − 2 for regression), warnings (pseudoreplication; a rank test that cannot reach P < 0.05 with these N; fewer than 3 replicates; very different SDs; a paired test on a table not marked Paired), alternatives, how to report it, and each column's N, SD and Shapiro-Wilk P. **Advanced** sets the degrees of freedom by hand. **Run this analysis…** opens the analysis dialog with everything filled in, to check before it runs.
 
-The guide follows Lord et al. (2020, *J Cell Biol* 219:e202001064, "SuperPlots"): the sample size of a test is the number of biological replicates, such as independent experiments; each replicate's cells are averaged and the test is run on those means (keep the number of cells per replicate similar, since each mean counts equally); experiments that each include every condition are analysed with a paired or ratio paired test; three replicates are a practical minimum, and more replicates add more power than more cells; and the figure states N, how it was counted and how the means and tests were calculated. A nested (hierarchical) analysis that uses every cell is more powerful and is not in QuantAnalysis yet.
+The guide follows Lord et al. (2020, *J Cell Biol* 219:e202001064, "SuperPlots"): the sample size of a test is the number of biological replicates, such as independent experiments; each replicate's cells are averaged and the test is run on those means (keep the number of cells per replicate similar, since each mean counts equally); experiments that each include every condition are analysed with a paired or ratio paired test; three replicates are a practical minimum, and more replicates add more power than more cells; and the figure states N, how it was counted and how the means and tests were calculated. A nested (hierarchical) analysis that keeps every cell is **Analyze → Nested t test / ANOVA…** (below), on a table with replicates: when every replicate has the same number of values it equals the ordinary test on the replicate means, and it adds how much of the variation lies among replicates (variance components). With different numbers of values per replicate it weighs the replicates by their values and uses Satterthwaite's degrees of freedom.
 
 ### Settings set by hand (Advanced)
 
@@ -53,7 +53,7 @@ Each analysis dialog has an **Advanced** tick box (off by default) that shows se
 
 | Setting | Analyses | Default |
 | --- | --- | --- |
-| Degrees of freedom | t tests (also **Conservative**: the smaller group's N − 1, for unpaired tests), one-way ANOVA (residual, used by the multiple comparisons too), Welch's ANOVA (denominator), repeated measures (before ε), two-way ANOVA (residual), linear regression (residual), nonlinear regression (residual, for the parameters' CIs and the bands only; the fit and its comparisons keep the computed df), correlation (t test of r) | computed |
+| Degrees of freedom | t tests (also **Conservative**: the smaller group's N − 1, for unpaired tests), one-way ANOVA (residual, used by the multiple comparisons too), Welch's ANOVA (denominator), nested t test and ANOVA (denominator, used by the interval and the multiple comparisons too; also **Conservative**: replicates − groups, or the computed df if smaller), repeated measures (before ε), two-way ANOVA (residual), linear regression (residual), nonlinear regression (residual, for the parameters' CIs and the bands only; the fit and its comparisons keep the computed df), correlation (t test of r) | computed |
 | Hypothesised difference | unpaired, Welch's and paired t tests: t = (difference − hypothesised) / SE; the CI does not change | 0 |
 | Sphericity correction ε | repeated-measures ANOVA, between 1/(k − 1) (lower bound) and 1 (none) | Geisser-Greenhouse ε |
 | SD for multiple comparisons | ordinary and repeated-measures ANOVA; the F test is unchanged | pooled SD |
@@ -123,6 +123,18 @@ Graphs of a grouped table (column scatter, bars, boxes or violins) colour each d
 ### Survival curves
 
 **File → New survival table** makes an XY table for time-to-event data: the X column is the time, each data set is one group, and **each row is one subject**. Put the subject's time in X and its status in its group's column: 1 if the event happened (death, relapse, recovery…) at that time, 0 if the subject was censored (still event-free when last seen); leave the other groups' cells in that row blank. **Survival curves (Kaplan-Meier)…** (Analyze menu, on an XY table) reads it; only the first replicate column of each data set is used (the sheet warns if there are more). The results give, for each group, the number of subjects, events and censored subjects and the median survival with its CI; with two or more groups, the log-rank (Mantel-Cox) and Gehan-Breslow-Wilcoxon tests; with two groups, the hazard ratio and the ratio of the medians; and, if **Groups are in order (test for trend)** is ticked (three or more groups), the log-rank test for trend. Rows with a status but no time (or a time but no status) are left out and counted in a warning, and a row with a status in two groups is an error. The analysis makes its own graph (under **Graphs**, named after the results): a step curve of percent survival per group from 100% at time 0, with a small tick on the curve at every censored subject and N (subjects) above it. Choose **Confidence band** under **Points** in the Graph section to shade each curve's confidence band; the legend names the groups. Axis titles, limits, fonts and colours of the Format panel apply.
+
+### Nested t test and nested one-way ANOVA
+
+A table with replicates holds every value (for example every cell) with the biological replicate it came from. The usual analyses of such a table use one value per replicate (its mean or median). **Analyze → Nested t test / ANOVA…** keeps every value instead: the cells are *nested* in the replicates, and the replicates in the groups. The groups are compared against the variation among replicates, so many cells from few replicates do not make P falsely small, but the cells still tell how well each replicate's value is known. With two columns it is a nested t test; with three or more, a nested one-way ANOVA with multiple comparisons.
+
+It needs a table with replicates (tick **Replicates** above the table, or **File → New table with replicates (SuperPlot)**), unpaired, with more replicates than groups and more than one value in some replicate. Without replicates the menu item says "Nested analyses need a table with replicates: tick Replicates above the table (or File → New table with replicates)". A table marked Paired is refused: the replicates of a paired design are measured in every column, so they are not nested in the groups; untick Paired, or use the paired analyses of the replicate means.
+
+**Dialog.** *P value* (two columns only): two-tailed or one-tailed. *Multiple comparisons* (three or more columns): none, every pair, each group against one or two reference groups, or selected pairs, with the methods valid after an ordinary ANOVA (the same list as in Compare three or more columns, without the test for trend). *Alpha*, *Confidence interval* and *P value style* as elsewhere. **Advanced** (off by default) holds only what is normally computed: the **denominator degrees of freedom** (Default, **Conservative** = replicates − groups, or the computed df if smaller, or set by hand) and, with a Bonferroni-type correction, the number of comparisons it counts. Run tests the analysis at once and shows any error in the dialog.
+
+**Results.** The nested t test gives the difference between the group means (B − A) with its SE and CI, t, df and P. The nested ANOVA gives F, df and P of the groups, then the multiple comparisons. Both give the ANOVA table with three rows (between groups, among replicates within groups, residual within replicates), the test of the replicates (is there any variation among replicates beyond that of the values?), the variance components with the **intraclass correlation** (the share of the variation that lies among replicates), and each group's number of replicates (N), values (n) and mean. The methods sentence gives N and n and says what the groups were tested against; it does not start with "Analyzed on one value per biological replicate", since every value is used. The results follow edits of the table, **Change options…** reopens the dialog, and the analysis is saved in the project. A graph can show its P (nested t test) or its comparisons (nested ANOVA) as brackets, like the other comparisons.
+
+**When the numbers of values differ.** The group means are the means of all of a group's values, so a replicate with more values counts more. The test then divides by a mean square built from the two lower levels, with Satterthwaite's degrees of freedom (non-integer); a note on the sheet says so. If every replicate has the same number of values, the groups are tested against the mean square among replicates with replicates − groups df, and the result equals the ordinary (equal-SD) one-way ANOVA or unpaired t test on the replicate means.
 
 ### Page layouts
 
@@ -409,6 +421,43 @@ fitted by least squares with sum-to-zero (effect) coding. It answers three quest
 - **Main column (or row) effect**: compare least-squares means, the average of a level's cell means with every cell weighted equally (they equal the plain means when the table is balanced). SE² of a difference = MS_residual · (Σ_i 1/n_ij + Σ_i 1/n_ij') / a². Most useful when the interaction is small: with a large interaction, the main effect averages over effects that differ by row.
 
 Two-way ANOVA assumes independent values: technical replicates (many objects from one biological replicate) give P values that are far too small, and a warning says so when a cell has more than 30 values. Checked against an independent least-squares fit (Type III sums of squares with sum-to-zero contrasts).
+
+## Nested t test and nested one-way ANOVA (`nested(table)`)
+
+The data are a replicate table (`ReplicateTable`): k groups (columns); group g has R_g biological replicates; replicate r of group g has n_gr values y_grj with mean ȳ_gr. n_g = Σ_r n_gr, N = Σ_g n_g values in all, R = Σ_g R_g replicates in all, ȳ_g is the mean of all n_g values of group g and ȳ the mean of all N. A replicate belongs to one group only (a Paired replicate table is refused). The model is y_grj = μ + α_g + ρ_r(g) + ε_grj with replicate effects ρ ~ N(0, σ²_rep) nested in the groups and ε ~ N(0, σ²), fitted by the method of moments (Sokal & Rohlf, *Biometry*, nested ANOVA).
+
+| Source | SS | df | MS |
+|---|---|---|---|
+| Between groups | Σ_g n_g (ȳ_g − ȳ)² | k − 1 | SS/df |
+| Among replicates within groups | Σ_g Σ_r n_gr (ȳ_gr − ȳ_g)² | R − k | SS/df |
+| Within replicates (residual) | Σ (y_grj − ȳ_gr)² | N − R | SS/df |
+
+The mean squares have the expectations E(MS_resid) = σ², E(MS_rep) = σ² + c_r σ²_rep and E(MS_groups) = σ² + c_g σ²_rep + (the variance of the group effects), with the coefficients
+
+- c_r = (N − Σ_g Σ_r n_gr² / n_g) / (R − k),
+- c_g = (Σ_g Σ_r n_gr² / n_g − Σ_g Σ_r n_gr² / N) / (k − 1).
+
+When every replicate has m values, c_r = c_g = m.
+
+**Test of the groups.** The denominator is the mean square whose expectation matches that of MS_groups under no group effect: MS_den = (c_g / c_r) MS_rep + (1 − c_g / c_r) MS_resid, with Satterthwaite's df = MS_den² / [ ((c_g / c_r) MS_rep)² / (R − k) + ((1 − c_g / c_r) MS_resid)² / (N − R) ]. F = MS_groups / MS_den with (k − 1, df) df. When c_g = c_r (an equal number of values in every replicate) MS_den = MS_rep and df = R − k, which is the ordinary ANOVA on the replicate means. **Test of the replicates**: F = MS_rep / MS_resid with (R − k, N − R) df.
+
+**Variance components.** σ̂²_rep = max(0, (MS_rep − MS_resid) / c_r) (a note says when it is set to 0), σ̂²_resid = MS_resid, and the **intraclass correlation** ICC = σ̂²_rep / (σ̂²_rep + σ̂²_resid), the share of the variation that lies among replicates.
+
+**Two groups (nested t test).** The difference is the difference of the raw group means, ȳ_2 − ȳ_1. The variance of a group mean is Var(ȳ_g) = σ̃²_rep Σ_r n_gr² / n_g² + MS_resid / n_g, with σ̃²_rep the estimate (MS_rep − MS_resid) / c_r *not* clipped at 0, so that t² equals the F of the groups exactly; SE² = Var(ȳ_1) + Var(ȳ_2) (a tiny positive floor keeps it defined). t = difference / SE with the denominator df above, a one- or two-tailed P, and the CI is the difference ± t(df) · SE.
+
+**Three or more groups.** Multiple comparisons use the group means with the variances Var(ȳ_g) above (uncorrelated) and the denominator df, in the same procedures as the pooled-error ANOVA comparisons (Tukey, Dunnett, Šidák, Holm-Šidák, Bonferroni, FDR…; see Multiple comparisons). The test for trend is not offered.
+
+```python
+from cellquant.stats import nested
+from cellquant.stats.replicates import ReplicateTable
+table = ReplicateTable.from_long(cells, value="intensity", group="condition", replicate="experiment")
+result = nested(table, comparisons="control", control="Negative control")
+result.values["f"], result.values["p"], result.values["icc"], result.values["comparisons"]
+```
+
+**Overrides** (keyword-only; listed under "Changed from the default"): `df` replaces the denominator df of the test of the groups, the t test and the comparisons (a positive number, or `"conservative"` = R − k); `m` is the number of comparisons the Bonferroni-type corrections count.
+
+**Errors and warnings.** A Paired table, no values with a replicate name, fewer than two groups with values, R ≤ k (some group needs two replicates) and N = R (every replicate has one value, so nothing is nested) are errors. Warnings: a group with one replicate; fewer than 3 more replicates than groups (R − k < 3: little power); replicate variance set to 0; values above the first replicate name (left out); columns without values (left out). Checked against the ordinary tests on replicate means (equal values per replicate) and hand-computed expected mean squares.
 
 ## Linear regression (`linear_regression(xy)`)
 

@@ -52,6 +52,7 @@ from cellquant.gui.quantanalysis.dialogs import (
     CurveFitDialog,
     ImportCsvDialog,
     ImportDialog,
+    NestedDialog,
     OutlierDialog,
     TWO_WAY_DEFAULTS,
     ProcessDialog,
@@ -65,6 +66,7 @@ from cellquant.gui.quantanalysis.project import (
     ANOVA_NAMES,
     COMPARE_TESTS,
     LOG,
+    NESTED_NEEDS_REPLICATES,
     OUTLIER_NAMES,
     DataSheet,
     GraphSheet,
@@ -291,6 +293,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(analyze, "Compare two columns…", lambda: self.analyze("compare"), "t tests and rank tests (the t test dialog).")
         self._action(analyze, "Compare three or more columns…", lambda: self.analyze("anova"),
                      "One-way ANOVA, Kruskal-Wallis and Friedman, with multiple comparisons against one or two reference groups or all pairs.")
+        self._action(analyze, "Nested t test / ANOVA…", lambda: self.analyze("nested"), tips.NESTED)
         self._action(analyze, "Two-way ANOVA…", lambda: self.analyze("twoway"), tips.TWO_WAY)
         self._action(analyze, "Linear regression…", lambda: self.analyze("linreg"), tips.LINREG)
         self._action(analyze, "Nonlinear regression (curve fit)…", lambda: self.analyze("curvefit"), tips.CURVEFIT)
@@ -940,6 +943,17 @@ class QuantAnalysisWindow(QMainWindow):
                 self.status("Comparing three or more columns needs at least three columns. For two, use Compare two columns….")
                 return None
             dialog = lambda: AnovaDialog(self, data.table, sheet=data)  # noqa: E731
+        elif kind == "nested":
+            if data.grouped is not None:
+                self.status("A nested analysis needs a column table with replicates; a grouped table has two factors.")
+                return None
+            if data.replicates is None:
+                self.status(NESTED_NEEDS_REPLICATES)
+                return None
+            if len(data.table) < 2:
+                self.status("A nested analysis compares groups: it needs at least two columns.")
+                return None
+            dialog = lambda: NestedDialog(self, data.table, data.replicates)  # noqa: E731
         elif kind == "outliers":
             dialog = lambda: OutlierDialog(self, data.table)  # noqa: E731
         elif kind == "twoway":
@@ -981,7 +995,7 @@ class QuantAnalysisWindow(QMainWindow):
         if sheet is not None and kind == "survival" and not sheet.error:
             # The survival curves are their own graph, with the legend on (the groups are told apart by colour).
             self.project.add_graph(GraphSheet(f"{sheet.name} (graph)", data.id, "xy", {"legend": {"show": True}}, sheet.id))
-        if sheet is not None and kind in ("compare", "anova", "linreg", "curvefit", "contingency"):
+        if sheet is not None and kind in ("compare", "anova", "nested", "linreg", "curvefit", "contingency"):
             for graph in self.project.graphs.values():
                 if graph.data_id == data.id and graph.result_id is None:
                     graph.result_id = sheet.id
@@ -1004,9 +1018,13 @@ class QuantAnalysisWindow(QMainWindow):
         data = self.project.data.get(sheet.data_id)
         if data is None and sheet.kind != "pstack":
             return
+        if options is None and sheet.kind == "nested" and data.replicates is None:
+            self.status(NESTED_NEEDS_REPLICATES)
+            return
         if options is None:
             box = {"compare": lambda: CompareDialog(self, data.table, sheet.options, sheet=data),
                    "anova": lambda: AnovaDialog(self, data.table, sheet.options, sheet=data),
+                   "nested": lambda: NestedDialog(self, data.table, data.replicates, sheet.options),
                    "outliers": lambda: OutlierDialog(self, data.table, sheet.options), "pstack": lambda: PStackDialog(self, sheet.options),
                    "twoway": lambda: TwoWayDialog(self, data.grouped, sheet.options),
                    "linreg": lambda: XYDialog(self, data.xy, "linreg", sheet.options),
@@ -1090,6 +1108,14 @@ class QuantAnalysisWindow(QMainWindow):
             return dialog
         rec, options = dialog.recommendation(), dialog.options()
         kind = rec.kind
+        if kind == "survival":  # the survival dialog reads an XY table (File → New survival table)
+            if data is None or data.xy is None:
+                self.status(f"{rec.name} needs an XY table with one row per subject: File → New survival table. Select or make one, then run it.")
+                return dialog
+            box = SurvivalDialog(self, data.xy)
+            if box.exec():
+                self.analyze("survival", box.options())
+            return dialog
         need = {"compare": (lambda d: d.xy is None and len(d.table) >= 2, "a data table with two or more columns"),
                 "anova": (lambda d: d.xy is None and len(d.table) >= 3, "a data table with three or more columns"),
                 "twoway": (lambda d: d.grouped is not None, "a grouped table (File → New grouped table)"),
@@ -1119,7 +1145,7 @@ class QuantAnalysisWindow(QMainWindow):
             self.status("Select a data table first.")
             return None
         result = next((item for item in reversed(list(self.project.results.values()))
-                       if item.data_id == data.id and item.kind in ("compare", "anova", "twoway", "linreg", "curvefit", "contingency")), None)
+                       if item.data_id == data.id and item.kind in ("compare", "anova", "nested", "twoway", "linreg", "curvefit", "contingency")), None)
         # A grouped graph colours its cells by data set (and an XY graph its data sets), so its legend is on from the start.
         several = data.grouped is not None or data.contingency is not None or (data.xy is not None and len(data.xy.sets) > 1)
         # A SuperPlot colours by biological replicate: its legend names them.
@@ -1223,6 +1249,8 @@ def result_name(kind: str, options: dict, data: DataSheet | None) -> str:
         return f"{COMPARE_TESTS[options['test']][0]}{where}"
     if kind == "anova":
         return f"{ANOVA_NAMES[options['test']][0]}{where}"
+    if kind == "nested":
+        return f"{'Nested t test' if data is not None and len(data.table) == 2 else 'Nested one-way ANOVA'}{where}"
     if kind == "outliers":
         return f"Outliers ({OUTLIER_NAMES[options.get('method', 'rout')]}){where}"
     if kind == "pstack":
