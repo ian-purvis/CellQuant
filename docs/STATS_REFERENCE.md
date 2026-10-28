@@ -2197,7 +2197,7 @@ By hand:
 
 - The CI is A ± z · SE, cut off at 0 and 1 (z = 1.96 for 95%).
 - **P value**: a two-tailed z test of A against 0.5, z = (A − 0.5) / SE₀, where SE₀ is the formula above evaluated at A = 0.5. P = 2 · P(Z > |z|). It is approximate (a normal approximation).
-- **Cutoffs** are the midpoints between consecutive distinct pooled values, plus one cutoff beyond each end (5% of the pooled range outside the data), so the curve runs from (0, 0) to (1, 1).
+- **Cutoffs** are the midpoints between consecutive distinct pooled values, plus one cutoff beyond each end (5% of the pooled range outside the data; when every value is the same, max(5% of |value|, 1)), so the curve runs from (0, 0) to (1, 1).
 - At each cutoff, sensitivity = true positives / patients and specificity = true negatives / controls, each with a Wilson score interval. The likelihood ratio is sensitivity / (1 − specificity), undefined where no control is positive (see [[Likelihood ratio]]).
 - The **best cutoff** maximizes Youden's J = sensitivity + specificity − 1.
 

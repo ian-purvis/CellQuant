@@ -69,6 +69,7 @@ def test_names_are_unique():
 
 def test_every_results_sheet_opens_a_page():
     from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES
+    from cellquant.gui.quantanalysis.project_file import RESULT_KINDS
     from cellquant.stats import CURVE_MODELS
 
     sheets = [("compare", {"test": test}) for test in COMPARE_TESTS]
@@ -76,11 +77,22 @@ def test_every_results_sheet_opens_a_page():
     sheets += [("outliers", {"method": method}) for method in OUTLIER_NAMES]
     sheets += [("curvefit", {"model": model}) for model in CURVE_MODELS]
     sheets += [("xycorr", {"method": method}) for method in ("pearson", "spearman")]
-    sheets += [(kind, {}) for kind in ("colstats", "normality", "pstack", "twoway", "nested", "linreg", "contingency", "roc", "blandaltman", "survival")]
+    variants = {kind for kind, _options in sheets}
+    sheets += [(kind, {}) for kind in sorted(RESULT_KINDS - variants)]  # every kind a project can hold, new ones included
     for kind, options in sheets:
         assert INDEX.for_sheet(kind, options) is not None, f"no page for {reference.sheet_key(kind, options)}"
     assert INDEX.for_sheet("compare", {"test": "welch_t"}).title == "Welch's t test"
     assert INDEX.for_sheet("anova", {"test": "kruskal_wallis"}).title == "Kruskal-Wallis test"
+
+
+def test_missing_reference_file_gives_a_stub(monkeypatch):
+    def missing(*_args, **_kwargs):
+        raise OSError("gone")
+
+    monkeypatch.setattr(Path, "read_text", missing)
+    stub = reference.text()
+    assert "docs/STATS_REFERENCE.md" in stub
+    assert reference.parse(stub).title == "Statistics reference"
 
 
 def test_row_labels_open_terms():
