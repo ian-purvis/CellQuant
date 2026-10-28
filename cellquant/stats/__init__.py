@@ -57,6 +57,7 @@ from cellquant.stats.ttests import (
     welch_t,
     wilcoxon_matched_pairs,
 )
+from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
 
 __all__ = [
     "ANOVA_TESTS",
@@ -69,6 +70,7 @@ __all__ = [
     "GroupedTable",
     "Row",
     "Section",
+    "XYTable",
     "adjust_p",
     "bartlett_test",
     "brown_forsythe_test",
@@ -89,6 +91,7 @@ __all__ = [
     "kolmogorov_smirnov",
     "kruskal_wallis",
     "kurtosis",
+    "linear_regression",
     "lognormal_unpaired_t",
     "lognormality",
     "mann_whitney",
@@ -117,4 +120,5 @@ __all__ = [
     "welch_t",
     "wilcoxon_matched_pairs",
     "wilcoxon_signed_rank",
+    "xy_correlation",
 ]

@@ -439,3 +439,21 @@ TWO_WAY_METHOD = ("Tukey for every pair and Dunnett against a reference are the 
 GROUPED_LAYOUT = ("How a grouped table is laid out. Interleaved: one block per row, its data sets side by side in their colours (the legend "
                   "names them). Separated: one block per data set, its rows side by side, the data set named under its block.")
 CLUSTER_GAP = "The space between blocks, in column widths (0: no gap)."
+NEW_XY = ("An XY table: one X column (dose, time, concentration…) and one or more Y data sets, each with replicates side by side. "
+          "For regression, correlation and curves.")
+XY_TABLE = ("Each row is one X value; each data set's replicates sit side by side. Type or paste numbers (X first when pasting "
+            "into the X column); blank cells are missing values. Double-click a title to rename it.")
+XY_ADD_SET = "Add a Y data set (another condition measured at the same X values)."
+XY_ADD_REPLICATE = "Add a replicate subcolumn to every data set (several Y values at the same X)."
+LINREG = ("A straight line through each data set: slope, intercept, their confidence intervals, R² and whether the slope differs "
+          "from zero. With two or more data sets, whether their slopes (then intercepts) differ.")
+LINREG_ORIGIN = ("Only when theory says Y must be 0 at X = 0 (and the data reach near it). Otherwise leave it off: forcing the line "
+                 "can bias the slope.")
+XYCORR = ("How closely Y rises or falls with X in each data set: r from −1 to 1, its confidence interval and P. Correlation does "
+          "not fit a line; for a slope use Linear regression.")
+XYCORR_METHOD = ("Pearson r assumes X and Y are both measured and roughly Gaussian. Spearman r works on ranks: use it for skewed "
+                 "data, outliers or a relationship that is monotonic but not straight.")
+XY_REPLICATES = ("Each replicate is a point: every value counts (the usual choice when replicates are independent). Only the mean: "
+                 "one point per X, when replicates are repeated measurements of one sample.")
+XY_BAND = ("Around the regression line: the confidence band holds the true line with the chosen confidence; the prediction band "
+           "holds that share of new points, so it is wider.")

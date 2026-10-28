@@ -73,6 +73,10 @@ Dividing every value by the same control mean (% of control by mean) changes the
 
 Graphs of a grouped table (column scatter, bars, boxes or violins) colour each data set the same in every row, and **Arrangement** (Graph section) lays them out: **Interleaved** puts each row in a block with its data sets side by side (the legend names the data sets, shown in a row above the plot by default), **Separated** puts each data set in a block with its rows side by side and its name under the block; **gap** sets the space between blocks. An empty cell keeps its place. Formats and colours are set per data set. **Join means** draws each data set's means across the rows (an interaction plot). With a two-way ANOVA as the graph's **Comparison**, brackets show its multiple comparisons: within each row or data set (between cells, also against a reference), or between row means (Interleaved) or data set means (Separated).
 
+### XY tables
+
+**File → New XY table** makes a table with an X column (dose, time, concentration…) and one or more Y data sets, each with its replicates side by side; each row is one X value. Type or paste values (pasting into the X column fills X first), and double-click the X or a data set title to rename it. A row without X is left out of the analyses. **Linear regression…** and **Correlation (XY)…** analyze it. The **XY** graph draws each data set against X, as each row's mean with its error bar or as every replicate (**Points** in the Graph section); with a linear regression as its **Comparison**, it draws each data set's fitted line and, if chosen, its confidence or prediction band. The column analyses and data processing work on column tables only.
+
 ### Page layouts
 
 **Graph → New page layout** puts several graphs on one page, for a figure. The page starts with the project's graphs (the one shown first) in a grid just large enough for them, and appears under **Layouts** in the navigator. The panel beside the page sets:
@@ -347,6 +351,23 @@ fitted by least squares with sum-to-zero (effect) coding. It answers three quest
 
 Two-way ANOVA assumes independent values: technical replicates (many objects from one biological replicate) give P values that are far too small, and a warning says so when a cell has more than 30 values. Checked against an independent least-squares fit (Type III sums of squares with sum-to-zero contrasts).
 
+## Linear regression (`linear_regression(xy)`)
+
+Each data set gets its own least-squares line, using every replicate as a point (or, if chosen, each row's mean as one point). With n points and the line Y = a·X + b:
+
+- slope a = Σ(x − x̄)(y − ȳ) / Σ(x − x̄)², intercept b = ȳ − a·x̄;
+- Sy.x = √(SS_residual / (n − 2)); SE(a) = Sy.x / √Σ(x − x̄)², SE(b) = Sy.x · √(1/n + x̄² / Σ(x − x̄)²); CIs are estimate ± t(n − 2) · SE;
+- R² = 1 − SS_residual / SS_total; the slope is tested against zero by F = SS_regression / (SS_residual / (n − 2)) with 1 and n − 2 degrees of freedom (the same P as the t test of the slope);
+- the X-intercept is −b/a.
+
+Forced through the origin, b = 0, a = Σxy / Σx², the degrees of freedom are n − 1 and R² compares with Σy² (not Σ(y − ȳ)²), so it is not comparable with an ordinary R². The confidence band at x is ŷ ± t·Sy.x·√(1/n + (x − x̄)²/Σ(x − x̄)²); the prediction band adds 1 inside the root (new points scatter around the line).
+
+With two or more data sets, the sheet tests whether the slopes are equal (an F test comparing one line per data set with lines sharing one slope, as in analysis of covariance). If they are not significantly different, it also tests whether the intercepts are equal (one line for all data sets against parallel lines).
+
+## Correlation (`xy_correlation(xy, method)`)
+
+Pearson r measures how closely X and Y follow a straight line; it assumes both were measured (not set by the experimenter) and are roughly Gaussian. Its CI uses Fisher's z = atanh(r) with SE 1/√(n − 3), and P comes from t = r√(n − 2)/√(1 − r²). Spearman rs is Pearson r of the ranks: no Gaussian assumption, and it measures any steady rise or fall. Its CI uses the same z transformation and is approximate. Correlation does not fit a line or say which variable depends on the other; for a slope, use linear regression.
+
 ## Multiple comparisons
 
 Every one-way analysis takes:
@@ -462,6 +483,8 @@ R 4.x documented outputs:
 Published tables: Dunnett's two-sided 5% critical values (df = ∞ and 10, 1 to 9 groups), and Grubbs' (1969) two-sided 5% critical values.
 
 scipy and statsmodels: `scipy.stats.tukey_hsd` (unequal n), `scipy.stats.dunnett`, `levene`, `bartlett`, `kruskal`, `friedmanchisquare`; statsmodels `AnovaRM` and `multipletests` (Šidák, Bonferroni, Holm, Holm-Šidák, `fdr_bh`, `fdr_by`, `fdr_tsbky`).
+
+Linear regression and correlation: `scipy.stats.linregress`, `pearsonr` and `spearmanr`; statsmodels `OLS` (with and without the intercept) for standard errors and the confidence and prediction bands, and its F tests of nested models for comparing slopes and intercepts.
 
 Independent code in the tests: the Geisser-Greenhouse epsilon by orthonormal contrasts, a direct REML fit of the mixed model, Games-Howell, T2, Dunn's test and the trend test written out from their formulas, and full enumeration of the Kruskal-Wallis permutation distribution. Simulations: Dunnett's and the studentized maximum modulus probabilities (millions of draws), the size of Welch's ANOVA, and the false-positive rates of Grubbs' test and ROUT.
 
