@@ -1001,7 +1001,8 @@ class XYDialog(QDialog):
 
 # --- Contingency tables -----------------------------------------------------------------------------------------
 
-CONTINGENCY_DEFAULTS = {"test": "auto", "yates": False, "diagnostic": False, "ci": 0.95, "alpha": 0.05, "style": "classic"}
+CONTINGENCY_DEFAULTS = {"test": "auto", "yates": False, "diagnostic": False, "trend": False, "group": 0, "outcome": 0, "ci": 0.95,
+                        "alpha": 0.05, "style": "classic"}
 
 
 class ContingencyDialog(QDialog):
@@ -1028,9 +1029,25 @@ class ContingencyDialog(QDialog):
         self.yates = QCheckBox("Yates' continuity correction (2 × 2 chi-square)")
         self.yates.setToolTip(tips.CONTINGENCY_YATES)
         self.yates.setChecked(bool(options["yates"]))
-        self.yates.setEnabled(square)
         form.addRow("", self.yates)
-        self.diagnostic = QCheckBox("Rows are a test result (positive first), columns the condition (present first)")
+        self.test.currentIndexChanged.connect(lambda _index: self.yates.setEnabled(square and self.test.currentData() == "chi2"))
+        self.yates.setEnabled(square and self.test.currentData() == "chi2")
+        self.trend = QCheckBox("Ordered groups: add the test for trend")
+        self.trend.setToolTip(tips.CONTINGENCY_TREND)
+        self.trend.setChecked(bool(options["trend"]))
+        self.trend.setEnabled(2 in table.counts.shape and max(table.counts.shape) >= 3)
+        form.addRow("Trend", self.trend)
+        self.group, self.outcome = QComboBox(), QComboBox()
+        for combo, names, key, tip in ((self.group, table.rows, "group", tips.CONTINGENCY_GROUP),
+                                       (self.outcome, table.columns, "outcome", tips.CONTINGENCY_OUTCOME)):
+            for index, name in enumerate(names[:2]):
+                combo.addItem(name, index)
+            combo.setToolTip(tip)
+            combo.setCurrentIndex(max(0, combo.findData(options[key])))
+            combo.setEnabled(square)
+        form.addRow("Group of interest", self.group)
+        form.addRow("Outcome of interest", self.outcome)
+        self.diagnostic = QCheckBox("Rows are test results, columns the condition")
         self.diagnostic.setToolTip(tips.CONTINGENCY_DIAGNOSTIC)
         self.diagnostic.setChecked(bool(options["diagnostic"]))
         self.diagnostic.setEnabled(square)
@@ -1067,7 +1084,9 @@ class ContingencyDialog(QDialog):
 
     def options(self) -> dict:
         return {"test": self.test.currentData(), "yates": self.yates.isChecked() and self.yates.isEnabled(),
-                "diagnostic": self.diagnostic.isChecked() and self.diagnostic.isEnabled(), "ci": self.ci.currentData(),
+                "diagnostic": self.diagnostic.isChecked() and self.diagnostic.isEnabled(),
+                "trend": self.trend.isChecked() and self.trend.isEnabled(), "group": self.group.currentData() or 0,
+                "outcome": self.outcome.currentData() or 0, "ci": self.ci.currentData(),
                 "alpha": round(self.alpha.value(), 6), "style": self.style.currentData()}
 
     def accept(self) -> None:

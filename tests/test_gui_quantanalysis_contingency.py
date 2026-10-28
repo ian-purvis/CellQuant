@@ -72,7 +72,11 @@ def test_analysis_graph_and_project(window, tmp_path):
     window.views.pop(sheet.id, None)
     window.select(sheet.id)
     dialog = ContingencyDialog(window, sheet.contingency, {"diagnostic": True})
-    assert dialog.yates.isEnabled() and dialog.options()["diagnostic"]
+    assert dialog.options()["diagnostic"] and not dialog.yates.isEnabled() and not dialog.trend.isEnabled()  # Yates only with chi-square
+    dialog.test.setCurrentIndex(dialog.test.findData("chi2"))
+    assert dialog.yates.isEnabled() and [dialog.group.itemText(i) for i in range(2)] == ["Treated", "Control"]
+    dialog.group.setCurrentIndex(1)
+    assert dialog.options()["group"] == 1 and dialog.options()["outcome"] == 0
     result = window.analyze("contingency", dict(CONTINGENCY_DEFAULTS))
     assert result.error == "" and result.name == f"Contingency: {sheet.name}"
     headers, rows = result_rows(result)
@@ -88,6 +92,7 @@ def test_analysis_graph_and_project(window, tmp_path):
     ax = view.figure._cq_axes["main"]
     bars = [patch for patch in ax.patches if getattr(patch, "_cq_target", (None,))[0] == "dataset"]
     assert len(bars) == 4 and bars[0].get_height() == pytest.approx(70) and ax.get_title(loc="left").startswith("P = ")
+    assert [label.get_text() for label in ax.get_xticklabels()] == ["Treated\n(N = 40)", "Control\n(N = 40)"]
     section = view.panel["graph"]
     section.contingency_values.setCurrentIndex(section.contingency_values.findData("count"))
     view.flush()

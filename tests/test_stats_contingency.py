@@ -57,7 +57,8 @@ def test_larger_tables_trend_and_cramers_v():
     sm = pytest.importorskip("statsmodels.stats.contingency_tables")
     counts = np.array([[20, 30], [28, 22], [35, 15], [40, 10]])
     table = ContingencyTable("Dose", ["0", "1", "2", "3"], ["Response", "None"], counts)
-    result = contingency(table)
+    assert "trend" not in contingency(table).values  # unordered groups by default
+    result = contingency(table, trend=True)
     reference = stats.chi2_contingency(counts)
     assert result.values["p"] == pytest.approx(reference.pvalue) and "Fisher" not in result.methods
     n = counts.sum()
@@ -67,8 +68,9 @@ def test_larger_tables_trend_and_cramers_v():
     assert chi_square_trend(counts.T)["chi2"] == pytest.approx(trend["chi2"])
     assert result.values["cramers_v"] == pytest.approx(math.sqrt(reference.statistic / n))
     three = ContingencyTable("", ["a", "b", "c"], ["x", "y", "z"], [[2, 1, 0], [1, 2, 1], [0, 1, 3]])
-    small = contingency(three)
-    assert "trend" not in small.values and any("expected counts are small" in text for text in small.warnings)
+    small = contingency(three, trend=True)
+    assert "trend" not in small.values and any("trend needs" in text for text in small.warnings)
+    assert "Cramér's V = " in small.methods and not any("Fewer than 20" in text for text in small.warnings) and any("expected counts are small" in text for text in small.warnings)
 
 
 def test_refusals():
@@ -78,9 +80,41 @@ def test_refusals():
         contingency(ContingencyTable("", ["a", "b"], ["x", "y"], [[1.5, 2], [2, 3]]))
     with pytest.raises(StatisticsError, match="at least one count"):
         contingency(ContingencyTable("", ["a", "b"], ["x", "y"], [[0, 0], [2, 3]]))
-    with pytest.raises(StatisticsError, match="2 × 2"):
-        contingency(ContingencyTable("", ["a", "b", "c"], ["x", "y"], [[1, 2], [2, 3], [4, 1]]), test="fisher")
+    grown = contingency(ContingencyTable("", ["a", "b", "c"], ["x", "y"], [[1, 2], [2, 3], [4, 1]]), test="fisher", yates=True, diagnostic=True)
+    assert grown.values["p"] == pytest.approx(stats.chi2_contingency([[1, 2], [2, 3], [4, 1]]).pvalue)
+    assert [any(word in text for text in grown.warnings) for word in ("chi-square test is used", "Yates", "diagnostic")] == [True] * 3
     with pytest.raises(StatisticsError, match="unique"):
         ContingencyTable("", ["a", "a"], ["x", "y"], np.ones((2, 2)))
     with pytest.raises(StatisticsError, match="two rows"):
         contingency(ContingencyTable("", ["a"], ["x", "y"], [[1, 2]]))
+
+
+def test_group_and_outcome_of_interest():
+    swapped = contingency(TWO, group=1, outcome=1)
+    effect, base = swapped.values["effect"], contingency(TWO).values["effect"]
+    assert effect["rr"] == pytest.approx(stats.contingency.relative_risk(25, 40, 12, 40).relative_risk)
+    assert contingency(TWO, group=1).values["effect"]["odds_ratio"] == pytest.approx(1 / base["odds_ratio"])
+    wide = swapped.values["wide"]
+    assert ("Effect size", "Relative risk (Control vs Treated, Did not)") in wide.index
+    assert ("Effect size", "Difference of proportions (Control − Treated)") in wide.index
+    assert "Control compared with Treated for Did not" in swapped.methods and "Fisher's exact test (two-sided" in swapped.methods
+    assert contingency(TWO, group="x", outcome=7).options["group"] == 0  # garbage falls back to row 1 and column 1
+
+
+def test_zero_cells_and_undefined_values():
+    zero = two_by_two(np.array([[0, 10], [5, 5]]))
+    assert zero["rr_corrected"] and zero["rr"] == pytest.approx((0.5 / 11) / (5.5 / 11))
+    assert all(math.isfinite(value) for value in zero["rr_ci"])
+    assert "0.5 added to every cell, as a or c was 0" in contingency(ContingencyTable("", ["a", "b"], ["x", "y"], [[0, 10], [5, 5]])).methods
+    # Likelihood-ratio CIs (log method), against the formula.
+    dx = two_by_two(np.array([[45, 10], [5, 90]]))["diagnostic"]
+    spread = stats.norm.ppf(0.975) * math.sqrt(1 / 45 - 1 / 50 + 1 / 10 - 1 / 100)
+    assert dx["lr_positive_ci"] == pytest.approx((9 * math.exp(-spread), 9 * math.exp(spread)))
+    assert wilson(0, 8) == (0.0, pytest.approx(wilson(0, 8)[1])) and wilson(8, 8)[1] == 1.0
+    undefined = contingency(ContingencyTable("", ["+", "-"], ["Present", "Absent"], [[0, 5], [2, 3]]), diagnostic=True).values["wide"]
+    assert undefined.loc[("Diagnostic test", "Sensitivity"), "Value"].startswith("0%")
+    assert undefined.loc[("Diagnostic test", "Likelihood ratio (positive)"), "Value"] == "0 (CI not defined: a cell it uses is 0)"
+    assert undefined.loc[("Diagnostic test", "Layout"), "Value"].startswith("Test positive: +")
+    # The difference's CI spans 0: the NNT's CI runs through infinity.
+    close = contingency(ContingencyTable("", ["A", "B"], ["Yes", "No"], [[10, 10], [9, 11]])).values["wide"]
+    assert "through ∞" in close.loc[("Effect size", "Number needed to treat (1 / |difference|)"), "Value"]

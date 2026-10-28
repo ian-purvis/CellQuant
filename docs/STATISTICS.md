@@ -79,7 +79,7 @@ Graphs of a grouped table (column scatter, bars, boxes or violins) colour each d
 
 ### Contingency tables
 
-**File → New contingency table** makes a table of counts: one row per group (or test result) and one column per outcome, every cell a whole number of subjects (0 for none). Add or remove rows and columns, paste counts, and double-click a title to rename it; the sheet shows the totals and says when a cell is blank or not a whole number. **Contingency table…** analyzes it. Its graph shows each row as a bar split by outcome (100% stacked), or the outcomes side by side as a percentage of the row or as counts (**Show** in the Graph section), with the linked analysis's P value above the bars.
+**File → New contingency table** makes a table of counts: one row per group (or test result) and one column per outcome, every cell a whole number of subjects (0 for none). Add or remove rows and columns, paste counts, and double-click a title to rename it; the sheet shows the totals and says when a cell is blank or not a whole number. **Contingency table…** analyzes it. Its graph shows each row as a bar split by outcome (100% stacked), or the outcomes side by side as a percentage of the row or as counts (**Show** in the Graph section), with the linked analysis's P value above the bars. In the percentage views each bar's label gives its row total (N).
 
 ### Page layouts
 
@@ -374,18 +374,18 @@ Pearson r measures how closely X and Y follow a straight line; it assumes both w
 
 ## Contingency tables (`contingency(table)`)
 
-Rows and columns are associated when the proportions of each outcome differ between the rows. For a 2 × 2 table the default is **Fisher's exact test** (two-sided, the sum of the probabilities of every table with the same margins that is no more likely than the one observed); larger tables use **Pearson's chi-square test**, Σ(observed − expected)²/expected with (rows − 1)(columns − 1) df. The chi-square P is approximate: the sheet warns when more than a fifth of the expected counts are below 5 or any is below 1. Yates' continuity correction can be chosen for a 2 × 2 chi-square.
+Rows and columns are associated when the proportions of each outcome differ between the rows. For a 2 × 2 table the default is **Fisher's exact test** (two-sided, the sum of the probabilities of every table with the same margins that is no more likely than the one observed); larger tables use **Pearson's chi-square test**, Σ(observed − expected)²/expected with (rows − 1)(columns − 1) df. The chi-square P is approximate: the sheet warns when more than a fifth of the expected counts are below 5 or any is below 1. Yates' continuity correction can be chosen for a 2 × 2 chi-square test (it does nothing with Fisher's test). Options that do not fit the table (Fisher's test, Yates' correction or the diagnostic reading on a larger table) are left out and the results say so.
 
-In a 2 × 2 table row 1 is the group of interest (treated, exposed) and column 1 the outcome of interest. With a = row 1 with the outcome, b = row 1 without, c and d the same for row 2:
+For a 2 × 2 table choose the **group of interest** (treated, exposed; row 1 by default) and the **outcome of interest** (column 1 by default); the results name both, as in "Relative risk (Treated vs Control, Died)", and choosing the other row gives the reciprocals. With a = the group of interest with the outcome, b = without, c and d the same for the other row:
 
-- **Relative risk** = (a/(a + b)) / (c/(c + d)), with Katz's log CI: exp(± z √(1/a − 1/(a + b) + 1/c − 1/(c + d))).
+- **Relative risk** = (a/(a + b)) / (c/(c + d)), with Katz's log CI: exp(± z √(1/a − 1/(a + b) + 1/c − 1/(c + d))). When a or c is 0, 0.5 is added to every cell (the sheet says so).
 - **Odds ratio** = ad/bc, with Woolf's logit CI: exp(± z √(1/a + 1/b + 1/c + 1/d)). When a cell is 0, 0.5 is added to every cell (the sheet says so).
-- **Difference of proportions** with Newcombe's hybrid score CI (from the two Wilson intervals), and the **number needed to treat** = 1/|difference| (whether it is to benefit or to harm depends on what the outcome is); its CI is the reciprocal of the difference's CI, and is not given when that CI includes 0.
+- **Difference of proportions** with Newcombe's hybrid score CI (from the two Wilson intervals), and the **number needed to treat** = 1/|difference| (whether it is to benefit or to harm depends on what the outcome is); its CI is the reciprocals of the difference's CI limits. When that CI includes 0, the NNT's CI runs from one limit through ∞ to the other, in the other direction.
 - **Phi** = (ad − bc)/√(row and column totals multiplied).
 
-Ticking **Diagnostic test** reads the table as rows = test positive, test negative and columns = condition present, absent: sensitivity = a/(a + c), specificity = d/(b + d), positive and negative predictive values a/(a + b) and d/(c + d), each with a Wilson score CI, and the likelihood ratios sensitivity/(1 − specificity) and (1 − sensitivity)/specificity. Predictive values hold only at the table's prevalence.
+Ticking **Diagnostic test** reads the table as rows = test results and columns = condition, the group of interest being test positive and the outcome of interest condition present (the results restate this layout): sensitivity = a/(a + c), specificity = d/(b + d), positive and negative predictive values a/(a + b) and d/(c + d), each with a Wilson score CI, and the likelihood ratios sensitivity/(1 − specificity) and (1 − sensitivity)/specificity, each with the log-method CI (Simel, Samsa and Matchar): exp(± z √(1/a − 1/(a + c) + 1/b − 1/(b + d))) for the positive ratio, the same with c and d for the negative one. A value whose denominator is 0 is reported as undefined. Predictive values hold only at the table's prevalence.
 
-A table with two columns and three or more ordered rows (or two rows and ordered columns) also gets the **chi-square test for trend** (Cochran-Armitage, scores 1, 2, 3…, 1 df): is there a linear trend in the proportion across the ordered groups? Larger tables report **Cramér's V** = √(χ²/(N (min(rows, columns) − 1))).
+When the groups are ordered (doses, ages, grades), tick **Ordered groups** to add the **chi-square test for trend** (Cochran-Armitage, scores 1, 2, 3… in table order, 1 df) to a table with two columns and three or more rows (or two rows and three or more columns): is there a linear trend in the proportion across the groups? It is off by default, as it means nothing for unordered groups such as genotypes or cell lines. Larger tables report **Cramér's V** = √(χ²/(N (min(rows, columns) − 1))).
 
 ## Multiple comparisons
 

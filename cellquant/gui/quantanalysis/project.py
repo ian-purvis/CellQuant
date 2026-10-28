@@ -520,7 +520,7 @@ def run_xy_correlation(data: DataSheet, options: dict) -> AnalysisResult:
     return xy_correlation(_xy_of(data, "Correlation of X with Y"), **kwargs)
 
 
-CONTINGENCY_KEYS = ("test", "yates", "diagnostic", "ci", "alpha", "style")
+CONTINGENCY_KEYS = ("test", "yates", "diagnostic", "trend", "group", "outcome", "ci", "alpha", "style")
 
 
 def run_contingency(data: DataSheet, options: dict) -> AnalysisResult:
@@ -532,8 +532,11 @@ def run_contingency(data: DataSheet, options: dict) -> AnalysisResult:
             kwargs[key] = float(kwargs[key])
         except (KeyError, TypeError, ValueError):
             kwargs.pop(key, None)
-    for key in ("yates", "diagnostic"):
+    for key in ("yates", "diagnostic", "trend"):
         kwargs[key] = bool(kwargs.get(key, False))
+    for key in ("group", "outcome"):
+        if not isinstance(kwargs.get(key, 0), int) or isinstance(kwargs.get(key), bool):
+            kwargs.pop(key)
     for key in ("test", "style"):
         if key in kwargs and not isinstance(kwargs[key], str):
             kwargs.pop(key)

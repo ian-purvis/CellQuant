@@ -1288,7 +1288,12 @@ def _draw_contingency(figure, data, result, fmt: GraphFormat, font: float, notes
             for bar in bars:
                 _tag(bar, "dataset", name)
         ax.set_xticks(np.arange(rows) * step + (len(shown) - 1) / 2)
-    ax.set_xticklabels([markup(name) for name in table.rows], fontsize=font, color=fmt.axis_color)
+    labels = [markup(name) for name in table.rows]
+    if fmt.contingency_values != "count":  # a percentage hides how many subjects it is of
+        labels = [f"{label}\n(N = {int(total)})" for label, total in zip(labels, totals[:, 0])]
+    ax.set_xticklabels(labels, fontsize=font, color=fmt.axis_color)
+    if stacked and len(shown) < len(table.columns):
+        notes.append("Some outcomes are hidden, so the stacked bars do not reach 100%.")
     _apply_scale(ax, fmt.y)
     _limits(ax, fmt.y, False)
     if stacked and fmt.y.max is None:
