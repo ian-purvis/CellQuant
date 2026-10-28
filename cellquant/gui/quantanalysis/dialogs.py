@@ -38,6 +38,7 @@ from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNI
 from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, parse_p_values
 from cellquant.stats import STYLES, ColumnTable
 from cellquant.stats import sources, transforms
+from cellquant.stats.contingency import TESTS as CONTINGENCY_TESTS, ContingencyTable, contingency
 from cellquant.stats.curvefit import MODELS, nonlinear_regression
 from cellquant.stats.grouped import COMPARE, FAMILIES, GroupedTable, two_way_anova
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
@@ -1207,6 +1208,106 @@ class CurveFitDialog(QDialog):
     def accept(self) -> None:
         try:
             nonlinear_regression(self.xy, **self.options())
+        except CellQuantError as exc:
+            self.note.setText(str(exc))
+            self.note.setVisible(True)
+            return
+        super().accept()
+
+
+# --- Contingency tables -----------------------------------------------------------------------------------------
+
+CONTINGENCY_DEFAULTS = {"test": "auto", "yates": False, "diagnostic": False, "trend": False, "group": 0, "outcome": 0, "ci": 0.95,
+                        "alpha": 0.05, "style": "classic"}
+
+
+class ContingencyDialog(QDialog):
+    """Analyze a contingency table: the test, Yates' correction and, for a 2 × 2 table, effect sizes or a diagnostic test."""
+
+    def __init__(self, parent, table: ContingencyTable, options: dict | None = None):
+        super().__init__(parent)
+        self.table = table
+        self.setWindowTitle("Contingency table")
+        options = {**CONTINGENCY_DEFAULTS, **(options or {})}
+        square = table.counts.shape == (2, 2)
+        layout = QVBoxLayout(self)
+        intro = QLabel(f"{len(table.rows)} rows × {len(table.columns)} columns. {tips.CONTINGENCY}")
+        intro.setWordWrap(True)
+        intro.setStyleSheet(NOTE_STYLE)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        self.test = QComboBox()
+        for key, name in CONTINGENCY_TESTS.items():
+            self.test.addItem(name, key)
+        self.test.setToolTip(tips.CONTINGENCY_TEST)
+        self.test.setCurrentIndex(max(0, self.test.findData(options["test"])))
+        form.addRow("Test", self.test)
+        self.yates = QCheckBox("Yates' continuity correction (2 × 2 chi-square)")
+        self.yates.setToolTip(tips.CONTINGENCY_YATES)
+        self.yates.setChecked(bool(options["yates"]))
+        form.addRow("", self.yates)
+        self.test.currentIndexChanged.connect(lambda _index: self.yates.setEnabled(square and self.test.currentData() == "chi2"))
+        self.yates.setEnabled(square and self.test.currentData() == "chi2")
+        self.trend = QCheckBox("Ordered groups: add the test for trend")
+        self.trend.setToolTip(tips.CONTINGENCY_TREND)
+        self.trend.setChecked(bool(options["trend"]))
+        self.trend.setEnabled(2 in table.counts.shape and max(table.counts.shape) >= 3)
+        form.addRow("Trend", self.trend)
+        self.group, self.outcome = QComboBox(), QComboBox()
+        for combo, names, key, tip in ((self.group, table.rows, "group", tips.CONTINGENCY_GROUP),
+                                       (self.outcome, table.columns, "outcome", tips.CONTINGENCY_OUTCOME)):
+            for index, name in enumerate(names[:2]):
+                combo.addItem(name, index)
+            combo.setToolTip(tip)
+            combo.setCurrentIndex(max(0, combo.findData(options[key])))
+            combo.setEnabled(square)
+        form.addRow("Group of interest", self.group)
+        form.addRow("Outcome of interest", self.outcome)
+        self.diagnostic = QCheckBox("Rows are test results, columns the condition")
+        self.diagnostic.setToolTip(tips.CONTINGENCY_DIAGNOSTIC)
+        self.diagnostic.setChecked(bool(options["diagnostic"]))
+        self.diagnostic.setEnabled(square)
+        form.addRow("Diagnostic test", self.diagnostic)
+        self.alpha = QDoubleSpinBox()
+        self.alpha.setRange(0.0001, 0.5)
+        self.alpha.setDecimals(4)
+        self.alpha.setSingleStep(0.01)
+        self.alpha.setToolTip(tips.ANOVA_ALPHA)
+        self.alpha.setValue(float(options["alpha"]))
+        form.addRow("Alpha", self.alpha)
+        self.ci = QComboBox()
+        for value in (0.90, 0.95, 0.99):
+            self.ci.addItem(f"{100 * value:g}%", value)
+        self.ci.setToolTip(tips.ANOVA_CI)
+        self.ci.setCurrentIndex(max(0, self.ci.findData(options["ci"])))
+        form.addRow("Confidence interval", self.ci)
+        self.style = QComboBox()
+        for name in STYLES:
+            self.style.addItem(name, name)
+        self.style.setToolTip(tips.ANOVA_STYLE)
+        self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
+        form.addRow("P value style", self.style)
+        layout.addLayout(form)
+        self.note = QLabel()
+        self.note.setWordWrap(True)
+        self.note.setStyleSheet(WARNING_STYLE)
+        self.note.setVisible(False)
+        layout.addWidget(self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def options(self) -> dict:
+        return {"test": self.test.currentData(), "yates": self.yates.isChecked() and self.yates.isEnabled(),
+                "diagnostic": self.diagnostic.isChecked() and self.diagnostic.isEnabled(),
+                "trend": self.trend.isChecked() and self.trend.isEnabled(), "group": self.group.currentData() or 0,
+                "outcome": self.outcome.currentData() or 0, "ci": self.ci.currentData(),
+                "alpha": round(self.alpha.value(), 6), "style": self.style.currentData()}
+
+    def accept(self) -> None:
+        try:
+            contingency(self.table, **self.options())
         except CellQuantError as exc:
             self.note.setText(str(exc))
             self.note.setVisible(True)

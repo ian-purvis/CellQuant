@@ -481,3 +481,26 @@ CURVE_COMPARE_DATASETS = ("Is one curve enough for every data set, or does each 
                           "separate fits (F test and AICc).")
 CURVE_COMPARE_PARAMETER = ("Does this parameter (for example LogEC50) differ between data sets? Fits them with it shared and the "
                            "rest separate, and tests that against separate fits (F test and AICc).")
+
+NEW_CONTINGENCY = ("A contingency table: counts of subjects, one row per group (or test result) and one column per outcome. For "
+                   "chi-square and Fisher's exact tests, relative risk, odds ratio, and sensitivity and specificity.")
+CONTINGENCY_TABLE = ("Each cell is a number of subjects (whole numbers; 0 for none), never a percentage or a mean. Rows are groups "
+                     "or test results; columns are outcomes. The analysis asks which row and column are of interest. "
+                     "Double-click a title to rename it; paste counts at the selected cell.")
+CONTINGENCY = ("Are the rows and columns associated? Fisher's exact test (2 × 2) or the chi-square test, with the relative risk, odds "
+               "ratio and difference of proportions for a 2 × 2 table, a test for trend when the rows are ordered, or sensitivity, "
+               "specificity and predictive values for a diagnostic test.")
+CONTINGENCY_TEST = ("Fisher's exact test is exact and suits any 2 × 2 table, even with small counts. The chi-square test is an "
+                    "approximation that needs expected counts of about 5 or more; it is the test for larger tables.")
+CONTINGENCY_YATES = ("Makes the 2 × 2 chi-square test more conservative. Rarely needed: Fisher's exact test is the better choice for a "
+                     "2 × 2 table with small counts.")
+CONTINGENCY_DIAGNOSTIC = ("Read the 2 × 2 table as a diagnostic test: rows = test results, columns = condition. The group of interest "
+                          "is the test-positive row and the outcome of interest the condition-present column. Gives sensitivity, "
+                          "specificity, predictive values and likelihood ratios instead of risks and odds.")
+CONTINGENCY_TREND = ("Tick only when the groups have a natural order (doses, ages, grades), in table order. Adds the chi-square test for "
+                     "trend (Cochran-Armitage, scores 1, 2, 3…): does the proportion rise or fall steadily across the groups? "
+                     "Meaningless for unordered groups such as genotypes or cell lines. Needs two columns (or two rows) and three "
+                     "or more groups.")
+CONTINGENCY_GROUP = ("The row compared with the other one (treated, exposed, test positive). Relative risk, odds ratio and the "
+                     "difference are this row versus the other; choosing the other row gives their reciprocals.")
+CONTINGENCY_OUTCOME = "The outcome whose risk is compared (death, response, condition present)."

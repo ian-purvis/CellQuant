@@ -176,6 +176,7 @@ class GraphFormat:
     # XY tables
     xy_replicates: str = "mean"     # "mean": each row's mean with its error bar; "each": every replicate as a point
     xy_band: str = "none"           # around a linked regression line: "none", "confidence" or "prediction"
+    contingency_values: str = "stacked"  # contingency tables: "stacked" (100% of each row), "percent" (% of row) or "count"
     # Axes
     frame: str = "plain"
     frame_offset: float = 6.0       # points, for the offset frame
@@ -248,6 +249,8 @@ class GraphFormat:
             fmt.xy_replicates = "mean"
         if fmt.xy_band not in ("none", "confidence", "prediction"):
             fmt.xy_band = "none"
+        if fmt.contingency_values not in ("stacked", "percent", "count"):
+            fmt.contingency_values = "stacked"
         gap = fmt.cluster_gap
         fmt.cluster_gap = min(5.0, max(0.0, float(gap))) if isinstance(gap, (int, float)) and math.isfinite(gap) else 0.8
         return fmt
