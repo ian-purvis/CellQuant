@@ -77,6 +77,10 @@ Graphs of a grouped table (column scatter, bars, boxes or violins) colour each d
 
 **File → New XY table** makes a table with an X column (dose, time, concentration…) and one or more Y data sets, each with its replicates side by side; each row is one X value. Type or paste values (pasting into the X column fills X first), and double-click the X or a data set title to rename it. A row without X is left out of the analyses. **Linear regression…** and **Correlation (XY)…** analyze it. The **XY** graph draws each data set against X, as each row's mean with its error bar or as every replicate (**Points** in the Graph section); with a linear regression as its **Comparison**, it draws each data set's fitted line and, if chosen, its confidence or prediction band. The column analyses and data processing work on column tables only.
 
+### Contingency tables
+
+**File → New contingency table** makes a table of counts: one row per group (or test result) and one column per outcome, every cell a whole number of subjects (0 for none). Add or remove rows and columns, paste counts, and double-click a title to rename it; the sheet shows the totals and says when a cell is blank or not a whole number. **Contingency table…** analyzes it. Its graph shows each row as a bar split by outcome (100% stacked), or the outcomes side by side as a percentage of the row or as counts (**Show** in the Graph section), with the linked analysis's P value above the bars.
+
 ### Page layouts
 
 **Graph → New page layout** puts several graphs on one page, for a figure. The page starts with the project's graphs (the one shown first) in a grid just large enough for them, and appears under **Layouts** in the navigator. The panel beside the page sets:
@@ -368,6 +372,21 @@ With two or more data sets, the sheet tests whether the slopes are equal (an F t
 
 Pearson r measures how closely X and Y follow a straight line; it assumes both were measured (not set by the experimenter) and are roughly Gaussian. Its CI uses Fisher's z = atanh(r) with SE 1/√(n − 3), and P comes from t = r√(n − 2)/√(1 − r²). Spearman rs is Pearson r of the ranks: no Gaussian assumption, and it measures any steady rise or fall. Its CI uses the same z transformation and is approximate. Correlation does not fit a line or say which variable depends on the other; for a slope, use linear regression.
 
+## Contingency tables (`contingency(table)`)
+
+Rows and columns are associated when the proportions of each outcome differ between the rows. For a 2 × 2 table the default is **Fisher's exact test** (two-sided, the sum of the probabilities of every table with the same margins that is no more likely than the one observed); larger tables use **Pearson's chi-square test**, Σ(observed − expected)²/expected with (rows − 1)(columns − 1) df. The chi-square P is approximate: the sheet warns when more than a fifth of the expected counts are below 5 or any is below 1. Yates' continuity correction can be chosen for a 2 × 2 chi-square.
+
+In a 2 × 2 table row 1 is the group of interest (treated, exposed) and column 1 the outcome of interest. With a = row 1 with the outcome, b = row 1 without, c and d the same for row 2:
+
+- **Relative risk** = (a/(a + b)) / (c/(c + d)), with Katz's log CI: exp(± z √(1/a − 1/(a + b) + 1/c − 1/(c + d))).
+- **Odds ratio** = ad/bc, with Woolf's logit CI: exp(± z √(1/a + 1/b + 1/c + 1/d)). When a cell is 0, 0.5 is added to every cell (the sheet says so).
+- **Difference of proportions** with Newcombe's hybrid score CI (from the two Wilson intervals), and the **number needed to treat** = 1/|difference| (whether it is to benefit or to harm depends on what the outcome is); its CI is the reciprocal of the difference's CI, and is not given when that CI includes 0.
+- **Phi** = (ad − bc)/√(row and column totals multiplied).
+
+Ticking **Diagnostic test** reads the table as rows = test positive, test negative and columns = condition present, absent: sensitivity = a/(a + c), specificity = d/(b + d), positive and negative predictive values a/(a + b) and d/(c + d), each with a Wilson score CI, and the likelihood ratios sensitivity/(1 − specificity) and (1 − sensitivity)/specificity. Predictive values hold only at the table's prevalence.
+
+A table with two columns and three or more ordered rows (or two rows and ordered columns) also gets the **chi-square test for trend** (Cochran-Armitage, scores 1, 2, 3…, 1 df): is there a linear trend in the proportion across the ordered groups? Larger tables report **Cramér's V** = √(χ²/(N (min(rows, columns) − 1))).
+
 ## Multiple comparisons
 
 Every one-way analysis takes:
@@ -483,6 +502,8 @@ R 4.x documented outputs:
 Published tables: Dunnett's two-sided 5% critical values (df = ∞ and 10, 1 to 9 groups), and Grubbs' (1969) two-sided 5% critical values.
 
 scipy and statsmodels: `scipy.stats.tukey_hsd` (unequal n), `scipy.stats.dunnett`, `levene`, `bartlett`, `kruskal`, `friedmanchisquare`; statsmodels `AnovaRM` and `multipletests` (Šidák, Bonferroni, Holm, Holm-Šidák, `fdr_bh`, `fdr_by`, `fdr_tsbky`).
+
+Contingency tables: `scipy.stats.fisher_exact`, `chi2_contingency` (with and without Yates' correction) and `contingency.relative_risk` (Katz CI); statsmodels `Table2x2` (odds ratio and its CI), `confint_proportions_2indep` (Newcombe), `proportion_confint` (Wilson) and `Table.test_ordinal_association` (the trend test, which equals the linear-by-linear statistic × N/(N − 1)).
 
 Linear regression and correlation: `scipy.stats.linregress`, `pearsonr` and `spearmanr`; statsmodels `OLS` (with and without the intercept) for standard errors and the confidence and prediction bands, and its F tests of nested models for comparing slopes and intercepts.
 

@@ -32,6 +32,7 @@ from cellquant.stats import (
     p_value_stack,
 )
 from cellquant.stats import transforms
+from cellquant.stats.contingency import ContingencyTable, contingency
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
@@ -105,6 +106,7 @@ class DataSheet:
     process: dict = field(default_factory=dict)          # the processing: "kind" and its options (cellquant.stats.transforms)
     grouped: GroupedTable | None = None  # a grouped table (two factors); ``table`` is then its cells as columns ("Row: Data set")
     xy: XYTable | None = None           # an XY table (X and Y data sets); ``table`` is then X and each data set's row means
+    contingency: ContingencyTable | None = None  # counts in rows × columns; ``table`` is then one column of counts per outcome
 
 
 @dataclass
@@ -392,6 +394,11 @@ class Project(QObject):
                 sheet.result = run(data, sheet.options)
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
+            elif sheet.kind == "contingency":
+                sheet.result = run_contingency(data, sheet.options)
+                sheet.wide = sheet.result.values["wide"]
+                sheet.warnings = list(sheet.result.warnings)
+                sheet.methods = sheet.result.methods
             elif sheet.kind in ("linreg", "xycorr"):
                 sheet.result = (run_linear_regression if sheet.kind == "linreg" else run_xy_correlation)(data, sheet.options)
                 sheet.wide = sheet.result.values["wide"]
@@ -511,6 +518,26 @@ def run_linear_regression(data: DataSheet, options: dict) -> AnalysisResult:
 def run_xy_correlation(data: DataSheet, options: dict) -> AnalysisResult:
     kwargs = {key: options[key] for key in XYCORR_KEYS if key in options and options[key] is not None}
     return xy_correlation(_xy_of(data, "Correlation of X with Y"), **kwargs)
+
+
+CONTINGENCY_KEYS = ("test", "yates", "diagnostic", "ci", "alpha", "style")
+
+
+def run_contingency(data: DataSheet, options: dict) -> AnalysisResult:
+    if data is None or data.contingency is None:
+        raise CellQuantError("This analysis needs a contingency table (counts): File → New contingency table.")
+    kwargs = {key: options[key] for key in CONTINGENCY_KEYS if key in options and options[key] is not None}
+    for key in ("ci", "alpha"):
+        try:
+            kwargs[key] = float(kwargs[key])
+        except (KeyError, TypeError, ValueError):
+            kwargs.pop(key, None)
+    for key in ("yates", "diagnostic"):
+        kwargs[key] = bool(kwargs.get(key, False))
+    for key in ("test", "style"):
+        if key in kwargs and not isinstance(kwargs[key], str):
+            kwargs.pop(key)
+    return contingency(data.contingency, **kwargs)
 
 
 def _as_list(value) -> list:
@@ -669,6 +696,14 @@ def xy_columns(xy: XYTable) -> ColumnTable:
         means = np.where(counts > 0, np.nansum(xy.values, axis=2) / np.maximum(counts, 1), np.nan)
     names = [xy.x_title] + [name if name != xy.x_title else f"{name} (Y)" for name in xy.sets]
     return ColumnTable(title=xy.title, columns=[Column(name, values) for name, values in zip(names, [xy.x, *means.T])])
+
+
+def set_contingency(sheet: DataSheet, table: ContingencyTable) -> None:
+    from cellquant.stats import Column
+
+    sheet.contingency = table
+    sheet.table = ColumnTable(title=table.title, columns=[Column(name, table.counts[:, j]) for j, name in enumerate(table.columns)])
+    sheet.row_labels = list(table.rows)
 
 
 def set_xy(sheet: DataSheet, xy: XYTable) -> None:

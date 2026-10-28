@@ -63,6 +63,13 @@ XY_REPLICATES = {"mean": ("Mean and error bar", "One point per X: the mean of it
                  "each": ("Every replicate", "Every replicate as its own point.")}
 XY_BANDS = {"none": "No band", "confidence": "Confidence band", "prediction": "Prediction band"}
 
+# Contingency tables. key: (menu name, tooltip)
+CONTINGENCY_VALUES = {
+    "stacked": ("Stacked, % of each row", "One bar per row (group), split by outcome; each bar adds up to 100%."),
+    "percent": ("Side by side, % of each row", "The outcomes of each row side by side, as a percentage of the row's total."),
+    "count": ("Side by side, counts", "The outcomes of each row side by side, as numbers of subjects."),
+}
+
 # Grouped tables. key: (menu name, tooltip)
 GROUPED_LAYOUTS = {
     "interleaved": ("Interleaved", "Each row is a block with its data sets side by side, coloured by data set. Compares the data sets within each row."),
@@ -82,7 +89,9 @@ def color_of(fmt, name: str, index: int) -> str:
 def series_names(data) -> list[str]:
     """The names a graph's data set formats and colours are keyed by: a grouped or XY table's data sets, else its columns."""
 
-    grouped, xy = getattr(data, "grouped", None), getattr(data, "xy", None)
+    grouped, xy, counts = getattr(data, "grouped", None), getattr(data, "xy", None), getattr(data, "contingency", None)
+    if counts is not None:
+        return list(counts.columns)
     return list(grouped.columns) if grouped is not None else list(xy.sets) if xy is not None else list(data.table.names)
 
 
@@ -353,6 +362,10 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
     font = float(fmt.font_size)
     notes: list[str] = []
     figure._cq_legend = None
+    if getattr(data, "contingency", None) is not None:
+        if graph.kind != "bar":
+            notes.append(f"A contingency table is drawn as bars; {KINDS[graph.kind][0].lower()} is for column tables.")
+        return _draw_contingency(figure, data, result, fmt, font, notes)
     if getattr(data, "xy", None) is not None:
         if graph.kind != "xy":
             notes.append(f"An XY table is drawn as an XY graph; {KINDS[graph.kind][0].lower()} is for column tables.")
@@ -1231,6 +1244,86 @@ def _draw_xy(figure, data, result, fmt: GraphFormat, font: float, notes: list[st
     figure._cq_plot = plot
     if fmt.legend.show and fmt.legend.position == "custom":
         legend = _legend(ax, "scatter", series, fmt, font, plot)
+    figure._cq_legend = legend
+    for note in fmt.annotations:
+        _annotation(figure, note, fmt, font, plot)
+    return notes
+
+
+def _draw_contingency(figure, data, result, fmt: GraphFormat, font: float, notes: list[str]) -> list[str]:
+    """A contingency table: one bar per row split by outcome (100% stacked), or the outcomes side by side as % of the
+    row or as counts, coloured by outcome. A linked analysis's P value is written above the bars."""
+
+    table = data.contingency
+    ax = figure.add_subplot(111)
+    _style_frame(ax, fmt)
+    counts = np.where(np.isfinite(table.counts), table.counts, 0.0)
+    totals = counts.sum(axis=1, keepdims=True)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        percent = np.where(totals > 0, 100 * counts / totals, 0.0)
+    if not np.isfinite(table.counts).all():
+        notes.append("Blank cells are drawn as 0; type a count (0 for none) in every cell.")
+    rows = len(table.rows)
+    shown = [j for j, name in enumerate(table.columns) if fmt.dataset(name).visible]
+    stacked = fmt.contingency_values == "stacked"
+    values = counts if fmt.contingency_values == "count" else percent
+    if stacked:
+        bottom = np.zeros(rows)
+        for j in shown:
+            name = table.columns[j]
+            style, color = fmt.dataset(name), fmt.color_of(name, j)
+            bars = ax.bar(np.arange(rows), values[:, j], style.bar_width, bottom=bottom, color=_rgba(style.bar_fill or color, style.bar_alpha),
+                          edgecolor=style.bar_border or color, linewidth=style.bar_border_width, hatch=style.hatch or None, zorder=3)
+            for bar in bars:
+                _tag(bar, "dataset", name)
+            bottom += values[:, j]
+        ax.set_xticks(np.arange(rows))
+    else:
+        step = len(shown) + 0.6
+        for k, j in enumerate(shown):
+            name = table.columns[j]
+            style, color = fmt.dataset(name), fmt.color_of(name, j)
+            bars = ax.bar(np.arange(rows) * step + k, values[:, j], style.bar_width, color=_rgba(style.bar_fill or color, style.bar_alpha),
+                          edgecolor=style.bar_border or color, linewidth=style.bar_border_width, hatch=style.hatch or None, zorder=3)
+            for bar in bars:
+                _tag(bar, "dataset", name)
+        ax.set_xticks(np.arange(rows) * step + (len(shown) - 1) / 2)
+    ax.set_xticklabels([markup(name) for name in table.rows], fontsize=font, color=fmt.axis_color)
+    _apply_scale(ax, fmt.y)
+    _limits(ax, fmt.y, False)
+    if stacked and fmt.y.max is None:
+        ax.set_ylim(0, 100)
+    if fmt.y.reverse:
+        ax.set_ylim(*reversed(ax.get_ylim()))
+    default = "Subjects" if fmt.contingency_values == "count" else "% of row"
+    _tag(ax.set_ylabel(markup(fmt.y.title if fmt.y.title is not None else default), **_text_kw(fmt.y.title_style, fmt, font)), "axis", "y")
+    if fmt.x.title:
+        _tag(ax.set_xlabel(markup(fmt.x.title), **_text_kw(fmt.x.title_style, fmt, font)), "axis", "x")
+    p = result.values.get("p") if result is not None and getattr(result, "analysis", "") == "Contingency" else None
+    title = fmt.title
+    if p is not None:
+        from cellquant.stats.pvalues import p_text
+
+        text = p_text(p, style=result.options.get("style", "classic"))
+        title = f"{title}\n{text}" if title else text
+    if title:
+        pad = 6 + (font * 1.8 if fmt.legend.show and fmt.legend.position == "master" else 0)
+        _tag(ax.set_title(markup(title), loc=fmt.title_loc, pad=pad, **_text_kw(fmt.title_style, fmt, font + 1)), "title")
+    _locators(ax.yaxis, fmt.y, notes)
+    _style_ticks(ax, "y", fmt.y, fmt)
+    series = {name: j for j, name in enumerate(table.columns)}
+    legend = None
+    if fmt.legend.show and fmt.legend.position != "custom":
+        legend = _legend(ax, "bar", series, fmt, font, None)
+    figure._cq_axes = {"main": ax, "segments": [ax], "bottom": ax, "right": None}
+    try:
+        figure.tight_layout(pad=0.6)
+    except (ValueError, np.linalg.LinAlgError):
+        pass
+    plot = plot_transform(figure, [ax])
+    figure._cq_plot = plot
+    if fmt.legend.show and fmt.legend.position == "custom":
+        legend = _legend(ax, "bar", series, fmt, font, plot)
     figure._cq_legend = legend
     for note in fmt.annotations:
         _annotation(figure, note, fmt, font, plot)

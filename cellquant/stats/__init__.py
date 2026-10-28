@@ -24,6 +24,7 @@ from cellquant.stats.anova import (
     repeated_measures_anova,
     welch_anova,
 )
+from cellquant.stats.contingency import ContingencyTable, contingency
 from cellquant.stats.descriptive import (
     column_statistics,
     column_statistics_table,
@@ -67,6 +68,7 @@ __all__ = [
     "Column",
     "ColumnTable",
     "ComparisonPlan",
+    "ContingencyTable",
     "GroupedTable",
     "Row",
     "Section",
@@ -79,6 +81,7 @@ __all__ = [
     "column_statistics_table",
     "compact_letter_display",
     "compare",
+    "contingency",
     "describe",
     "effect_sizes",
     "format_p",

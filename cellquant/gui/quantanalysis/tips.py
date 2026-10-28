@@ -457,3 +457,18 @@ XY_REPLICATES = ("Each replicate is a point: every value counts (the usual choic
                  "one point per X, when replicates are repeated measurements of one sample.")
 XY_BAND = ("Around the regression line: the confidence band holds the true line with the chosen confidence; the prediction band "
            "holds that share of new points, so it is wider.")
+
+NEW_CONTINGENCY = ("A contingency table: counts of subjects, one row per group (or test result) and one column per outcome. For "
+                   "chi-square and Fisher's exact tests, relative risk, odds ratio, and sensitivity and specificity.")
+CONTINGENCY_TABLE = ("Each cell is a number of subjects (whole numbers; 0 for none), never a percentage or a mean. Rows are groups "
+                     "(treated first) or test results (positive first); columns are outcomes (the outcome of interest first). "
+                     "Double-click a title to rename it; paste counts at the selected cell.")
+CONTINGENCY = ("Are the rows and columns associated? Fisher's exact test (2 × 2) or the chi-square test, with the relative risk, odds "
+               "ratio and difference of proportions for a 2 × 2 table, a test for trend when the rows are ordered, or sensitivity, "
+               "specificity and predictive values for a diagnostic test.")
+CONTINGENCY_TEST = ("Fisher's exact test is exact and suits any 2 × 2 table, even with small counts. The chi-square test is an "
+                    "approximation that needs expected counts of about 5 or more; it is the test for larger tables.")
+CONTINGENCY_YATES = ("Makes the 2 × 2 chi-square test more conservative. Rarely needed: Fisher's exact test is the better choice for a "
+                     "2 × 2 table with small counts.")
+CONTINGENCY_DIAGNOSTIC = ("Read the 2 × 2 table as a diagnostic test: rows = test positive, test negative; columns = condition present, "
+                          "absent. Gives sensitivity, specificity, predictive values and likelihood ratios instead of risks and odds.")
