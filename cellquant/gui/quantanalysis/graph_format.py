@@ -26,6 +26,13 @@ PALETTE = ["#5B6770", "#2F7FC1", "#D1495B", "#E3A33B", "#3A9D78", "#7E5BA6", "#A
 # Okabe and Ito's palette, told apart with every common colour-vision deficiency; yellow last (faint on white).
 COLORBLIND_PALETTE = ["#0072B2", "#E69F00", "#009E73", "#D55E00", "#CC79A7", "#56B4E9", "#000000", "#F0E442"]
 MM_PER_INCH = 25.4
+# SuperPlots: one colour per biological replicate. key: (menu name, colours)
+REPLICATE_PALETTES = {
+    "bold": ("Bold", ["#2F7FC1", "#D1495B", "#3A9D78", "#E3A33B", "#7E5BA6", "#4BA3C3", "#A0522D", "#C9629D", "#6B8E23", "#5B6770"]),
+    "colorblind": ("Colour-blind safe", list(COLORBLIND_PALETTE)),
+    "greys": ("Greys", ["#1A1A1A", "#8C8C8C", "#4D4D4D", "#BDBDBD", "#333333", "#A6A6A6", "#666666", "#D9D9D9"]),
+}
+REPLICATE_SYMBOLS = ["o", "s", "^", "D", "v", "h", "P", "X", "*"]
 
 # key: menu name. Matplotlib marker codes.
 SYMBOLS = {"o": "Circle", "s": "Square", "^": "Triangle up", "v": "Triangle down", "D": "Diamond", "h": "Hexagon",
@@ -176,6 +183,12 @@ class GraphFormat:
     # XY tables
     xy_replicates: str = "mean"     # "mean": each row's mean with its error bar; "each": every replicate as a point
     xy_band: str = "none"           # around a linked regression line: "none", "confidence" or "prediction"
+    # SuperPlots
+    replicate_colors: str = "bold"  # a key of REPLICATE_PALETTES: one colour per biological replicate
+    replicate_shapes: bool = False  # a different symbol per replicate as well (for print in grey, or colour-blind readers)
+    replicate_layout: str = "together"  # the values: "together" (one swarm per column) or "lanes" (each replicate side by side)
+    replicate_alpha: float = 0.5    # opacity of the values (small dots)
+    replicate_link: bool = False    # a line joining each replicate's marker across the columns (replicates measured in every column)
     # Axes
     frame: str = "plain"
     frame_offset: float = 6.0       # points, for the offset frame
@@ -248,6 +261,12 @@ class GraphFormat:
             fmt.xy_replicates = "mean"
         if fmt.xy_band not in ("none", "confidence", "prediction"):
             fmt.xy_band = "none"
+        if fmt.replicate_colors not in REPLICATE_PALETTES:
+            fmt.replicate_colors = "bold"
+        if fmt.replicate_layout not in ("together", "lanes"):
+            fmt.replicate_layout = "together"
+        alpha = fmt.replicate_alpha
+        fmt.replicate_alpha = min(1.0, max(0.05, float(alpha))) if isinstance(alpha, (int, float)) and math.isfinite(alpha) else 0.5
         gap = fmt.cluster_gap
         fmt.cluster_gap = min(5.0, max(0.0, float(gap))) if isinstance(gap, (int, float)) and math.isfinite(gap) else 0.8
         return fmt
@@ -474,10 +493,10 @@ def _decimal(value: float, places: int, thousands: bool) -> str:
 # key: (name in the Magic dialog, tooltip, settings copied). "datasets" and "colors" are copied by data set order.
 GROUPS = {
     "colors": ("Colours", "The palette and each data set's colour, by order: the first data set takes the first colour.",
-               ["palette", "colors"]),
+               ["palette", "colors", "replicate_colors"]),
     "datasets": ("Data set appearance", "Symbols, bars, boxes, mean lines, error bars and connecting lines of every data set, by order.",
                  ["dataset_default", "datasets", "dot_size", "pair_lines", "pair_color", "pair_width", "connect_means", "connect_color",
-                  "connect_width", "connect_style"]),
+                  "connect_width", "connect_style", "replicate_shapes", "replicate_layout", "replicate_alpha", "replicate_link"]),
     "frame": ("Frame and axis lines", "Plain, offset or boxed axes, and the axis line width and colour.",
               ["frame", "frame_offset", "axis_color", "axis_width"]),
     "ticks": ("Scale, ticks and numbering", "Linear or log scale, tick interval, direction and length, and how numbers are written.",

@@ -457,3 +457,37 @@ XY_REPLICATES = ("Each replicate is a point: every value counts (the usual choic
                  "one point per X, when replicates are repeated measurements of one sample.")
 XY_BAND = ("Around the regression line: the confidence band holds the true line with the chosen confidence; the prediction band "
            "holds that share of new points, so it is wider.")
+
+# Replicates and SuperPlots
+REPLICATES = (
+    "Add a Replicate column that names each row's biological replicate (N), so the table can hold every value (for example "
+    "every cell, n) while its analyses use one value per replicate: its mean (or median) in each column. Lay the rows out in "
+    "blocks: the first replicate's values of every column, then the next replicate's. Graph → SuperPlot then shows both levels.\n"
+    "Click again to remove the column: the analyses then use every value, which treats cells of one sample as independent "
+    "(pseudoreplication)."
+)
+REPLICATE_COLUMN = (
+    "The biological replicate (N) each row belongs to, for example Experiment 1, Animal 2 or a date. Type it on the first row of "
+    "each block; a blank continues the replicate above. Use the same names in every column, so a replicate keeps one colour on "
+    "the SuperPlot (and, with Paired, is compared with itself). Paste a block whose first column is words to fill it."
+)
+REPLICATE_VALUE = (
+    "Each replicate's value in a column, which the analyses and the large markers of a SuperPlot use. Mean: the usual choice. "
+    "Median: when a few values (cells) of a replicate are far from the rest."
+)
+NEW_REPLICATE_TABLE = (
+    "A column table with a Replicate column: paste every value (for example every cell) of each condition, in blocks by "
+    "biological replicate. Analyses use the replicate means (N) and Graph → SuperPlot shows both levels."
+)
+CSV_REPLICATE = (
+    "The column that names each row's biological replicate (N), if the file has one. The table then holds every value and "
+    "its analyses use one value per replicate (the replicate means), ready for a SuperPlot."
+)
+SUPERPLOT_COLORS = ("One colour per biological replicate, the same in every column: the small dots (values) and the large marker "
+                    "(the replicate's mean) share it. Greys suits print; use Shapes with it.")
+SUPERPLOT_SHAPES = "A different symbol for each replicate's marker too, so replicates can be told apart without colour."
+SUPERPLOT_LAYOUT = ("Together: every value of a column in one swarm, coloured by replicate (the usual SuperPlot). By replicate: each "
+                    "replicate's values in a lane of their own with its marker in the middle, which helps when one replicate hides another.")
+SUPERPLOT_ALPHA = "How opaque the small dots (values) are. Lower it when there are many values, so the replicate markers stand out."
+SUPERPLOT_LINK = ("A line joining each replicate's marker across the columns. For replicates measured in every condition (a paired "
+                  "design): shows whether every replicate moves the same way.")

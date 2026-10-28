@@ -26,6 +26,8 @@ from cellquant.gui.quantanalysis.graph_format import (
     MM_PER_INCH,  # noqa: F401 - used by the graph view
     OPEN_SYMBOLS,
     PALETTE,  # noqa: F401
+    REPLICATE_PALETTES,
+    REPLICATE_SYMBOLS,
     AxisFormat,
     GraphFormat,
     as_format,
@@ -47,7 +49,10 @@ KINDS = {
     "estimation": ("Estimation plot", "Two columns and, on a right axis, their difference with its confidence interval (from a t test). Shows how big the effect is, not only whether P is small."),
     "xy": ("XY", "Each data set of an XY table against X: points (or means with error bars) and, with a linear regression as its "
            "comparison, the fitted line and its confidence or prediction band."),
-    "superplot": ("SuperPlot", "Images shaded by biological replicate (small dots), each replicate's value as a large outlined marker, and the mean ± SD of the replicates. Tests use the replicates (N), not the images (n)."),
+    "superplot": ("SuperPlot", "Every value (for example every cell or image) as a small dot coloured by its biological replicate, each "
+                  "replicate's mean as a large marker in the same colour, and the mean ± SD of the replicate means. Tests use the "
+                  "replicate means (N), not the values (n). Needs replicates: the Replicates button on the data table, or CellQuant "
+                  "results imported with one dot per biological replicate."),
 }
 
 ERRORS = {
@@ -393,9 +398,12 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         notes.append("Before-after joins rows of a paired table. Tick Paired on the data table if row i is the same subject in every column.")
     if kind in ("superplot", "estimation") and any(np.any(mask) for mask in (outliers or {}).values()):
         notes.append("Outliers are marked on column graphs (hollow points), not on a SuperPlot or an estimation plot.")
-    if kind == "superplot" and (data.images is None or data.images.empty or not (data.images["unit"].astype(str) != "").any()):
-        notes.append("A SuperPlot needs a table imported from CellQuant results with one dot per biological replicate (Import CellQuant results, Dot = biological replicate). Drawn as a column scatter.")
+    levels = superplot_levels(data) if kind == "superplot" else None
+    if kind == "superplot" and levels is None:
+        notes.append("A SuperPlot needs to know each value's biological replicate: click Replicates on the data table and name the "
+                     "replicate of each block of rows, or import CellQuant results with one dot per biological replicate. Drawn as a column scatter.")
         kind = "scatter"
+    replicate_entries = None
 
     gaps = _valid_breaks(y_axis, kind, log, notes)
     on_right = [column.name for column in columns if fmt.dataset(column.name).axis == "right" and fmt.dataset(column.name).visible]
@@ -440,7 +448,7 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         if kind == "estimation":
             names, positions = _draw_estimation(segment, figure, columns, compared, result, fmt, font)
         elif kind == "superplot":
-            _draw_superplot(segment, data, columns, fmt)
+            replicate_entries = _draw_superplot(segment, columns, levels, fmt)
         else:
             _draw_columns(segment, right if segment is ax else None, kind, table, columns, fmt, outliers, log, largest, places)
     if grouped is not None:
@@ -525,7 +533,7 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         right.tick_params(axis="y", which="both", left=False, right=fmt.right.visible, labelright=fmt.right.visible)
     legend = None
     if fmt.legend.show and kind != "estimation" and fmt.legend.position != "custom":
-        legend = _legend(ax, kind, _series(columns, table, places), fmt, font, None)
+        legend = _legend(ax, kind, _series(columns, table, places), fmt, font, None, replicate_entries)
     figure._cq_axes = {"main": ax, "segments": segments, "bottom": bottom, "right": right}
     if gaps:
         figure.align_ylabels(segments)  # the Y title clears the numbers of every segment
@@ -541,7 +549,7 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
     plot = plot_transform(figure, segments)
     figure._cq_plot = plot
     if fmt.legend.show and kind != "estimation" and fmt.legend.position == "custom":
-        legend = _legend(ax, kind, _series(columns, table, places), fmt, font, plot)  # dragged: placed after the layout, which it does not change
+        legend = _legend(ax, kind, _series(columns, table, places), fmt, font, plot, replicate_entries)  # dragged: placed after the layout, which it does not change
     figure._cq_legend = legend
     for note in fmt.annotations:
         _annotation(figure, note, fmt, font, plot)
@@ -661,6 +669,9 @@ def _draw_columns(ax, right, kind: str, table, columns, fmt: GraphFormat, outlie
 
 
 def _n_text(data, column) -> str:
+    replicates = getattr(data, "replicates", None)
+    if replicates is not None:
+        return f"N={column.finite.size}\nn={replicates.counts().get(column.name, 0)}"
     if data.pseudoreplicated:
         return f"n={column.finite.size} cells"
     spec = getattr(data, "spec", None)
@@ -838,18 +849,28 @@ def _series(columns, table, places) -> dict[str, int]:
     return {column.name: table.names.index(column.name) for column in columns}
 
 
-def _legend(ax, kind: str, series: dict, fmt: GraphFormat, font: float, plot):
+def _legend(ax, kind: str, series: dict, fmt: GraphFormat, font: float, plot, replicates=None):
     from matplotlib.font_manager import FontProperties
     from matplotlib.legend import Legend
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
-    shown = [name for name in series if fmt.dataset(name).visible]
+    if replicates:  # a SuperPlot: one entry per biological replicate, in its colour (and symbol)
+        series = {name: index for index, (name, _color, _symbol) in enumerate(replicates)}
+        shown = list(series)
+    else:
+        shown = [name for name in series if fmt.dataset(name).visible]
     order = [name for name in fmt.legend.order if name in shown] + [name for name in shown if name not in fmt.legend.order]
     if not order:
         return None
     handles = []
+    looks = {name: (color, symbol) for name, color, symbol in replicates or []}
     for name in order:
+        if name in looks:
+            color, symbol = looks[name]
+            handles.append(Line2D([], [], marker=symbol or fmt.dataset_default.symbol, linestyle="none", markerfacecolor=color,
+                                  markeredgecolor="#111111", markeredgewidth=0.8, markersize=6))
+            continue
         style = fmt.dataset(name)
         color = fmt.color_of(name, series[name])
         if kind == "bar" and style.show_bar:
@@ -1237,47 +1258,111 @@ def _draw_xy(figure, data, result, fmt: GraphFormat, font: float, notes: list[st
     return notes
 
 
-UNIT_PALETTE = ["#2F7FC1", "#D1495B", "#3A9D78", "#E3A33B", "#7E5BA6", "#4BA3C3", "#A0522D", "#C9629D", "#6B8E23", "#5B6770"]
+def superplot_levels(data):
+    """The two levels of a SuperPlot: every value (``group``, ``unit``, ``value``; for example every cell, or every
+    image of an import) and each biological replicate's value (``group``, ``dot``, ``value``; None when unknown).
+    None when the table has no replicates."""
+
+    replicates = getattr(data, "replicates", None)
+    if replicates is not None:
+        small = replicates.long()
+        return None if small.empty else (small[["group", "unit", "value"]], replicates.summaries()[["group", "dot", "value"]])
+    images, units = getattr(data, "images", None), getattr(data, "units", None)
+    if images is None or images.empty or not (images["unit"].astype(str) != "").any():
+        return None
+    return images[["group", "unit", "value"]], (units[["group", "dot", "value"]] if units is not None else None)
 
 
-def _draw_superplot(ax, data, columns, fmt: GraphFormat) -> None:
-    """Images (n) as small dots shaded by biological replicate; replicates (N) as large outlined markers;
-    the line and bars are the mean ± SD (or the chosen error) of the replicates, which is what the tests use."""
+def replicate_style(levels, fmt: GraphFormat) -> list[tuple[str, str, str | None]]:
+    """Each replicate in order with its colour and, with Different shapes, its symbol."""
 
-    images = data.images
-    units = data.units if data.units is not None else None
-    every_unit = list(dict.fromkeys(str(name) for name in images["unit"]))
-    colors = {name: UNIT_PALETTE[index % len(UNIT_PALETTE)] for index, name in enumerate(every_unit)}
+    small, big = levels
+    names = [str(name) for name in small["unit"]] + ([str(name) for name in big["dot"]] if big is not None else [])
+    names = [name for name in dict.fromkeys(names) if name]
+    palette = REPLICATE_PALETTES.get(fmt.replicate_colors, REPLICATE_PALETTES["bold"])[1]
+    return [(name, palette[index % len(palette)], REPLICATE_SYMBOLS[index % len(REPLICATE_SYMBOLS)] if fmt.replicate_shapes else None)
+            for index, name in enumerate(names)]
+
+
+def _lanes(names: list[str], index: int, width: float = 0.72) -> dict[str, float]:
+    """Each replicate's lane centre within column ``index`` (side by side, in replicate order)."""
+
+    if len(names) < 2:
+        return {name: float(index) for name in names}
+    step = width / len(names)
+    return {name: index - width / 2 + step * (number + 0.5) for number, name in enumerate(names)}
+
+
+def _draw_superplot(ax, columns, levels, fmt: GraphFormat) -> list[tuple[str, str, str | None]]:
+    """Every value (for example every cell) as a small dot coloured by its biological replicate; each replicate's value as
+    a large outlined marker in the same colour; the line and bars are the mean ± SD (or the chosen error) of the
+    replicates, which is what the tests use. Returns the replicates with their colours and symbols, for the legend."""
+
+    small, big = levels
+    style_of = replicate_style(levels, fmt)
+    colors = {name: color for name, color, _symbol in style_of}
+    symbols = {name: symbol for name, _color, symbol in style_of}
+    order = [name for name, _color, _symbol in style_of]
     log = fmt.y.scale != "linear"
-    error = fmt.error if fmt.error != "none" else "sd"
-    small = _dot_area(fmt, len(images)) * 0.55
+    lanes = fmt.replicate_layout == "lanes"
+    area = float(fmt.dot_size) if fmt.dot_size else _dot_area(fmt, len(small)) * 0.55
+    markers: dict[str, list[tuple[float, float]]] = {}
     for index, column in enumerate(columns):
         style = fmt.dataset(column.name)
         if not style.visible:
             continue
         tag = ("dataset", column.name)
-        subset = images.loc[images["group"] == column.name]
+        subset = small.loc[small["group"] == column.name]
         values = subset["value"].to_numpy(dtype=float)
+        units = subset["unit"].astype(str).to_numpy()
         keep = np.isfinite(values) & ((values > 0) if log else True)
-        offsets = _jitter(np.log10(values[keep]) if log else values[keep], 0.26)
-        _tag(ax.scatter(index + offsets, values[keep], s=small, c=[colors[str(name)] for name in subset["unit"].to_numpy()[keep]],
-                        alpha=0.55, linewidth=0, zorder=2), *tag)
-        if units is not None and style.show_symbols:
-            replicate = units.loc[units["group"] == column.name]
+        values, units = values[keep], units[keep]
+        replicate = big.loc[big["group"] == column.name] if big is not None else None
+        present = [name for name in order if (units == name).any() or (replicate is not None and (replicate["dot"].astype(str) == name).any())]
+        centres = _lanes(present, index)
+        x = np.full(values.size, float(index))
+        if lanes:
+            spread = min(0.12, 0.3 * 0.72 / max(len(present), 1))
+            for name in present:
+                mine = units == name
+                if mine.any():
+                    x[mine] = centres[name] + _jitter(np.log10(values[mine]) if log else values[mine], spread)
+        elif values.size:
+            x = index + _jitter(np.log10(values) if log else values, 0.26)
+        if values.size:
+            _tag(ax.scatter(x, values, s=area, c=[colors.get(name, "#888888") for name in units], alpha=fmt.replicate_alpha,
+                            linewidth=0, zorder=2), *tag)
+        if replicate is not None and style.show_symbols:
             unit_values = replicate["value"].to_numpy(dtype=float)
-            ok = np.isfinite(unit_values)
-            unit_offsets = _jitter(unit_values[ok], 0.14)
-            _tag(ax.scatter(index + unit_offsets, unit_values[ok], s=style.symbol_size or 70, marker=style.symbol,
-                            c=[colors.get(str(name), "#555555") for name in replicate["dot"].to_numpy()[ok]],
-                            edgecolor="#111111", linewidth=1.0, zorder=4), *tag)
-        center, low, high = _center_and_bars(column.finite, error)
+            dots = replicate["dot"].astype(str).to_numpy()
+            ok = np.isfinite(unit_values) & ((unit_values > 0) if log else True)
+            unit_values, dots = unit_values[ok], dots[ok]
+            if lanes:
+                unit_x = np.array([centres.get(name, float(index)) for name in dots])
+            else:
+                unit_x = index + _jitter(np.log10(unit_values) if log else unit_values, 0.14)
+            size = style.symbol_size or 70
+            for symbol in dict.fromkeys(symbols.get(name) or style.symbol for name in dots):
+                mine = np.array([(symbols.get(name) or style.symbol) == symbol for name in dots], bool)
+                _tag(ax.scatter(unit_x[mine], unit_values[mine], s=size, marker=symbol, c=[colors.get(name, "#555555") for name in dots[mine]],
+                                edgecolor="#111111", linewidth=1.0, zorder=4), *tag)
+            for name, x_value, y_value in zip(dots, unit_x, unit_values):
+                markers.setdefault(name, []).append((float(x_value), float(y_value)))
+        center, low, high = _center_and_bars(column.finite, fmt.error if fmt.error != "none" else "sd")
         half = style.center_length * 0.6
-        if style.show_center:
+        if style.show_center and np.isfinite(center):
             _tag(ax.hlines(center, index - half, index + half, color=style.center_color, linewidth=style.center_width * 1.125, zorder=5), *tag)
-        if style.show_error and np.isfinite(low) and np.isfinite(high) and high > low:
+        if fmt.error != "none" and style.show_error and np.isfinite(low) and np.isfinite(high) and high > low:
             start = center if style.error_direction == "above" else low
             _tag(ax.vlines(index, start, high, color=style.error_color, linewidth=style.error_width * 1.1, zorder=5), *tag)
             if style.error_cap > 0:
                 caps = [high] if style.error_direction == "above" else [low, high]
                 _tag(ax.hlines(caps, index - style.error_cap * 0.6, index + style.error_cap * 0.6, color=style.error_color,
                                linewidth=style.error_width * 1.1, zorder=5), *tag)
+    if fmt.replicate_link:
+        for name, points in markers.items():
+            if len(points) > 1:
+                points.sort()
+                _tag(ax.plot([p[0] for p in points], [p[1] for p in points], color=colors.get(name, "#555555"), linewidth=0.9,
+                             alpha=0.8, zorder=3)[0], "connect")
+    return style_of

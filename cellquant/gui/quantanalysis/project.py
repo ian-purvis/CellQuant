@@ -34,6 +34,7 @@ from cellquant.stats import (
 from cellquant.stats import transforms
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
+from cellquant.stats.replicates import ReplicateTable
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
 
 LOG = logging.getLogger("cellquant.quantanalysis")
@@ -105,6 +106,7 @@ class DataSheet:
     process: dict = field(default_factory=dict)          # the processing: "kind" and its options (cellquant.stats.transforms)
     grouped: GroupedTable | None = None  # a grouped table (two factors); ``table`` is then its cells as columns ("Row: Data set")
     xy: XYTable | None = None           # an XY table (X and Y data sets); ``table`` is then X and each data set's row means
+    replicates: ReplicateTable | None = None  # every value with its biological replicate; ``table`` is then each replicate's mean (N)
 
 
 @dataclass
@@ -674,6 +676,25 @@ def xy_columns(xy: XYTable) -> ColumnTable:
 def set_xy(sheet: DataSheet, xy: XYTable) -> None:
     sheet.xy = xy
     sheet.table = xy_columns(xy)
+
+
+def set_replicates(sheet: DataSheet, replicates: ReplicateTable | None, values: list | None = None) -> None:
+    """Give a column table a replicate per row (its analyses then use one value per replicate), or take it away
+    (``None``: the table holds every value again, ``values`` when given, else the replicate table's)."""
+
+    from cellquant.stats import Column
+
+    if replicates is None:
+        old = sheet.replicates
+        sheet.replicates = None
+        if old is not None:
+            sheet.table = ColumnTable(title=old.title, paired=old.paired,
+                                      columns=[Column(name, column) for name, column in zip(old.names, values if values is not None else old.values)])
+            sheet.row_labels = []
+        return
+    sheet.replicates = replicates
+    sheet.table = replicates.summary_table()
+    sheet.row_labels = replicates.replicates()
 
 
 def table_with(table: ColumnTable, names: list[str], values: list[np.ndarray], paired: bool) -> ColumnTable:

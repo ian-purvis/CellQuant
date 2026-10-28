@@ -406,6 +406,17 @@ class GraphSection(Section):
         self.xy_band = self.combo(graphs.XY_BANDS, tips.XY_BAND)
         self.xy_row = _pair(self.xy_replicates, self.xy_band)
         form.addRow("Points", self.xy_row)
+        self.replicate_colors = self.combo({key: name for key, (name, _colors) in gf.REPLICATE_PALETTES.items()}, tips.SUPERPLOT_COLORS)
+        self.replicate_shapes = self.check("Shapes", tips.SUPERPLOT_SHAPES)
+        self.replicate_row = _pair(self.replicate_colors, self.replicate_shapes)
+        form.addRow("Replicates", self.replicate_row)
+        self.replicate_layout = self.combo({"together": "Together", "lanes": "By replicate"}, tips.SUPERPLOT_LAYOUT)
+        self.replicate_alpha = self.number(0.05, 1, tips.SUPERPLOT_ALPHA, 0.05, 2)
+        self.replicate_alpha.setMaximumWidth(48)
+        self.values_row = _pair(self.replicate_layout, "opacity", self.replicate_alpha)
+        form.addRow("Values", self.values_row)
+        self.replicate_link = self.check("Join each replicate", tips.SUPERPLOT_LINK)
+        form.addRow("Lines", self.replicate_link)
         self.comparison = QComboBox()
         self.comparison.setToolTip(tips.GRAPH_COMPARISON)
         self.comparison.currentIndexChanged.connect(self.changed)
@@ -448,6 +459,12 @@ class GraphSection(Section):
         self.xy_replicates.setCurrentIndex(max(0, self.xy_replicates.findData(fmt.xy_replicates)))
         self.xy_band.setCurrentIndex(max(0, self.xy_band.findData(fmt.xy_band)))
         self.arrangement.setCurrentIndex(max(0, self.arrangement.findData(fmt.grouped_layout)))
+        self.replicate_colors.setCurrentIndex(max(0, self.replicate_colors.findData(fmt.replicate_colors)))
+        self.replicate_shapes.setChecked(fmt.replicate_shapes)
+        self.replicate_layout.setCurrentIndex(max(0, self.replicate_layout.findData(fmt.replicate_layout)))
+        self.replicate_alpha.setValue(float(fmt.replicate_alpha))
+        self.replicate_link.setChecked(fmt.replicate_link)
+        self._superplot_rows()
         self.cluster_gap.setValue(float(fmt.cluster_gap))
         self.show_outliers.setChecked(fmt.show_outliers)
         self.dot_size.setValue(float(fmt.dot_size))
@@ -470,12 +487,23 @@ class GraphSection(Section):
         fmt.error = self.error.currentData()
         fmt.grouped_layout, fmt.cluster_gap = self.arrangement.currentData(), self.cluster_gap.value()
         fmt.xy_replicates, fmt.xy_band = self.xy_replicates.currentData(), self.xy_band.currentData()
+        fmt.replicate_colors, fmt.replicate_shapes = self.replicate_colors.currentData(), self.replicate_shapes.isChecked()
+        fmt.replicate_layout, fmt.replicate_alpha = self.replicate_layout.currentData(), self.replicate_alpha.value()
+        fmt.replicate_link = self.replicate_link.isChecked()
+        self._superplot_rows()
         fmt.show_outliers = self.show_outliers.isChecked()
         fmt.dot_size = self.dot_size.value()
         fmt.font_family = self.font_family.currentData() or ""
         fmt.font_size = self.font_size.value()
         fmt.width, fmt.height, fmt.units = self.width_box.value(), self.height_box.value(), self.units.currentData()
         self.view.window.sheet_renamed(sheet)
+
+    def _superplot_rows(self) -> None:
+        """The SuperPlot rows show only while the graph is a SuperPlot (they follow the Graph choice at once)."""
+
+        superplot = self.view.sheet.kind == "superplot"
+        for row in (self.replicate_row, self.values_row, self.replicate_link):
+            _row_visible(self.form, row, superplot)
 
     def _units_changed(self, *_args) -> None:
         if self._filling:
