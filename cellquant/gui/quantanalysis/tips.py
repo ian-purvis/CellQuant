@@ -460,10 +460,21 @@ XY_BAND = ("Around the regression line: the confidence band holds the true line 
 ADVANCED = ("Settings that are normally worked out from the data. Leave them at Default unless you have a reason; anything set by hand "
             "is listed on the results sheet and in the methods text so it is reported.")
 ADVANCED_NOTE = "Used only while Advanced is ticked. Anything set by hand is listed on the results sheet."
-OVERRIDE_DF = ("The degrees of freedom the P value and the confidence interval use. Default: worked out from the data (Welch-Satterthwaite "
-               "for Welch's test, N − k for ANOVA). Conservative: the smaller group's N − 1, a cautious choice when the SDs and the Ns both "
-               "differ. Set by hand only with a reason, for example df counted from the biological replicates of a nested design rather "
-               "than from the values. A larger df gives a smaller P.")
+OVERRIDE_DF = ("The degrees of freedom the P values (and confidence intervals) use. Default: worked out from the data (N − k for ANOVA, the "
+               "Welch df for Welch's ANOVA, N − rc for two-way ANOVA); the multiple comparisons that use the pooled error term use it too. "
+               "Set it by hand only with a reason, for example df counted from the biological replicates of a nested design rather than from "
+               "the values. A larger df gives a smaller P. The ANOVA table keeps the computed DF and MS.")
+OVERRIDE_DF_T = ("The degrees of freedom the P value and the confidence interval use. Default: worked out from the data (Welch-Satterthwaite "
+                 "for Welch's test, N − 2 or pairs − 1 otherwise). Conservative: the smaller group's N − 1, a cautious choice when the SDs and "
+                 "the Ns both differ. Set it by hand only with a reason, for example df counted from the biological replicates of a nested "
+                 "design rather than from the values. A larger df gives a smaller P.")
+OVERRIDE_DF_RM = ("The error degrees of freedom of the repeated-measures F test, before ε multiplies them. Default: (k − 1)(N − 1). With the "
+                  "Geisser-Greenhouse correction on, the multiple comparisons use each pair's own differences (N − 1 df) and do not change; "
+                  "they use this df only with the pooled error term (for example when an SD is set). A larger df gives a smaller P.")
+OVERRIDE_DF_LINREG = ("The residual degrees of freedom of the slope and intercept CIs and P values, the F test and the bands. Default: N − 2 "
+                      "(N − 1 through the origin). The comparison of slopes and intercepts between data sets keeps the computed df.")
+OVERRIDE_DF_CORR = ("The degrees of freedom of the t test of r. Default: N − 2. For Spearman's r this is the usual t approximation; the "
+                    "confidence interval (Fisher z) does not change.")
 OVERRIDE_DIFFERENCE = ("The difference (B − A) the test compares against. Default 0: are the means equal? Another value tests, for example, "
                        "whether the treatment changes the value by more than 5 percentage points. The confidence interval does not change.")
 OVERRIDE_EPSILON = ("The sphericity correction ε (between 1/(k − 1) and 1) that multiplies both degrees of freedom. Default: Geisser-"

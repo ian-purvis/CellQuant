@@ -135,13 +135,12 @@ def _sd_change(sd, computed: float, changes: list, comparisons, trend) -> float:
     value = _check_sd(sd)
     if comparisons in (None, False) and not trend:
         raise StatisticsError("sd is the SD the multiple comparisons use; ask for multiple comparisons (or the test for trend) to use it.")
-    if value != computed:
-        changes.append(("SD for multiple comparisons", fmt(value), fmt(computed)))
+    changes.append(("SD for multiple comparisons", fmt(value), fmt(computed)))
     return value
 
 
 def _m_change(out: dict, changes: list | None) -> None:
-    if out["m"] is not None and changes is not None and any(size != out["m"] for size in out["per_family"]):
+    if out["m"] is not None and changes is not None:
         sizes = out["per_family"]
         changes.append(("Number of comparisons (m)", str(int(out["m"])), str(sizes[0]) if len(set(sizes)) == 1 else ", ".join(map(str, sizes))))
 
@@ -565,8 +564,7 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
         df_err = df_override(df, df_err, "Error df (before epsilon)", changes, larger)
     if epsilon is not None:
         eps_set = _check_epsilon(epsilon, k)
-        if eps_set != scale:
-            changes.append(("Epsilon", fmt(eps_set), fmt(scale)))
+        changes.append(("Epsilon", fmt(eps_set), fmt(scale)))
         scale, geisser_greenhouse = eps_set, True
     dfn, dfd = core["df_treatment"] * scale, df_err * scale
     p = float(stats.f.sf(core["f"], dfn, dfd)) if np.isfinite(core["f"]) else np.nan
@@ -612,6 +610,8 @@ def repeated_measures_anova(table: ColumnTable, *, groups: Sequence[str] | None 
     cov_sd = _sd_change(sd, math.sqrt(core["ms_residual"]), changes, comparisons, trend) if sd is not None else None
     if cov_sd is not None and rm_error == "separate":
         raise StatisticsError('sd replaces the pooled error term, so it cannot be combined with rm_error="separate".')
+    if cov_sd is not None and rm_error is None and geisser_greenhouse:
+        changes.append(("Multiple comparisons error term", "pooled (a set SD replaces it)", "each pair's own differences"))
     rm_error = rm_error or ("separate" if geisser_greenhouse and cov_sd is None else "pooled")
     if rm_error == "pooled":
         est = Estimates(names, core["means"], np.full(k, n), (core["ms_residual"] if cov_sd is None else cov_sd**2) / n * np.eye(k), df_err, "pooled",

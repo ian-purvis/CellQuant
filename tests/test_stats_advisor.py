@@ -127,3 +127,22 @@ def test_normality_hint():
     facts = facts_of(_table(Control=skewed, Treated=skewed * 2))
     assert facts.normality["Control"] == pytest.approx(stats.shapiro(skewed).pvalue)
     assert any("Shapiro-Wilk P < 0.05" in w for w in recommend(Answers(), facts).warnings)
+
+
+def test_replicates_behind_cells_count_for_the_minimum_and_summary():
+    cells = facts_of(_table(), dot="object", replicates=[2, 4])
+    assert any("practical minimum" in w for w in recommend(suggested(cells), cells).warnings)
+    medians = facts_of(_table(), replicate_means=True, replicate_summary="median")
+    assert "replicate's median" in recommend(suggested(medians), medians).unit
+    mw = recommend(Answers(dot="cell", gaussian="no"), facts_of(_table(Control=[1, 2, 3], Treated=[4, 5, 6]), dot="object"))
+    assert any("With n = 3 and 3" in w for w in mw.warnings)
+
+
+def test_three_groups_on_a_two_column_table_and_empty_grouped_cells():
+    rec = recommend(Answers(groups=3), facts_of(_table()))
+    assert rec.df is None and any("2 column(s)" in w for w in rec.warnings)
+    values = np.arange(12, dtype=float).reshape(2, 2, 3)
+    values[1, 1, :] = np.nan
+    facts = facts_of(grouped=GroupedTable("t", ["WT", "KO"], ["Vehicle", "Drug"], values))
+    rec = recommend(Answers(goal="two_factors"), facts)
+    assert rec.df == 9 - 3 and any("empty" in w for w in rec.warnings)

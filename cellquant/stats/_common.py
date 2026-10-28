@@ -111,13 +111,15 @@ def df_override(df, computed: float, label: str, changes: list, larger: list, *,
     text = fmt(computed)
     if value == "conservative":
         value = float(conservative)
+        if value == computed:  # a paired test: the conservative df is the computed one, so nothing changes
+            return value
         shown = f"{fmt(value)} (conservative)"
     else:
         shown = fmt(value)
-    if np.isfinite(computed) and value != computed:
-        changes.append((label, shown, text))
-        if value > computed:
-            larger.append(label)
+    # Listed even when it equals the computed df: a setting made by hand is always reported.
+    changes.append((label, shown, text))
+    if np.isfinite(computed) and value > computed:
+        larger.append(label)
     return value
 
 
@@ -138,4 +140,10 @@ def record_overrides(result, changes: list[tuple[str, str, str]], larger_df: Seq
     larger = [f"A larger {label} than computed ({by_label[label][0]} instead of {by_label[label][1]}) makes P smaller and needs a reason; "
               "give it when you report the result." for label in larger_df if label in by_label]
     result.warnings[0:0] = notes + larger
+    if any("df" in label for label, _value, _default in changes):
+        for section in result.sections:  # an ANOVA table's residual row keeps its computed DF and MS; say which DF the tests used
+            if section.title == "ANOVA table":
+                for row in section.rows:
+                    if row.label.startswith("Residual"):
+                        row.formatted += " (the tests use the DF set by hand)"
     result.methods += "".join(f" Changed from the default: {label} = {value} (computed {default})." for label, value, default in changes)

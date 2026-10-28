@@ -36,22 +36,33 @@ COMPARISON_TEXT = {
 }
 
 
-def facts_for(sheet) -> Facts:
-    """What a data sheet tells the guide: its table, how it was imported (what a dot is, the replicates behind each
-    group's images or cells) and whether it is a table of replicates (its replicate means are analyzed)."""
+def facts_for(sheet, columns=None, table=None) -> Facts:
+    """What a data sheet tells the guide: its table (only ``columns`` of it, when given: the two columns a comparison
+    uses), how it was imported (what a dot is, the replicates behind each group's images or cells) and whether it is a
+    table of replicates (each replicate's mean or median is analyzed). ``table`` stands in when there is no sheet."""
+
+    from cellquant.stats import ColumnTable
 
     if sheet is None:
-        return Facts()
-    spec = getattr(sheet, "spec", None)
+        if table is None:
+            return Facts()
+        sheet_table, spec, images, replicates_table = table, None, None, None
+    else:
+        sheet_table, spec, images = sheet.table, getattr(sheet, "spec", None), getattr(sheet, "images", None)
+        replicates_table = getattr(sheet, "replicates", None)
+    if sheet is not None and (sheet.xy is not None or sheet.grouped is not None):
+        return facts_of(None, sheet.grouped, sheet.xy)
+    if columns:
+        chosen = [sheet_table[name] for name in columns if name in sheet_table.names]
+        if len(chosen) == len(columns) and len({column.name for column in chosen}) == len(chosen):
+            sheet_table = ColumnTable(sheet_table.title, chosen, sheet_table.paired)
     dot = getattr(spec, "dot", None)
     replicates = []
-    images = getattr(sheet, "images", None)
     if dot in ("image", "object") and images is not None and {"group", "unit"} <= set(images.columns):
         counts = images.dropna(subset=["unit"]).groupby("group", sort=False)["unit"].nunique()
-        replicates = [int(counts.get(name, 0)) for name in sheet.table.names] if sheet.table is not None else list(counts)
-    replicate_means = getattr(sheet, "replicates", None) is not None
-    return facts_of(sheet.table if sheet.xy is None and sheet.grouped is None else None, sheet.grouped, sheet.xy, dot=dot,
-                    replicates=replicates if any(replicates) else [], replicate_means=replicate_means)
+        replicates = [int(counts.get(name, 0)) for name in sheet_table.names]
+    return facts_of(sheet_table, dot=dot, replicates=replicates if any(replicates) else [], replicate_means=replicates_table is not None,
+                    replicate_summary=getattr(replicates_table, "summary", "mean"))
 
 
 class AnalysisGuideDialog(QDialog):
@@ -116,7 +127,7 @@ class AnalysisGuideDialog(QDialog):
         self.answer.setOpenExternalLinks(False)
         right.addWidget(self.answer, 1)
         self.advanced = AdvancedBox(self, right)
-        self.advanced.add("df", "Degrees of freedom", tips.OVERRIDE_DF, 0.01, 1e6, 2, modes=(("conservative", "Conservative (smaller N − 1)"),),
+        self.advanced.add("df", "Degrees of freedom", tips.OVERRIDE_DF_T, 0.01, 1e6, 4, modes=(("conservative", "Conservative (smaller N − 1)"),),
                           value=10)
         columns.addLayout(right, 1)
         outer.addLayout(columns, 1)
@@ -198,14 +209,18 @@ class AnalysisGuideDialog(QDialog):
         df_mode.model().item(df_mode.findData("conservative")).setEnabled(conservative)
         if not conservative and df_mode.currentData() == "conservative":
             df_mode.setCurrentIndex(0)
-        has_df = rec.kind in ("compare", "anova", "twoway", "linreg", "xycorr") and rec.options.get("test") not in (
+        has_df = rec.kind in ("compare", "anova", "twoway", "linreg", "xycorr") and not rec.mixed and rec.options.get("test") not in (
             "mann_whitney", "wilcoxon", "kruskal_wallis", "friedman")
         self.advanced.show_field("df", has_df)
+        tip = {"compare": tips.OVERRIDE_DF_T, "linreg": tips.OVERRIDE_DF_LINREG, "xycorr": tips.OVERRIDE_DF_CORR}.get(rec.kind, tips.OVERRIDE_DF)
+        if rec.options.get("test") == "repeated_measures":
+            tip = tips.OVERRIDE_DF_RM
+        self.advanced.set_label("df", "Degrees of freedom", tip)
         self.advanced.set_default_text("df", f"Default ({rec.df:.4g})" if rec.df is not None else "Default (computed)")
         mode, spin, *_rest = self.advanced.fields["df"]
         if mode.currentData() is None and rec.df is not None:  # "Set by hand" starts from the computed df
             spin.blockSignals(True)
-            spin.setValue(round(rec.df, 2))
+            spin.setValue(rec.df)
             spin.blockSignals(False)
         self.answer.setHtml(self._html(rec))
 

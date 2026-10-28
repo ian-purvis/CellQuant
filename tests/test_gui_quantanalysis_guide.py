@@ -159,3 +159,77 @@ def test_advanced_settings_reach_each_analysis(window):
     assert changed is not None and len(changed.rows) == 3  # epsilon is for repeated measures only: dropped
     plain = window.analyze("anova", {"test": "kruskal_wallis", "comparisons": "all", "method": "dunn", "df": 5})
     assert plain.error == "" and _section(plain.result, "Changed from the default") is None
+
+
+def test_guide_from_a_dialog_keeps_the_import_and_the_columns(window, tmp_path, monkeypatch):
+    spec = sources.ImportSpec("area", dot="object", group_by="Folder 1")
+    data = window.open_folder(make_results(tmp_path / "objects"), spec, accept=True)
+    seen = {}
+
+    def fake_guide(self):
+        seen["facts"], seen["rec"] = self.facts, self.recommendation()
+        return 0
+
+    monkeypatch.setattr(AnalysisGuideDialog, "exec", fake_guide)
+    dialog = CompareDialog(window, data.table, sheet=data)
+    dialog._guide()
+    assert seen["facts"].dot == "cell" and seen["rec"].warnings[0].startswith("Pseudoreplication")
+    three = ColumnTable.from_columns({"A": A, "B": B, "C": [1.0, 2, 3]})
+    sheet = window.project.add_data(DataSheet("Three", three))
+    compare = CompareDialog(window, three, {"test": "welch_t", "first": "A", "second": "C", "alternative": "two-sided", "ci": 0.95,
+                                           "alpha": 0.05, "style": "classic"}, sheet=sheet)
+    compare._guide()
+    assert seen["facts"].names == ["A", "C"] and seen["facts"].sizes == [5, 3]
+
+
+def test_settings_for_a_different_table_are_flagged(window):
+    data = _two(window)
+    dialog = CompareDialog(window, data.table)
+    dialog.set_options({**dialog.options(), "df": 4})
+    options = dialog.options()
+    assert options["advanced_for"] == [5, 6]
+    sheet = window.analyze("compare", options)
+    assert not any("different table" in text for text in sheet.result.warnings)
+    data.table = ColumnTable.from_columns({"Control": A + [16.0, 17.0], "Treated": B})
+    window.project.data_changed(data.id) if hasattr(window.project, "data_changed") else None
+    window.project.rerun(sheet)
+    assert any("different table" in text and "5, 6" in text and "7, 6" in text for text in sheet.result.warnings)
+    again = CompareDialog(window, data.table, sheet.options)
+    assert not again.advanced.stale.isHidden() and "different table" in again.advanced.stale.text()
+
+
+def test_guide_answer_about_cells_reaches_the_results(window, monkeypatch):
+    _two(window)
+    monkeypatch.setattr(AnalysisGuideDialog, "exec", lambda self: _check(self.dot, "cell") or 1)
+    monkeypatch.setattr(CompareDialog, "exec", lambda self: 1)
+    window.help_choose()
+    sheet = next(iter(window.project.results.values()))
+    assert sheet.options["not_independent"] == "cells" and sheet.result.warnings[0].startswith("Pseudoreplication")
+
+
+def test_repeated_measures_with_blanks_offers_no_df(qtbot, window):
+    table = ColumnTable.from_columns({"A": [1.0, 2, 3, 4], "B": [2.0, 3, np.nan, 5], "C": [3.0, 5, 6, 8]}, paired=True)
+    anova = AnovaDialog(None, table, {"test": "repeated_measures"})
+    qtbot.addWidget(anova)
+    for key in ("df", "epsilon", "sd"):
+        assert anova.advanced.fields[key][3].isHidden()
+    data = window.project.add_data(DataSheet("Blanks", table))
+    guide = AnalysisGuideDialog(None, facts_for(data))
+    qtbot.addWidget(guide)
+    _check(guide.groups, 3)
+    _check(guide.paired, True)
+    rec = guide.recommendation()
+    assert rec.mixed and rec.df is None and any("mixed-effects" in text for text in rec.warnings)
+    assert guide.advanced.fields["df"][3].isHidden()
+
+
+def test_dialogs_check_advanced_values_before_running(qtbot):
+    three = ColumnTable.from_columns({"A": A, "B": B, "C": [5.0, 6, 7, 8]})
+    anova = AnovaDialog(None, three, {"test": "ordinary", "comparisons": "all", "method": "bonferroni", "m": 1})
+    qtbot.addWidget(anova)
+    anova.accept()
+    assert anova.result() == 0 and "less than" in anova.note.text()
+    compare = CompareDialog(None, three)
+    qtbot.addWidget(compare)
+    compare.advanced.set_values({"df": ["not", "a", "number"], "difference": None})
+    assert not compare.advanced.toggle.isChecked() and "df" not in compare.options()

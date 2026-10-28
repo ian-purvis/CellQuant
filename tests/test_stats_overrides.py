@@ -110,8 +110,8 @@ def test_welch_df_and_conservative():
     assert r.values["df"] == 9
     assert r.values["p"] == pytest.approx(2 * stats.t.sf(abs(base.values["t"]), 9))
     recorded(r, "df", "9 (conservative)")
-    r = compare(t, "welch_t", df=base.values["df"])  # the same df is not a change
-    untouched(r)
+    r = compare(t, "welch_t", df=base.values["df"])  # set by hand, even to the computed df, is always listed
+    assert r.values["p"] == pytest.approx(base.values["p"]) and r.values["overrides"]["df"]["default"] == r.values["overrides"]["df"]["value"]
 
 
 def test_difference_shifts_t():
@@ -250,7 +250,7 @@ def test_m_validation():
     with pytest.raises(StatisticsError, match="cannot be less than"):  # per family: control + 2 others = 2 comparisons
         ordinary_anova(t, comparisons="control", control="A", method="bonferroni", m=1)
     ok = ordinary_anova(t, comparisons="control", control="A", method="bonferroni", m=2)
-    assert "overrides" not in ok.values
+    assert ok.values["overrides"]["Number of comparisons (m)"] == {"value": "2", "default": "2"}  # listed although unchanged
 
 
 # --- ANOVA -----------------------------------------------------------------------------------------------------------
@@ -458,3 +458,17 @@ def test_paired_t_direct_call_records_methods_once():
     r = paired_t(table(paired=True)["A"].values, table(paired=True)["B"].values, df=3, difference=0.1)
     assert r.methods.count("Changed from the default") == 2
     assert r.warnings[0].startswith("Set by hand")
+
+
+def test_anova_table_says_which_df_the_tests_used():
+    r = ordinary_anova(table(), df=5)
+    row = next(row for section in r.sections if section.title == "ANOVA table" for row in section.rows if row.label.startswith("Residual"))
+    assert "set by hand" in row.formatted
+
+
+def test_rm_sd_records_the_error_term_switch():
+    from cellquant.stats.anova import repeated_measures_anova
+
+    t = ColumnTable.from_columns({"A": [1.0, 2, 3, 4, 5], "B": [2.0, 3, 5, 5, 7], "C": [3.0, 5, 6, 8, 9]}, paired=True)
+    r = repeated_measures_anova(t, comparisons="all", method="bonferroni", sd=1.0)
+    assert "Multiple comparisons error term" in r.values["overrides"]

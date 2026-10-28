@@ -71,7 +71,8 @@ class Facts:
     sds: list[float] = field(default_factory=list)
     dot: str | None = None                    # an import's dot: "replicate", "image" or "cell"
     replicates: list[int] = field(default_factory=list)  # biological replicates per group behind images or cells
-    replicate_means: bool = False             # a table of replicates: the tests use each replicate's mean
+    replicate_means: bool = False             # a table of replicates: the tests use each replicate's mean (or median)
+    replicate_summary: str = "mean"           # what a table of replicates gives each replicate: "mean" or "median"
     rows: int = 0                             # grouped: rows (first factor) and data sets (second factor)
     data_sets: int = 0
     points: int = 0                           # xy: X values with a Y (one point per X, replicates averaged)
@@ -94,6 +95,7 @@ class Recommendation:
     warnings: list[str] = field(default_factory=list)
     report: str = ""
     pseudoreplicated: bool = False            # the values are images or cells of shared samples
+    mixed: bool = False                       # paired with blanks: the engine fits a mixed-effects model
 
 
 def _finite(values: np.ndarray) -> np.ndarray:
@@ -109,12 +111,14 @@ def _shapiro(values: np.ndarray) -> float | None:
 
 
 def facts_of(table: ColumnTable | None = None, grouped: GroupedTable | None = None, xy: XYTable | None = None, *,
-             dot: str | None = None, replicates: list[int] | None = None, replicate_means: bool = False) -> Facts:
+             dot: str | None = None, replicates: list[int] | None = None, replicate_means: bool = False,
+             replicate_summary: str = "mean") -> Facts:
     """What a data sheet's table tells the guide. ``dot`` is the import's dot ("unit" is read as "replicate", "object" as
     "cell"); ``replicates`` the number of biological replicates behind each group's images or cells."""
 
     dot = {"unit": "replicate", "object": "cell"}.get(dot or "", dot)
-    facts = Facts(dot=dot, replicates=list(replicates or []), replicate_means=replicate_means)
+    facts = Facts(dot=dot, replicates=list(replicates or []), replicate_means=replicate_means,
+                  replicate_summary="median" if replicate_summary == "median" else "mean")
     if xy is not None:
         facts.shape = "xy"
         facts.names = list(xy.sets)
@@ -214,9 +218,10 @@ def _unit(answers: Answers, facts: Facts, rec: Recommendation, sizes: list[int])
 
     sizes_text = " and ".join(str(n) for n in sizes) if 0 < len(sizes) <= 6 else (f"{min(sizes)} to {max(sizes)}" if sizes else "")
     if facts.replicate_means:
-        rec.unit = ("Each value in the analysis is one biological replicate's mean (a table of replicates, as in a SuperPlot): the tests "
+        what = facts.replicate_summary
+        rec.unit = (f"Each value in the analysis is one biological replicate's {what} (a table of replicates, as in a SuperPlot): the tests "
                     f"use N, the number of replicates{f' ({sizes_text} per group)' if sizes_text else ''}, not n, the cells or images "
-                    "behind each mean. Keep the number of cells per replicate similar: each replicate's mean counts equally.")
+                    f"behind each {what}. Keep the number of cells per replicate similar: each replicate's {what} counts equally.")
         if not answers.paired:
             rec.warnings.append("If each experiment included every condition (run side by side on the same day), answer Paired: a paired "
                                 "test of the replicate means removes the run-to-run variation, and ignoring that link makes the test too "
@@ -253,7 +258,8 @@ def _two_groups(answers: Answers, facts: Facts) -> Recommendation:
                    "and loses almost nothing when they are equal, so it is the safer default.",
         "unpaired_t": "Two unpaired groups, Gaussian values, and the same SD in both (check the SDs below).",
         "lognormal_t": "Two unpaired groups of positive values whose logarithms are Gaussian (intensities, areas, counts with a long right "
-                       "tail). The test compares the logs and reports the ratio of the geometric means.",
+                       "tail). The test compares the logs and reports the ratio of the geometric means. It assumes the logs have the same "
+                       "SD in both groups, whatever the answer about SDs.",
         "mann_whitney": "Two unpaired groups, and no Gaussian assumption: the test compares ranks.",
         "paired_t": "Each replicate (or each experiment, run side by side) gave a value in both groups, so the test looks at each pair's "
                     "difference: run-to-run variation drops out, which gives more power. Ignoring the pairing makes the test too conservative.",
@@ -304,9 +310,11 @@ def _two_groups(answers: Answers, facts: Facts) -> Recommendation:
         elif test == "mann_whitney":
             rec.dof.append(("Degrees of freedom", "none: a rank test gives an exact P from the group sizes"))
             if len(sizes) == 2 and min(sizes) > 0 and smallest_p("mann_whitney", *sizes) > 0.05:
-                rec.warnings.append(f"With N = {sizes[0]} and {sizes[1]} the smallest two-tailed P Mann-Whitney can give is "
-                                    f"{smallest_p('mann_whitney', *sizes):.3g}, so it cannot reach P < 0.05 whatever the data "
-                                    "(4 per group is the least). Add replicates, or use Welch's t test if its assumptions hold.")
+                letter = "N" if answers.dot == "replicate" or answers.independent or facts.replicate_means else "n"
+                rec.warnings.append(f"With {letter} = {sizes[0]} and {sizes[1]} the smallest two-tailed P Mann-Whitney can give is "
+                                    f"{smallest_p('mann_whitney', *sizes):.3g}, so it cannot reach P < 0.05 whatever the data. It needs "
+                                    "larger groups (for example 4 and 4, or 3 and 5); a one-tailed P is half as large. Add replicates, or "
+                                    "use Welch's t test if its assumptions hold.")
         else:
             rec.dof.append(("t test df", "N₁ + N₂ − 2" if test != "welch_t" else "Welch-Satterthwaite, from the SDs"))
         if test == "unpaired_t" and len(facts.sds) >= 2 and all(np.isfinite(facts.sds[:2])) and min(facts.sds[:2]) > 0:
@@ -322,7 +330,8 @@ def _two_groups(answers: Answers, facts: Facts) -> Recommendation:
 
 
 def _many_groups(answers: Answers, facts: Facts) -> Recommendation:
-    paired, gaussian, sizes, k = answers.paired, answers.gaussian, facts.sizes, max(3, len(facts.sizes))
+    paired, gaussian, sizes = answers.paired, answers.gaussian, facts.sizes
+    k = len(sizes) if len(sizes) >= 3 else 3
     if paired:
         test = "friedman" if gaussian == "no" else "repeated_measures"
     elif gaussian == "no":
@@ -362,7 +371,19 @@ def _many_groups(answers: Answers, facts: Facts) -> Recommendation:
         alternatives.insert(0, "The values' logarithms are Gaussian: make a log table first (Analyze → Transform…) and analyze that")
     rec = Recommendation("anova", {"test": test, "comparisons": None if goal == "none" else goal, "method": None},
                          TEST_NAMES[test], why, then=then, alternatives=alternatives)
-    if paired:
+    if facts.shape == "column" and len(sizes) < 3:
+        rec.warnings.append(f"The table has {len(sizes)} column(s); comparing three or more groups needs a column per group.")
+        sizes = []
+    mixed = paired and bool(sizes) and facts.pairs is not None and facts.pairs < max(sizes)
+    if mixed:
+        rec.mixed = True
+        rec.warnings.append(f"Only {facts.pairs} of the rows have a value in every column, so the analysis fits a mixed-effects model "
+                            "instead of repeated-measures ANOVA (it keeps the incomplete rows). Its degrees of freedom come from the model, "
+                            "and degrees of freedom, ε or an SD cannot be set by hand.")
+    if paired and mixed:
+        _unit(answers, facts, rec, [max(sizes)] * k)
+        rec.dof.append(("Degrees of freedom", "from the mixed-effects model (shown in the results)"))
+    elif paired:
         n = facts.pairs if facts.pairs is not None else (min(sizes) if sizes else None)
         _unit(answers, facts, rec, [n] * k if n else [])
         if n:
@@ -411,6 +432,7 @@ def _two_factors(answers: Answers, facts: Facts) -> Recommendation:
     interaction = answers.interaction and not one_each
     why = ("Two factors (the table's rows and its data sets). The two-way ANOVA tests each factor and, with the interaction, whether the effect "
            "of one depends on the other (does the treatment work differently in the two genotypes?).")
+    cells = sum(1 for size in facts.sizes if size > 0)
     rec = Recommendation("twoway", {"interaction": interaction}, TEST_NAMES["twoway"], why,
                          then="Multiple comparisons within each row (or data set) say where the effects are.",
                          alternatives=["Without the interaction, when you assume the factors act independently: more residual df"])
@@ -426,13 +448,16 @@ def _two_factors(answers: Answers, facts: Facts) -> Recommendation:
         rec.dof.append(("Data set factor", f"c − 1 = {c - 1}"))
         if interaction:
             rec.dof.append(("Interaction", f"(r − 1)(c − 1) = {(r - 1) * (c - 1)}"))
-            rec.df = float(total - r * c)
-            rec.dof.append(("Residual (error)", f"N − rc = {total} − {r * c} = {total - r * c}"))
+            rec.df = float(total - cells)
+            rec.dof.append(("Residual (error)", f"N − rc = {total} − {r * c} = {total - r * c}" if cells == r * c else
+                            f"N − (cells with values) = {total} − {cells} = {total - cells}"))
         else:
             rec.df = float(total - r - c + 1)
             rec.dof.append(("Residual (error)", f"N − r − c + 1 = {total - r - c + 1}"))
         if one_each:
             rec.warnings.append("One value per cell: the interaction cannot be tested (no residual left), so it is left out.")
+        if cells < r * c:
+            rec.warnings.append(f"{r * c - cells} cell(s) are empty: some effects or comparisons may not be estimable, and the results say which.")
     rec.report = _report(rec, [])
     return rec
 
@@ -478,9 +503,9 @@ def recommend(answers: Answers, facts: Facts | None = None) -> Recommendation:
         rec.warnings.append("Not sure about Gaussian? Look at the dots: roughly symmetric, no long tail, nothing piled at 0 or 100%? Means of "
                             "many cells per replicate are usually close to Gaussian. With N below about 8 a normality test cannot tell, and "
                             "with large N it flags departures that do not matter, so do not rely on it alone.")
-    if rec.kind in ("compare", "anova") and (answers.dot == "replicate" or answers.independent or facts.replicate_means) and facts.sizes \
-            and min(facts.sizes) < 3:
-        rec.warnings.append(f"A group has {min(facts.sizes)} biological replicate(s). Three is a practical minimum, and subtle differences need "
+    counts = facts.sizes if (answers.dot == "replicate" or answers.independent or facts.replicate_means) else facts.replicates
+    if rec.kind in ("compare", "anova") and counts and min(counts) < 3:
+        rec.warnings.append(f"A group has {min(counts)} biological replicate(s). Three is a practical minimum, and subtle differences need "
                             "more: adding replicates raises power far more than measuring more cells in each.")
     if answers.dot != "replicate" and not answers.independent and not facts.replicate_means:
         rec.alternatives.append("A nested (hierarchical) analysis that uses every cell while modelling the replicates can find smaller "

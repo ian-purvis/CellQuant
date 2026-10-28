@@ -61,6 +61,14 @@ Each analysis dialog has an **Advanced** tick box (off by default) that shows se
 
 A setting set by hand is used only while Advanced is ticked. The results sheet lists it in a **Changed from the default** section and as a warning, the methods sentence ends with it, and the project saves it (**Change options…** shows it again). Use one only with a reason you can report, for example degrees of freedom counted from the biological replicates of a nested design. A larger df gives a smaller P, and the results say so.
 
+Notes on what a setting reaches:
+
+- **Repeated measures**: a df set by hand applies to the main F test. With the Geisser-Greenhouse correction the multiple comparisons use each pair's own differences (N − 1); a set SD switches them to the pooled error term, and the results record the switch. With blank cells (a mixed-effects model) only the comparison count can be set.
+- **Linear regression**: the df applies to the CIs, the F test of the slope and the bands; the comparison of slopes between data sets keeps its computed df.
+- **Correlation**: for Spearman's r the df applies to the t approximation of its P.
+- The ANOVA table's residual row says when the tests used a df set by hand.
+- Settings saved for one table and reused after the table changes (rows added or removed) are flagged in the dialog and on the results as chosen for a different table.
+
 ### Suggested analysis for image data
 
 - Measure: % of target (marker-positive and target-positive cells over target-positive cells) or % of segmented cells (marker-positive over every segmented object).

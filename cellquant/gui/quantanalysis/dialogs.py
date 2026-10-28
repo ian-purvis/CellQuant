@@ -32,7 +32,7 @@ from qtpy.QtWidgets import (
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
-from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, parse_p_values
+from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, parse_p_values, table_signature
 from cellquant.stats import STYLES, ColumnTable
 from cellquant.stats import sources, transforms
 from cellquant.stats.grouped import COMPARE, FAMILIES, GroupedTable, two_way_anova
@@ -96,7 +96,13 @@ class AdvancedBox:
         note.setWordWrap(True)
         note.setStyleSheet(NOTE_STYLE)
         self.form.addRow(note)
+        self.stale = QLabel()
+        self.stale.setWordWrap(True)
+        self.stale.setStyleSheet(WARNING_STYLE)
+        self.stale.setVisible(False)
+        self.form.addRow(self.stale)
         self.fields: dict[str, tuple] = {}
+        self.basis = None  # the table the settings are chosen for (project.table_signature); saved with them
         layout.addWidget(self.toggle)
         layout.addWidget(self.box)
 
@@ -133,6 +139,13 @@ class AdvancedBox:
     def set_default_text(self, key: str, text: str) -> None:
         self.fields[key][0].setItemText(0, text)
 
+    def set_label(self, key: str, text: str, tip: str | None = None) -> None:
+        mode, spin, name, row, _decimals = self.fields[key]
+        name.setText(text)
+        if tip:
+            for widget in (name, mode, spin, row):
+                widget.setToolTip(tip)
+
     def values(self) -> dict:
         """The settings set by hand, by key: a number, or a mode such as "conservative"."""
 
@@ -146,6 +159,8 @@ class AdvancedBox:
                 out[key] = mode.currentData()
             else:
                 out[key] = int(round(spin.value())) if decimals == 0 else round(spin.value(), decimals)
+        if out and self.basis is not None:
+            out["advanced_for"] = self.basis
         return out
 
     def set_values(self, options: dict) -> None:
@@ -155,19 +170,62 @@ class AdvancedBox:
             if value is None:
                 mode.setCurrentIndex(0)
                 continue
-            changed = True
             if isinstance(value, str):
-                mode.setCurrentIndex(max(0, mode.findData(value)))
-            else:
-                mode.setCurrentIndex(mode.findData("custom"))
-                spin.setValue(float(value))
+                found = mode.findData(value)
+                mode.setCurrentIndex(max(0, found))
+                changed = changed or found > 0
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):  # a damaged saved option: back to Default
+                mode.setCurrentIndex(0)
+                continue
+            changed = True
+            mode.setCurrentIndex(mode.findData("custom"))
+            spin.setValue(number)
         self.toggle.setChecked(changed)
+        was = options.get("advanced_for")
+        stale = changed and was is not None and self.basis is not None and list(was) != list(self.basis)
+        self.stale.setText(f"These settings were set for a different table ({_basis_text(was)}; now {_basis_text(self.basis)}). Check them."
+                           if stale else "")
+        self.stale.setVisible(stale)
 
 
-# Keys of the Advanced settings; an analysis's options carry only those set by hand.
-OVERRIDE_KEYS = ("df", "difference", "epsilon", "sd", "m")
+def _basis_text(basis) -> str:
+    return "values per group " + ", ".join(str(item) for item in basis) if basis else "no table"
+
+
+# Keys of the Advanced settings; an analysis's options carry only those set by hand (and the table they were set for).
+OVERRIDE_KEYS = ("df", "difference", "epsilon", "sd", "m", "advanced_for")
 # The corrections whose number of comparisons can be set by hand.
 M_METHODS = ("bonferroni", "sidak", "holm_sidak", "dunn")
+
+
+def _has_blank_rows(table: ColumnTable) -> bool:
+    """A paired table with a row that misses a value in some column (repeated measures then fits a mixed model)."""
+
+    import numpy as np
+
+    if not table.columns:
+        return False
+    rows = max(column.values.size for column in table.columns)
+    filled = [np.isfinite(np.concatenate([column.values, np.full(rows - column.values.size, np.nan)])) for column in table.columns]
+    present = np.any(filled, axis=0)
+    return bool(np.any(present & ~np.all(filled, axis=0)))
+
+
+def _check_run(kind: str, table: ColumnTable, options: dict, note: QLabel) -> bool:
+    """Run the analysis once with the Advanced settings, so a value it cannot take is caught in the dialog."""
+
+    from cellquant.gui.quantanalysis.project import DataSheet, run_anova, run_compare
+
+    try:
+        (run_compare if kind == "compare" else run_anova)(DataSheet("", table), options)
+    except CellQuantError as exc:
+        note.setText(str(exc))
+        note.setVisible(True)
+        return False
+    return True
 
 
 # --- Import CellQuant results ---------------------------------------------------------------------------------
@@ -453,12 +511,14 @@ DEFAULT_OPTIONS = {"test": "welch_t", "first": 0, "second": 1, "alternative": "t
 
 
 class CompareDialog(QDialog):
-    """The t test dialog: columns, design, distribution, test, tails and P value options."""
+    """The t test dialog: columns, design, distribution, test, tails and P value options. ``sheet`` (the data sheet)
+    lets Help me choose… know how the table was imported."""
 
-    def __init__(self, parent, table: ColumnTable, options: dict | None = None):
+    def __init__(self, parent, table: ColumnTable, options: dict | None = None, sheet=None):
         super().__init__(parent)
         self.setWindowTitle("Compare two columns")
         self.table = table
+        self.sheet = sheet
         options = {**DEFAULT_OPTIONS, **({"test": "paired_t"} if table.paired and not options else {}), **(options or {})}
         layout = QVBoxLayout(self)
         columns = QGroupBox("Columns")
@@ -511,7 +571,8 @@ class CompareDialog(QDialog):
         form.addRow("P value style", self.style)
         layout.addLayout(form)
         self.advanced = AdvancedBox(self, layout)
-        self.advanced.add("df", "Degrees of freedom", tips.OVERRIDE_DF, 0.01, 1e6, 2,
+        self.advanced.basis = table_signature(table)
+        self.advanced.add("df", "Degrees of freedom", tips.OVERRIDE_DF_T, 0.01, 1e6, 4,
                           modes=(("conservative", "Conservative (smaller N − 1)"),), value=10)
         self.advanced.add("difference", "Hypothesised difference", tips.OVERRIDE_DIFFERENCE, -1e9, 1e9, 4, 0.1, default_text="0 (no difference)")
         self.note = QLabel()
@@ -593,10 +654,11 @@ class CompareDialog(QDialog):
         self.note.setVisible(bool(notes))
 
     def _guide(self) -> None:
-        from cellquant.gui.quantanalysis.guide import AnalysisGuideDialog
-        from cellquant.stats.advisor import Answers, facts_of
+        from cellquant.gui.quantanalysis.guide import AnalysisGuideDialog, facts_for
+        from cellquant.stats.advisor import Answers, suggested
 
-        dialog = AnalysisGuideDialog(self, facts_of(self.table), Answers(groups=2, paired=bool(_checked(self.design))))
+        facts = facts_for(self.sheet, [self.first.currentData(), self.second.currentData()], self.table)
+        dialog = AnalysisGuideDialog(self, facts, suggested(facts, Answers(groups=2, paired=bool(_checked(self.design)))))
         if not dialog.exec():
             return
         if dialog.recommendation().kind == "compare":
@@ -617,6 +679,8 @@ class CompareDialog(QDialog):
         if self.first.currentIndex() == self.second.currentIndex():
             self.note.setText("Choose two different columns.")
             self.note.setVisible(True)
+            return
+        if self.advanced.values() and not _check_run("compare", self.table, self.options(), self.note):
             return
         super().accept()
 
@@ -645,10 +709,11 @@ class AnovaDialog(QDialog):
     """The one-way ANOVA dialog: design, Gaussian or not, the test, multiple comparisons (with one or two
     reference groups), alpha, CI level and P value style."""
 
-    def __init__(self, parent, table: ColumnTable, options: dict | None = None):
+    def __init__(self, parent, table: ColumnTable, options: dict | None = None, sheet=None):
         super().__init__(parent)
         self.setWindowTitle("Compare three or more columns")
         self.table = table
+        self.sheet = sheet
         options = {**ANOVA_DEFAULTS, **({"test": "repeated_measures"} if table.paired and not options else {}), **(options or {})}
         layout = QVBoxLayout(self)
         columns = QHBoxLayout()
@@ -727,7 +792,8 @@ class AnovaDialog(QDialog):
         columns.addLayout(right, 1)
         layout.addLayout(columns)
         self.advanced = AdvancedBox(self, layout)
-        self.advanced.add("df", "Residual degrees of freedom", tips.OVERRIDE_DF, 0.01, 1e6, 2, value=10)
+        self.advanced.basis = table_signature(table)
+        self.advanced.add("df", "Residual degrees of freedom", tips.OVERRIDE_DF, 0.01, 1e6, 4, value=10)
         self.advanced.add("epsilon", "Sphericity correction ε", tips.OVERRIDE_EPSILON, 0.0, 1.0, 4, 0.01, default_text="Default (Geisser-Greenhouse)",
                           value=1)
         self.advanced.add("sd", "SD for multiple comparisons", tips.OVERRIDE_SD, 1e-12, 1e12, 6, 0.1, default_text="Default (pooled SD)", value=1)
@@ -866,11 +932,17 @@ class AnovaDialog(QDialog):
             return
         test, goal = self.test.currentData(), _checked(self.goal)
         compares = goal in ("all", "control", "selected")
-        self.advanced.show_field("df", test in ("ordinary", "welch", "repeated_measures"))
-        self.advanced.show_field("epsilon", test == "repeated_measures" and self.greenhouse.isChecked())
-        self.advanced.show_field("sd", test in ("ordinary", "repeated_measures") and compares)
+        # Repeated measures with blanks is fitted as a mixed-effects model, which takes none of these.
+        mixed = test == "repeated_measures" and _has_blank_rows(self.table)
+        self.advanced.show_field("df", test in ("ordinary", "welch", "repeated_measures") and not mixed)
+        self.advanced.show_field("epsilon", test == "repeated_measures" and self.greenhouse.isChecked() and not mixed)
+        self.advanced.show_field("sd", test in ("ordinary", "repeated_measures") and compares and not mixed)
         self.advanced.show_field("m", compares and self.method.currentData() in M_METHODS)
         self.advanced.set_default_text("df", "Default (Welch, from the SDs)" if test == "welch" else "Default (computed)")
+        label, tip = {"welch": ("Denominator degrees of freedom (Welch)", tips.OVERRIDE_DF),
+                      "repeated_measures": ("Error degrees of freedom (before ε)", tips.OVERRIDE_DF_RM)}.get(
+            test, ("Residual degrees of freedom", tips.OVERRIDE_DF))
+        self.advanced.set_label("df", label, tip)
 
     def _notes(self) -> None:
         notes = []
@@ -882,10 +954,11 @@ class AnovaDialog(QDialog):
         self.note.setVisible(bool(notes))
 
     def _guide(self) -> None:
-        from cellquant.gui.quantanalysis.guide import AnalysisGuideDialog
-        from cellquant.stats.advisor import Answers, facts_of
+        from cellquant.gui.quantanalysis.guide import AnalysisGuideDialog, facts_for
+        from cellquant.stats.advisor import Answers, suggested
 
-        dialog = AnalysisGuideDialog(self, facts_of(self.table), Answers(groups=3, paired=bool(_checked(self.design))))
+        facts = facts_for(self.sheet, None, self.table)
+        dialog = AnalysisGuideDialog(self, facts, suggested(facts, Answers(groups=3, paired=bool(_checked(self.design)))))
         if not dialog.exec():
             return
         if dialog.recommendation().kind == "anova":
@@ -916,6 +989,8 @@ class AnovaDialog(QDialog):
         if goal == "selected" and not options["pairs"]:
             self.note.setText("Tick at least one pair to compare.")
             self.note.setVisible(True)
+            return
+        if self.advanced.values() and not _check_run("anova", self.table, options, self.note):
             return
         super().accept()
 
@@ -992,7 +1067,8 @@ class TwoWayDialog(QDialog):
         form.addRow("P value style", self.style)
         layout.addLayout(form)
         self.advanced = AdvancedBox(self, layout)
-        self.advanced.add("df", "Residual degrees of freedom", tips.OVERRIDE_DF, 0.01, 1e6, 2, value=10)
+        self.advanced.basis = table_signature(grouped)
+        self.advanced.add("df", "Residual degrees of freedom", tips.OVERRIDE_DF, 0.01, 1e6, 4, value=10)
         self.advanced.set_values(options)
         self.note = QLabel()
         self.note.setWordWrap(True)
@@ -1120,8 +1196,9 @@ class XYDialog(QDialog):
         form.addRow("P value style", self.style)
         layout.addLayout(form)
         self.advanced = AdvancedBox(self, layout)
-        self.advanced.add("df", "Residual degrees of freedom" if kind == "linreg" else "Degrees of freedom (t test of r)", tips.OVERRIDE_DF,
-                          0.01, 1e6, 2, value=10)
+        self.advanced.basis = table_signature(xy)
+        self.advanced.add("df", "Residual degrees of freedom" if kind == "linreg" else "Degrees of freedom (t test of r)",
+                          tips.OVERRIDE_DF_LINREG if kind == "linreg" else tips.OVERRIDE_DF_CORR, 0.01, 1e6, 4, value=10)
         self.advanced.set_values(options)
         self.note = QLabel()
         self.note.setWordWrap(True)

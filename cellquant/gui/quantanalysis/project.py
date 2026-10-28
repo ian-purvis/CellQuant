@@ -419,6 +419,35 @@ class Project(QObject):
 # --- Running analyses ------------------------------------------------------------------------------------------
 
 
+def table_signature(table) -> list[int]:
+    """What Advanced settings are chosen for: the values per group of a column table (per cell of a grouped table, per data
+    set of an XY table). Saved with the settings, so a later change of the table is flagged."""
+
+    if table is None:
+        return []
+    if isinstance(table, GroupedTable):
+        return [int(np.isfinite(table.values[i, j]).sum()) for i in range(len(table.rows)) for j in range(len(table.columns))]
+    if isinstance(table, XYTable):
+        return [int(table.points(j)[0].size) for j in range(len(table.sets))]
+    return [int(column.finite.size) for column in table.columns]
+
+
+def _hand_set_notes(result: AnalysisResult, table, options: dict) -> None:
+    """Warnings the options carry: settings set by hand for a different table, and the guide's answer that the values are
+    images or cells of shared samples."""
+
+    was = options.get("advanced_for")
+    if was is not None and any(options.get(key) is not None for key in ("df", "difference", "epsilon", "sd", "m")):
+        now = table_signature(table)
+        if list(was) != now:
+            result.warnings.insert(0, f"The settings set by hand under Advanced were chosen for a different table (values per group "
+                                      f"{', '.join(map(str, was))}; now {', '.join(map(str, now))}). Check them with Change options….")
+    what = options.get("not_independent")
+    if what in ("images", "cells") and not any(text.startswith("Pseudoreplication") for text in result.warnings):
+        result.warnings.insert(0, f"Pseudoreplication: each value is one of the {what} of shared samples (your answer in Help me choose…), "
+                                  "so the test counts them as independent and P is too small. Use one value per biological replicate.")
+
+
 def run_compare(data: DataSheet, options: dict) -> AnalysisResult:
     table = data.table
     first, second = options.get("first", 0), options.get("second", 1)
@@ -436,6 +465,7 @@ def run_compare(data: DataSheet, options: dict) -> AnalysisResult:
         kwargs["difference"] = options["difference"]
     result = compare(table, test, first, second, **kwargs)
     _small_n_warning(result, table, test, first, second, kwargs.get("alpha", 0.05))
+    _hand_set_notes(result, table, options)
     return result
 
 
@@ -481,7 +511,9 @@ def run_anova(data: DataSheet, options: dict) -> AnalysisResult:
         kwargs.pop("m", None)
     if goal != "control":
         kwargs.pop("family", None)
-    return one_way(table, test, **kwargs)
+    result = one_way(table, test, **kwargs)
+    _hand_set_notes(result, table, options)
+    return result
 
 
 TWO_WAY_KEYS = ("interaction", "compare", "goal", "method", "control", "family", "alpha", "ci", "style", "df")
@@ -504,7 +536,9 @@ def run_two_way(data: DataSheet, options: dict) -> AnalysisResult:
         inner = grouped.rows if kwargs["compare"] in ("within_columns", "row_means") else grouped.columns
         if kwargs.get("control") not in inner:
             raise CellQuantError(f"The reference {kwargs.get('control')!r} is gone; choose it again (Change options…).")
-    return two_way_anova(grouped, **kwargs)
+    result = two_way_anova(grouped, **kwargs)
+    _hand_set_notes(result, grouped, options)
+    return result
 
 
 LINREG_KEYS = ("through_origin", "replicates", "ci", "alpha", "style", "df")
@@ -519,12 +553,16 @@ def _xy_of(data: DataSheet | None, what: str) -> XYTable:
 
 def run_linear_regression(data: DataSheet, options: dict) -> AnalysisResult:
     kwargs = {key: options[key] for key in LINREG_KEYS if key in options and options[key] is not None}
-    return linear_regression(_xy_of(data, "Linear regression"), **kwargs)
+    result = linear_regression(_xy_of(data, "Linear regression"), **kwargs)
+    _hand_set_notes(result, data.xy, options)
+    return result
 
 
 def run_xy_correlation(data: DataSheet, options: dict) -> AnalysisResult:
     kwargs = {key: options[key] for key in XYCORR_KEYS if key in options and options[key] is not None}
-    return xy_correlation(_xy_of(data, "Correlation of X with Y"), **kwargs)
+    result = xy_correlation(_xy_of(data, "Correlation of X with Y"), **kwargs)
+    _hand_set_notes(result, data.xy, options)
+    return result
 
 
 def _as_list(value) -> list:

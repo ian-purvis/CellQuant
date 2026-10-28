@@ -873,12 +873,12 @@ class QuantAnalysisWindow(QMainWindow):
             if len(data.table) < 2:
                 self.status("Comparing needs at least two columns.")
                 return None
-            dialog = lambda: CompareDialog(self, data.table)  # noqa: E731
+            dialog = lambda: CompareDialog(self, data.table, sheet=data)  # noqa: E731
         elif kind == "anova":
             if len(data.table) < 3:
                 self.status("Comparing three or more columns needs at least three columns. For two, use Compare two columns….")
                 return None
-            dialog = lambda: AnovaDialog(self, data.table)  # noqa: E731
+            dialog = lambda: AnovaDialog(self, data.table, sheet=data)  # noqa: E731
         elif kind == "outliers":
             dialog = lambda: OutlierDialog(self, data.table)  # noqa: E731
         elif kind == "twoway":
@@ -919,14 +919,16 @@ class QuantAnalysisWindow(QMainWindow):
         if data is None and sheet.kind != "pstack":
             return
         if options is None:
-            box = {"compare": lambda: CompareDialog(self, data.table, sheet.options), "anova": lambda: AnovaDialog(self, data.table, sheet.options),
+            box = {"compare": lambda: CompareDialog(self, data.table, sheet.options, sheet=data),
+                   "anova": lambda: AnovaDialog(self, data.table, sheet.options, sheet=data),
                    "outliers": lambda: OutlierDialog(self, data.table, sheet.options), "pstack": lambda: PStackDialog(self, sheet.options),
                    "twoway": lambda: TwoWayDialog(self, data.grouped, sheet.options),
                    "linreg": lambda: XYDialog(self, data.xy, "linreg", sheet.options),
                    "xycorr": lambda: XYDialog(self, data.xy, "xycorr", sheet.options)}[sheet.kind]()
             if not box.exec():
                 return
-            options = box.options()
+            # The guide's answer that the values are not independent stays with the analysis.
+            options = {**box.options(), **{key: sheet.options[key] for key in ("not_independent",) if key in sheet.options}}
         sheet.options = options
         sheet.name = result_name(sheet.kind, options, data)
         self.sheet_renamed(sheet)
@@ -1006,15 +1008,18 @@ class QuantAnalysisWindow(QMainWindow):
             self.status(f"{rec.name} needs {need[1]}. Select or make one, then run it.")
             return dialog
         if kind == "compare":
-            box = CompareDialog(self, data.table, {**DEFAULT_OPTIONS, **options})
+            box = CompareDialog(self, data.table, {**DEFAULT_OPTIONS, **options}, sheet=data)
         elif kind == "anova":
-            box = AnovaDialog(self, data.table, options)
+            box = AnovaDialog(self, data.table, options, sheet=data)
         elif kind == "twoway":
             box = TwoWayDialog(self, data.grouped, {**TWO_WAY_DEFAULTS, **options})
         else:
             box = XYDialog(self, data.xy, kind, options)
         if box.exec():
-            self.analyze(kind, box.options())
+            chosen = box.options()
+            if rec.pseudoreplicated and not data.pseudoreplicated:
+                chosen["not_independent"] = "images" if dialog.answers().dot == "image" else "cells"
+            self.analyze(kind, chosen)
         return dialog
 
     def new_graph(self, kind: str) -> GraphSheet | None:
