@@ -374,6 +374,8 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
     analysis = getattr(result, "analysis", "") if result is not None else ""
     if analysis in ("ROC curve", "Bland-Altman") and getattr(data, "xy", None) is None and getattr(data, "grouped", None) is None:
         return (_draw_roc if analysis == "ROC curve" else _draw_bland_altman)(figure, data, result, fmt, font, notes)
+    if analysis == "Survival" and getattr(data, "xy", None) is not None:
+        return _draw_survival(figure, data, result, fmt, font, notes)
     if getattr(data, "xy", None) is not None:
         if graph.kind != "xy":
             notes.append(f"An XY table is drawn as an XY graph; {KINDS[graph.kind][0].lower()} is for column tables.")
@@ -892,6 +894,8 @@ def _legend(ax, kind: str, series: dict, fmt: GraphFormat, font: float, plot, re
         if kind == "bar" and style.show_bar:
             handles.append(Patch(facecolor=_rgba(style.bar_fill or color, style.bar_alpha), edgecolor=style.bar_border or color,
                                  hatch=style.hatch or None, linewidth=style.bar_border_width))
+        elif kind == "survival":
+            handles.append(Line2D([], [], color=color, linewidth=max(1.0, style.center_width * 0.75)))
         elif kind in ("box", "violin"):
             handles.append(Patch(facecolor=_rgba(style.box_fill or color, style.box_alpha), edgecolor=style.box_line or color,
                                  linewidth=style.box_line_width))
@@ -1470,6 +1474,48 @@ def _draw_roc(figure, data, result, fmt: GraphFormat, font: float, notes: list[s
     line = (f"Area = {result.values['auc']:.2f}, {p_text(result.values['p'], style=result.options.get('style', 'classic'))}"
             f" (N = {result.values['n_controls']} / {result.values['n_patients']})")
     _finish_diagnostic(figure, ax, fmt, font, notes, f"{fmt.title}\n{line}" if fmt.title else line, "100% − Specificity (%)", "Sensitivity (%)")
+    return notes
+
+
+def _draw_survival(figure, data, result, fmt: GraphFormat, font: float, notes: list[str]) -> list[str]:
+    """Linked Kaplan-Meier curves: each group's percent surviving as a step curve from 100% at time 0, a tick at every censored subject
+    and, if the Band is on, the log-log confidence band."""
+
+    values = result.values
+    xy = data.xy
+    ax = figure.add_subplot(111)
+    _style_frame(ax, fmt)
+    if fmt.x.scale != "linear" or fmt.y.scale != "linear":
+        notes.append("Survival curves are drawn on linear axes.")
+    sets = {name: j for j, name in enumerate(xy.sets)}
+    for name in values["groups"]:
+        style = fmt.dataset(name)
+        if not style.visible:
+            continue
+        color, tag = fmt.color_of(name, sets.get(name, 0)), ("dataset", name)
+        curve = values["curves"][name]
+        times = np.concatenate([[0.0], curve["time"].to_numpy(float)])
+        percent = 100 * np.concatenate([[1.0], curve["survival"].to_numpy(float)])
+        if fmt.xy_band != "none":  # where the log-log interval is undefined (survival 0 or 1) the band closes onto the curve
+            low = 100 * np.concatenate([[1.0], np.where(np.isfinite(curve["low"]), curve["low"], curve["survival"])])
+            high = 100 * np.concatenate([[1.0], np.where(np.isfinite(curve["high"]), curve["high"], curve["survival"])])
+            _tag(ax.fill_between(times, low, high, step="post", color=color, alpha=0.15, linewidth=0, zorder=1), *tag)
+        _tag(ax.step(times, percent, where="post", color=color, linewidth=max(1.0, style.center_width * 0.75), solid_joinstyle="miter",
+                     zorder=3)[0], *tag)
+        marks = curve[curve["censored"] > 0]
+        if style.show_symbols and len(marks):  # a censored subject is a tick on the curve at its time
+            _tag(ax.plot(marks["time"].to_numpy(float), 100 * marks["survival"].to_numpy(float), linestyle="none", marker="|",
+                         markersize=max(6.0, font * 0.8), markeredgewidth=1.4, color=color, zorder=4)[0], *tag)
+    ax.set_ylim(0, 100)
+    ax.margins(x=0.03)
+    ax.set_xlim(left=0)
+    line = f"N = {values['subjects']} subjects"
+    series = {name: sets.get(name, 0) for name in values["groups"]}
+    legend = _legend(ax, "survival", series, fmt, font, None) if fmt.legend.show and fmt.legend.position != "custom" else None
+    _finish_diagnostic(figure, ax, fmt, font, notes, f"{fmt.title}\n{line}" if fmt.title else line, xy.x_title, "Percent survival")
+    if fmt.legend.show and fmt.legend.position == "custom":
+        legend = _legend(ax, "survival", series, fmt, font, figure._cq_plot)
+    figure._cq_legend = legend
     return notes
 
 

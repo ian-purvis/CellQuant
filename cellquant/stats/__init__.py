@@ -42,6 +42,7 @@ from cellquant.stats.normality import lognormality, normality
 from cellquant.stats.outliers import grubbs_fit, identify_outliers, rout_fit
 from cellquant.stats.pvalues import STYLES, format_p, p_summary, p_text
 from cellquant.stats.results import AnalysisResult, Row, Section
+from cellquant.stats.survival import SurvivalTable, kaplan_meier, survival
 from cellquant.stats.tables import Column, ColumnTable
 from cellquant.stats.transforms import column_math, fraction_of_total, normalize, process, remove_baseline, transform
 from cellquant.stats.ttests import (
@@ -75,6 +76,7 @@ __all__ = [
     "GroupedTable",
     "Row",
     "Section",
+    "SurvivalTable",
     "XYTable",
     "adjust_p",
     "bartlett_test",
@@ -97,6 +99,7 @@ __all__ = [
     "hedges_j",
     "identify_outliers",
     "kolmogorov_smirnov",
+    "kaplan_meier",
     "kruskal_wallis",
     "kurtosis",
     "linear_regression",
@@ -123,6 +126,7 @@ __all__ = [
     "roc_curve",
     "rout_fit",
     "skewness",
+    "survival",
     "transform",
     "two_way_anova",
     "unpaired_t",

@@ -57,6 +57,7 @@ from cellquant.gui.quantanalysis.dialogs import (
     ProcessDialog,
     PStackDialog,
     RocDialog,
+    SurvivalDialog,
     TwoWayDialog,
     XYDialog,
 )
@@ -246,6 +247,7 @@ class QuantAnalysisWindow(QMainWindow):
             ("New grouped table", tips.NEW_GROUPED, self.new_grouped_table),
             ("New XY table", tips.NEW_XY, self.new_xy_table),
             ("New contingency table", tips.NEW_CONTINGENCY, self.new_contingency_table),
+            ("New survival table", tips.NEW_SURVIVAL, self.new_survival_table),
             ("Open project…", "A QuantAnalysis project file (.cqstats) saved before: its tables, analyses and graphs.", self.open_project_dialog),
         ):
             button = QPushButton(label)
@@ -274,6 +276,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(file, "New grouped table", self.new_grouped_table, tips.NEW_GROUPED)
         self._action(file, "New XY table", self.new_xy_table, tips.NEW_XY)
         self._action(file, "New contingency table", self.new_contingency_table, tips.NEW_CONTINGENCY)
+        self._action(file, "New survival table", self.new_survival_table, tips.NEW_SURVIVAL)
         self._action(file, "Import CSV…", self.import_csv_dialog, "A CSV file, wide (one column per group) or long (value and group columns).")
         file.addSeparator()
         self._action(file, "Import from the open experiment…", self.import_experiment, "The experiment open in CellQuant, at its current cutoffs.")
@@ -295,6 +298,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(analyze, "Contingency table…", lambda: self.analyze("contingency"), tips.CONTINGENCY)
         self._action(analyze, "ROC curve…", lambda: self.analyze("roc"), tips.ROC)
         self._action(analyze, "Bland-Altman…", lambda: self.analyze("blandaltman"), tips.BLAND_ALTMAN)
+        self._action(analyze, "Survival curves (Kaplan-Meier)…", lambda: self.analyze("survival"), tips.SURVIVAL)
         analyze.addSeparator()
         self._action(analyze, "Identify outliers…", lambda: self.analyze("outliers"),
                      "ROUT, Grubbs' and iterative Grubbs' tests. Flagged values are shaded in the table and hollow on graphs; the table is not changed.")
@@ -688,6 +692,15 @@ class QuantAnalysisWindow(QMainWindow):
         self.select(sheet.id)
         return sheet
 
+    def new_survival_table(self) -> DataSheet:
+        """An empty survival table: an XY table with Time as X and two groups (one replicate each), one row per subject."""
+
+        sheet = DataSheet(f"Data {len(self.project.data) + 1}", ColumnTable())
+        set_xy(sheet, XYTable("", "Time", np.full(8, np.nan), ["Group A", "Group B"], np.full((8, 2, 1), np.nan)))
+        self.project.add_data(sheet)
+        self.select(sheet.id)
+        return sheet
+
     def new_contingency_table(self) -> DataSheet:
         """An empty 2 × 2 contingency table to type counts into."""
 
@@ -944,6 +957,11 @@ class QuantAnalysisWindow(QMainWindow):
                 self.status(f"{name} needs at least two columns: {'the controls and the patients' if kind == 'roc' else 'method A and method B'}.")
                 return None
             dialog = (lambda: RocDialog(self, data.table)) if kind == "roc" else (lambda: BlandAltmanDialog(self, data.table))
+        elif kind == "survival":
+            if data.xy is None:
+                self.status("Survival curves need an XY table with one row per subject: File → New survival table.")
+                return None
+            dialog = lambda: SurvivalDialog(self, data.xy)  # noqa: E731
         elif kind == "contingency":
             if data.contingency is None:
                 self.status("Contingency analyses need a contingency table of counts: File → New contingency table.")
@@ -960,6 +978,9 @@ class QuantAnalysisWindow(QMainWindow):
         if sheet is not None and kind in ("roc", "blandaltman") and not sheet.error:
             # An ROC curve or Bland-Altman plot is its own graph; the table's column graphs stay as they are.
             self.project.add_graph(GraphSheet(f"{sheet.name} (graph)", data.id, "scatter", {}, sheet.id))
+        if sheet is not None and kind == "survival" and not sheet.error:
+            # The survival curves are their own graph, with the legend on (the groups are told apart by colour).
+            self.project.add_graph(GraphSheet(f"{sheet.name} (graph)", data.id, "xy", {"legend": {"show": True}}, sheet.id))
         if sheet is not None and kind in ("compare", "anova", "linreg", "curvefit", "contingency"):
             for graph in self.project.graphs.values():
                 if graph.data_id == data.id and graph.result_id is None:
@@ -993,7 +1014,8 @@ class QuantAnalysisWindow(QMainWindow):
                    "curvefit": lambda: CurveFitDialog(self, data.xy, sheet.options),
                    "contingency": lambda: ContingencyDialog(self, data.contingency, sheet.options),
                    "roc": lambda: RocDialog(self, data.table, sheet.options),
-                   "blandaltman": lambda: BlandAltmanDialog(self, data.table, sheet.options)}[sheet.kind]()
+                   "blandaltman": lambda: BlandAltmanDialog(self, data.table, sheet.options),
+                   "survival": lambda: SurvivalDialog(self, data.xy, sheet.options)}[sheet.kind]()
             if not box.exec():
                 return
             # The guide's answer that the values are not independent stays with the analysis.
@@ -1215,6 +1237,8 @@ def result_name(kind: str, options: dict, data: DataSheet | None) -> str:
         return f"ROC curve{where}"
     if kind == "blandaltman":
         return f"Bland-Altman{where}"
+    if kind == "survival":
+        return f"Survival{where}"
     if kind == "curvefit":
         return f"Nonlinear regression ({CURVE_MODELS.get(str(options.get('model')), CURVE_MODELS['log_dose_response']).name}){where}"
     if kind == "xycorr":
