@@ -417,6 +417,9 @@ class GraphSection(Section):
         form.addRow("Values", self.values_row)
         self.replicate_link = self.check("Join each replicate", tips.SUPERPLOT_LINK)
         form.addRow("Lines", self.replicate_link)
+        self.contingency_values = self.combo({key: name for key, (name, _tip) in graphs.CONTINGENCY_VALUES.items()},
+                                             "\n".join(f"{name}: {tip}" for name, tip in graphs.CONTINGENCY_VALUES.values()))
+        form.addRow("Show", self.contingency_values)
         self.comparison = QComboBox()
         self.comparison.setToolTip(tips.GRAPH_COMPARISON)
         self.comparison.currentIndexChanged.connect(self.changed)
@@ -450,12 +453,14 @@ class GraphSection(Section):
         self.comparison.clear()
         self.comparison.addItem("none", None)
         for result in self.view.project.results.values():
-            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "twoway", "linreg", "curvefit"):
+            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "twoway", "linreg", "curvefit", "contingency"):
                 self.comparison.addItem(result.name, result.id)
         self.comparison.setCurrentIndex(max(0, self.comparison.findData(sheet.result_id)))
         data = self.view.project.data.get(sheet.data_id)
         _row_visible(self.form, self.arrangement_row, data is not None and data.grouped is not None)
         _row_visible(self.form, self.xy_row, data is not None and data.xy is not None)
+        _row_visible(self.form, self.contingency_values, data is not None and data.contingency is not None)
+        self.contingency_values.setCurrentIndex(max(0, self.contingency_values.findData(fmt.contingency_values)))
         self.xy_replicates.setCurrentIndex(max(0, self.xy_replicates.findData(fmt.xy_replicates)))
         self.xy_band.setCurrentIndex(max(0, self.xy_band.findData(fmt.xy_band)))
         self.arrangement.setCurrentIndex(max(0, self.arrangement.findData(fmt.grouped_layout)))
@@ -491,6 +496,7 @@ class GraphSection(Section):
         fmt.replicate_layout, fmt.replicate_alpha = self.replicate_layout.currentData(), self.replicate_alpha.value()
         fmt.replicate_link = self.replicate_link.isChecked()
         self._superplot_rows()
+        fmt.contingency_values = self.contingency_values.currentData()
         fmt.show_outliers = self.show_outliers.isChecked()
         fmt.dot_size = self.dot_size.value()
         fmt.font_family = self.font_family.currentData() or ""

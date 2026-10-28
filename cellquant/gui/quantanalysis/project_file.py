@@ -20,9 +20,21 @@ import numpy as np
 import pandas as pd
 
 from cellquant.errors import CellQuantError
-from cellquant.gui.quantanalysis.project import DataSheet, GraphSheet, LayoutSheet, Project, ResultSheet, reserve_ids, set_grouped, set_replicates, set_xy
+from cellquant.gui.quantanalysis.project import (
+    DataSheet,
+    GraphSheet,
+    LayoutSheet,
+    Project,
+    ResultSheet,
+    reserve_ids,
+    set_contingency,
+    set_grouped,
+    set_replicates,
+    set_xy,
+)
 from cellquant.stats.replicates import ReplicateTable
 from cellquant.stats import ColumnTable, transforms
+from cellquant.stats.contingency import ContingencyTable
 from cellquant.stats.grouped import GroupedTable
 from cellquant.stats.xy import XYTable
 from cellquant.stats.sources import ImportSpec
@@ -32,7 +44,7 @@ SUFFIX = ".cqstats"
 FORMAT = "cellquant-quantanalysis-project"
 VERSION = 1
 MEMBER = "project.json"
-RESULT_KINDS = {"compare", "anova", "colstats", "normality", "outliers", "pstack", "twoway", "linreg", "xycorr", "curvefit"}
+RESULT_KINDS = {"compare", "anova", "colstats", "normality", "outliers", "pstack", "twoway", "linreg", "xycorr", "curvefit", "contingency"}
 
 
 # --- Writing -------------------------------------------------------------------------------------------------------------
@@ -104,6 +116,9 @@ def _data(sheet: DataSheet, experiment_dir: str | None) -> dict:
         "grouped": None if sheet.grouped is None else {
             "rows": list(sheet.grouped.rows), "columns": list(sheet.grouped.columns),
             "values": [[_numbers(cell) for cell in row] for row in sheet.grouped.values]},
+        "contingency": None if sheet.contingency is None else {
+            "rows": list(sheet.contingency.rows), "columns": list(sheet.contingency.columns),
+            "counts": [_numbers(row) for row in sheet.contingency.counts]},
         "xy": None if sheet.xy is None else {
             "x_title": sheet.xy.x_title, "x": _numbers(sheet.xy.x), "sets": list(sheet.xy.sets),
             "values": [[_numbers(cell) for cell in row] for row in sheet.xy.values]},
@@ -265,6 +280,10 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
                 set_grouped(sheet, GroupedTable(table.title, list(grouped["rows"]), list(grouped["columns"]),
                                                 np.array([[_values(cell) for cell in row] for row in grouped["values"]], dtype=float)
                                                 .reshape(len(grouped["rows"]), len(grouped["columns"]), -1)))
+            counts = item.get("contingency")
+            if isinstance(counts, dict):
+                set_contingency(sheet, ContingencyTable(table.title, list(counts["rows"]), list(counts["columns"]),
+                                                        np.array([_values(row) for row in counts["counts"]], dtype=float)))
             xy = item.get("xy")
             if isinstance(xy, dict):
                 x = _values(xy["x"])
