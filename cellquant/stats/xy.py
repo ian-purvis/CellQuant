@@ -17,6 +17,7 @@ import pandas as pd
 from scipy import stats
 
 from cellquant.errors import StatisticsError
+from cellquant.stats._common import check_df, df_override, record_overrides
 from cellquant.stats.pvalues import format_p, p_summary
 from cellquant.stats.results import AnalysisResult, fmt, fmt_ci
 
@@ -96,8 +97,11 @@ class XYTable:
 # --- Linear regression ----------------------------------------------------------------------------------------
 
 
-def fit_line(x: np.ndarray, y: np.ndarray, through_origin: bool = False) -> dict:
-    """Least-squares line through (x, y). Raises when it cannot be fitted."""
+def fit_line(x: np.ndarray, y: np.ndarray, through_origin: bool = False, df_set: float | None = None) -> dict:
+    """Least-squares line through (x, y). Raises when it cannot be fitted.
+
+    ``df_set`` (a positive number, already checked) replaces the residual df in the t critical value, the F test of the slope and the bands;
+    MS_residual still divides by the computed df (kept as ``df_computed``)."""
 
     x, y = np.asarray(x, float), np.asarray(y, float)
     n = x.size
@@ -126,10 +130,13 @@ def fit_line(x: np.ndarray, y: np.ndarray, through_origin: bool = False) -> dict
     r2 = 1.0 - ss_resid / ss_total if ss_total > 0 else float("nan")
     ss_reg = ss_total - ss_resid
     f = ss_reg / ms if ms > 0 else float("nan")
+    df_computed = df
+    if df_set is not None:
+        df = df_set
     p = float(stats.f.sf(f, 1, df)) if math.isfinite(f) else float("nan")
     return {"slope": slope, "intercept": intercept, "cov": cov * ms, "unscaled": cov, "ms": ms, "sy_x": math.sqrt(ms), "df": df, "n": n,
             "r2": r2, "f": f, "p": p, "ss_resid": ss_resid, "x_min": float(x.min()), "x_max": float(x.max()),
-            "through_origin": through_origin, "x_mean": float(x.mean())}
+            "through_origin": through_origin, "x_mean": float(x.mean()), **({"df_computed": df_computed} if df_set is not None else {})}
 
 
 def band(fit: dict, xs, ci: float = 0.95, prediction: bool = False) -> tuple[np.ndarray, np.ndarray]:
@@ -157,7 +164,7 @@ def _compare_lines(fits: dict[str, dict], data: dict[str, tuple[np.ndarray, np.n
 
     names = list(fits)
     ss_separate = sum(fits[name]["ss_resid"] for name in names)
-    df_separate = sum(fits[name]["df"] for name in names)
+    df_separate = sum(fits[name].get("df_computed", fits[name]["df"]) for name in names)
     # One common slope, an intercept per line.
     columns, ys = [], []
     for index, name in enumerate(names):
@@ -193,10 +200,12 @@ def _compare_lines(fits: dict[str, dict], data: dict[str, tuple[np.ndarray, np.n
 
 
 def linear_regression(table: XYTable, *, through_origin: bool = False, replicates: str = "each", ci: float = 0.95, alpha: float = 0.05,
-                      style: str = "classic") -> AnalysisResult:
+                      style: str = "classic", df=None) -> AnalysisResult:
     """A straight line through each data set of an XY table.
 
-    ``replicates``: "each" (every replicate is a point) or "mean" (each row's mean is one point)."""
+    ``replicates``: "each" (every replicate is a point) or "mean" (each row's mean is one point).
+    ``df`` (advanced override, recorded in "Changed from the default") replaces the residual df n - 2 (n - 1 through the
+    origin) in the slope and intercept CIs and P and in the F test of the slope ≠ 0; the fitted line, SEs and R² are unchanged."""
 
     if not 0 < ci < 1:
         raise StatisticsError("The confidence level must be between 0 and 1 (for example 0.95).")
@@ -208,13 +217,19 @@ def linear_regression(table: XYTable, *, through_origin: bool = False, replicate
                                                                 "alpha": alpha, "style": style})
     level = f"{100 * ci:g}% CI"
     fits, data, out = {}, {}, {}
+    changes, larger = [], []
+    if df is not None:
+        check_df(df)
     for j, name in enumerate(table.sets):
         x, y = table.points(j, means=replicates == "mean")
         try:
-            fit = fit_line(x, y, through_origin)
+            fit = fit_line(x, y, through_origin, float(df) if df is not None else None)
         except StatisticsError as exc:
             result.warnings.append(f"{name}: {exc}")
             continue
+        if df is not None:
+            label = "Residual df" if len(table.sets) == 1 else f"Residual df ({name})"
+            df_override(df, fit["df_computed"], label, changes, larger)
         fits[name], data[name] = fit, (x, y)
         t = stats.t.ppf(0.5 + ci / 2, fit["df"])
         se_slope, se_intercept = math.sqrt(fit["cov"][0, 0]), math.sqrt(fit["cov"][1, 1])
@@ -236,7 +251,7 @@ def linear_regression(table: XYTable, *, through_origin: bool = False, replicate
             ("Goodness of fit", "R squared"): fmt(fit["r2"]),
             ("Goodness of fit", "Sy.x"): fmt(fit["sy_x"]),
             ("Is the slope different from zero?", "F"): fmt(fit["f"]),
-            ("Is the slope different from zero?", "DFn, DFd"): f"1, {fit['df']}",
+            ("Is the slope different from zero?", "DFn, DFd"): f"1, {fmt(fit['df'])}",
             ("Is the slope different from zero?", "P value"): format_p(fit["p"], style=style),
             ("Is the slope different from zero?", "Significant?"): ("" if sig is None else f"{'Yes' if sig else 'No'} "
                                                                    f"({p_summary(fit['p'], style)})"),
@@ -277,14 +292,17 @@ def linear_regression(table: XYTable, *, through_origin: bool = False, replicate
                       f"Student's t; the slope was tested against zero by an F test (alpha = {alpha:g}).{compared}")
     if any(fit["n"] < 5 for fit in fits.values()):
         result.warnings.append("Fewer than 5 points in a data set: the line, its CIs and R² are rough.")
+    record_overrides(result, changes, larger)
     return result
 
 
 # --- Correlation ----------------------------------------------------------------------------------------------
 
 
-def correlation(x: np.ndarray, y: np.ndarray, method: str = "pearson", ci: float = 0.95) -> dict:
-    """r (Pearson) or rs (Spearman) with its CI (Fisher z; approximate for Spearman) and two-tailed P."""
+def correlation(x: np.ndarray, y: np.ndarray, method: str = "pearson", ci: float = 0.95, df_set: float | None = None) -> dict:
+    """r (Pearson) or rs (Spearman) with its CI (Fisher z; approximate for Spearman) and two-tailed P.
+
+    ``df_set`` (a positive number, already checked) makes P the t test of r, t = r√(n-2)/√(1-r²), with that df instead of n - 2."""
 
     keep = np.isfinite(x) & np.isfinite(y)
     x, y = np.asarray(x, float)[keep], np.asarray(y, float)[keep]
@@ -300,6 +318,8 @@ def correlation(x: np.ndarray, y: np.ndarray, method: str = "pearson", ci: float
     else:
         raise StatisticsError("method must be 'pearson' or 'spearman'.")
     r, p = float(r), float(p)
+    if df_set is not None:
+        p = 0.0 if abs(r) >= 1 else float(2 * stats.t.sf(abs(r) * math.sqrt(n - 2) / math.sqrt(1 - r * r), df_set))
     low = high = float("nan")
     if n > 3 and abs(r) < 1:
         z, half = math.atanh(r), stats.norm.ppf(0.5 + ci / 2) / math.sqrt(n - 3)
@@ -310,8 +330,9 @@ def correlation(x: np.ndarray, y: np.ndarray, method: str = "pearson", ci: float
 
 
 def xy_correlation(table: XYTable, *, method: str = "pearson", ci: float = 0.95, alpha: float = 0.05, style: str = "classic",
-                   replicates: str = "each") -> AnalysisResult:
-    """X against each data set's Y: Pearson's r or Spearman's rs."""
+                   replicates: str = "each", df=None) -> AnalysisResult:
+    """X against each data set's Y: Pearson's r or Spearman's rs. ``df`` (advanced override, recorded in "Changed from the
+    default") replaces n - 2 in the t test of r (the Fisher z CI is unchanged)."""
 
     if method not in ("pearson", "spearman"):
         raise StatisticsError("method must be 'pearson' or 'spearman'.")
@@ -319,13 +340,18 @@ def xy_correlation(table: XYTable, *, method: str = "pearson", ci: float = 0.95,
     result = AnalysisResult(f"Correlation ({name})", table.title, {"method": method, "ci": ci, "alpha": alpha, "style": style,
                                                                      "replicates": replicates})
     out, values = {}, {}
+    changes, larger = [], []
+    if df is not None:
+        check_df(df)
     for j, set_name in enumerate(table.sets):
         x, y = table.points(j, means=replicates == "mean")
         try:
-            item = correlation(x, y, method, ci)
+            item = correlation(x, y, method, ci, float(df) if df is not None else None)
         except StatisticsError as exc:
             result.warnings.append(f"{set_name}: {exc}")
             continue
+        if df is not None:
+            df_override(df, item["n"] - 2, "df" if len(table.sets) == 1 else f"df ({set_name})", changes, larger)
         values[set_name] = item
         sig = bool(item["p"] < alpha)
         rows = {("Correlation", "r" if method == "pearson" else "rs"): fmt(item["r"]),
@@ -349,6 +375,7 @@ def xy_correlation(table: XYTable, *, method: str = "pearson", ci: float = 0.95,
     else:
         result.methods = (f"Spearman rank correlation between X and each data set (no Gaussian assumption); approximate {100 * ci:g}% CI by "
                           f"Fisher's z transformation; two-tailed P (alpha = {alpha:g}).")
+    record_overrides(result, changes, larger)
     return result
 
 

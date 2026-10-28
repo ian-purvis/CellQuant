@@ -152,20 +152,19 @@ def test_table_editing_paste_and_csv(window, tmp_path):
 
 
 def test_dialogs_teach_and_prefill(qtbot):
-    from cellquant.gui.quantanalysis.dialogs import ChooseTestDialog, CompareDialog
+    from cellquant.gui.quantanalysis.dialogs import CompareDialog, _check
+    from cellquant.gui.quantanalysis.guide import AnalysisGuideDialog
     from cellquant.stats import ColumnTable
 
-    guide = ChooseTestDialog(None)
+    guide = AnalysisGuideDialog(None)
     qtbot.addWidget(guide)
-    assert guide.choice()["test"] == "welch_t"
-    from cellquant.gui.quantanalysis.dialogs import _check
-
+    assert guide.recommendation().options["test"] == "welch_t"
     _check(guide.gaussian, "no")
-    assert guide.choice()["test"] == "mann_whitney"
+    assert guide.recommendation().options["test"] == "mann_whitney"
     _check(guide.paired, True)
-    assert guide.choice()["test"] == "wilcoxon"
+    assert guide.recommendation().options["test"] == "wilcoxon"
     _check(guide.groups, 3)
-    assert guide.choice()["kind"] == "anova" and "next update" not in guide.answer.toPlainText()  # three or more groups: see test_gui_quantanalysis_anova.py
+    assert guide.recommendation().kind == "anova"  # three or more groups: see test_gui_quantanalysis_anova.py
     table = ColumnTable.from_columns({"A": [1, 2, 3], "B": [4, 5, 6]})
     dialog = CompareDialog(None, table)
     qtbot.addWidget(dialog)

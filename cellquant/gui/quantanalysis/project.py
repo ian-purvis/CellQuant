@@ -429,12 +429,20 @@ def run_compare(data: DataSheet, options: dict) -> AnalysisResult:
         raise CellQuantError("Comparing two columns needs a table with at least two columns.")
     test = options.get("test", "unpaired_t")
     kwargs = {key: options[key] for key in ("alternative", "ci", "alpha", "style") if key in options}
+    # Advanced settings set by hand: the t tests take df, and the difference tested against.
+    if test in ("welch_t", "unpaired_t", "lognormal_t", "paired_t", "ratio_paired_t") and options.get("df") is not None:
+        kwargs["df"] = options["df"]
+    if test in ("welch_t", "unpaired_t", "paired_t") and options.get("difference") not in (None, 0):
+        kwargs["difference"] = options["difference"]
     result = compare(table, test, first, second, **kwargs)
     _small_n_warning(result, table, test, first, second, kwargs.get("alpha", 0.05))
     return result
 
 
-ANOVA_KEYS = ("alpha", "ci", "style", "comparisons", "method", "family", "pairs", "geisser_greenhouse")
+ANOVA_KEYS = ("alpha", "ci", "style", "comparisons", "method", "family", "pairs", "geisser_greenhouse", "df", "sd", "m", "epsilon")
+# The Advanced settings each one-way test takes (others are dropped: a saved option the test cannot use is ignored).
+ANOVA_OVERRIDES = {"ordinary": ("df", "sd", "m"), "welch": ("df", "m"), "repeated_measures": ("df", "sd", "m", "epsilon"),
+                   "kruskal_wallis": ("m",), "friedman": ("m",)}
 
 
 def run_anova(data: DataSheet, options: dict) -> AnalysisResult:
@@ -451,6 +459,9 @@ def run_anova(data: DataSheet, options: dict) -> AnalysisResult:
         raise CellQuantError(f"A column this comparison used is gone ({', '.join(gone)}); choose the groups again (Change options…).")
     rank = test in ("kruskal_wallis", "friedman")
     kwargs = {key: options[key] for key in ANOVA_KEYS if key in options and options[key] is not None}
+    for key in ("df", "sd", "m", "epsilon"):
+        if key not in ANOVA_OVERRIDES.get(test, ()):
+            kwargs.pop(key, None)
     if test != "repeated_measures":
         kwargs.pop("geisser_greenhouse", None)
     if rank:
@@ -465,12 +476,15 @@ def run_anova(data: DataSheet, options: dict) -> AnalysisResult:
     if goal in (None, "none"):
         kwargs.pop("comparisons", None)
         kwargs.pop("method", None)
+    if goal in (None, "none", "trend"):
+        kwargs.pop("sd", None)
+        kwargs.pop("m", None)
     if goal != "control":
         kwargs.pop("family", None)
     return one_way(table, test, **kwargs)
 
 
-TWO_WAY_KEYS = ("interaction", "compare", "goal", "method", "control", "family", "alpha", "ci", "style")
+TWO_WAY_KEYS = ("interaction", "compare", "goal", "method", "control", "family", "alpha", "ci", "style", "df")
 
 
 def run_two_way(data: DataSheet, options: dict) -> AnalysisResult:
@@ -493,8 +507,8 @@ def run_two_way(data: DataSheet, options: dict) -> AnalysisResult:
     return two_way_anova(grouped, **kwargs)
 
 
-LINREG_KEYS = ("through_origin", "replicates", "ci", "alpha", "style")
-XYCORR_KEYS = ("method", "replicates", "ci", "alpha", "style")
+LINREG_KEYS = ("through_origin", "replicates", "ci", "alpha", "style", "df")
+XYCORR_KEYS = ("method", "replicates", "ci", "alpha", "style", "df")
 
 
 def _xy_of(data: DataSheet | None, what: str) -> XYTable:

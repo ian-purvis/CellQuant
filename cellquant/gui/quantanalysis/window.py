@@ -42,10 +42,10 @@ from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import graphs
 from cellquant.gui.quantanalysis import project_file, tips
 from cellquant.gui.quantanalysis.datagrid import DataSheetView
+from cellquant.gui.quantanalysis.guide import AnalysisGuideDialog, facts_for
 from cellquant.gui.quantanalysis.dialogs import (
     DEFAULT_OPTIONS,
     AnovaDialog,
-    ChooseTestDialog,
     CompareDialog,
     ImportCsvDialog,
     ImportDialog,
@@ -290,7 +290,7 @@ class QuantAnalysisWindow(QMainWindow):
         for kind, name in transforms.PROCESSES.items():
             self._action(processing, f"{name}…", lambda kind=kind: self.process_data(kind), tips.PROCESS[kind])
         analyze.addSeparator()
-        self._action(analyze, "Help me choose…", self.help_choose, "Answer a few questions; the guide recommends a test and fills its dialog.")
+        self._action(analyze, "Help me choose…", self.help_choose, tips.GUIDE)
         graph = bar.addMenu("&Graph")
         for key, (name, tip) in graphs.KINDS.items():
             self._action(graph, name, lambda key=key: self.new_graph(key), tip)
@@ -310,7 +310,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(export, "Copy results", self.copy_results, "The results sheet shown, as tab-separated text.")
         help_menu = bar.addMenu("&Help")
         self._action(help_menu, "Statistics guide…", self.statistics_guide, "Definitions, equations and when to use each test.")
-        self._action(help_menu, "Help me choose…", self.help_choose)
+        self._action(help_menu, "Help me choose…", self.help_choose, tips.GUIDE)
         self._action(help_menu, "Log…", self.show_log, "What QuantAnalysis did: imports, analyses, exports and any errors.")
         for menu in (file, analyze, graph, export, help_menu):
             menu.setToolTipsVisible(True)
@@ -988,25 +988,34 @@ class QuantAnalysisWindow(QMainWindow):
             self.log(f"{cleaned.name} created from {sheet.name}: {sheet.result.values['n_outliers']} value(s) blank")
         return cleaned
 
-    def help_choose(self) -> None:
-        dialog = ChooseTestDialog(self)
-        if not dialog.exec():
-            return
-        choice = dialog.choice()
+    def help_choose(self) -> AnalysisGuideDialog | None:
+        """The analysis guide on the selected table; Run this analysis opens the recommended analysis filled in."""
+
         data = self.current_data()
-        many = choice["kind"] == "anova"
-        if data is None or len(data.table) < (3 if many else 2):
-            self.status(f"Select a data table with {'three or more' if many else 'two'} columns, then run the recommended test.")
-            return
-        options = {key: value for key, value in choice.items() if key != "kind"}
-        if many:
-            anova = AnovaDialog(self, data.table, options)
-            if anova.exec():
-                self.analyze("anova", anova.options())
+        dialog = AnalysisGuideDialog(self, facts_for(data))
+        if not dialog.exec():
+            return dialog
+        rec, options = dialog.recommendation(), dialog.options()
+        kind = rec.kind
+        need = {"compare": (lambda d: d.xy is None and len(d.table) >= 2, "a data table with two or more columns"),
+                "anova": (lambda d: d.xy is None and len(d.table) >= 3, "a data table with three or more columns"),
+                "twoway": (lambda d: d.grouped is not None, "a grouped table (File → New grouped table)"),
+                "linreg": (lambda d: d.xy is not None, "an XY table (File → New XY table)"),
+                "xycorr": (lambda d: d.xy is not None, "an XY table (File → New XY table)")}[kind]
+        if data is None or not need[0](data):
+            self.status(f"{rec.name} needs {need[1]}. Select or make one, then run it.")
+            return dialog
+        if kind == "compare":
+            box = CompareDialog(self, data.table, {**DEFAULT_OPTIONS, **options})
+        elif kind == "anova":
+            box = AnovaDialog(self, data.table, options)
+        elif kind == "twoway":
+            box = TwoWayDialog(self, data.grouped, {**TWO_WAY_DEFAULTS, **options})
         else:
-            compare = CompareDialog(self, data.table, {**DEFAULT_OPTIONS, **options})
-            if compare.exec():
-                self.analyze("compare", compare.options())
+            box = XYDialog(self, data.xy, kind, options)
+        if box.exec():
+            self.analyze(kind, box.options())
+        return dialog
 
     def new_graph(self, kind: str) -> GraphSheet | None:
         data = self.current_data()
