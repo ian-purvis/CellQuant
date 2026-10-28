@@ -45,6 +45,7 @@ from cellquant.gui.quantanalysis.datagrid import DataSheetView
 from cellquant.gui.quantanalysis.dialogs import (
     DEFAULT_OPTIONS,
     AnovaDialog,
+    BlandAltmanDialog,
     ChooseTestDialog,
     CompareDialog,
     ContingencyDialog,
@@ -55,6 +56,7 @@ from cellquant.gui.quantanalysis.dialogs import (
     TWO_WAY_DEFAULTS,
     ProcessDialog,
     PStackDialog,
+    RocDialog,
     TwoWayDialog,
     XYDialog,
 )
@@ -288,6 +290,8 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(analyze, "Nonlinear regression (curve fit)…", lambda: self.analyze("curvefit"), tips.CURVEFIT)
         self._action(analyze, "Correlation (XY)…", lambda: self.analyze("xycorr"), tips.XYCORR)
         self._action(analyze, "Contingency table…", lambda: self.analyze("contingency"), tips.CONTINGENCY)
+        self._action(analyze, "ROC curve…", lambda: self.analyze("roc"), tips.ROC)
+        self._action(analyze, "Bland-Altman…", lambda: self.analyze("blandaltman"), tips.BLAND_ALTMAN)
         analyze.addSeparator()
         self._action(analyze, "Identify outliers…", lambda: self.analyze("outliers"),
                      "ROUT, Grubbs' and iterative Grubbs' tests. Flagged values are shaded in the table and hollow on graphs; the table is not changed.")
@@ -889,7 +893,7 @@ class QuantAnalysisWindow(QMainWindow):
         if data.contingency is not None and kind != "contingency":
             self.status("A contingency table is analyzed with Contingency table…; the other analyses need a column, grouped or XY table.")
             return None
-        if data.xy is not None and kind in ("compare", "anova", "outliers", "twoway"):
+        if data.xy is not None and kind in ("compare", "anova", "outliers", "twoway", "roc", "blandaltman"):
             self.status("An XY table is analyzed with Linear regression…, Nonlinear regression… or Correlation (XY)…; the column analyses need a "
                         "column table.")
             return None
@@ -911,6 +915,15 @@ class QuantAnalysisWindow(QMainWindow):
                             "data set factor.")
                 return None
             dialog = lambda: TwoWayDialog(self, data.grouped)  # noqa: E731
+        elif kind in ("roc", "blandaltman"):
+            name = "An ROC curve" if kind == "roc" else "A Bland-Altman analysis"
+            if data.grouped is not None:
+                self.status(f"{name} needs a column table; a grouped table has two factors. Make a column table with one column per group.")
+                return None
+            if len(data.table) < 2:
+                self.status(f"{name} needs at least two columns: {'the controls and the patients' if kind == 'roc' else 'method A and method B'}.")
+                return None
+            dialog = (lambda: RocDialog(self, data.table)) if kind == "roc" else (lambda: BlandAltmanDialog(self, data.table))
         elif kind == "contingency":
             if data.contingency is None:
                 self.status("Contingency analyses need a contingency table of counts: File → New contingency table.")
@@ -924,6 +937,9 @@ class QuantAnalysisWindow(QMainWindow):
         else:
             dialog = None
         sheet = self._add_result(data, kind, options, dialog)
+        if sheet is not None and kind in ("roc", "blandaltman") and not sheet.error:
+            # An ROC curve or Bland-Altman plot is its own graph; the table's column graphs stay as they are.
+            self.project.add_graph(GraphSheet(f"{sheet.name} (graph)", data.id, "scatter", {}, sheet.id))
         if sheet is not None and kind in ("compare", "anova", "linreg", "curvefit", "contingency"):
             for graph in self.project.graphs.values():
                 if graph.data_id == data.id and graph.result_id is None:
@@ -954,7 +970,9 @@ class QuantAnalysisWindow(QMainWindow):
                    "linreg": lambda: XYDialog(self, data.xy, "linreg", sheet.options),
                    "xycorr": lambda: XYDialog(self, data.xy, "xycorr", sheet.options),
                    "curvefit": lambda: CurveFitDialog(self, data.xy, sheet.options),
-                   "contingency": lambda: ContingencyDialog(self, data.contingency, sheet.options)}[sheet.kind]()
+                   "contingency": lambda: ContingencyDialog(self, data.contingency, sheet.options),
+                   "roc": lambda: RocDialog(self, data.table, sheet.options),
+                   "blandaltman": lambda: BlandAltmanDialog(self, data.table, sheet.options)}[sheet.kind]()
             if not box.exec():
                 return
             options = box.options()
@@ -1157,6 +1175,10 @@ def result_name(kind: str, options: dict, data: DataSheet | None) -> str:
         return f"Linear regression{where}"
     if kind == "contingency":
         return f"Contingency{where}"
+    if kind == "roc":
+        return f"ROC curve{where}"
+    if kind == "blandaltman":
+        return f"Bland-Altman{where}"
     if kind == "curvefit":
         return f"Nonlinear regression ({CURVE_MODELS.get(str(options.get('model')), CURVE_MODELS['log_dose_response']).name}){where}"
     if kind == "xycorr":

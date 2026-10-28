@@ -34,6 +34,7 @@ from cellquant.stats import (
 from cellquant.stats import transforms
 from cellquant.stats.contingency import ContingencyTable, contingency
 from cellquant.stats.curvefit import nonlinear_regression
+from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
@@ -428,6 +429,11 @@ class Project(QObject):
                 sheet.wide = sheet.result.values["wide"]
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
+            elif sheet.kind in ("roc", "blandaltman"):
+                sheet.result = (run_roc if sheet.kind == "roc" else run_bland_altman)(data, sheet.options)
+                sheet.wide = sheet.result.values["wide"]
+                sheet.warnings = list(sheet.result.warnings)
+                sheet.methods = sheet.result.methods
             elif sheet.kind in ("linreg", "xycorr", "curvefit"):
                 run = {"linreg": run_linear_regression, "xycorr": run_xy_correlation, "curvefit": run_curve_fit}[sheet.kind]
                 sheet.result = run(data, sheet.options)
@@ -590,6 +596,71 @@ def run_contingency(data: DataSheet, options: dict) -> AnalysisResult:
         if key in kwargs and not isinstance(kwargs[key], str):
             kwargs.pop(key)
     return contingency(data.contingency, **kwargs)
+
+
+ROC_KEYS = ("controls", "patients", "direction", "ci", "alpha", "style")
+BLAND_ALTMAN_KEYS = ("a", "b", "method", "ci")
+
+
+def _pick_column(table: ColumnTable, value, default: int):
+    """The column an option names (its name, or a position); anything unusable falls back to ``default``."""
+
+    if isinstance(value, str):
+        if value not in table.names:
+            raise CellQuantError(f"The column {value!r} is gone; choose the columns again (Change options…).")
+        return table[value]
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < len(table):
+        return table[value]
+    return table[default]
+
+
+def _two_columns(data: DataSheet, options: dict, keys: tuple[str, str], what: str):
+    if data is None or data.contingency is not None or data.xy is not None or data.grouped is not None:
+        raise CellQuantError(f"{what} needs a column table.")
+    if len(data.table) < 2:
+        raise CellQuantError(f"{what} needs a table with at least two columns.")
+    first, second = _pick_column(data.table, options.get(keys[0]), 0), _pick_column(data.table, options.get(keys[1]), 1)
+    if first.name == second.name:
+        raise CellQuantError("Choose two different columns.")
+    return first, second
+
+
+def _common_kwargs(options: dict, keys: tuple[str, ...]) -> dict:
+    kwargs = {key: options[key] for key in keys if key in options and options[key] is not None}
+    for key in ("ci", "alpha"):
+        try:
+            kwargs[key] = float(kwargs[key])
+        except (KeyError, TypeError, ValueError):
+            kwargs.pop(key, None)
+    for key in ("direction", "method", "style"):
+        if key in kwargs and not isinstance(kwargs[key], str):
+            kwargs.pop(key)
+    return kwargs
+
+
+def run_roc(data: DataSheet, options: dict) -> AnalysisResult:
+    controls, patients = _two_columns(data, options, ("controls", "patients"), "An ROC curve")
+    kwargs = _common_kwargs(options, ROC_KEYS)
+    for key in ("controls", "patients"):
+        kwargs.pop(key, None)
+    return roc_curve(controls.values, patients.values, names=(controls.name, patients.name), **kwargs)
+
+
+def paired(a, b) -> tuple[np.ndarray, np.ndarray]:
+    """Two columns paired by row. A shorter column has blanks at the bottom, so those rows have no pair (they are left out
+    and counted)."""
+
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    size = max(a.size, b.size)
+    return tuple(np.concatenate([values, np.full(size - values.size, np.nan)]) for values in (a, b))
+
+
+def run_bland_altman(data: DataSheet, options: dict) -> AnalysisResult:
+    first, second = _two_columns(data, options, ("a", "b"), "A Bland-Altman analysis")
+    kwargs = _common_kwargs(options, BLAND_ALTMAN_KEYS)
+    for key in ("a", "b"):
+        kwargs.pop(key, None)
+    return bland_altman(*paired(first.values, second.values), names=(first.name, second.name), **kwargs)
 
 
 def _as_list(value) -> list:

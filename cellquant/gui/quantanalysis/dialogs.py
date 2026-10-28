@@ -35,11 +35,12 @@ from qtpy.QtWidgets import (
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
-from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, parse_p_values
+from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, paired, parse_p_values
 from cellquant.stats import STYLES, ColumnTable
 from cellquant.stats import sources, transforms
 from cellquant.stats.contingency import TESTS as CONTINGENCY_TESTS, ContingencyTable, contingency
 from cellquant.stats.curvefit import MODELS, nonlinear_regression
+from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.grouped import COMPARE, FAMILIES, GroupedTable, two_way_anova
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
 from cellquant.stats.multcomp import (
@@ -1308,6 +1309,160 @@ class ContingencyDialog(QDialog):
     def accept(self) -> None:
         try:
             contingency(self.table, **self.options())
+        except CellQuantError as exc:
+            self.note.setText(str(exc))
+            self.note.setVisible(True)
+            return
+        super().accept()
+
+
+# --- ROC curve and Bland-Altman ---------------------------------------------------------------------------------
+
+ROC_DEFAULTS = {"controls": 0, "patients": 1, "direction": "auto", "ci": 0.95, "alpha": 0.05, "style": "classic"}
+ROC_DIRECTIONS = {"auto": "Auto (from the data)", ">": "Higher values are positive",
+                  "<": "Lower values are positive"}
+BLAND_ALTMAN_DEFAULTS = {"a": 0, "b": 1, "method": "difference", "ci": 0.95}
+BLAND_ALTMAN_METHODS = {"difference": "Difference (A − B)", "ratio": "Ratio (A / B)", "percent": "% difference"}
+
+
+def _column_combo(table: ColumnTable, value, default: int, tip: str) -> QComboBox:
+    combo = QComboBox()
+    for name in table.names:
+        combo.addItem(name, name)
+    combo.setToolTip(tip)
+    index = combo.findData(value) if isinstance(value, str) else value if isinstance(value, int) and not isinstance(value, bool) else default
+    combo.setCurrentIndex(max(0, min(combo.count() - 1, index if index >= 0 else default)))
+    return combo
+
+
+def _ci_combo(value, tip: str) -> QComboBox:
+    combo = QComboBox()
+    for level in (0.90, 0.95, 0.99):
+        combo.addItem(f"{100 * level:g}%", level)
+    combo.setToolTip(tip)
+    combo.setCurrentIndex(max(0, combo.findData(value)))
+    return combo
+
+
+def _two_column_dialog(dialog: QDialog, title: str, intro: str, minimum: int = 460) -> tuple[QVBoxLayout, QFormLayout]:
+    dialog.setWindowTitle(title)
+    dialog.setMinimumWidth(minimum)
+    layout = QVBoxLayout(dialog)
+    label = QLabel(intro)
+    label.setWordWrap(True)
+    label.setStyleSheet(NOTE_STYLE)
+    layout.addWidget(label)
+    form = QFormLayout()
+    layout.addLayout(form)
+    return layout, form
+
+
+def _dialog_footer(dialog: QDialog, layout: QVBoxLayout) -> QLabel:
+    note = QLabel()
+    note.setWordWrap(True)
+    note.setStyleSheet(WARNING_STYLE)
+    note.setVisible(False)
+    layout.addWidget(note)
+    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    buttons.button(QDialogButtonBox.Ok).setText("Run")
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+    return note
+
+
+class RocDialog(QDialog):
+    """ROC curve: the controls and patients columns, which direction is positive, and the interval and P value options."""
+
+    def __init__(self, parent, table: ColumnTable, options: dict | None = None):
+        super().__init__(parent)
+        self.table = table
+        options = {**ROC_DEFAULTS, **(options or {})}
+        layout, form = _two_column_dialog(self, "ROC curve", f"{tips.ROC} Each column of this table is one group.")
+        self.controls = _column_combo(table, options["controls"], 0, tips.ROC_CONTROLS)
+        self.patients = _column_combo(table, options["patients"], 1, tips.ROC_PATIENTS)
+        form.addRow("Controls (without the condition)", self.controls)
+        form.addRow("Patients (with the condition)", self.patients)
+        self.direction = QComboBox()
+        for key, name in ROC_DIRECTIONS.items():
+            self.direction.addItem(name, key)
+        self.direction.setToolTip(tips.ROC_DIRECTION)
+        self.direction.setCurrentIndex(max(0, self.direction.findData(options["direction"])))
+        form.addRow("Direction", self.direction)
+        self.ci = _ci_combo(options["ci"], tips.ROC_CI)
+        form.addRow("Confidence interval", self.ci)
+        self.alpha = QDoubleSpinBox()
+        self.alpha.setRange(0.0001, 0.5)
+        self.alpha.setDecimals(4)
+        self.alpha.setSingleStep(0.01)
+        self.alpha.setToolTip(tips.ALPHA)
+        self.alpha.setValue(float(options["alpha"]))
+        form.addRow("Alpha", self.alpha)
+        self.style = QComboBox()
+        for name in STYLES:
+            self.style.addItem(name, name)
+        self.style.setToolTip(tips.P_STYLE)
+        self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
+        form.addRow("P value style", self.style)
+        self.note = _dialog_footer(self, layout)
+        if self.controls.currentIndex() == self.patients.currentIndex() and self.patients.count() > 1:
+            self.patients.setCurrentIndex(1 if self.controls.currentIndex() == 0 else 0)
+
+    def options(self) -> dict:
+        return {"controls": self.controls.currentData(), "patients": self.patients.currentData(), "direction": self.direction.currentData(),
+                "ci": self.ci.currentData(), "alpha": round(self.alpha.value(), 6), "style": self.style.currentData()}
+
+    def accept(self) -> None:
+        if self.controls.currentIndex() == self.patients.currentIndex():
+            self.note.setText("Choose two different columns: the controls and the patients.")
+            self.note.setVisible(True)
+            return
+        try:
+            options = self.options()
+            roc_curve(self.table[options["controls"]].values, self.table[options["patients"]].values, ci=options["ci"], alpha=options["alpha"],
+                      style=options["style"], direction=options["direction"])
+        except CellQuantError as exc:
+            self.note.setText(str(exc))
+            self.note.setVisible(True)
+            return
+        super().accept()
+
+
+class BlandAltmanDialog(QDialog):
+    """Bland-Altman agreement: the two methods' columns (paired by row), the measure of disagreement and the interval."""
+
+    def __init__(self, parent, table: ColumnTable, options: dict | None = None):
+        super().__init__(parent)
+        self.table = table
+        options = {**BLAND_ALTMAN_DEFAULTS, **(options or {})}
+        layout, form = _two_column_dialog(self, "Bland-Altman", f"{tips.BLAND_ALTMAN} Row i of one column is paired with row i of the other.")
+        self.first = _column_combo(table, options["a"], 0, tips.BLAND_ALTMAN_A)
+        self.second = _column_combo(table, options["b"], 1, tips.BLAND_ALTMAN_B)
+        form.addRow("Method A", self.first)
+        form.addRow("Method B", self.second)
+        self.method = QComboBox()
+        for key, name in BLAND_ALTMAN_METHODS.items():
+            self.method.addItem(name, key)
+        self.method.setToolTip(tips.BLAND_ALTMAN_MEASURE)
+        self.method.setCurrentIndex(max(0, self.method.findData(options["method"])))
+        form.addRow("Measure", self.method)
+        self.ci = _ci_combo(options["ci"], tips.BLAND_ALTMAN_CI)
+        form.addRow("Confidence interval", self.ci)
+        self.note = _dialog_footer(self, layout)
+        if self.first.currentIndex() == self.second.currentIndex() and self.second.count() > 1:
+            self.second.setCurrentIndex(1 if self.first.currentIndex() == 0 else 0)
+
+    def options(self) -> dict:
+        return {"a": self.first.currentData(), "b": self.second.currentData(), "method": self.method.currentData(), "ci": self.ci.currentData()}
+
+    def accept(self) -> None:
+        if self.first.currentIndex() == self.second.currentIndex():
+            self.note.setText("Choose two different columns: method A and method B.")
+            self.note.setVisible(True)
+            return
+        try:
+            options = self.options()
+            bland_altman(*paired(self.table[options["a"]].values, self.table[options["b"]].values), method=options["method"], ci=options["ci"])
         except CellQuantError as exc:
             self.note.setText(str(exc))
             self.note.setVisible(True)

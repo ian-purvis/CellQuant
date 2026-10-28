@@ -132,7 +132,7 @@ class ResultSheetView(QWidget):
         sheet = self.sheet
         data = self.project.data.get(sheet.data_id)
         self.source.setText(f"From data table: {data.name}" if data else "")
-        self.options_button.setVisible(sheet.kind in ("compare", "anova", "outliers", "pstack", "twoway", "linreg", "xycorr", "curvefit", "contingency"))
+        self.options_button.setVisible(sheet.kind in ("compare", "anova", "outliers", "pstack", "twoway", "linreg", "xycorr", "curvefit", "contingency", "roc", "blandaltman"))
         self.clean_button.setVisible(sheet.kind == "outliers")
         self.clean_button.setEnabled(sheet.result is not None)
         self.error.setText(f"⚠ {sheet.error}" if sheet.error else "")
