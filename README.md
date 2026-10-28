@@ -2,7 +2,7 @@
 
 CellQuant finds nuclei (or cells) in fluorescence microscope images and counts how many are positive for markers. It works on one image or a whole experiment, and you check every result by eye in napari.
 
-**New to CellQuant? Read [Start here](docs/START_HERE.md).** It covers installing, a 15-minute practice run with a known answer, and each step with a success check.
+**New to CellQuant? [Start here](docs/START_HERE.md).** It covers installing, a 15-minute practice run with a known answer, and each step with a success check.
 
 ## Quick start (Windows)
 
