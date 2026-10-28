@@ -479,7 +479,7 @@ def compare_models(fit_a: dict, fit_b: dict, alpha: float = 0.05) -> dict:
                    f_prefers=None if out["unreliable"] or not math.isfinite(p) else "complex" if p < alpha else "simple")
     delta, probability = _aicc_choice(first["aicc"], second["aicc"])
     out.update(aicc_delta=delta, aicc_simple=probability,
-               aicc_prefers=None if not math.isfinite(delta) else "simple" if delta >= 0 else "complex")
+               aicc_prefers=None if out["unreliable"] or not math.isfinite(delta) else "simple" if delta >= 0 else "complex")
     return out
 
 

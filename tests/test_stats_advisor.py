@@ -146,3 +146,11 @@ def test_three_groups_on_a_two_column_table_and_empty_grouped_cells():
     facts = facts_of(grouped=GroupedTable("t", ["WT", "KO"], ["Vehicle", "Drug"], values))
     rec = recommend(Answers(goal="two_factors"), facts)
     assert rec.df == 9 - 3 and any("empty" in w for w in rec.warnings)
+
+
+def test_two_groups_point_to_roc_and_bland_altman():
+    unpaired = recommend(Answers(groups=2))
+    assert any(text.startswith("ROC curve") for text in unpaired.alternatives)
+    paired = recommend(Answers(groups=2, paired=True))
+    assert any(text.startswith("Bland-Altman") for text in paired.alternatives)
+    assert not any(text.startswith("ROC curve") for text in paired.alternatives)

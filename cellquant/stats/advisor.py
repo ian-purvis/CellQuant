@@ -280,6 +280,10 @@ def _two_groups(answers: Answers, facts: Facts) -> Recommendation:
         "ratio_paired_t": ["Paired t test if the effect is a difference"],
         "wilcoxon": ["Paired t test when the differences are close to Gaussian: more power at small N"],
     }[test]
+    alternatives = alternatives + (
+        ["Bland-Altman agreement if the two columns are two methods measuring the same samples (how well they agree, not whether "
+         "they differ)"] if paired else
+        ["ROC curve if the question is how well the measurement tells the two groups apart (a cutoff that calls each sample)"])
     rec = Recommendation("compare", {"test": test, "alternative": answers.tails}, TEST_NAMES[test], why, alternatives=alternatives)
     if paired:
         pairs = facts.pairs if facts.pairs is not None else (min(sizes) if sizes else None)

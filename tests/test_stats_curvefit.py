@@ -273,4 +273,4 @@ def test_a_simpler_model_better_than_the_fuller_one_is_flagged():
     assert not compare_models(line, quadratic)["unreliable"]
     stuck = {**quadratic, "ss_resid": line["ss_resid"] * 2}  # a fuller fit stuck short of its best
     item = compare_models(line, stuck)
-    assert item["unreliable"] and item["f_prefers"] is None
+    assert item["unreliable"] and item["f_prefers"] is None and item["aicc_prefers"] is None
