@@ -203,17 +203,37 @@ def _check_x(model: Model, x: np.ndarray) -> None:
 
 
 def _least_squares(residual: Callable, starts: list[np.ndarray]) -> optimize.OptimizeResult | None:
+    """The best of the fits from ``starts``. When the first start converges cleanly, only two more are tried."""
+
     max_nfev = 150 * (starts[0].size + 1)  # a fit that has not settled by then is running off (an ambiguous fit)
     best = None
-    for start in starts:
+    for index, start in enumerate(starts):
+        if index == 3 and best is not None and best.status > 0 and not _covariance(best.jac)[1]:
+            break
         try:
             with np.errstate(all="ignore"):
-                found = optimize.least_squares(residual, start, method="trf", x_scale="jac", jac="3-point", max_nfev=max_nfev)
+                found = optimize.least_squares(residual, start, method="trf", x_scale="jac", jac=lambda q: _jacobian(residual, q),
+                                               max_nfev=max_nfev)
         except (ValueError, np.linalg.LinAlgError):
             continue
         if np.isfinite(found.cost) and (best is None or found.cost < best.cost * (1 - 1e-12)):
             best = found
     return best
+
+
+def _jacobian(residual: Callable, q: np.ndarray) -> np.ndarray:
+    """Central differences with a step relative to each parameter, so an EC50 of 1e-8 M is differentiated as finely as a
+    Top of 100 (scipy's default step is absolute below 1)."""
+
+    q = np.asarray(q, float)
+    columns = []
+    for i in range(q.size):
+        h = 6e-6 * abs(q[i]) if q[i] != 0 else 6e-6
+        up, down = q.copy(), q.copy()
+        up[i] += h
+        down[i] -= h
+        columns.append((residual(up) - residual(down)) / (up[i] - down[i]))
+    return np.column_stack(columns)
 
 
 def _starts(start: np.ndarray, linear: bool) -> list[np.ndarray]:
@@ -227,12 +247,23 @@ def _starts(start: np.ndarray, linear: bool) -> list[np.ndarray]:
 
 
 def _covariance(jac: np.ndarray) -> tuple[np.ndarray, bool]:
-    """(J'J)⁻¹ and whether the fit is ambiguous (the data do not pin down every parameter)."""
+    """(J'J)⁻¹ and whether the fit is ambiguous (the data do not pin down every parameter: a parameter's dependency on
+    the others is above 0.9999, or J'J is singular). The columns are scaled to
+    unit length first, so parameters in very different units (an EC50 of 1e-9 M beside a Top of 100) are not mistaken
+    for an ambiguous fit."""
 
-    _u, s, vt = np.linalg.svd(jac, full_matrices=False)
-    if s.size == 0 or s[-1] <= s[0] * 1e-9:
-        return np.full((jac.shape[1], jac.shape[1]), np.nan), True
-    return (vt.T / s**2) @ vt, False
+    k = jac.shape[1]
+    norms = np.linalg.norm(jac, axis=0)
+    if k == 0 or not np.isfinite(jac).all() or (norms == 0).any():
+        return np.full((k, k), np.nan), True
+    _u, s, vt = np.linalg.svd(jac / norms, full_matrices=False)
+    if s[-1] <= s[0] * 1e-7:
+        return np.full((k, k), np.nan), True
+    scaled = (vt.T / s**2) @ vt
+    # Dependency of each parameter, 1 − 1/(C_ii · (C⁻¹)_ii): above 0.9999 the others can stand in for it almost entirely.
+    if (1 - 1 / np.diag(scaled) > 0.9999).any():
+        return np.full((k, k), np.nan), True
+    return scaled / np.outer(norms, norms), False
 
 
 def aicc(ss: float, n: int, k: int) -> float:
@@ -394,7 +425,8 @@ def global_fit(model: str | Model, data: list[tuple[np.ndarray, np.ndarray]], sh
     with np.errstate(all="ignore"):
         ss = float((residual(found.x) ** 2).sum())
     return {"params": [dict(zip(model.params, map(float, p))) for p in unpack(found.x)], "ss_resid": ss, "df": total - count,
-            "n": total, "k": count, "shared": shared, "aicc": aicc(ss, total, count)}
+            "n": total, "k": count, "shared": shared, "aicc": aicc(ss, total, count), "converged": bool(found.status > 0),
+            "ambiguous": _covariance(found.jac)[1]}
 
 
 def _f_test(ss_simple: float, df_simple: int, ss_complex: float, df_complex: int) -> tuple[float, float, int, int]:
@@ -449,12 +481,15 @@ def compare_data_sets(model: str | Model, data: dict[str, tuple[np.ndarray, np.n
         raise StatisticsError(f"{parameter} is not a free parameter of the fit, so it cannot be compared.")
     shared = list(free) if parameter is None else [parameter]
     null = global_fit(model, [data[name] for name in names], shared, fixed, [fits[name]["params"] for name in names])
+    if not null["converged"] or null["ambiguous"]:
+        raise StatisticsError("The fit with " + (f"{parameter} shared" if parameter else "one curve for every data set")
+                              + " is ambiguous or did not converge, so the data sets are not compared.")
     ss_separate = sum(fits[name]["ss_resid"] for name in names)
     df_separate = sum(fits[name]["df"] for name in names)
     k_separate = sum(len(fits[name]["free"]) for name in names)
     f, p, dfn, dfd = _f_test(null["ss_resid"], null["df"], ss_separate, df_separate)
     delta, probability = _aicc_choice(null["aicc"], aicc(ss_separate, null["n"], k_separate))
-    return {"parameter": parameter, "shared": null, "f": f, "p": p, "dfn": dfn, "dfd": dfd,
+    return {"parameter": parameter, "shared": null, "data_sets": names, "f": f, "p": p, "dfn": dfn, "dfd": dfd,
             "f_prefers": None if not math.isfinite(p) else "separate" if p < alpha else "shared",
             "aicc_delta": delta, "aicc_shared": probability,
             "aicc_prefers": None if not math.isfinite(delta) else "shared" if delta >= 0 else "separate"}
@@ -477,8 +512,8 @@ def _derived(fit: dict, ci_of: Callable[[str], tuple[float, float]]) -> list[tup
         out.append(("Span", p["Y0"] - p["Plateau"], None))
     if key in ("one_phase", "exponential_growth"):
         low, high = ci_of("K")
-        reach = (LN2 / high, LN2 / low) if math.isfinite(low) and low * high > 0 else None
-        out.append(("Half-life" if key == "one_phase" else "Doubling time", LN2 / p["K"] if p["K"] else float("nan"),
+        reach = (LN2 / high, LN2 / low) if math.isfinite(low) and low > 0 else None
+        out.append(("Half-life" if key == "one_phase" else "Doubling time", LN2 / p["K"] if p["K"] > 0 else float("nan"),
                     tuple(sorted(reach)) if reach else None))
     if key == "gaussian":
         out.append(("Width at half height", 2 * math.sqrt(2 * LN2) * abs(p["SD"]), None))
@@ -514,7 +549,8 @@ def _fit_rows(fit: dict, model: Model, level: str, ci: float) -> dict:
     rows[("Goodness of fit", "Sy.x")] = fmt(fit["sy_x"])
     rows[("Goodness of fit", "AICc")] = fmt(fit["aicc"])
     rows[("Data", "Points analyzed")] = str(fit["n"])
-    rows[("Data", "Converged")] = ("Yes" if fit["converged"] else "No") + (" (ambiguous)" if fit["ambiguous"] else "")
+    rows[("Data", "Converged")] = "Yes" if fit["converged"] else "No"
+    rows[("Data", "Ambiguous")] = "Yes" if fit["ambiguous"] else "No"
     return rows
 
 
@@ -530,7 +566,27 @@ def _unknowns(table: XYTable, j: int) -> list[tuple[int, float]]:
     return out
 
 
-def nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", fixed: dict | None = None, replicates: str = "each",
+_CACHE: dict[tuple, AnalysisResult] = {}
+
+
+def _cache_key(table: XYTable, options: dict) -> tuple:
+    return (table.title, table.x_title, tuple(table.sets), table.x.tobytes(), table.values.shape, table.values.tobytes(), repr(sorted(
+        (key, sorted(value.items()) if isinstance(value, dict) else value) for key, value in options.items())))
+
+
+def nonlinear_regression(table: XYTable, **options) -> AnalysisResult:
+    """Fit a model to each data set of an XY table (see ``_nonlinear_regression`` for the options). The same table and
+    options give the same result object, so checking options in a dialog and then showing them fits only once."""
+
+    key = _cache_key(table, options)
+    if key not in _CACHE:
+        if len(_CACHE) >= 32:
+            _CACHE.pop(next(iter(_CACHE)))
+        _CACHE[key] = _nonlinear_regression(table, **options)
+    return _CACHE[key]
+
+
+def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", fixed: dict | None = None, replicates: str = "each",
                          ci: float = 0.95, alpha: float = 0.05, style: str = "classic", compare: str = "none",
                          compare_model: str | None = None, compare_fixed: dict | None = None, compare_parameter: str | None = None,
                          interpolate: bool = False) -> AnalysisResult:
@@ -612,6 +668,8 @@ def nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", fi
                     text += f" (dose {fmt(10 ** roots[0])})"
                 if len(roots) > 1:
                     text += f"; also {', '.join(fmt(item) for item in roots[1:])}"
+                if roots and (fit["ambiguous"] or not fit["converged"]):
+                    text += " (unreliable: the fit is ambiguous or did not converge)"
                 rows[("Interpolated X (rows with Y but no X)", f"Row {row + 1}: Y = {fmt(value)}")] = text
             interpolated[name] = found
         out[name] = rows
@@ -631,8 +689,17 @@ def nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", fi
             result.warnings.append(f"The data sets are not compared: the fit of {', '.join(unsure)} is ambiguous or did not converge, "
                                    "so a shared fit would not mean anything. Fix a parameter or choose another model.")
         else:
-            datasets = compare_data_sets(fitted_model, data, fits, compare_parameter or None, fixed, alpha)
+            try:
+                datasets = compare_data_sets(fitted_model, data, fits, compare_parameter or None, fixed, alpha)
+            except StatisticsError as exc:
+                result.warnings.append(str(exc))
+        if datasets is not None:
+            skipped = [name for name in table.sets if name not in fits]
             lines = _dataset_rows(datasets, style)
+            section_title = next(iter(lines))[0]
+            lines[(section_title, "Data sets compared")] = ", ".join(datasets["data_sets"])
+            if skipped:
+                lines[(section_title, "Left out (no fit)")] = ", ".join(skipped)
             extra = pd.DataFrame({next(iter(fits)): lines})
             extra.index.names = ["section", "statistic"]
             frame = pd.concat([frame, extra])
@@ -645,16 +712,25 @@ def nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", fi
     points = "each replicate as a point" if replicates == "each" else "the mean of each row's replicates as one point"
     held = f" with {', '.join(f'{name} = {fmt(value)}' for name, value in fixed.items())} fixed" if fixed else ""
     methods = (f"Least-squares nonlinear regression ({fitted_model.name}: {fitted_model.equation}{held}) of each data set ({points}); "
-               f"asymptotic {100 * ci:g}% CIs of the parameters.")
+               f"asymptotic {100 * ci:g}% CIs of the parameters" + (" (the CIs of EC50, half-life and doubling time are transformed from "
+                                                                     "those of LogEC50 and K)" if fitted_model.key in
+                                                                     ("log_dose_response", "one_phase", "exponential_growth") else "")
+               + ".")
     if other is not None:
         methods += (f" Each fit was compared with {_fit_label(other, compare_fixed)} by AICc and, where one model is a special case of "
                     f"the other, the extra sum-of-squares F test (alpha = {alpha:g}).")
     if datasets is not None:
         what = f"{compare_parameter} is the same for every data set" if compare_parameter else "one curve fits every data set"
+        left_out = [name for name in table.sets if name not in fits]
+        what += f" ({', '.join(datasets['data_sets'])}; {', '.join(left_out)} could not be fitted and {'was' if len(left_out) == 1 else 'were'} left out)" if left_out else ""
         methods += (f" The null hypothesis that {what} was tested against separate fits by the extra sum-of-squares F test "
                     f"(alpha = {alpha:g}) and AICc.")
     if interpolate:
-        methods += " Unknown X values were read off each fitted curve within the range of its X values (no extrapolation)."
+        methods += (" Unknown X values were read off each fitted curve within the range of its X values (no extrapolation); they have "
+                    "no confidence intervals.")
+    if fitted_model.key == "dose_response":
+        methods += (" The EC50's CI is symmetric and asymptotic, so it can reach below 0; fitting log(dose) gives an asymmetric CI "
+                    "that cannot.")
     result.methods = methods
     if any(fit["n"] < 2 * len(fit["free"]) + 1 for fit in fits.values()):
         result.warnings.append("Few points per parameter in a data set: the fit, its CIs and R² are rough.")
@@ -671,7 +747,12 @@ def _model_rows(item: dict, model: Model, fixed: dict, other: Model, other_fixed
     simple_label = _fit_label(model, fixed) if first_is_main else _fit_label(other, other_fixed)
     complex_label = _fit_label(other, other_fixed) if first_is_main else _fit_label(model, fixed)
     section = "Which fit is better?"
-    rows = {(section, "Simpler model"): simple_label}
+    ranked = item["nested"] or len(item["simple"]["free"]) < len(item["complex"]["free"])
+    if not ranked:  # neither is simpler: name them as they were chosen
+        simple_label, complex_label = _fit_label(model, fixed), _fit_label(other, other_fixed)
+    rows = {(section, "Simpler model" if ranked else "Model A"): simple_label}
+    if not ranked:
+        rows[(section, "Model B")] = complex_label
     if item["nested"]:
         rows[(section, "F (extra sum-of-squares)")] = fmt(item["f"])
         rows[(section, "DFn, DFd")] = f"{item['dfn']}, {item['dfd']}"
@@ -681,9 +762,10 @@ def _model_rows(item: dict, model: Model, fixed: dict, other: Model, other_fixed
                                                      else f"{simple_label} (the extra parameters do not help: {p_summary(item['p'], style)})")
     else:
         rows[(section, "F (extra sum-of-squares)")] = "not nested: compared by AICc only"
-    rows[(section, "AICc difference (complex − simple)")] = fmt(item["aicc_delta"])
+    rows[(section, "AICc difference (complex − simple)" if ranked else "AICc difference (B − A)")] = fmt(item["aicc_delta"])
     if math.isfinite(item["aicc_simple"]):
-        rows[(section, "Probability the simpler model is correct")] = f"{100 * item['aicc_simple']:.3g}%"
+        rows[(section, "Probability the simpler model is correct" if ranked else "Probability model A is correct")] = (
+            f"{100 * item['aicc_simple']:.3g}%")
     if item["aicc_prefers"]:
         rows[(section, "Preferred (AICc)")] = simple_label if item["aicc_prefers"] == "simple" else complex_label
     return rows

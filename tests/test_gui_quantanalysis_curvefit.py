@@ -133,3 +133,29 @@ def test_ambiguous_fits_are_dashed_on_graphs():
     notes = graphs.draw(figure, sheet, GraphSheet("G", sheet.id, "xy", {"xy_band": "confidence"}), result)
     curve = [line for line in figure._cq_axes["main"].lines if len(line.get_xdata()) == 200]
     assert curve[0].get_linestyle() == "--" and any("dashed" in note for note in notes) and any("No band" in note for note in notes)
+
+
+def test_edits_refit_once_typing_pauses(window, qtbot):
+    from cellquant.gui.quantanalysis.dialogs import CURVEFIT_DEFAULTS
+    from cellquant.gui.quantanalysis.project import FIT_DELAY_MS
+
+    sheet = _filled(window)
+    fit = window.analyze("curvefit", {**CURVEFIT_DEFAULTS, "interpolate": True})
+    before = fit.result
+    window.select(sheet.id)
+    graph = window.new_graph("xy")
+    redrawn = []
+    window.project.changed.connect(redrawn.append)
+    for k in range(3):  # three quick edits: one refit
+        sheet.xy.values[0, 0, k] = 30.0
+        window.project.data_changed(sheet.id)
+    assert fit.result is before
+    qtbot.waitUntil(lambda: fit.result is not before, timeout=FIT_DELAY_MS * 10)
+    assert fit.result.values["fits"]["A"]["params"]["Bottom"] > before.values["fits"]["A"]["params"]["Bottom"]
+    assert redrawn.count(fit.id) == 4 and graph.id in redrawn  # 3 edits + the refit; the graph redraws with the new curve
+    found = fit.result.values["interpolated"]["A"]
+    assert found and "unreliable" not in fit.result.values["wide"].loc[("Interpolated X (rows with Y but no X)",
+                                                                         f"Row 12: Y = {found[0]['y']:g}"), "A"]
+    fit.options.update(ci="wide", alpha=None, model=7, compare="datasets", compare_parameter="Nope")  # a damaged project file
+    window.project.rerun(fit)
+    assert fit.error == "" and any("not a free parameter" in text for text in fit.warnings)

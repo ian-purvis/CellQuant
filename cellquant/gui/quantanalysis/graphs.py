@@ -1214,7 +1214,10 @@ def _draw_xy(figure, data, result, fmt: GraphFormat, font: float, notes: list[st
     if no_curve:
         notes.append(f"The fit of {', '.join(no_curve)} is ambiguous or did not converge (see its results), so its curve is dashed.")
     if no_band:
-        notes.append(f"No band for {', '.join(no_band)}: the fit is ambiguous, so it has no confidence intervals.")
+        notes.append(f"No band for {', '.join(no_band)}: its fit has no confidence intervals (it is ambiguous or has no residual "
+                     "degrees of freedom).")
+    if fits and fmt.xy_band == "prediction" and result.options.get("replicates") == "mean":
+        notes.append("The fit used each row's mean, so the prediction band is for a new row mean, not a single replicate.")
     if left_out:
         notes.append(f"{left_out} value(s) cannot be shown on a log axis (≤ 0) and are left out of the graph.")
     if fmt.x.min is not None or fmt.x.max is not None:

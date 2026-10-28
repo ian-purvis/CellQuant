@@ -460,7 +460,8 @@ XY_REPLICATES = ("Each replicate is a point: every value counts (the usual choic
                  "graph shows the points is set separately on the graph (Points).")
 XY_GRAPH_POINTS = ("How the graph shows each data set; it does not change what a fit uses (set that in the analysis's options).")
 XY_BAND = ("Around the fitted line or curve: the confidence band holds the true line with the chosen confidence; the prediction band "
-           "holds that share of new points, so it is wider.")
+           "holds that share of new points, so it is wider. When the fit used only each row's mean, the prediction band is for a new "
+           "mean of a row, not a single replicate.")
 
 CURVEFIT = ("Fit a curve to each data set by least squares: best-fit parameters with standard errors and confidence intervals, R², "
             "and optionally a comparison with a second fit or between data sets, and X read off the curve for unknowns.")

@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-from qtpy.QtCore import QObject, Signal
+from qtpy.QtCore import QObject, QTimer, Signal
 from scipy import special
 
 from cellquant.errors import CellQuantError
@@ -143,6 +143,9 @@ class LayoutSheet:
     id: str = field(default_factory=lambda: next_id("layout"))
 
 
+FIT_DELAY_MS = 400  # how long typing must pause before curve fits are refitted
+
+
 class Project(QObject):
     """Every sheet, and the links between them. ``changed(id)`` names the sheet that changed ("" for the list)."""
 
@@ -158,6 +161,12 @@ class Project(QObject):
         self._refreshing: set[str] = set()
         self._renamed_from: dict[str, str] = {}  # sheet id -> its name before a rename that its processed tables follow
         self.changed.connect(lambda _sheet_id: self.modified.emit())
+        # Curve fits are refitted once typing pauses, not on every cell edit.
+        self._pending_fits: set[str] = set()
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.setInterval(FIT_DELAY_MS)
+        self._fit_timer.timeout.connect(self.flush_fits)
 
     def touch(self) -> None:
         self.modified.emit()
@@ -348,7 +357,11 @@ class Project(QObject):
 
         results, graphs = self.linked(data_id)
         for result in results:
-            self.compute(result)
+            if result.kind == "curvefit" and result.result is not None:
+                self._pending_fits.add(result.id)
+                self._fit_timer.start()
+            else:
+                self.compute(result)
         self.changed.emit(data_id)
         for result in results:
             self.changed.emit(result.id)
@@ -358,6 +371,21 @@ class Project(QObject):
             self.refresh_cleaned(copy)
         for copy in [item for item in self.data.values() if item.processed_from == data_id]:
             self.refresh_processed(copy, renamed)
+
+    def flush_fits(self) -> None:
+        """Refit the curve fits whose table changed since they were last fitted, and redraw what shows them."""
+
+        self._fit_timer.stop()
+        pending, self._pending_fits = self._pending_fits, set()
+        for result_id in pending:
+            result = self.results.get(result_id)
+            if result is None:
+                continue
+            self.compute(result)
+            self.changed.emit(result.id)
+            for graph in self.graphs.values():
+                if graph.result_id == result.id:
+                    self.changed.emit(graph.id)
 
     def refresh_cleaned(self, sheet: DataSheet) -> None:
         """The cleaned copy follows its source: flag the outliers again and blank them."""
@@ -517,6 +545,15 @@ def run_curve_fit(data: DataSheet, options: dict) -> AnalysisResult:
     for key in ("fixed", "compare_fixed"):  # a saved project may hold anything here
         if key in kwargs and not isinstance(kwargs[key], dict):
             kwargs.pop(key)
+    for key in ("ci", "alpha"):
+        try:
+            kwargs[key] = float(kwargs[key])
+        except (KeyError, TypeError, ValueError):
+            kwargs.pop(key, None)
+    for key in ("model", "compare_model", "compare_parameter", "compare", "replicates", "style"):
+        if key in kwargs and not isinstance(kwargs[key], str):
+            kwargs.pop(key)
+    kwargs["interpolate"] = bool(kwargs.get("interpolate", False))
     return nonlinear_regression(_xy_of(data, "Nonlinear regression"), **kwargs)
 
 

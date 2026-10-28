@@ -172,3 +172,55 @@ def test_unreliable_fits_are_not_compared():
     assert result.values["datasets"] is None and any("not compared" in text and "Flat" in text for text in result.warnings)
     result = nonlinear_regression(table, model="gaussian", compare="model", compare_model="polynomial_2")
     assert "Flat" not in result.values["comparisons"] and "Peak" in result.values["comparisons"]
+
+
+def test_parameters_in_very_different_units_are_not_ambiguous():
+    # X in molar: EC50 near 1e-8 beside a Top of 100. Unscaled, the Jacobian's columns differ by ~1e10.
+    x = np.repeat(np.geomspace(1e-11, 1e-5, 10), 2)
+    y = 3 + 97 / (1 + (2e-8 / x) ** 1.1) + RNG.normal(0, 2, x.size)
+    fit = fit_curve("dose_response", x, y)
+    params, cov = curve_fit(lambda v, b, t, e, h: b + (t - b) / (1 + (e / v) ** h), x, y, p0=[0, 100, 1e-8, 1], maxfev=20000)
+    assert not fit["ambiguous"] and fit["params"]["EC50"] == pytest.approx(params[2], rel=1e-4)
+    assert fit["se"]["EC50"] == pytest.approx(np.sqrt(cov[2, 2]), rel=1e-3)
+    cubic = np.linspace(0, 1000, 12)
+    fit = fit_curve("polynomial_3", cubic, 2 + 0.5 * cubic - 1e-3 * cubic**2 + 1e-6 * cubic**3 + RNG.normal(0, 1, cubic.size))
+    assert not fit["ambiguous"] and np.isfinite(fit["se"]["B3"])
+
+
+def test_comparisons_name_their_data_sets_and_refuse_bad_shared_fits(monkeypatch):
+    from cellquant.stats import curvefit
+
+    x = np.linspace(0, 10, 8)
+    values = np.full((8, 3, 1), np.nan)
+    values[:, 0, 0] = 1 + 2 * x + RNG.normal(0, 0.3, 8)
+    values[:, 1, 0] = 3 + 2.5 * x + RNG.normal(0, 0.3, 8)
+    values[:2, 2, 0] = [1.0, 2.0]  # too few points to fit
+    table = XYTable("Y", "X", x, ["A", "B", "C"], values)
+    result = nonlinear_regression(table, model="line", compare="datasets")
+    wide = result.values["wide"]
+    assert wide.loc[("Does one curve fit every data set?", "Data sets compared"), "A"] == "A, B"
+    assert wide.loc[("Does one curve fit every data set?", "Left out (no fit)"), "A"] == "C" and "C could not be fitted" in result.methods
+    monkeypatch.setattr(curvefit, "_CACHE", {})
+    real = curvefit.global_fit
+    monkeypatch.setattr(curvefit, "global_fit", lambda *args, **kwargs: {**real(*args, **kwargs), "converged": False})
+    result = nonlinear_regression(table, model="line", compare="datasets", compare_parameter="Slope")
+    assert result.values["datasets"] is None and any("Slope shared is ambiguous" in text for text in result.warnings)
+    monkeypatch.setattr(curvefit, "_CACHE", {})
+    result = nonlinear_regression(table, model="line", compare="datasets", compare_parameter="Top")  # no such parameter: a warning
+    assert result.values["datasets"] is None and any("not a free parameter" in text for text in result.warnings)
+
+
+def test_labels_for_unranked_models_growth_and_ambiguity_rows():
+    x = np.linspace(-5, 5, 11)
+    table = XYTable("Y", "X", x, ["A"], (4 * np.exp(-0.5 * (x / 2) ** 2) + RNG.normal(0, 0.1, 11)).reshape(11, 1, 1))
+    wide = nonlinear_regression(table, model="gaussian", compare="model", compare_model="polynomial_2").values["wide"]
+    assert wide.loc[("Which fit is better?", "Model A"), "A"].startswith("Gaussian") and ("Which fit is better?", "Model B") in wide.index
+    assert ("Which fit is better?", "Simpler model") not in wide.index and wide.loc[("Data", "Ambiguous"), "A"] == "No"
+    from cellquant.stats.curvefit import _derived
+
+    away = {"model": "one_phase", "params": {"Y0": 2.0, "Plateau": 10.0, "K": -0.2}}  # K < 0 runs away from the plateau: no half-life
+    assert np.isnan(_derived(away, lambda _name: (-0.3, -0.1))[1][1])
+    dose = nonlinear_regression(XYTable("Y", "dose", np.geomspace(0.01, 100, 8), ["A"],
+                                        (100 / (1 + 1 / np.geomspace(0.01, 100, 8)) + RNG.normal(0, 1, 8)).reshape(8, 1, 1)),
+                                model="dose_response")
+    assert "can reach below 0" in dose.methods
