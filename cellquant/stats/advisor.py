@@ -23,6 +23,7 @@ GOALS = {
     "groups": "Whether groups (conditions) differ",
     "two_factors": "How two factors (e.g. genotype × treatment) act",
     "xy": "How one measure changes with another (X, Y)",
+    "survival": "How long until an event (survival)",
 }
 DOTS = {
     "replicate": "A biological replicate (animal, culture, experiment)",
@@ -83,7 +84,7 @@ class Facts:
 
 @dataclass
 class Recommendation:
-    kind: str                                 # "compare", "anova", "twoway", "linreg" or "xycorr" (a window analysis)
+    kind: str                                 # "compare", "anova", "twoway", "linreg", "xycorr" or "survival" (a window analysis)
     options: dict
     name: str
     why: str
@@ -493,8 +494,26 @@ def _xy(answers: Answers, facts: Facts) -> Recommendation:
     return rec
 
 
+def _survival(answers: Answers, facts: Facts) -> Recommendation:
+    rec = Recommendation("survival", {}, "Survival curves (Kaplan-Meier)",
+                         "Times to an event (death, relapse, a cell dividing) where some subjects are still event-free when last seen "
+                         "(censored): Kaplan-Meier curves use every subject, censored ones until they drop out, and the log-rank test compares "
+                         "the curves. Averaging the times, or leaving out the censored subjects, would be biased.",
+                         alternatives=["Gehan-Breslow-Wilcoxon test (on the same sheet) when early differences matter most",
+                                       "The log-rank test for trend when the groups are in order (dose, grade)"],
+                         unit="N = the subjects (one row each)")
+    rec.dof.append(("Log-rank test", "chi-square with groups − 1 df"))
+    rec.warnings.append("Make the table with File → New survival table: one row per subject, its time in X and 1 (event) or 0 (censored) in "
+                        "its group's column. The hazard ratio assumes the hazards stay proportional: look for crossing curves.")
+    rec.report = ("Kaplan-Meier survival; log-rank (Mantel-Cox) χ²(df) = …, P = …; median survival … (95% CI … to …) per group; hazard ratio "
+                  "… (95% CI … to …); N subjects and events per group.")
+    return rec
+
+
 def recommend(answers: Answers, facts: Facts | None = None) -> Recommendation:
     facts = facts or Facts()
+    if answers.goal == "survival":
+        return _survival(answers, facts)
     if answers.goal == "xy":
         rec = _xy(answers, facts)
     elif answers.goal == "two_factors":
@@ -512,8 +531,9 @@ def recommend(answers: Answers, facts: Facts | None = None) -> Recommendation:
         rec.warnings.append(f"A group has {min(counts)} biological replicate(s). Three is a practical minimum, and subtle differences need "
                             "more: adding replicates raises power far more than measuring more cells in each.")
     if answers.dot != "replicate" and not answers.independent and not facts.replicate_means:
-        rec.alternatives.append("A nested (hierarchical) analysis that uses every cell while modelling the replicates can find smaller "
-                                "differences than testing replicate means; it is not in QuantAnalysis yet")
+        rec.alternatives.append("Nested t test or nested one-way ANOVA (on a table with replicates): keeps every value, tests the groups "
+                                "against the variation among replicates and shows how much of the variation lies among them; with the same "
+                                "number of values per replicate its test equals the test on replicate means")
     small = [name for name, p in facts.normality.items() if p < 0.05]
     if small and answers.gaussian in ("yes", "unsure") and rec.kind in ("compare", "anova"):
         rec.warnings.append(f"Shapiro-Wilk P < 0.05 for {', '.join(small)}: those values may not be Gaussian (with large N this can be a "
