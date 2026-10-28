@@ -57,10 +57,12 @@ from cellquant.stats.ttests import (
     welch_t,
     wilcoxon_matched_pairs,
 )
+from cellquant.stats.curvefit import MODELS as CURVE_MODELS, fit_curve, nonlinear_regression
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
 
 __all__ = [
     "ANOVA_TESTS",
+    "CURVE_MODELS",
     "STYLES",
     "TESTS",
     "AnalysisResult",
@@ -81,6 +83,7 @@ __all__ = [
     "compare",
     "describe",
     "effect_sizes",
+    "fit_curve",
     "format_p",
     "fraction_of_total",
     "friedman",
@@ -92,6 +95,7 @@ __all__ = [
     "kruskal_wallis",
     "kurtosis",
     "linear_regression",
+    "nonlinear_regression",
     "lognormal_unpaired_t",
     "lognormality",
     "mann_whitney",

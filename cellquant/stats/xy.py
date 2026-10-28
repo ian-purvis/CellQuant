@@ -100,6 +100,8 @@ def fit_line(x: np.ndarray, y: np.ndarray, through_origin: bool = False) -> dict
     """Least-squares line through (x, y). Raises when it cannot be fitted."""
 
     x, y = np.asarray(x, float), np.asarray(y, float)
+    if not (np.isfinite(x).all() and np.isfinite(y).all()):
+        raise StatisticsError("Linear regression needs finite X and Y values (leave blanks out first).")
     n = x.size
     params = 1 if through_origin else 2
     if n < params + 1:
@@ -263,12 +265,14 @@ def linear_regression(table: XYTable, *, through_origin: bool = False, replicate
                           ("Are the intercepts equal? (slopes alike)", "DFn, DFd"):
                           f"{comparison['intercepts_dfn']}, {comparison['intercepts_dfd']}",
                           ("Are the intercepts equal? (slopes alike)", "P value"): format_p(comparison["intercepts_p"], style=style)})
+        elif "intercepts_p" in comparison:
+            lines[("Are the intercepts equal? (slopes alike)", "")] = "Not compared: the slopes differ"
         extra = pd.DataFrame({next(iter(fits)): lines})
         extra.index.names = ["section", "statistic"]
         frame = pd.concat([frame, extra])
         section = result.section("Comparing the data sets")
         for (part, label), text in lines.items():
-            section.add(f"{part}: {label}", text, text)
+            section.add(f"{part}: {label}" if label else part, text, text)
     result.values.update(fits=fits, wide=frame, comparison=comparison)
     points = "each replicate as a point" if replicates == "each" else "the mean of each row's replicates as one point"
     origin = ", forced through the origin" if through_origin else ""

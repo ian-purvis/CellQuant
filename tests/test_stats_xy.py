@@ -112,3 +112,13 @@ def test_correlation_matches_scipy():
         correlation(np.array([1.0, 2.0]), np.array([1.0, 3.0]))
     with pytest.raises(StatisticsError, match="does not vary"):
         correlation(np.array([1.0, 2.0, 3.0]), np.array([1.0, 1.0, 1.0]))
+
+
+def test_nonfinite_points_and_differing_slopes_are_said():
+    with pytest.raises(StatisticsError, match="finite"):
+        fit_line(np.array([1.0, 2.0, np.nan]), np.array([1.0, 2.0, 3.0]))
+    x = np.arange(6.0)
+    values = np.stack([x * 1.0 + np.array([0, 0.1, -0.1, 0.05, 0, -0.05]), x * 5.0 + np.array([0.1, 0, -0.1, 0, 0.05, 0])], axis=1)
+    result = linear_regression(XYTable("", "X", x, ["A", "B"], values[:, :, None]))
+    assert result.values["comparison"]["slopes_p"] < 0.05
+    assert result.values["wide"].loc[("Are the intercepts equal? (slopes alike)", ""), "A"] == "Not compared: the slopes differ"

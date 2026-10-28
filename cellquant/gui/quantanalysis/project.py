@@ -32,6 +32,7 @@ from cellquant.stats import (
     p_value_stack,
 )
 from cellquant.stats import transforms
+from cellquant.stats.curvefit import nonlinear_regression
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.normality import TESTS as NORMALITY_TESTS
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
@@ -392,8 +393,9 @@ class Project(QObject):
                 sheet.result = run(data, sheet.options)
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
-            elif sheet.kind in ("linreg", "xycorr"):
-                sheet.result = (run_linear_regression if sheet.kind == "linreg" else run_xy_correlation)(data, sheet.options)
+            elif sheet.kind in ("linreg", "xycorr", "curvefit"):
+                run = {"linreg": run_linear_regression, "xycorr": run_xy_correlation, "curvefit": run_curve_fit}[sheet.kind]
+                sheet.result = run(data, sheet.options)
                 sheet.wide = sheet.result.values["wide"]
                 sheet.warnings = list(sheet.result.warnings)
                 sheet.methods = sheet.result.methods
@@ -495,6 +497,8 @@ def run_two_way(data: DataSheet, options: dict) -> AnalysisResult:
 
 LINREG_KEYS = ("through_origin", "replicates", "ci", "alpha", "style")
 XYCORR_KEYS = ("method", "replicates", "ci", "alpha", "style")
+CURVEFIT_KEYS = ("model", "fixed", "replicates", "ci", "alpha", "style", "compare", "compare_model", "compare_fixed", "compare_parameter",
+                 "interpolate")
 
 
 def _xy_of(data: DataSheet | None, what: str) -> XYTable:
@@ -506,6 +510,14 @@ def _xy_of(data: DataSheet | None, what: str) -> XYTable:
 def run_linear_regression(data: DataSheet, options: dict) -> AnalysisResult:
     kwargs = {key: options[key] for key in LINREG_KEYS if key in options and options[key] is not None}
     return linear_regression(_xy_of(data, "Linear regression"), **kwargs)
+
+
+def run_curve_fit(data: DataSheet, options: dict) -> AnalysisResult:
+    kwargs = {key: options[key] for key in CURVEFIT_KEYS if key in options and options[key] is not None}
+    for key in ("fixed", "compare_fixed"):  # a saved project may hold anything here
+        if key in kwargs and not isinstance(kwargs[key], dict):
+            kwargs.pop(key)
+    return nonlinear_regression(_xy_of(data, "Nonlinear regression"), **kwargs)
 
 
 def run_xy_correlation(data: DataSheet, options: dict) -> AnalysisResult:
