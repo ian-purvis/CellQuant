@@ -243,3 +243,22 @@ def test_strongly_different_data_sets_are_still_compared():
     assert datasets is not None and datasets["p"] < 1e-6 and datasets["f_prefers"] == "separate" and datasets["shared"]["ambiguous"]
     assert any("ambiguous" in text and "still holds" in text for text in result.warnings)
     assert "poorly determined" in result.values["wide"].loc[("Is LogEC50 the same for every data set?", "Shared LogEC50"), "Low"]
+    assert not datasets["unreliable"] and "poorly determined (ambiguous)" in result.methods
+
+
+def test_a_shared_fit_better_than_separate_fits_is_flagged(monkeypatch):
+    from cellquant.stats import curvefit
+
+    x = np.linspace(0, 10, 8)
+    values = np.full((8, 2, 1), np.nan)
+    values[:, 0, 0] = 1 + 2 * x + RNG.normal(0, 0.3, 8)
+    values[:, 1, 0] = 1 + 2 * x + RNG.normal(0, 0.3, 8)
+    table = XYTable("Y", "X", x, ["A", "B"], values)
+    monkeypatch.setattr(curvefit, "_CACHE", {})
+    real = curvefit.global_fit
+    monkeypatch.setattr(curvefit, "global_fit", lambda *args, **kwargs: {**real(*args, **kwargs), "ss_resid": 1e-6})  # beats the separate fits
+    result = nonlinear_regression(table, model="line", compare="datasets")
+    datasets = result.values["datasets"]
+    assert datasets["unreliable"] and datasets["f_prefers"] is None and datasets["aicc_prefers"] is None
+    assert any("not reliable" in text for text in result.warnings)
+    assert result.values["wide"].loc[("Does one curve fit every data set?", "Reliable?"), "A"].startswith("No")

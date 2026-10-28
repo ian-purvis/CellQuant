@@ -500,10 +500,13 @@ def compare_data_sets(model: str | Model, data: dict[str, tuple[np.ndarray, np.n
     k_separate = sum(len(fits[name]["free"]) for name in names)
     f, p, dfn, dfd = _f_test(null["ss_resid"], null["df"], ss_separate, df_separate)
     delta, probability = _aicc_choice(null["aicc"], aicc(ss_separate, null["n"], k_separate))
-    return {"parameter": parameter, "shared": null, "data_sets": names, "f": f, "p": p, "dfn": dfn, "dfd": dfd,
-            "f_prefers": None if not math.isfinite(p) else "separate" if p < alpha else "shared",
+    # The shared fit is a special case of the separate fits, so it can never fit better; when it does, a separate fit is stuck
+    # in a local optimum and neither test can be trusted.
+    unreliable = null["ss_resid"] < ss_separate * (1 - 1e-9)
+    return {"parameter": parameter, "shared": null, "data_sets": names, "f": f, "p": p, "dfn": dfn, "dfd": dfd, "unreliable": unreliable,
+            "f_prefers": None if unreliable or not math.isfinite(p) else "separate" if p < alpha else "shared",
             "aicc_delta": delta, "aicc_shared": probability,
-            "aicc_prefers": None if not math.isfinite(delta) else "shared" if delta >= 0 else "separate"}
+            "aicc_prefers": None if unreliable or not math.isfinite(delta) else "shared" if delta >= 0 else "separate"}
 
 
 # --- The results sheet ----------------------------------------------------------------------------------------
@@ -708,6 +711,9 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
             result.warnings.append("The fit with " + (f"{compare_parameter} shared" if compare_parameter else "one curve for every data set")
                                    + " is ambiguous: its parameters are poorly determined, as happens when the data sets differ "
                                    "strongly. The comparison uses only how well it fits (its sum of squares), so it still holds.")
+        if datasets is not None and datasets["unreliable"]:
+            result.warnings.append("The shared fit fits better than the separate fits, which cannot happen at their best: a separate fit "
+                                   "may be stuck short of its best fit. The comparison is not reliable; check each fit, or fix a parameter.")
         if len(fits) >= 2:
             skipped = [name for name in table.sets if name not in fits]
             if datasets is not None:
@@ -745,7 +751,10 @@ def _nonlinear_regression(table: XYTable, *, model: str = "log_dose_response", f
         left_out = [name for name in table.sets if name not in fits]
         what += f" ({', '.join(datasets['data_sets'])}; {', '.join(left_out)} could not be fitted and {'was' if len(left_out) == 1 else 'were'} left out)" if left_out else ""
         methods += (f" The null hypothesis that {what} was tested against separate fits by the extra sum-of-squares F test "
-                    f"(alpha = {alpha:g}) and AICc.")
+                    f"(alpha = {alpha:g}) and AICc; the shared fit was started from the median of the separate fits and from each "
+                    "data set's own fit, keeping the best.")
+        if datasets["shared"]["ambiguous"]:
+            methods += " Its parameters were poorly determined (ambiguous); the tests use only its sum of squares."
     if interpolate:
         methods += (" Unknown X values were read off each fitted curve within the range of its X values (no extrapolation); they have "
                     "no confidence intervals.")
@@ -799,7 +808,9 @@ def _dataset_rows(item: dict, style: str) -> dict:
     rows = {}
     if parameter:
         rows[(section, f"Shared {parameter}")] = fmt(item["shared"]["params"][0][parameter]) + (
-            " (poorly determined: the data sets differ too much to share it)" if item["shared"]["ambiguous"] else "")
+            " (shared fit poorly determined)" if item["shared"]["ambiguous"] else "")
+    if item.get("unreliable"):
+        rows[(section, "Reliable?")] = "No: the shared fit fits better than the separate fits, so a separate fit is stuck"
     rows[(section, "F (extra sum-of-squares)")] = fmt(item["f"])
     rows[(section, "DFn, DFd")] = f"{item['dfn']}, {item['dfd']}"
     rows[(section, "P value")] = format_p(item["p"], style=style)
