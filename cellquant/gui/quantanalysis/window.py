@@ -336,6 +336,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(export, "Export results CSV…", self.export_results, "The results sheet shown, as a CSV file.")
         self._action(export, "Copy results", self.copy_results, "The results sheet shown, as tab-separated text.")
         help_menu = bar.addMenu("&Help")
+        self._action(help_menu, "Statistics reference…", lambda: self.statistics_reference(), tips.REFERENCE)
         self._action(help_menu, "Statistics guide…", self.statistics_guide, "Definitions, equations and when to use each test.")
         self._action(help_menu, "Help me choose…", self.help_choose, tips.GUIDE)
         self._action(help_menu, "Log…", self.show_log, "What QuantAnalysis did: imports, analyses, exports and any errors.")
@@ -1235,6 +1236,35 @@ class QuantAnalysisWindow(QMainWindow):
         dialog = GuideDialog(self, statistics_text(), title="QuantAnalysis: statistics guide", modal=False)
         dialog.show()
         return dialog
+
+    def statistics_reference(self, sheet: ResultSheet | None = None, term: str = ""):
+        """The statistics reference, at the page for ``sheet`` (its analysis) or ``term`` when given. Made once and reused."""
+
+        from cellquant.gui.quantanalysis import reference
+        from cellquant.gui.quantanalysis.reference_window import ReferenceWindow
+
+        window = getattr(self, "_reference", None)
+        if window is None:
+            window = self._reference = ReferenceWindow(self, reference.text(), statistics_text(), self.open_example)
+        if sheet is not None:
+            options = dict(sheet.options)
+            if sheet.result is not None and sheet.result.analysis.startswith("Mixed-effects"):
+                options["test"] = "mixed"  # repeated measures with blanks is fitted as a mixed model
+            window.show_sheet(sheet.kind, options)
+        elif term:
+            window.show_name(term)
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        return window
+
+    def open_example(self, name: str, data: dict, paired: bool = False) -> DataSheet:
+        """A worked example from the statistics reference as a new data table, to analyze and compare."""
+
+        sheet = self.project.add_data(DataSheet(name, ColumnTable.from_columns(data, title=name, paired=paired)))
+        self.select(sheet.id)
+        self.log(f"{name} added from the statistics reference")
+        return sheet
 
     def show_log(self) -> QDialog:
         dialog = QDialog(self)

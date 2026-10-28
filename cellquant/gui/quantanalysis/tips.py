@@ -572,6 +572,12 @@ OVERRIDE_SD = ("The SD the multiple comparisons use. Default: the pooled SD of e
                "known from many earlier experiments. The overall F test is unchanged.")
 OVERRIDE_M = ("How many comparisons the correction counts (Bonferroni, Šidák, Holm-Šidák, Dunn). Default: the comparisons made. Set it higher "
               "when these comparisons are part of a larger planned set, for example the same comparisons in other figures.")
+REFERENCE = ("A page for every analysis and term: what is done to your data, how each number is calculated, and a worked "
+             "example you can redo by hand or run with the engine.")
+HOW_CALCULATED = ("Open this analysis's page in the statistics reference: what is done to your data, the equations, and a worked "
+                  "example to check the numbers. Double-click a row label to see what it means.")
+HOW_CALCULATED_DIALOG = ("Open the statistics reference at the analysis chosen here: what is done to your data, the equations, "
+                         "and a worked example. The dialog stays open.")
 GUIDE = "Answer a few questions about your experiment; the guide recommends a test, works out its degrees of freedom and fills its dialog."
 GUIDE_GOAL = "What the experiment asks. The table you selected sets the first answer; change it if the table is not the right kind yet."
 GUIDE_DOT = ("What one value in the table is. The test's sample size N must count independent samples (biological replicates): animals, "

@@ -21,7 +21,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellquant.gui.quantanalysis import tips
+from cellquant.gui.quantanalysis import reference, tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
 from cellquant.gui.quantanalysis.project import PSEUDO_WARNING, Project, ResultSheet
 
@@ -94,6 +94,9 @@ class ResultSheetView(QWidget):
         self.clean_button = QPushButton("Create cleaned table")
         self.clean_button.setToolTip(tips.CLEAN)
         self.clean_button.clicked.connect(lambda: window.create_cleaned_table(sheet))
+        how = QPushButton("How is this calculated?")
+        how.setToolTip(tips.HOW_CALCULATED)
+        how.clicked.connect(lambda: window.statistics_reference(sheet))
         copy = QPushButton("Copy")
         copy.setToolTip("Copy the results as tab-separated text, to paste into a spreadsheet or a document.")
         copy.clicked.connect(self.copy)
@@ -102,6 +105,7 @@ class ResultSheetView(QWidget):
         export.clicked.connect(self.export_csv)
         top.addWidget(self.options_button)
         top.addWidget(self.clean_button)
+        top.addWidget(how)
         top.addWidget(copy)
         top.addWidget(export)
         layout.addLayout(top)
@@ -119,6 +123,7 @@ class ResultSheetView(QWidget):
         self.table.horizontalHeader().hide()
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(False)
+        self.table.cellDoubleClicked.connect(self._explain)
         layout.addWidget(self.table, 1)
         methods_title = QLabel("<b>Methods</b> (copy into your paper and add N and what a dot is)")
         layout.addWidget(methods_title)
@@ -164,6 +169,8 @@ class ResultSheetView(QWidget):
                     cell.setBackground(QBrush(SECTION_BACKGROUND))
                     self.table.setItem(row, column, cell)
                 continue
+            if reference.default_index().for_label(label) is not None:
+                item.setToolTip("Double-click: what this means and how it's calculated")
             self.table.setItem(row, 0, item)
             for column, value in enumerate(values, start=1):
                 cell = QTableWidgetItem(value)
@@ -175,6 +182,14 @@ class ResultSheetView(QWidget):
             header.setSectionResizeMode(column, QHeaderView.ResizeToContents if len(headers) > 2 else QHeaderView.Stretch)
         self.table.resizeRowsToContents()
         self.methods.setText(sheet.methods or "")
+
+    def _explain(self, row: int, _column: int) -> None:
+        """Double-clicking a row label opens the term it names in the statistics reference."""
+
+        item = self.table.item(row, 0)
+        page = reference.default_index().for_label(item.text()) if item is not None else None
+        if page is not None:
+            self.window.statistics_reference(term=page.title)
 
     def copy(self) -> None:
         self.project.flush_fits()
