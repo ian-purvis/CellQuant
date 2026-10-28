@@ -28,6 +28,7 @@ from qtpy.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -35,7 +36,17 @@ from qtpy.QtWidgets import (
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
-from cellquant.gui.quantanalysis.project import ANOVA_NAMES, COMPARE_TESTS, OUTLIER_NAMES, paired, parse_p_values, table_signature
+from cellquant.gui.quantanalysis.project import (
+    ANOVA_NAMES,
+    COMPARE_TESTS,
+    OUTLIER_NAMES,
+    DataSheet,
+    paired,
+    parse_p_values,
+    run_correlation_matrix,
+    run_pca,
+    table_signature,
+)
 from cellquant.stats import STYLES, ColumnTable
 from cellquant.stats import sources, transforms
 from cellquant.stats.contingency import TESTS as CONTINGENCY_TESTS, ContingencyTable, contingency
@@ -43,6 +54,7 @@ from cellquant.stats.curvefit import MODELS, nonlinear_regression
 from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.survival import SurvivalTable, survival
 from cellquant.stats.grouped import COMPARE, FAMILIES, GroupedTable, two_way_anova
+from cellquant.stats.multivariate import MISSING as CORRELATION_MISSING, SELECTIONS as PCA_SELECTIONS
 from cellquant.stats.xy import XYTable, linear_regression, xy_correlation
 from cellquant.stats.replicates import ReplicateTable, looks_like_replicate
 from cellquant.stats.multcomp import (
@@ -2058,6 +2070,193 @@ class SurvivalDialog(QDialog):
             options = self.options()
             table = SurvivalTable.from_columns(self.xy.x, {name: self.xy.values[:, j, 0] for j, name in enumerate(self.xy.sets)}, self.xy.title)
             survival(table, **options)
+        except CellQuantError as exc:
+            self.note.setText(str(exc))
+            self.note.setVisible(True)
+            return
+        super().accept()
+
+
+# --- Correlation matrix and principal component analysis ---------------------------------------------------------
+
+CORRELATION_MATRIX_DEFAULTS = {"method": "pearson", "missing": "pairwise", "adjust": "none", "ci": 0.95, "alpha": 0.05, "style": "classic",
+                               "variables": None}
+CORRELATION_METHODS = {"pearson": "Pearson (straight-line relation)", "spearman": "Spearman (ranks)"}
+PCA_DEFAULTS = {"standardize": True, "select": "parallel", "variance": 0.8, "number": 2, "variables": None}
+
+
+def _variables_list(dialog: QDialog, layout: QVBoxLayout, table: ColumnTable, chosen) -> QListWidget:
+    """The checklist of the columns to use as variables (all ticked unless ``chosen`` names some)."""
+
+    title = QLabel("Variables")
+    title.setToolTip(tips.MV_VARIABLES)
+    layout.addWidget(title)
+    box = QListWidget()
+    box.setToolTip(tips.MV_VARIABLES)
+    box.setMaximumHeight(130)
+    for name in table.names:
+        item = QListWidgetItem(name)
+        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+        item.setCheckState(Qt.Checked if not isinstance(chosen, (list, tuple)) or name in chosen else Qt.Unchecked)
+        box.addItem(item)
+    layout.addWidget(box)
+    return box
+
+
+def _ticked_variables(box: QListWidget):
+    """The names ticked in the checklist; None when all are (so columns added to the table later are included)."""
+
+    ticked = [box.item(row).text() for row in range(box.count()) if box.item(row).checkState() == Qt.Checked]
+    return None if len(ticked) == box.count() else ticked
+
+
+class CorrelationMatrixDialog(QDialog):
+    """Correlation matrix: Pearson or Spearman, how blanks are handled, the P value adjustment, the interval, alpha and P value style, and
+    the variables (columns) to include."""
+    reference = "corrmatrix"  # the statistics reference page its How is it calculated? button opens
+
+    def __init__(self, parent, table: ColumnTable, options: dict | None = None):
+        super().__init__(parent)
+        self.table = table
+        options = {**CORRELATION_MATRIX_DEFAULTS, **(options or {})}
+        self.setWindowTitle("Correlation matrix")
+        self.setMinimumWidth(460)
+        layout = QVBoxLayout(self)
+        intro = QLabel(f"{tips.CORRELATION_MATRIX} This table has {len(table)} columns.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet(NOTE_STYLE)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        layout.addLayout(form)
+        self.method = QComboBox()
+        for key, name in CORRELATION_METHODS.items():
+            self.method.addItem(name, key)
+        self.method.setToolTip(tips.CORR_METHOD)
+        self.method.setCurrentIndex(max(0, self.method.findData(options["method"])))
+        form.addRow("Correlation", self.method)
+        self.missing = QComboBox()
+        for key, name in CORRELATION_MISSING.items():
+            self.missing.addItem(name, key)
+        self.missing.setToolTip(tips.CORR_MISSING)
+        self.missing.setCurrentIndex(max(0, self.missing.findData(options["missing"])))
+        form.addRow("Blank values", self.missing)
+        self.adjust = QComboBox()
+        self.adjust.addItem(STACK_METHODS["none"], "none")
+        for key, name in STACK_METHODS.items():
+            if key == "none":
+                continue
+            self.adjust.addItem(("FDR: " if key in FDR_METHODS else "") + name, key)
+            self.adjust.setItemData(self.adjust.count() - 1, tips.METHOD_TIPS.get(key, tips.CORR_ADJUST), Qt.ToolTipRole)
+        self.adjust.setToolTip(tips.CORR_ADJUST)
+        self.adjust.setCurrentIndex(max(0, self.adjust.findData(options["adjust"])))
+        form.addRow("P value adjustment", self.adjust)
+        self.ci = _ci_combo(options["ci"], tips.CORR_CI)
+        form.addRow("Confidence interval", self.ci)
+        self.alpha = QDoubleSpinBox()
+        self.alpha.setRange(0.0001, 0.5)
+        self.alpha.setDecimals(4)
+        self.alpha.setSingleStep(0.01)
+        self.alpha.setToolTip(tips.CORR_ALPHA)
+        self.alpha.setValue(float(options["alpha"]))
+        form.addRow("Alpha", self.alpha)
+        self.style = QComboBox()
+        for name in STYLES:
+            self.style.addItem(name, name)
+        self.style.setToolTip(tips.P_STYLE)
+        self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
+        form.addRow("P value style", self.style)
+        self.variables = _variables_list(self, layout, table, options["variables"])
+        self.note = _dialog_footer(self, layout)
+
+    def options(self) -> dict:
+        return {"method": self.method.currentData(), "missing": self.missing.currentData(), "adjust": self.adjust.currentData(),
+                "ci": self.ci.currentData(), "alpha": round(self.alpha.value(), 6), "style": self.style.currentData(),
+                "variables": _ticked_variables(self.variables)}
+
+    def accept(self) -> None:
+        try:
+            run_correlation_matrix(DataSheet("", self.table), self.options())
+        except CellQuantError as exc:
+            self.note.setText(str(exc))
+            self.note.setVisible(True)
+            return
+        super().accept()
+
+
+class PcaDialog(QDialog):
+    """Principal component analysis: scaling, how many components to keep, and the variables (columns) to include. Advanced: the number
+    of random data sets and the seed of parallel analysis."""
+    reference = "pca"  # the statistics reference page its How is it calculated? button opens
+
+    def __init__(self, parent, table: ColumnTable, options: dict | None = None):
+        super().__init__(parent)
+        self.table = table
+        options = {**PCA_DEFAULTS, **(options or {})}
+        self.setWindowTitle("Principal component analysis (PCA)")
+        self.setMinimumWidth(460)
+        layout = QVBoxLayout(self)
+        intro = QLabel(f"{tips.PCA} This table has {len(table)} columns.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet(NOTE_STYLE)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        layout.addLayout(form)
+        self.standardize = QCheckBox("Scale each variable to unit variance")
+        self.standardize.setToolTip(tips.PCA_STANDARDIZE)
+        self.standardize.setChecked(options["standardize"] is not False)
+        form.addRow(self.standardize)
+        self.select = QComboBox()
+        for key, name in PCA_SELECTIONS.items():
+            self.select.addItem(name + (" (recommended)" if key == "parallel" else ""), key)
+        self.select.setToolTip(tips.PCA_SELECT)
+        self.select.setCurrentIndex(max(0, self.select.findData(options["select"])))
+        form.addRow("Components to keep", self.select)
+        self.variance = QDoubleSpinBox()
+        self.variance.setRange(1, 100)
+        self.variance.setDecimals(0)
+        self.variance.setSuffix(" %")
+        self.variance.setToolTip(tips.PCA_VARIANCE)
+        try:
+            self.variance.setValue(100 * float(options["variance"]))
+        except (TypeError, ValueError):
+            self.variance.setValue(80)
+        self.variance_label = QLabel("Variance to explain")
+        self.variance_label.setToolTip(tips.PCA_VARIANCE)
+        form.addRow(self.variance_label, self.variance)
+        self.number = QSpinBox()
+        self.number.setRange(1, max(1, len(table)))
+        self.number.setToolTip(tips.PCA_NUMBER)
+        self.number.setValue(int(options["number"]) if isinstance(options["number"], int) and not isinstance(options["number"], bool) else 2)
+        self.number_label = QLabel("Number of components")
+        self.number_label.setToolTip(tips.PCA_NUMBER)
+        form.addRow(self.number_label, self.number)
+        self.variables = _variables_list(self, layout, table, options["variables"])
+        self.advanced = AdvancedBox(self, layout)
+        self.advanced.add("simulations", "Random data sets (parallel analysis)", tips.PCA_SIMULATIONS, 100, 100000, 0, default_text="Default (1000)",
+                          value=1000)
+        self.advanced.add("seed", "Random seed (parallel analysis)", tips.PCA_SEED, 0, 2147483647, 0, default_text="Default (0)", value=0)
+        self.advanced.set_values(options)
+        self.select.currentIndexChanged.connect(lambda _index: self._select_changed())
+        self._select_changed()
+        self.note = _dialog_footer(self, layout)
+
+    def _select_changed(self) -> None:
+        """Show only what the chosen rule uses: the variance share, the number of components, or the parallel analysis settings."""
+
+        key = self.select.currentData()
+        for widget, shown in ((self.variance_label, key == "variance"), (self.variance, key == "variance"),
+                              (self.number_label, key == "number"), (self.number, key == "number")):
+            widget.setVisible(shown)
+        for field in ("simulations", "seed"):
+            self.advanced.show_field(field, key == "parallel")
+
+    def options(self) -> dict:
+        return {"standardize": self.standardize.isChecked(), "select": self.select.currentData(), "variance": round(self.variance.value() / 100, 6),
+                "number": self.number.value(), "variables": _ticked_variables(self.variables), **self.advanced.values()}
+
+    def accept(self) -> None:
+        try:
+            run_pca(DataSheet("", self.table), self.options())
         except CellQuantError as exc:
             self.note.setText(str(exc))
             self.note.setVisible(True)

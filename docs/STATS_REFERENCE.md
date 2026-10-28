@@ -2097,6 +2097,116 @@ Here Y doubles each unit of X, so Y = 2 · 2^X = 2 · exp(0.6931 · X): Y0 = 2, 
 
 **Related:** [[Linear regression]], [[Least squares]], [[R squared]], [[Standard error]], [[Confidence interval]], [[F ratio]], [[Residual]], [[Degrees of freedom]]
 
+### Several variables
+
+#### Correlation matrix
+
+<!-- opens: corrmatrix -->
+<!-- equations: Correlation matrix -->
+
+**In short:** Gives the correlation of every pair of variables (columns) at once, each with its confidence interval, P value and number of cases.
+
+**When to use it:** You measured several things on the same cases (for example area, intensity and distance of each cell, or several markers per image) and want to see which go together. Each row is one case, each column one variable. For one pair, or to compare a relation between groups, use [[Correlation (Pearson and Spearman)]] or [[Linear regression]] on an XY table.
+
+**What is done to your data:** Each row is a case. With **each pair uses every case with both values** (the default), a pair uses the rows where both of its columns have a value, so n can differ between pairs. With **only cases with every variable**, any row with a blank is left out of every pair. Spearman replaces the values with their ranks (ties get their average rank). Nothing else is changed. A pair with fewer than 3 cases, or a variable that does not vary, is not computed and the other pairs are unaffected.
+
+**How it's calculated:** For each pair of variables x and y, with n cases:
+
+- Pearson r = Σ(x − x̄)(y − ȳ) / √(Σ(x − x̄)² · Σ(y − ȳ)²). Spearman rₛ is the same formula on the ranks.
+- t = r · √(n − 2) / √(1 − r²), with n − 2 [[Degrees of freedom|df]]; the two-tailed [[P value]] is 2 · P(T > |t|).
+- The [[Confidence interval|confidence interval]] uses Fisher's z: z = atanh(r), SE = 1/√(n − 3), and the limits are tanh(z ± z* · SE), where z* is 1.96 for 95%. For Spearman the interval is approximate.
+- With a P value adjustment, the P values of all k(k − 1)/2 pairs are adjusted together as one family (see [[Analyze a stack of P values]]).
+
+**Worked example:** Three measurements on five cells.
+
+```example
+Area: 1, 2, 3, 4, 5
+Intensity: 2, 4, 5, 4, 5
+Distance: 5, 3, 4, 2, 1
+>>> correlation_matrix(data)
+r[0][1] = 0.7746
+p[0][1] = 0.1240
+ci_low[0][1] = -0.3401
+ci_high[0][1] = 0.9842
+r[0][2] = -0.9000
+p[0][2] = 0.03739
+n[0][1] = 5
+```
+
+By hand, for Area and Intensity:
+
+- Means 3 and 4. Deviations of Area −2, −1, 0, 1, 2; of Intensity −2, 0, 1, 0, 1.
+- Σ products = 4 + 0 + 0 + 0 + 2 = 6; Σ squares 10 and 6. r = 6 / √60 = 0.7746.
+- t = 0.7746 · √3 / √(1 − 0.6) = 2.121 with 3 df, so P = 0.124 (`2 * scipy.stats.t.sf(2.121, 3)`).
+- z = atanh(0.7746) = 1.032, SE = 1/√2 = 0.7071, so z ± 1.96 · 0.7071 = −0.354 to 2.418, and tanh gives −0.340 to 0.984.
+- Area and Distance: Σ products = −9, Σ squares 10 and 10, so r = −0.9.
+
+**Interpreting the results:** r runs from −1 (a perfect falling line) through 0 (no straight-line relation) to 1 (a perfect rising line). The heat map colours r from blue (−1) to red (1); an asterisk marks pairs whose P is below alpha. With many variables, many pairs are tested and some P values below 0.05 are expected by chance, so consider an adjustment. A correlation shows that two measurements go together, not that one causes the other.
+
+**Options:** Pearson or Spearman; how blank values are handled (each pair, or only complete cases); the P value adjustment (none by default; Holm, Holm-Šidák, Bonferroni, Šidák or an FDR method); the confidence level, alpha and P value style; and the variables to include.
+
+**Checked against:** pandas `DataFrame.corr` (Pearson and Spearman), scipy `pearsonr` and `spearmanr`, and the Holm adjustment written out from its formula.
+
+**References:** Fisher RA (1915) *Biometrika* 10:507–521 (the z transformation).
+
+**Learn more:** [Correlation (Handbook of Biological Statistics)](https://www.biostathandbook.com/linearregression.html), [Pearson correlation coefficient (Wikipedia)](https://en.wikipedia.org/wiki/Pearson_correlation_coefficient).
+
+**Related:** [[Correlation (Pearson and Spearman)]], [[Principal component analysis (PCA)]], [[Adjusted P value]], [[Confidence interval]]
+
+#### Principal component analysis (PCA)
+
+<!-- opens: pca -->
+<!-- equations: Correlation matrix -->
+
+**In short:** Combines several variables into a few new ones (components) that hold as much of the variation among the cases as possible, so you can see the main patterns in many measurements at once.
+
+**When to use it:** Several variables measured on the same cases, when you want to see whether the cases form groups, which variables move together, or how many independent patterns there are. PCA describes the data; it does not test a hypothesis and gives no P values.
+
+**What is done to your data:** Only rows with a value in every variable are used (a row with a blank is left out, and the sheet counts them). Each variable is centred (its mean subtracted) and, by default, divided by its SD, so variables in different units count equally. With scaling off, the variables are only centred, so a variable with a large spread dominates.
+
+**How it's calculated:** With n cases and k variables:
+
+- z = (x − x̄) / s for each variable (s with n − 1), or z = x − x̄ without scaling.
+- C = zᵀz / (n − 1): the correlation matrix when scaled, the covariance matrix when not.
+- The components are the eigenvectors of C, in order of decreasing eigenvalue. Each eigenvalue λ is the variance of the cases along its component. The share of the variance is λ / Σλ (Σλ = k when scaled), and the cumulative share is the running sum.
+- Each eigenvector is signed so that its largest coefficient is positive, because a component's sign is arbitrary.
+- Loadings = eigenvector × √eigenvalue. With scaling on, a loading is the correlation of a variable with a component.
+- Scores = z × eigenvector: each case's position along each component kept.
+- Components to keep: **parallel analysis** keeps the components whose eigenvalue is above the 95th percentile of the same eigenvalue in random normal data of the same size (1000 data sets, seed 0, so it is repeatable); **eigenvalue > 1** (Kaiser); a **share of the variance**; or a number set by hand. At least one component is always kept.
+
+**Worked example:** Two variables on four cases.
+
+```example
+A: 2, 4, 6, 8
+B: 1, 3, 2, 4
+>>> pca(data)
+eigenvalues[0] = 1.8
+eigenvalues[1] = 0.2
+share[0] = 0.9
+loadings[0][0] = 0.9487
+scores.PC1[0] = -1.643
+```
+
+By hand:
+
+- A has mean 5 and SD 2.582; B has mean 2.5 and SD 1.291. Scaled: A → −1.162, −0.387, 0.387, 1.162; B → −1.162, 0.387, −0.387, 1.162.
+- The correlation is Σ z_A z_B / 3 = (1.35 − 0.15 − 0.15 + 1.35) / 3 = 0.8, so C = [[1, 0.8], [0.8, 1]].
+- For a 2 × 2 correlation matrix the eigenvalues are 1 + r = 1.8 and 1 − r = 0.2, with eigenvectors (0.707, 0.707) and (0.707, −0.707). PC1 holds 1.8 / 2 = 90% of the variance.
+- Loading of A on PC1 = 0.707 × √1.8 = 0.949.
+- The first case's PC1 score = (−1.162 − 1.162) × 0.707 = −1.643. (`scores` is a table with each case's row number and its score on each component kept.)
+
+**Interpreting the results:** The **scree** graph shows each component's eigenvalue; the components above the dashed line (the parallel-analysis threshold, or 1) are kept. The **scores** graph places each case on PC1 and PC2: cases close together have similar profiles. Arrows show each variable's loadings: variables pointing the same way are positively correlated, opposite ways negatively. A component is a mix of variables, so name it from its large loadings. With scaling off, the sheet warns when SDs differ more than tenfold.
+
+**Options:** Scale each variable to unit variance (on by default); the rule for how many components to keep, with its percentage or number; the variables to include. In Advanced, the number of random data sets and the seed of parallel analysis.
+
+**Checked against:** The eigenvalues of numpy's correlation matrix, a singular value decomposition of the standardized data (scores, up to sign), and the loadings as correlations of each variable with each component.
+
+**References:** Jolliffe IT, *Principal Component Analysis*, 2nd ed. (2002). Horn JL (1965) *Psychometrika* 30:179–185 (parallel analysis).
+
+**Learn more:** [Principal component analysis (Wikipedia)](https://en.wikipedia.org/wiki/Principal_component_analysis), [Seeing Theory](https://seeing-theory.brown.edu/), [StatQuest video index](https://statquest.org/video-index/).
+
+**Related:** [[Correlation matrix]], [[Variance]], [[Correlation (Pearson and Spearman)]]
+
 ### Contingency tables
 
 #### Contingency tables (Fisher's and chi-square)

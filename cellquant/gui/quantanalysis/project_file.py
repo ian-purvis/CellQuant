@@ -44,7 +44,7 @@ SUFFIX = ".cqstats"
 FORMAT = "cellquant-quantanalysis-project"
 VERSION = 1
 MEMBER = "project.json"
-RESULT_KINDS = {"compare", "anova", "nested", "colstats", "normality", "outliers", "pstack", "twoway", "linreg", "xycorr", "curvefit", "contingency", "roc", "blandaltman", "survival"}
+RESULT_KINDS = {"compare", "anova", "nested", "colstats", "normality", "outliers", "pstack", "twoway", "linreg", "xycorr", "curvefit", "contingency", "roc", "blandaltman", "survival", "corrmatrix", "pca"}
 
 
 # --- Writing -------------------------------------------------------------------------------------------------------------

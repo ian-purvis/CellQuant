@@ -424,6 +424,8 @@ class GraphSection(Section):
         self.comparison.setToolTip(tips.GRAPH_COMPARISON)
         self.comparison.currentIndexChanged.connect(self.changed)
         form.addRow("Comparison", self.comparison)
+        self.pca_view = self.combo({"scree": "Scree plot (eigenvalues)", "scores": "Scores and loadings"}, tips.PCA_VIEW)
+        form.addRow("PCA graph", self.pca_view)
         self.show_outliers = self.check("Outliers hollow", "Draw the values flagged by Analyze → Identify outliers… as hollow points. The values stay in the table.")
         form.addRow("Outliers", self.show_outliers)
         self.dot_size = self.number(0, 400, tips.DOT_SIZE, 1, 1, special="auto")
@@ -453,9 +455,11 @@ class GraphSection(Section):
         self.comparison.clear()
         self.comparison.addItem("none", None)
         for result in self.view.project.results.values():
-            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "nested", "twoway", "linreg", "curvefit", "contingency", "roc", "blandaltman", "survival"):
+            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "nested", "twoway", "linreg", "curvefit", "contingency", "roc", "blandaltman", "survival", "corrmatrix", "pca"):
                 self.comparison.addItem(result.name, result.id)
         self.comparison.setCurrentIndex(max(0, self.comparison.findData(sheet.result_id)))
+        self.pca_view.setCurrentIndex(max(0, self.pca_view.findData(fmt.pca_view)))
+        self._pca_row()
         data = self.view.project.data.get(sheet.data_id)
         _row_visible(self.form, self.arrangement_row, data is not None and data.grouped is not None)
         _row_visible(self.form, self.xy_row, data is not None and data.xy is not None)
@@ -489,6 +493,8 @@ class GraphSection(Section):
         sheet, fmt = self.view.sheet, self.fmt
         sheet.kind = self.kind.currentData()
         sheet.result_id = self.comparison.currentData()
+        fmt.pca_view = self.pca_view.currentData()
+        self._pca_row()
         fmt.error = self.error.currentData()
         fmt.grouped_layout, fmt.cluster_gap = self.arrangement.currentData(), self.cluster_gap.value()
         fmt.xy_replicates, fmt.xy_band = self.xy_replicates.currentData(), self.xy_band.currentData()
@@ -503,6 +509,12 @@ class GraphSection(Section):
         fmt.font_size = self.font_size.value()
         fmt.width, fmt.height, fmt.units = self.width_box.value(), self.height_box.value(), self.units.currentData()
         self.view.window.sheet_renamed(sheet)
+
+    def _pca_row(self) -> None:
+        """The PCA view shows only while the graph's comparison is a principal component analysis."""
+
+        result = self.view.project.results.get(self.comparison.currentData() or "")
+        _row_visible(self.form, self.pca_view, result is not None and result.kind == "pca")
 
     def _superplot_rows(self) -> None:
         """The SuperPlot rows show only while the graph is a SuperPlot (they follow the Graph choice at once)."""

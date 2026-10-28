@@ -190,6 +190,7 @@ class GraphFormat:
     replicate_alpha: float = 0.5    # opacity of the values (small dots)
     replicate_link: bool = False    # a line joining each replicate's marker across the columns (replicates measured in every column)
     contingency_values: str = "stacked"  # contingency tables: "stacked" (100% of each row), "percent" (% of row) or "count"
+    pca_view: str = "scree"         # a linked principal component analysis: "scree" (eigenvalues) or "scores" (PC1 against PC2 with the loadings)
     # Axes
     frame: str = "plain"
     frame_offset: float = 6.0       # points, for the offset frame
@@ -270,6 +271,8 @@ class GraphFormat:
         fmt.replicate_alpha = min(1.0, max(0.05, float(alpha))) if isinstance(alpha, (int, float)) and math.isfinite(alpha) else 0.5
         if fmt.contingency_values not in ("stacked", "percent", "count"):
             fmt.contingency_values = "stacked"
+        if fmt.pca_view not in ("scree", "scores"):
+            fmt.pca_view = "scree"
         gap = fmt.cluster_gap
         fmt.cluster_gap = min(5.0, max(0.0, float(gap))) if isinstance(gap, (int, float)) and math.isfinite(gap) else 0.8
         return fmt

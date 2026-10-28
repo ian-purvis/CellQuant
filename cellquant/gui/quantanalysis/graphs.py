@@ -376,6 +376,11 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         return (_draw_roc if analysis == "ROC curve" else _draw_bland_altman)(figure, data, result, fmt, font, notes)
     if analysis == "Survival" and getattr(data, "xy", None) is not None:
         return _draw_survival(figure, data, result, fmt, font, notes)
+    if analysis in ("Correlation matrix", "Principal component analysis") and getattr(data, "xy", None) is None \
+            and getattr(data, "grouped", None) is None:
+        if analysis == "Correlation matrix":
+            return _draw_correlation_matrix(figure, data, result, fmt, font, notes)
+        return (_draw_pca_scores if fmt.pca_view == "scores" else _draw_pca_scree)(figure, data, result, fmt, font, notes)
     if getattr(data, "xy", None) is not None:
         if graph.kind != "xy":
             notes.append(f"An XY table is drawn as an XY graph; {KINDS[graph.kind][0].lower()} is for column tables.")
@@ -1417,8 +1422,10 @@ def _series_style(fmt: GraphFormat, data, name: str):
     return fmt.dataset(name), fmt.color_of(name, names.index(name) if name in names else 0)
 
 
-def _finish_diagnostic(figure, ax, fmt: GraphFormat, font: float, notes: list[str], title: str, x_title: str, y_title: str) -> None:
-    """Axis limits, titles, ticks, annotations and the plot transform shared by the ROC and Bland-Altman graphs."""
+def _finish_diagnostic(figure, ax, fmt: GraphFormat, font: float, notes: list[str], title: str, x_title: str, y_title: str,
+                       own_ticks: tuple[str, ...] = ()) -> None:
+    """Axis limits, titles, ticks, annotations and the plot transform shared by the ROC, Bland-Altman, survival and multiple-variable graphs.
+    The ticks of the axes named in ``own_ticks`` ("x", "y") are the caller's (names, whole numbers): only their font is set."""
 
     if fmt.x.min is not None or fmt.x.max is not None:
         low, high = ax.get_xlim()
@@ -1435,7 +1442,8 @@ def _finish_diagnostic(figure, ax, fmt: GraphFormat, font: float, notes: list[st
     if title:
         _tag(ax.set_title(markup(title), loc=fmt.title_loc, pad=6, **_text_kw(fmt.title_style, fmt, font + 1)), "title")
     for which, axis in (("y", fmt.y), ("x", fmt.x)):
-        _locators(ax.yaxis if which == "y" else ax.xaxis, axis, notes)
+        if which not in own_ticks:
+            _locators(ax.yaxis if which == "y" else ax.xaxis, axis, notes)
         _style_ticks(ax, which, axis, fmt)
     figure._cq_axes = {"main": ax, "segments": [ax], "bottom": ax, "right": None}
     try:
@@ -1519,6 +1527,173 @@ def _draw_survival(figure, data, result, fmt: GraphFormat, font: float, notes: l
     if fmt.legend.show and fmt.legend.position == "custom":
         legend = _legend(ax, "survival", series, fmt, font, figure._cq_plot)
     figure._cq_legend = legend
+    return notes
+
+
+def _text_on(rgba) -> str:
+    """Black or white text, whichever reads better on a cell of this colour."""
+
+    red, green, blue = rgba[:3]
+    return "#111111" if 0.2126 * red + 0.7152 * green + 0.0722 * blue > 0.5 else "#FFFFFF"
+
+
+def _draw_correlation_matrix(figure, data, result, fmt: GraphFormat, font: float, notes: list[str]) -> list[str]:
+    """A linked correlation matrix as a heat map: r in every cell on a blue-white-red scale fixed at -1 to 1, a * on the pairs with P (adjusted,
+    if it was) below alpha, the variables named on both axes and a colour bar."""
+
+    from matplotlib import colormaps
+    from matplotlib.colors import Normalize
+
+    values = result.values
+    names, r = [str(name) for name in values["names"]], np.asarray(values["r"], float)
+    p_adj = np.asarray(values["p_adjusted"], float)
+    alpha = float(result.options.get("alpha", 0.05))
+    adjusted = result.options.get("adjust", "none") != "none"
+    symbol = "r" if result.options.get("method", "pearson") == "pearson" else "rₛ"
+    k = len(names)
+    ax = figure.add_subplot(111)
+    _style_frame(ax, fmt)
+    cmap = colormaps["RdBu_r"].with_extremes(bad="#E6E6E6")  # an undefined r is grey
+    norm = Normalize(vmin=-1, vmax=1)
+    image = ax.imshow(np.ma.masked_invalid(r), cmap=cmap, norm=norm, aspect="equal", interpolation="nearest")
+    size = max(4.5, 0.85 * font * min(1.0, 6.0 / k))  # smaller numbers in a bigger matrix
+    for i in range(k):
+        for j in range(k):
+            if not np.isfinite(r[i, j]):
+                ax.text(j, i, "–", ha="center", va="center", fontsize=size, color="#555555")
+                continue
+            star = "*" if i != j and p_adj[i, j] < alpha else ""
+            ax.text(j, i, f"{r[i, j]:.2f}{star}".replace("-", "−"), ha="center", va="center", fontsize=size, color=_text_on(cmap(norm(r[i, j]))))
+    angle = fmt.x.label_angle or (45 if k > 2 else 0)
+    ax.set_xticks(range(k), labels=[markup(name) for name in names], rotation=angle, ha="right" if angle else "center", rotation_mode="anchor")
+    ax.set_yticks(range(k), labels=[markup(name) for name in names])
+    bar = figure.colorbar(image, ax=ax, ticks=[-1, -0.5, 0, 0.5, 1], fraction=0.046, pad=0.04)
+    bar.set_label(symbol, fontsize=fmt.font_size, color="#222222")
+    bar.ax.tick_params(labelsize=fmt.font_size, width=fmt.axis_width, color=fmt.axis_color, labelcolor="#222222")
+    bar.ax.set_yticklabels(["−1", "−0.5", "0", "0.5", "1"])
+    bar.outline.set_linewidth(fmt.axis_width)
+    bar.outline.set_edgecolor(fmt.axis_color)
+    if fmt.x.scale != "linear" or fmt.y.scale != "linear":
+        notes.append("A correlation matrix is drawn on linear axes.")
+    pairs = np.asarray(values["n"])[np.tril_indices(k, -1)]
+    count = f"N = {int(pairs.min())} cases" if pairs.min() == pairs.max() else f"N = {int(pairs.min())} to {int(pairs.max())} cases"
+    key = f"* {'adjusted ' if adjusted else ''}P < {alpha:g}"
+    _finish_diagnostic(figure, ax, fmt, font, notes, f"{fmt.title}\n{count}" if fmt.title else count, key, "", own_ticks=("x", "y"))
+    figure._cq_colorbar = bar
+    return notes
+
+
+def _small_legend(ax, handles: list, labels: list[str], fmt: GraphFormat, font: float, loc: str):
+    from matplotlib.legend import Legend
+
+    legend = Legend(ax, handles, labels, loc=loc, frameon=fmt.legend.frame, prop={"size": font * 0.9}, labelcolor="#111111", handlelength=1.6,
+                    borderaxespad=0.4)
+    if fmt.legend.frame:
+        legend.get_frame().set_edgecolor(fmt.axis_color)
+        legend.get_frame().set_linewidth(fmt.axis_width)
+    ax.add_artist(legend)
+    _tag(legend, "legend")
+    return legend
+
+
+def _draw_pca_scree(figure, data, result, fmt: GraphFormat, font: float, notes: list[str]) -> list[str]:
+    """A linked principal component analysis as a scree plot: the eigenvalue of each component (filled when kept, open when not) and the line
+    the rule compared them with (the parallel-analysis 95th percentile, or 1 for the eigenvalue > 1 rule)."""
+
+    from matplotlib.lines import Line2D
+    from matplotlib.ticker import MaxNLocator
+
+    values = result.values
+    eigenvalues, keep, threshold = np.asarray(values["eigenvalues"], float), int(values["keep"]), values["threshold"]
+    x = np.arange(1, eigenvalues.size + 1)
+    ax = figure.add_subplot(111)
+    _style_frame(ax, fmt)
+    style, color = _series_style(fmt, data, str(values["names"][0]))
+    size = style.symbol_size or 36.0
+    handles, labels = [], []
+    if threshold is not None or result.options.get("select") == "kaiser":
+        if threshold is not None:
+            line, text = np.asarray(threshold, float), "Parallel analysis (95th percentile)"
+            ax.plot(x, line, linestyle="--", color=fmt.axis_color, linewidth=max(0.8, fmt.axis_width), marker="", zorder=2)
+        else:  # Kaiser: eigenvalue 1 for the correlation matrix, the mean eigenvalue for the covariance matrix
+            level = 1.0 if result.options.get("standardize", True) else float(eigenvalues.sum() / len(values["names"]))
+            text = "Eigenvalue = 1" if result.options.get("standardize", True) else "Mean eigenvalue"
+            ax.axhline(level, linestyle="--", color=fmt.axis_color, linewidth=max(0.8, fmt.axis_width), zorder=2)
+        handles.append(Line2D([], [], linestyle="--", color=fmt.axis_color, linewidth=max(0.8, fmt.axis_width)))
+        labels.append(text)
+    if style.visible:
+        _tag(ax.plot(x, eigenvalues, color=color, linewidth=max(1.0, style.center_width * 0.75), solid_joinstyle="miter", zorder=3)[0], "dataset",
+             str(values["names"][0]))
+        kept = x <= keep
+        for mask, face in ((kept, color), (~kept, "white")):
+            if mask.any():
+                _tag(ax.scatter(x[mask], eigenvalues[mask], s=size, marker="o", facecolors=face, edgecolors=color, linewidths=1.4, zorder=4),
+                     "dataset", str(values["names"][0]))
+        handles = [Line2D([], [], marker="o", linestyle="-", color=color, markerfacecolor=color, markeredgecolor=color),
+                   Line2D([], [], marker="o", linestyle="-", color=color, markerfacecolor="white", markeredgecolor=color), *handles]
+        labels = ["Kept", "Not kept", *labels]
+    ax.set_xlim(0.6, x.size + 0.4)
+    ax.set_ylim(bottom=0)
+    ax.margins(y=0.06)
+    ax.xaxis.set_major_locator(MaxNLocator(integer=True))
+    if fmt.x.scale != "linear" or fmt.y.scale != "linear":
+        notes.append("A scree plot is drawn on linear axes.")
+    legend = _small_legend(ax, handles, labels, fmt, font, "upper right") if handles else None
+    count = f"N = {values['n']} cases, {keep} of {eigenvalues.size} components kept"
+    _finish_diagnostic(figure, ax, fmt, font, notes, f"{fmt.title}\n{count}" if fmt.title else count, "Component", "Eigenvalue", own_ticks=("x",))
+    figure._cq_legend = legend
+    return notes
+
+
+def _draw_pca_scores(figure, data, result, fmt: GraphFormat, font: float, notes: list[str]) -> list[str]:
+    """A linked principal component analysis as a biplot: each case's PC1 against PC2 score and, from the origin, an arrow to each variable's
+    loading (scaled to the range of the scores) with its name at the tip. With one component kept the scores are drawn against the row number."""
+
+    from matplotlib.patheffects import withStroke
+
+    values = result.values
+    names = [str(name) for name in values["names"]]
+    scores, share = values["scores"], np.asarray(values["share"], float)
+    ax = figure.add_subplot(111)
+    _style_frame(ax, fmt)
+    style, color = _series_style(fmt, data, names[0])
+    two = int(values["keep"]) >= 2
+    x = scores["PC1"].to_numpy(float)
+    y = scores["PC2"].to_numpy(float) if two else scores["row"].to_numpy(float)
+    if style.visible:
+        _dots(ax, x, y, np.zeros(x.size, bool), style, color, style.symbol_size or _dot_area(fmt, x.size), 0.85 if x.size < 200 else 0.6,
+              ("dataset", names[0]))
+    if two:
+        ax.axhline(0, color="#BBBBBB", linewidth=0.8, linestyle=":", zorder=1)
+        ax.axvline(0, color="#BBBBBB", linewidth=0.8, linestyle=":", zorder=1)
+        loadings = np.asarray(values["loadings"], float)[:, :2]
+        reach = np.abs(loadings).max(axis=0)
+        span = np.abs(np.c_[x, y]).max(axis=0)
+        factor = 0.8 * min(span[c] / reach[c] for c in range(2) if reach[c] > 0 and span[c] > 0) if (reach > 0).any() and (span > 0).any() else 1.0
+        ink = fmt.axis_color
+        halo = [withStroke(linewidth=2.5, foreground="white")]
+        placed: list[tuple[float, float]] = []
+        for name, (u, v) in zip(names, loadings * factor):
+            ax.annotate("", xy=(u, v), xytext=(0, 0), arrowprops={"arrowstyle": "-|>", "color": ink, "linewidth": 1.0, "shrinkA": 0, "shrinkB": 0},
+                        zorder=5)
+            step = 0.05 * 2 * span[1]
+            label_v = v
+            while any(abs(u - pu) < 0.25 * 2 * span[0] and abs(label_v - pv) < step for pu, pv in placed):  # tips that nearly coincide: stack the names
+                label_v += step if v >= 0 else -step
+            placed.append((u, label_v))
+            ax.text(u, label_v, name, fontsize=font * 0.9, color=ink, ha="left" if u >= 0 else "right", va="bottom" if v >= 0 else "top", zorder=6,
+                    path_effects=halo)
+        ax.margins(0.12)
+        ax.set_aspect("equal", adjustable="datalim")
+    else:
+        ax.margins(0.08)
+        notes.append("Only one component was kept, so the scores are drawn against the row number and the loadings are not shown. "
+                     "Keep two or more components (Change options…) for the PC1 against PC2 plot with the loadings.")
+    if fmt.x.scale != "linear" or fmt.y.scale != "linear":
+        notes.append("A scores plot is drawn on linear axes.")
+    count = f"N = {values['n']} cases"
+    x_title, y_title = f"PC1 ({100 * share[0]:.1f}%)", f"PC2 ({100 * share[1]:.1f}%)" if two else "Row"
+    _finish_diagnostic(figure, ax, fmt, font, notes, f"{fmt.title}\n{count}" if fmt.title else count, x_title, y_title)
     return notes
 
 
