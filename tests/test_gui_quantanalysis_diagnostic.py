@@ -174,6 +174,10 @@ def test_roc_graph(window, table):
     assert ax.get_ylabel() == "Sensitivity (%)" and ax.get_xlabel() == "100% − Specificity (%)"
     title = ax.get_title(loc="left")
     assert title.startswith(f"Area = {result.result.values['auc']:.2f}") and "P " in title
+    values = result.result.values
+    assert f"(N = {values['n_controls']} / {values['n_patients']})" in title
+    marker = [line for line in ax.get_lines() if line.get_marker() == "o"]  # the best cutoff
+    assert len(marker) == 1 and marker[0].get_xdata()[0] == pytest.approx(values["curve"]["fpr_percent"].iloc[values["best"]])
 
     graph.format["y"] = {"title": "True positives"}
     graph.format["title"] = "Marker"
@@ -208,6 +212,7 @@ def test_bland_altman_graph(window, table):
     labels = [text.get_text() for text in ax.texts]
     assert len(labels) == 3 and any(label.startswith("Bias ") for label in labels) and any("limit" in label for label in labels)
     assert ax.get_xlabel() == "Average of Healthy and Disease" and ax.get_ylabel() == "Healthy − Disease"
+    assert ax.get_title(loc="left") == f"N = {values['n']} pairs"
 
     window.change_options(result, {"a": "Healthy", "b": "Disease", "method": "percent", "ci": 0.95})
     view.flush()

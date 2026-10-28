@@ -1411,12 +1411,21 @@ def _draw_roc(figure, data, result, fmt: GraphFormat, font: float, notes: list[s
     if style.visible:
         _tag(ax.plot(curve["fpr_percent"].to_numpy(), curve["sensitivity"].to_numpy(), color=color, linewidth=max(1.0, style.center_width * 0.75),
                      solid_joinstyle="miter", zorder=3)[0], "dataset", name)
+    best = int(result.values.get("best", -1))
+    if style.visible and 0 <= best < len(curve):  # the best cutoff (Youden's J), labelled with its value
+        x0, y0 = float(curve["fpr_percent"].iloc[best]), float(curve["sensitivity"].iloc[best])
+        _tag(ax.plot([x0], [y0], linestyle="none", marker="o", markersize=6, markerfacecolor="white", markeredgecolor=color,
+                     markeredgewidth=1.5, zorder=4)[0], "dataset", name)
+        sign = ">" if result.values.get("direction") == ">" else "<"
+        ax.annotate(f"{sign} {_short_number(result.values['best_cutoff'])}", xy=(x0, y0), xytext=(6, -10), textcoords="offset points",
+                    fontsize=font * 0.85, color=fmt.axis_color, ha="left", va="top")
     ax.set_xlim(0, 100)
     ax.set_ylim(0, 100)
     ax.set_box_aspect(1)
     if fmt.x.scale != "linear" or fmt.y.scale != "linear":
         notes.append("An ROC curve is drawn on linear axes.")
-    line = f"Area = {result.values['auc']:.2f}, {p_text(result.values['p'], style=result.options.get('style', 'classic'))}"
+    line = (f"Area = {result.values['auc']:.2f}, {p_text(result.values['p'], style=result.options.get('style', 'classic'))}"
+            f" (N = {result.values['n_controls']} / {result.values['n_patients']})")
     _finish_diagnostic(figure, ax, fmt, font, notes, f"{fmt.title}\n{line}" if fmt.title else line, "100% − Specificity (%)", "Sensitivity (%)")
     return notes
 
@@ -1444,7 +1453,8 @@ def _draw_bland_altman(figure, data, result, fmt: GraphFormat, font: float, note
         notes.append("A Bland-Altman graph is drawn on linear axes.")
     measure = {"difference": f"{first} − {second}", "ratio": f"{first} / {second}", "percent": f"% difference ({first} − {second})"}.get(
         result.options.get("method"), f"{first} − {second}")
-    _finish_diagnostic(figure, ax, fmt, font, notes, fmt.title, f"Average of {first} and {second}", measure)
+    count = f"N = {values['n']} pairs"
+    _finish_diagnostic(figure, ax, fmt, font, notes, f"{fmt.title}\n{count}" if fmt.title else count, f"Average of {first} and {second}", measure)
     return notes
 
 

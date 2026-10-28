@@ -119,7 +119,7 @@ def test_nan_dropped_and_wide_layout():
     assert list(wide.loc["Data"].index) == ["Controls (controls) n", "Patients (patients) n", "Positive when"]
     assert len(wide.loc[wide.index.get_level_values(0).str.startswith("Sensitivity and specificity")]) == len(result.values["curve"])
     assert result.analysis == "ROC curve" and result.methods and "Hanley" in result.methods
-    assert not result.warnings
+    assert result.warnings == ["1 blank or non-numeric value of Controls was left out.", "1 blank or non-numeric value of Patients was left out."]
 
 
 def test_small_groups_warn():
@@ -211,3 +211,16 @@ def test_bland_altman_refusals():
         bland_altman([1.0, 2.0], [-1.0, 1.0], method="percent")
     with pytest.raises(StatisticsError):
         bland_altman([1.0, 2.0], [2.0, 3.0], ci=0)
+
+
+def test_blanks_are_counted_and_auto_direction_is_explained():
+    from cellquant.stats.diagnostic import roc_curve
+
+    result = roc_curve([1.0, 2.0, np.nan, 3.0, 4.0, 2.5], [3.0, 4.0, 5.0, np.inf, 6.0, 5.5], names=("Healthy", "Disease"))
+    assert result.values["n_controls"] == 5 and result.values["n_patients"] == 5
+    assert any("1 blank or non-numeric value of Healthy was left out" in text for text in result.warnings)
+    assert any("of Disease was left out" in text for text in result.warnings)
+    assert "chosen from the data" in result.methods
+    assert "chosen from the data" not in roc_curve([1.0, 2.0, 3.0], [3.0, 4.0, 5.0], direction=">").methods
+    best = result.values["best"]
+    assert result.values["curve"]["cutoff"].iloc[best] == result.values["best_cutoff"]

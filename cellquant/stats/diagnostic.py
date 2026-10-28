@@ -25,15 +25,17 @@ from cellquant.stats.results import AnalysisResult, fmt, fmt_ci
 # --- ROC curve ------------------------------------------------------------------------------------------------
 
 
-def _finite(values, label: str) -> np.ndarray:
+def _finite(values, label: str) -> tuple[np.ndarray, int]:
+    """The finite values, and how many blanks (or infinities) were left out."""
+
     try:
         array = np.asarray(values, dtype=float).reshape(-1)
     except (TypeError, ValueError) as exc:
         raise StatisticsError(f"The {label} must be numbers.") from exc
-    array = array[np.isfinite(array)]
-    if array.size < 1:
+    kept = array[np.isfinite(array)]
+    if kept.size < 1:
         raise StatisticsError(f"The {label} need at least one value.")
-    return array
+    return kept, int(array.size - kept.size)
 
 
 def _wilson(successes: np.ndarray, n: int, ci: float) -> tuple[np.ndarray, np.ndarray]:
@@ -69,7 +71,8 @@ def roc_curve(controls, patients, *, ci: float = 0.95, alpha: float = 0.05, styl
         raise StatisticsError("alpha must be between 0 and 1 (for example 0.05).")
     if direction not in ("auto", ">", "<"):
         raise StatisticsError("direction must be 'auto', '>' or '<'.")
-    controls, patients = _finite(controls, "controls"), _finite(patients, "patients")
+    (controls, dropped_c), (patients, dropped_p) = _finite(controls, "controls"), _finite(patients, "patients")
+    chosen = direction == "auto"
     n_c, n_p = controls.size, patients.size
     pooled = np.concatenate([controls, patients])
     ranks = stats.rankdata(pooled)
@@ -129,7 +132,7 @@ def roc_curve(controls, patients, *, ci: float = 0.95, alpha: float = 0.05, styl
     rows[("Data", f"{names[0]} (controls) n")] = str(n_c)
     rows[("Data", f"{names[1]} (patients) n")] = str(n_p)
     rows[("Data", "Positive when")] = f"the value is {word} the cutoff"
-    part = f"Sensitivity and specificity at each cutoff ({level}s)"
+    part = f"Sensitivity and specificity at each cutoff, midway between values ({level}s)"
     for i, cutoff in enumerate(cutoffs):
         ratio = "" if not np.isfinite(likelihood[i]) else f"; likelihood ratio {fmt(likelihood[i])}"
         rows[(part, f"{'>' if direction == '>' else '<'} {fmt(cutoff)}")] = (
@@ -141,12 +144,19 @@ def roc_curve(controls, patients, *, ci: float = 0.95, alpha: float = 0.05, styl
     frame = pd.DataFrame({"ROC curve": rows})
     frame.index.names = ["section", "statistic"]
     result.values.update(auc=auc, se=se, ci_low=ci_low, ci_high=ci_high, p=p, direction=direction, n_controls=n_c, n_patients=n_p,
-                         curve=curve, best_cutoff=float(cutoffs[best]), wide=frame)
+                         curve=curve, best_cutoff=float(cutoffs[best]), best=best, wide=frame)
     result.methods = (f"Receiver operating characteristic curve: a value {word} the cutoff is called positive; sensitivity and specificity "
                       f"at every cutoff with {level}s by the Wilson score method. Area under the curve = Mann-Whitney U / (n1 × n2), ties "
                       f"counted one half, with the standard error of Hanley & McNeil (1982) and a {level} of area ± z × SE limited to 0 to 1. "
                       f"The P value is a two-tailed z test of the area against 0.5 that uses the standard error computed under the null "
                       f"(area = 0.5) (alpha = {alpha:g}). The best cutoff maximizes Youden's J = sensitivity + specificity − 1.")
+    if chosen:
+        result.methods += (f" The direction was chosen from the data (patients' values tend to be {'higher' if direction == '>' else 'lower'}), "
+                           "so the area is at least 0.5; the two-sided P value is the same for either direction.")
+    for dropped, name in ((dropped_c, names[0]), (dropped_p, names[1])):
+        if dropped:
+            result.warnings.append(f"{dropped} blank or non-numeric value{'s' if dropped != 1 else ''} of {name} "
+                                   f"{'were' if dropped != 1 else 'was'} left out.")
     if min(n_c, n_p) < 5:
         result.warnings.append("Fewer than 5 values in a group: the area, its CI and the cutoffs are rough.")
     return result
@@ -220,7 +230,9 @@ def bland_altman(a, b, *, method: str = "difference", ci: float = 0.95, names: t
                          average=average, measure=measure, wide=frame)
     result.methods = (f"Bland-Altman analysis of {names[0]} against {names[1]}: the bias is the mean of {measure_name} and the limits of "
                       f"agreement are the bias ± 1.96 SD. The {level} of the bias uses Student's t; the {level}s of the limits use "
-                      f"Student's t with the approximate standard error √(3 SD² / n) (Bland & Altman, 1986).")
+                      f"Student's t with the approximate standard error √(3 SD² / n) (Bland & Altman, 1986)."
+                      + (" The ratios are analyzed on their own scale (not logged), so the limits are symmetric around the bias."
+                         if method == "ratio" else ""))
     if dropped:
         result.warnings.append(f"{dropped} pair{'s' if dropped != 1 else ''} with a missing value {'were' if dropped != 1 else 'was'} left out.")
     if n < 10:
