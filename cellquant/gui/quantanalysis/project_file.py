@@ -32,7 +32,7 @@ SUFFIX = ".cqstats"
 FORMAT = "cellquant-quantanalysis-project"
 VERSION = 1
 MEMBER = "project.json"
-RESULT_KINDS = {"compare", "anova", "colstats", "normality", "outliers", "pstack", "twoway", "linreg", "xycorr", "contingency"}
+RESULT_KINDS = {"compare", "anova", "colstats", "normality", "outliers", "pstack", "twoway", "linreg", "xycorr", "curvefit", "contingency"}
 
 
 # --- Writing -------------------------------------------------------------------------------------------------------------

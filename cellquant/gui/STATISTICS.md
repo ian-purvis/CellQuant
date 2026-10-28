@@ -75,7 +75,7 @@ Graphs of a grouped table (column scatter, bars, boxes or violins) colour each d
 
 ### XY tables
 
-**File → New XY table** makes a table with an X column (dose, time, concentration…) and one or more Y data sets, each with its replicates side by side; each row is one X value. Type or paste values (pasting into the X column fills X first), and double-click the X or a data set title to rename it. A row without X is left out of the analyses. **Linear regression…** and **Correlation (XY)…** analyze it. The **XY** graph draws each data set against X, as each row's mean with its error bar or as every replicate (**Points** in the Graph section); with a linear regression as its **Comparison**, it draws each data set's fitted line and, if chosen, its confidence or prediction band. The column analyses and data processing work on column tables only.
+**File → New XY table** makes a table with an X column (dose, time, concentration…) and one or more Y data sets, each with its replicates side by side; each row is one X value. Type or paste values (pasting into the X column fills X first), and double-click the X or a data set title to rename it. A row without X is left out of the fits; a row with Y but no X is an unknown, whose X a curve fit can read off the curve. **Linear regression…**, **Nonlinear regression (curve fit)…** and **Correlation (XY)…** analyze it. The **XY** graph draws each data set against X, as each row's mean with its error bar or as every replicate (**Points** in the Graph section); with a linear regression or curve fit as its **Comparison**, it draws each data set's fitted line or curve and, if chosen, its confidence or prediction band. **Points** sets only how the graph shows replicates; whether a fit uses every replicate or each row's mean is set in the analysis's options. The column analyses and data processing work on column tables only.
 
 ### Contingency tables
 
@@ -366,7 +366,33 @@ Each data set gets its own least-squares line, using every replicate as a point 
 
 Forced through the origin, b = 0, a = Σxy / Σx², the degrees of freedom are n − 1 and R² compares with Σy² (not Σ(y − ȳ)²), so it is not comparable with an ordinary R². The confidence band at x is ŷ ± t·Sy.x·√(1/n + (x − x̄)²/Σ(x − x̄)²); the prediction band adds 1 inside the root (new points scatter around the line).
 
-With two or more data sets, the sheet tests whether the slopes are equal (an F test comparing one line per data set with lines sharing one slope, as in analysis of covariance). If they are not significantly different, it also tests whether the intercepts are equal (one line for all data sets against parallel lines).
+With two or more data sets, the sheet tests whether the slopes are equal (an F test comparing one line per data set with lines sharing one slope, as in analysis of covariance). If they are not significantly different, it also tests whether the intercepts are equal (one line for all data sets against parallel lines); if they are, the sheet says the intercepts were not compared.
+
+## Nonlinear regression (`nonlinear_regression(xy, model)`)
+
+**Nonlinear regression (curve fit)…** fits one equation to each data set by least squares (every replicate as a point, or each row's mean). The built-in models (`CURVE_MODELS`):
+
+| Model | Equation | Also reported |
+|---|---|---|
+| Dose-response, X is log(dose) | Y = Bottom + (Top − Bottom) / (1 + 10^((LogEC50 − X) · HillSlope)) | EC50 = 10^LogEC50 (its CI from LogEC50's), Span |
+| Dose-response, X is dose | Y = Bottom + (Top − Bottom) / (1 + (EC50 / X)^HillSlope) | Span |
+| Michaelis-Menten | Y = Vmax · X / (Km + X) | |
+| One-phase exponential | Y = Plateau + (Y0 − Plateau) · exp(−K · X) (decay, or a rise when Plateau > Y0) | Half-life = ln 2 / K, Span |
+| Exponential growth | Y = Y0 · exp(K · X) | Doubling time = ln 2 / K |
+| Gaussian | Y = Amplitude · exp(−½ ((X − Mean) / SD)²) | Width at half height = 2√(2 ln 2) · SD |
+| Line, quadratic, cubic | Y = B0 + B1·X (+ B2·X² + B3·X³) | |
+
+A HillSlope above 0 rises with X and below 0 falls. Starting values come from the data (Bottom and Top from the smallest and largest means, the EC50 where Y is halfway, a slope sign from the trend, a half-life where the curve is halfway, a log-linear fit for growth, the peak and its width for a Gaussian), and the fit is run from them and from six nearby starts; the smallest sum of squares wins. Any parameter can be **fixed** to a constant (for example Bottom = 0 and Top = 100 for data normalized to percent, or HillSlope = 1 for a standard slope); fixed parameters are not counted in the degrees of freedom.
+
+With k fitted parameters and n points: df = n − k, Sy.x = √(SS_residual / df), R² = 1 − SS_residual / SS_total. Standard errors are asymptotic: the covariance is Sy.x² (JᵀJ)⁻¹, with J the derivatives of the curve with respect to the parameters at the best fit, and CIs are estimate ± t(df) · SE (symmetric; they can be poor when the data do not cover the curve). If the data cannot pin down every parameter (for example only the bottom plateau was measured), the fit is **ambiguous**: a parameter's dependency on the others, 1 − 1/(C_ii (C⁻¹)_ii), is above 0.9999. No SE or CI is given, the sheet suggests fixing a parameter, comparisons leave the fit out, unknowns read off it are marked unreliable, and its curve is dashed. A fit that stopped before converging is treated the same way. The confidence band at x is ŷ ± t · √(g(x)ᵀ C g(x)), with g(x) the derivatives at x and C the covariance; the prediction band adds Sy.x² inside the root. AICc = n ln(SS/n) + 2K + 2K(K + 1)/(n − K − 1), with K = k + 1.
+
+**Compare**:
+
+- **With a second fit**: each data set is also fitted by a second model (or the same model with a parameter fixed). When one is a special case of the other (a parameter fixed, or a line inside a polynomial), the extra sum-of-squares F test, F = ((SS₁ − SS₂)/(df₁ − df₂)) / (SS₂/df₂), says whether the more complex fit is worth its extra parameters. AICc is given for every pair: the difference and the probability that the simpler model is correct, 1 / (1 + e^(−Δ/2)).
+- **Does one curve fit every data set?**: one curve fitted to all the data sets together against a curve per data set (F test and AICc).
+- **Does one parameter differ between data sets?**: the chosen parameter (for example LogEC50) is shared by all data sets and the others are fitted per data set (a global fit), against a separate fit per data set. With a straight line and the slope, this is the slopes test of linear regression.
+
+**Unknowns** (ticked): for each row with Y but no X, the mean of its Y values is read off each data set's curve, within the range of X the curve was fitted on (a standard curve). A Y the curve does not reach there is reported as out of range, not extrapolated; when the curve passes it more than once (a peak), every X is listed. For log(dose), the dose is given too.
 
 ## Correlation (`xy_correlation(xy, method)`)
 
@@ -506,6 +532,8 @@ scipy and statsmodels: `scipy.stats.tukey_hsd` (unequal n), `scipy.stats.dunnett
 Contingency tables: `scipy.stats.fisher_exact`, `chi2_contingency` (with and without Yates' correction) and `contingency.relative_risk` (Katz CI); statsmodels `Table2x2` (odds ratio and its CI), `confint_proportions_2indep` (Newcombe), `proportion_confint` (Wilson) and `Table.test_ordinal_association` (the trend test, which equals the linear-by-linear statistic × N/(N − 1)).
 
 Linear regression and correlation: `scipy.stats.linregress`, `pearsonr` and `spearmanr`; statsmodels `OLS` (with and without the intercept) for standard errors and the confidence and prediction bands, and its F tests of nested models for comparing slopes and intercepts.
+
+Nonlinear regression: `scipy.optimize.curve_fit` (parameters and their standard errors, with and without a fixed parameter); statsmodels `OLS` for the bands of a straight line and its F tests of nested models (a line inside a quadratic; one line for all data sets against a line per data set); the shared-slope test agrees with linear regression's slopes test. Every model recovers its own parameters from exact data with its automatic starting values.
 
 Independent code in the tests: the Geisser-Greenhouse epsilon by orthonormal contrasts, a direct REML fit of the mixed model, Games-Howell, T2, Dunn's test and the trend test written out from their formulas, and full enumeration of the Kruskal-Wallis permutation distribution. Simulations: Dunnett's and the studentized maximum modulus probabilities (millions of draws), the size of Welch's ANOVA, and the false-positive rates of Grubbs' test and ROUT.
 

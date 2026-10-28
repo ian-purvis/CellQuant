@@ -402,7 +402,7 @@ class GraphSection(Section):
         self.arrangement_row = _pair(self.arrangement, "gap", self.cluster_gap)
         form.addRow("Arrangement", self.arrangement_row)
         self.xy_replicates = self.combo({key: name for key, (name, _tip) in graphs.XY_REPLICATES.items()},
-                                        "\n".join(f"{name}: {tip}" for name, tip in graphs.XY_REPLICATES.values()))
+                                        "\n".join([*(f"{name}: {tip}" for name, tip in graphs.XY_REPLICATES.values()), tips.XY_GRAPH_POINTS]))
         self.xy_band = self.combo(graphs.XY_BANDS, tips.XY_BAND)
         self.xy_row = _pair(self.xy_replicates, self.xy_band)
         form.addRow("Points", self.xy_row)
@@ -442,7 +442,7 @@ class GraphSection(Section):
         self.comparison.clear()
         self.comparison.addItem("none", None)
         for result in self.view.project.results.values():
-            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "twoway", "linreg", "contingency"):
+            if result.data_id == sheet.data_id and result.kind in ("compare", "anova", "twoway", "linreg", "curvefit", "contingency"):
                 self.comparison.addItem(result.name, result.id)
         self.comparison.setCurrentIndex(max(0, self.comparison.findData(sheet.result_id)))
         data = self.view.project.data.get(sheet.data_id)
