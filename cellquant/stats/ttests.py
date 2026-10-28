@@ -27,7 +27,7 @@ import numpy as np
 from scipy import special, stats
 
 from cellquant.errors import StatisticsError
-from cellquant.stats._common import check_options, finite, p_rows, pairs, t_critical, t_p, tails_text
+from cellquant.stats._common import check_options, df_override, finite, p_rows, pairs, record_overrides, t_critical, t_p, tails_text
 from cellquant.stats._rank import hodges_lehmann_two_sample, normal_p, rank_sum_exact_allowed, rank_sum_exact_p, tie_sum
 from cellquant.stats.descriptive import signed_rank_rows
 from cellquant.stats.pvalues import format_p, p_summary
@@ -90,7 +90,7 @@ def paired_effect_sizes(a, b) -> dict[str, float]:
     return {"cohen_dz": float(dz), "hedges_gz": float(dz * hedges_j(n - 1)), "glass_delta": float(d.mean() / sa) if sa > 0 else np.nan}
 
 
-def _unpaired_core(a: np.ndarray, b: np.ndarray, welch: bool, ci: float) -> dict[str, float]:
+def _unpaired_core(a: np.ndarray, b: np.ndarray, welch: bool, ci: float, df_set: float | None = None, null: float = 0.0) -> dict[str, float]:
     na, nb = a.size, b.size
     va = np.var(a, ddof=1) if na > 1 else np.nan
     vb = np.var(b, ddof=1) if nb > 1 else np.nan
@@ -102,12 +102,24 @@ def _unpaired_core(a: np.ndarray, b: np.ndarray, welch: bool, ci: float) -> dict
         df = na + nb - 2
         pooled = (np.nan_to_num((na - 1) * va) + np.nan_to_num((nb - 1) * vb)) / df
         se = np.sqrt(pooled * (1 / na + 1 / nb))
+    if df_set is not None:
+        df = df_set
     difference = float(b.mean() - a.mean())
-    t = difference / se if se > 0 else np.nan
+    t = (difference - null) / se if se > 0 else np.nan
     half = t_critical(ci, df) * se if np.isfinite(df) else np.nan
     r2 = t * t / (t * t + df) if np.isfinite(t) else np.nan
     return {"n_a": na, "n_b": nb, "mean_a": float(a.mean()), "mean_b": float(b.mean()), "sd_a": float(np.sqrt(va)), "sd_b": float(np.sqrt(vb)),
             "difference": difference, "se": float(se), "df": float(df), "t": float(t), "ci_low": float(difference - half), "ci_high": float(difference + half), "r_squared": float(r2)}
+
+
+def _check_difference(difference) -> float:
+    try:
+        value = float(difference)
+    except (TypeError, ValueError):
+        raise StatisticsError(f"The hypothesised difference must be a number, not {difference!r}.") from None
+    if not np.isfinite(value):
+        raise StatisticsError("The hypothesised difference must be a finite number.")
+    return value
 
 
 def _check_unpaired(a: np.ndarray, b: np.ndarray, welch: bool, what: str) -> None:
@@ -145,14 +157,19 @@ def _variance_f_test(result: AnalysisResult, a: np.ndarray, b: np.ndarray, alpha
 
 
 def unpaired_t(a, b, *, welch: bool = False, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95,
-               alpha: float = 0.05, style: str = "classic", table_title: str = "") -> AnalysisResult:
+               alpha: float = 0.05, style: str = "classic", table_title: str = "", df=None, difference: float = 0.0) -> AnalysisResult:
     """Unpaired t test.
 
     Pooled (Student): s_p² as above, SE = s_p·√(1/n_A + 1/n_B), df = n_A + n_B - 2.
     Welch: SE = √(s_A²/n_A + s_B²/n_B), df by Welch-Satterthwaite
     (s_A²/n_A + s_B²/n_B)² / ((s_A²/n_A)²/(n_A-1) + (s_B²/n_B)²/(n_B-1)).
     t = (x̄_B - x̄_A)/SE; CI = difference ± t(1-α/2, df)·SE; R² (eta squared) = t²/(t² + df).
-    Also reports an F test comparing the two variances, and the effect sizes."""
+    Also reports an F test comparing the two variances, and the effect sizes.
+
+    Advanced overrides (keyword-only, recorded in "Changed from the default"): ``df`` replaces the
+    degrees of freedom (a positive number, or "conservative" = min(n_A, n_B) - 1) in P, the CI's t
+    critical value and R²; ``difference`` is the hypothesised difference Δ₀ (B - A), t = (x̄_B - x̄_A - Δ₀)/SE
+    (the CI is unchanged)."""
 
     alternative = check_options(alternative, ci, alpha)
     a, dropped_a = finite(a)
@@ -161,6 +178,13 @@ def unpaired_t(a, b, *, welch: bool = False, names: tuple[str, str] = ("A", "B")
     _check_unpaired(a, b, welch, name)
     result = _start(name, names, table_title, {"welch": welch, "alternative": alternative, "ci": ci, "alpha": alpha, "style": style})
     core = _unpaired_core(a, b, welch, ci)
+    changes, larger = [], []
+    if df is not None or difference != 0.0:
+        null = _check_difference(difference)
+        df_set = df_override(df, core["df"], "df", changes, larger, conservative=min(a.size, b.size) - 1) if df is not None else None
+        if null != 0.0:
+            changes.append(("Hypothesised difference", fmt(null), "0"))
+        core = _unpaired_core(a, b, welch, ci, df_set, null)
     if not np.isfinite(core["t"]):
         result.warnings.append("Both columns have zero variance, so t and P are undefined.")
     p = t_p(core["t"], core["df"], alternative)
@@ -181,6 +205,7 @@ def unpaired_t(a, b, *, welch: bool = False, names: tuple[str, str] = ("A", "B")
     data.add(f"Sample size, {names[1]}", b.size)
     _blanks(result, dropped_a + dropped_b)
     _methods(result, "Welch's unpaired t test (unequal variances)" if welch else "Unpaired t test (pooled variance)", alternative, names, alpha)
+    record_overrides(result, changes, larger)
     return result
 
 
@@ -201,10 +226,10 @@ def _difference_rows(result: AnalysisResult, core: dict, names: tuple[str, str],
 
 
 def lognormal_unpaired_t(a, b, *, welch: bool = False, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95,
-                         alpha: float = 0.05, style: str = "classic", table_title: str = "") -> AnalysisResult:
+                         alpha: float = 0.05, style: str = "classic", table_title: str = "", df=None) -> AnalysisResult:
     """Unpaired t test on log values, for lognormal data. Reports the geometric means and the ratio
     of geometric means B/A = 10^(mean log10 B - mean log10 A) with its CI (the antilog of the CI of
-    the difference of logs). Needs every value > 0."""
+    the difference of logs). Needs every value > 0. ``df`` overrides the degrees of freedom as in ``unpaired_t``."""
 
     alternative = check_options(alternative, ci, alpha)
     a, dropped_a = finite(a)
@@ -216,6 +241,9 @@ def lognormal_unpaired_t(a, b, *, welch: bool = False, names: tuple[str, str] = 
     result = _start(name, names, table_title, {"welch": welch, "alternative": alternative, "ci": ci, "alpha": alpha, "style": style})
     la, lb = np.log10(a), np.log10(b)
     core = _unpaired_core(la, lb, welch, ci)
+    changes, larger = [], []
+    if df is not None:
+        core = _unpaired_core(la, lb, welch, ci, df_override(df, core["df"], "df", changes, larger, conservative=min(a.size, b.size) - 1))
     if not np.isfinite(core["t"]):
         result.warnings.append("Both columns have zero variance on the log scale, so t and P are undefined.")
     p = t_p(core["t"], core["df"], alternative)
@@ -239,17 +267,18 @@ def lognormal_unpaired_t(a, b, *, welch: bool = False, names: tuple[str, str] = 
                          geomean_a=10 ** core["mean_a"], geomean_b=10 ** core["mean_b"], ratio=ratio, ratio_ci_low=low, ratio_ci_high=high)
     _blanks(result, dropped_a + dropped_b)
     _methods(result, f"{'Welch' if welch else 'Unpaired'} t test on log10-transformed values", alternative, names, alpha)
+    record_overrides(result, changes, larger)
     return result
 
 
-def _paired_core(a: np.ndarray, b: np.ndarray, ci: float) -> dict[str, float]:
+def _paired_core(a: np.ndarray, b: np.ndarray, ci: float, df_set: float | None = None, null: float = 0.0) -> dict[str, float]:
     d = b - a
     n = d.size
     sd = float(np.std(d, ddof=1))
     se = sd / np.sqrt(n)
     mean = float(d.mean())
-    t = mean / se if se > 0 else np.nan
-    df = n - 1
+    t = (mean - null) / se if se > 0 else np.nan
+    df = n - 1 if df_set is None else df_set
     half = t_critical(ci, df) * se
     r2 = t * t / (t * t + df) if np.isfinite(t) else np.nan
     return {"n": n, "mean_a": float(a.mean()), "mean_b": float(b.mean()), "difference": mean, "sd_difference": sd, "se": se, "df": df, "t": float(t),
@@ -282,10 +311,14 @@ def _pairing_rows(result: AnalysisResult, a: np.ndarray, b: np.ndarray, alpha: f
 
 
 def paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95, alpha: float = 0.05,
-             style: str = "classic", table_title: str = "") -> AnalysisResult:
+             style: str = "classic", table_title: str = "", df=None, difference: float = 0.0) -> AnalysisResult:
     """Paired t test on the differences d = B - A: t = mean(d) / (SD(d)/√n), df = n - 1 pairs.
     R² (partial eta squared) = t²/(t² + df). Also reports the Pearson correlation between the
-    columns, whether pairing was effective, and the paired effect sizes."""
+    columns, whether pairing was effective, and the paired effect sizes.
+
+    Advanced overrides: ``df`` replaces n - 1 in P, the CI and R² (a positive number; "conservative"
+    equals n - 1 here); ``difference`` is the hypothesised mean difference Δ₀, t = (mean(d) - Δ₀)/SE
+    (the CI is unchanged)."""
 
     alternative = check_options(alternative, ci, alpha)
     a, b, dropped = pairs(a, b, names)
@@ -293,12 +326,19 @@ def paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "t
         raise StatisticsError(f"A paired t test needs at least 2 complete pairs (there are {a.size}).")
     result = _start("Paired t test", names, table_title, {"alternative": alternative, "ci": ci, "alpha": alpha, "style": style})
     core = _paired_core(a, b, ci)
+    changes, larger = [], []
+    if df is not None or difference != 0.0:
+        null = _check_difference(difference)
+        df_set = df_override(df, core["df"], "df", changes, larger, conservative=core["df"]) if df is not None else None
+        if null != 0.0:
+            changes.append(("Hypothesised difference", fmt(null), "0"))
+        core = _paired_core(a, b, ci, df_set, null)
     if not np.isfinite(core["t"]):
         result.warnings.append("Every difference is the same (SD of differences = 0), so t and P are undefined.")
     p = t_p(core["t"], core["df"], alternative)
     section = result.section("Paired t test")
     p_rows(section, p, alpha, style, alternative, names)
-    section.add("t, df", (core["t"], core["df"]), f"t={fmt(core['t'])}, df={core['df']}")
+    section.add("t, df", (core["t"], core["df"]), f"t={fmt(core['t'])}, df={fmt(core['df'])}")
     section.add("Number of pairs", core["n"])
     size = result.section("How big is the difference?")
     size.add(f"Mean difference ({names[1]} - {names[0]})", core["difference"])
@@ -315,13 +355,15 @@ def paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "t
     _pairing_rows(result, a, b, alpha, style)
     _blanks(result, dropped, paired=True)
     _methods(result, "Paired t test", alternative, names, alpha)
+    record_overrides(result, changes, larger)
     return result
 
 
 def ratio_paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: str = "two-sided", ci: float = 0.95, alpha: float = 0.05,
-                   style: str = "classic", table_title: str = "") -> AnalysisResult:
+                   style: str = "classic", table_title: str = "", df=None) -> AnalysisResult:
     """Ratio paired t test: a paired t test on log10(B) - log10(A) = log10(B/A). Reports the
-    geometric mean of the ratios B/A = 10^mean(log10 ratio) and its CI. Needs every value > 0."""
+    geometric mean of the ratios B/A = 10^mean(log10 ratio) and its CI. Needs every value > 0.
+    ``df`` overrides the degrees of freedom as in ``paired_t``."""
 
     alternative = check_options(alternative, ci, alpha)
     a, b, dropped = pairs(a, b, names)
@@ -332,12 +374,15 @@ def ratio_paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: st
     result = _start("Ratio paired t test", names, table_title, {"alternative": alternative, "ci": ci, "alpha": alpha, "style": style})
     la, lb = np.log10(a), np.log10(b)
     core = _paired_core(la, lb, ci)
+    changes, larger = [], []
+    if df is not None:
+        core = _paired_core(la, lb, ci, df_override(df, core["df"], "df", changes, larger, conservative=core["df"]))
     if not np.isfinite(core["t"]):
         result.warnings.append("Every ratio is the same, so t and P are undefined.")
     p = t_p(core["t"], core["df"], alternative)
     section = result.section("Ratio paired t test")
     p_rows(section, p, alpha, style, alternative, names)
-    section.add("t, df", (core["t"], core["df"]), f"t={fmt(core['t'])}, df={core['df']}")
+    section.add("t, df", (core["t"], core["df"]), f"t={fmt(core['t'])}, df={fmt(core['df'])}")
     section.add("Number of pairs", core["n"])
     ratio, low, high = 10 ** core["difference"], 10 ** core["ci_low"], 10 ** core["ci_high"]
     size = result.section("How big is the difference?")
@@ -351,6 +396,7 @@ def ratio_paired_t(a, b, *, names: tuple[str, str] = ("A", "B"), alternative: st
     _pairing_rows(result, la, lb, alpha, style)
     _blanks(result, dropped, paired=True)
     _methods(result, "Ratio paired t test (paired t test on log10 ratios)", alternative, names, alpha)
+    record_overrides(result, changes, larger)
     return result
 
 

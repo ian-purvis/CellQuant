@@ -22,6 +22,7 @@ import pandas as pd
 from scipy import stats
 
 from cellquant.errors import StatisticsError
+from cellquant.stats._common import df_override, record_overrides
 from cellquant.stats.multcomp import ComparisonPlan, Estimates, comparison_rows, default_method, run_comparisons
 from cellquant.stats.pvalues import format_p, p_summary
 from cellquant.stats.results import AnalysisResult, fmt
@@ -285,13 +286,17 @@ def _comparisons(table: GroupedTable, fit: dict, compare: str, goal: str, method
 
 
 def two_way_anova(table: GroupedTable, *, interaction: bool = True, compare: str | None = None, goal: str = "all", method: str | None = None,
-                  control: str | None = None, family: str = "per_group", alpha: float = 0.05, ci: float = 0.95, style: str = "classic") -> AnalysisResult:
+                  control: str | None = None, family: str = "per_group", alpha: float = 0.05, ci: float = 0.95, style: str = "classic",
+                  df=None) -> AnalysisResult:
     """Ordinary two-way ANOVA of a grouped table, with optional multiple comparisons.
 
     ``compare``: None, or a key of COMPARE. ``goal``: "all" (every pair) or "control" (each vs. ``control``).
     ``family``: for comparisons within rows or data sets, "per_group" (each row or data set is a family; Tukey
     and Dunnett allowed) or "combined" (every comparison in one family; Šidák, Holm-Šidák, Bonferroni, Fisher's LSD
-    or FDR)."""
+    or FDR).
+
+    Advanced override ``df`` (a positive number, recorded in "Changed from the default") replaces the residual df
+    in every F test (P recomputed from the same F) and in the multiple comparisons."""
 
     if not 0 < alpha < 1:
         raise StatisticsError("alpha must be between 0 and 1 (for example 0.05).")
@@ -302,6 +307,11 @@ def two_way_anova(table: GroupedTable, *, interaction: bool = True, compare: str
     if family not in FAMILIES:
         raise StatisticsError(f"family must be one of {', '.join(FAMILIES)}.")
     fit = fit_two_way(table, interaction)
+    changes, larger = [], []
+    if df is not None:
+        df_used = df_override(df, fit["df_resid"], "Residual df", changes, larger)
+        fit = {**fit, "df_resid": df_used,
+               "rows": [{**row, "p": float(stats.f.sf(row["f"], row["df"], df_used)) if np.isfinite(row["f"]) else np.nan} for row in fit["rows"]]}
     result = AnalysisResult("Two-way ANOVA", table.title, {"interaction": interaction, "compare": compare, "goal": goal, "method": method,
                                                             "control": control, "family": family, "alpha": alpha, "ci": ci, "style": style})
     head = result.section("Table analyzed")
@@ -315,16 +325,16 @@ def two_way_anova(table: GroupedTable, *, interaction: bool = True, compare: str
         variation.add(labels[row["term"]], row["percent"], f"{fmt(row['percent'])}% of total variation")
         sig = bool(row["p"] < alpha) if np.isfinite(row["p"]) else None
         significance.add(labels[row["term"]], row["p"],
-                         f"F ({row['df']}, {fit['df_resid']}) = {fmt(row['f'])}; P = {format_p(row['p'], style=style)} "
+                         f"F ({row['df']}, {fmt(fit['df_resid'])}) = {fmt(row['f'])}; P = {format_p(row['p'], style=style)} "
                          f"({p_summary(row['p'], style)}); significant? {'' if sig is None else ('Yes' if sig else 'No')}")
     residual = 100 * fit["ss_resid"] / fit["ss_total"] if fit["ss_total"] > 0 else np.nan
     variation.add("Residual", residual, f"{fmt(residual)}% of total variation")
     anova = result.section("ANOVA table")
     for row in fit["rows"]:
         anova.add(labels[row["term"]], row, f"SS = {fmt(row['ss'])}; DF = {row['df']}; MS = {fmt(row['ms'])}; "
-                                            f"F ({row['df']}, {fit['df_resid']}) = {fmt(row['f'])}; P = {format_p(row['p'], style=style)}")
+                                            f"F ({row['df']}, {fmt(fit['df_resid'])}) = {fmt(row['f'])}; P = {format_p(row['p'], style=style)}")
     anova.add("Residual", {"ss": fit["ss_resid"], "df": fit["df_resid"], "ms": fit["ms_resid"]},
-              f"SS = {fmt(fit['ss_resid'])}; DF = {fit['df_resid']}; MS = {fmt(fit['ms_resid'])}")
+              f"SS = {fmt(fit['ss_resid'])}; DF = {fmt(fit['df_resid'])}; MS = {fmt(fit['ms_resid'])}")
     data = result.section("Data summary")
     data.add("Number of rows", len(table.rows))
     data.add("Number of data sets (columns)", len(table.columns))
@@ -377,6 +387,7 @@ def two_way_anova(table: GroupedTable, *, interaction: bool = True, compare: str
     model = "with interaction" if fit["interaction"] else "without interaction (additive)"
     result.methods = (f"Ordinary two-way ANOVA {model}, Type III sums of squares ({len(table.rows)} rows × {len(table.columns)} data sets, "
                       f"{fit['n']} values; alpha = {alpha:g}).{more}")
+    record_overrides(result, changes, larger)
     return result
 
 

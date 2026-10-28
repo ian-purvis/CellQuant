@@ -20,7 +20,7 @@ QuantAnalysis analyses and graphs CellQuant results the way the standard column-
 
 A table imported from the open experiment follows it: change a cutoff or an approval and the table is marked out of date and imported again when you return to the window (or click **Refresh**). Editing a table by hand detaches it.
 
-**Analyse.** **Analyze → Column statistics**, **Normality and lognormality tests**, and **Compare two columns…** (the t test dialog: paired or unpaired, parametric or not, the test, tails, alpha, CI level, P value style). **Help me choose…** asks a few questions and fills the dialog. Each analysis is a results sheet with its warnings and a methods sentence; **Copy** and **Export results CSV…** save it. Edit the data table and its results and graphs update.
+**Analyse.** **Analyze → Column statistics**, **Normality and lognormality tests**, and **Compare two columns…** (the t test dialog: paired or unpaired, parametric or not, the test, tails, alpha, CI level, P value style). **Help me choose…** (the analysis guide, below) recommends an analysis and fills its dialog. Each analysis is a results sheet with its warnings and a methods sentence; **Copy** and **Export results CSV…** save it. Edit the data table and its results and graphs update.
 
 **Compare three or more columns…** (the one-way ANOVA dialog). *Experimental design*: unpaired, or paired (repeated measures, with the Geisser-Greenhouse correction on by default; untick it to assume sphericity). *Assume a Gaussian distribution?* Yes gives ordinary ANOVA, or Welch and Brown-Forsythe ANOVA when SDs may differ; No gives Kruskal-Wallis, or Friedman when paired. *Multiple comparisons*: none, every pair, each group against one or two reference groups, selected pairs, or a test for a linear trend. The **Method** list shows only what is valid for the design (for example Tukey, Dunnett and Holm-Šidák after ANOVA, Games-Howell and Dunnett's T3 after Welch, Dunn's tests after a rank test, and the FDR methods after any). With two reference groups, for example a negative and a positive control, each reference is its own family (like running a vs.-control analysis once per reference) or both are corrected as one family, which is stricter. Alpha, the CI level and the P value style are set here; **Change options…** on the results sheet reopens the dialog. The results sheet shows the ANOVA table and the comparisons table, and the graph's *Comparison* menu lists it.
 
@@ -33,6 +33,41 @@ A table imported from the open experiment follows it: change a cutoff or an appr
 **Projects.** **File → Save project** (Ctrl+S) keeps every data table, analysis and graph in one `.cqstats` file; **Save project as…** picks a new file, and **Open project…** (Ctrl+O), **Open recent** or the window's **Open project…** button open one again. A project file holds each table's values, how it was imported and from where, each analysis's options, and each graph's whole format. Analyses are computed again when the project is opened, so a result always matches its table. A table imported from the experiment open in CellQuant stays linked to that experiment: when the project is opened with the same experiment open, the table is imported again with the same choices (the experiment may have changed since); otherwise it follows that experiment's results folder. The title bar shows the file, with `*` while there are unsaved changes. **New project**, **Open project…** and closing CellQuant ask to save unsaved changes; closing only the QuantAnalysis window keeps the project for when it is opened again. The file is a zip archive holding `project.json`, written to a temporary file first so a failed save leaves the old file as it was.
 
 Graphs need matplotlib, and two normality tests need statsmodels: `pip install "cellquant[stats]"`. Without them the window says so and the rest works. **Help → Log…** lists what was done.
+
+### Choosing an analysis (Help me choose…)
+
+**Analyze → Help me choose…** (also in Help, and as a button in the analysis dialogs) asks about the experiment and recommends an analysis. It reads the selected table first, so most answers are already filled in: the kind of question (a column table compares groups, a grouped table has two factors, an XY table relates X and Y), what one value is (from the import's **Dot =**), the number of groups and whether the table is marked Paired. Only the questions that apply are shown:
+
+- **What do you want to know?** Whether groups differ; how two factors affect a measure and whether they interact; or how one measure changes with another.
+- **What is one value?** A biological replicate, an image or a cell. For images or cells the guide warns about pseudoreplication and says how many replicates are behind them, unless each image or cell was treated or assigned on its own (for example each cell injected separately), which makes it its own replicate. A table of replicate means (as for a SuperPlot) is analysed with N = the replicates.
+- **Paired?** Yes when each replicate gave a value in every group, including each experiment run with every condition side by side on the same day. Pairing removes run-to-run variation; ignoring it makes the test too conservative.
+- **Gaussian?** Yes, no, the logarithms are (positive values with a long right tail), or not sure. **Same SD?** (unpaired Gaussian groups; Welch's tests by default). **Which comparisons?** (three or more groups). **Direction predicted before the experiment?** (one or two tails). **Interaction?** (two factors). **Line or correlation**, and whether several Y values per X are independent (XY).
+
+The answer gives the test and why, what N is, the degrees of freedom worked out from the table (for example the Welch-Satterthwaite df, k − 1 and N − k for ANOVA, (k − 1)(N − 1) for repeated measures, N − rc for two-way ANOVA, N − 2 for regression), warnings (pseudoreplication; a rank test that cannot reach P < 0.05 with these N; fewer than 3 replicates; very different SDs; a paired test on a table not marked Paired), alternatives, how to report it, and each column's N, SD and Shapiro-Wilk P. **Advanced** sets the degrees of freedom by hand. **Run this analysis…** opens the analysis dialog with everything filled in, to check before it runs.
+
+The guide follows Lord et al. (2020, *J Cell Biol* 219:e202001064, "SuperPlots"): the sample size of a test is the number of biological replicates, such as independent experiments; each replicate's cells are averaged and the test is run on those means (keep the number of cells per replicate similar, since each mean counts equally); experiments that each include every condition are analysed with a paired or ratio paired test; three replicates are a practical minimum, and more replicates add more power than more cells; and the figure states N, how it was counted and how the means and tests were calculated. A nested (hierarchical) analysis that uses every cell is more powerful and is not in QuantAnalysis yet.
+
+### Settings set by hand (Advanced)
+
+Each analysis dialog has an **Advanced** tick box (off by default) that shows settings normally worked out from the data. Each is **Default** or **Set by hand**, and only the ones the chosen test uses are shown:
+
+| Setting | Analyses | Default |
+| --- | --- | --- |
+| Degrees of freedom | t tests (also **Conservative**: the smaller group's N − 1, for unpaired tests), one-way ANOVA (residual, used by the multiple comparisons too), Welch's ANOVA (denominator), repeated measures (before ε), two-way ANOVA (residual), linear regression (residual), correlation (t test of r) | computed |
+| Hypothesised difference | unpaired, Welch's and paired t tests: t = (difference − hypothesised) / SE; the CI does not change | 0 |
+| Sphericity correction ε | repeated-measures ANOVA, between 1/(k − 1) (lower bound) and 1 (none) | Geisser-Greenhouse ε |
+| SD for multiple comparisons | ordinary and repeated-measures ANOVA; the F test is unchanged | pooled SD |
+| Comparisons the correction counts | Bonferroni, Šidák, Holm-Šidák and Dunn's tests, per family; at least the comparisons made | the comparisons made |
+
+A setting set by hand is used only while Advanced is ticked. The results sheet lists it in a **Changed from the default** section and as a warning, the methods sentence ends with it, and the project saves it (**Change options…** shows it again). Use one only with a reason you can report, for example degrees of freedom counted from the biological replicates of a nested design. A larger df gives a smaller P, and the results say so.
+
+Notes on what a setting reaches:
+
+- **Repeated measures**: a df set by hand applies to the main F test. With the Geisser-Greenhouse correction the multiple comparisons use each pair's own differences (N − 1); a set SD switches them to the pooled error term, and the results record the switch. With blank cells (a mixed-effects model) only the comparison count can be set.
+- **Linear regression**: the df applies to the CIs, the F test of the slope and the bands; the comparison of slopes between data sets keeps its computed df.
+- **Correlation**: for Spearman's r the df applies to the t approximation of its P.
+- The ANOVA table's residual row says when the tests used a df set by hand.
+- Settings saved for one table and reused after the table changes (rows added or removed) are flagged in the dialog and on the results as chosen for a different table.
 
 ### Suggested analysis for image data
 
