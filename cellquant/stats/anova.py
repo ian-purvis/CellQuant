@@ -918,7 +918,7 @@ def kruskal_wallis(table: ColumnTable, *, groups: Sequence[str] | None = None, c
 
     P is exact (permutation, ties included, as usual) when there are at most
     KW_EXACT_MAX_PARTITIONS distinct ways to split the values into the groups (``kw_partitions``;
-    for example 5 groups of 3 or 4 groups of 4, a few seconds at most); otherwise it is the
+    for example 5 groups of 3, a few seconds at most; 4 groups of 4 are over the limit); otherwise it is the
     chi-square approximation with k - 1 df. The cutoff is this engine's choice. ``exact=False`` forces
     chi-square, ``exact=True`` refuses when enumeration is too large. Multiple comparisons: Dunn's
     test on the mean ranks. ``m`` is the number of comparisons Dunn's Bonferroni-type correction counts."""

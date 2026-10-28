@@ -547,6 +547,7 @@ DEFAULT_OPTIONS = {"test": "welch_t", "first": 0, "second": 1, "alternative": "t
 class CompareDialog(QDialog):
     """The t test dialog: columns, design, distribution, test, tails and P value options. ``sheet`` (the data sheet)
     lets Help me choose… know how the table was imported."""
+    reference = "compare"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, table: ColumnTable, options: dict | None = None, sheet=None):
         super().__init__(parent)
@@ -620,6 +621,7 @@ class CompareDialog(QDialog):
         bottom.addWidget(guide)
         bottom.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        add_reference_button(buttons, self)
         buttons.button(QDialogButtonBox.Ok).setText("Run")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -742,6 +744,7 @@ def methods_for(test: str, goal: str, combined: bool = False) -> list[str]:
 class AnovaDialog(QDialog):
     """The one-way ANOVA dialog: design, Gaussian or not, the test, multiple comparisons (with one or two
     reference groups), alpha, CI level and P value style."""
+    reference = "anova"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, table: ColumnTable, options: dict | None = None, sheet=None):
         super().__init__(parent)
@@ -843,6 +846,7 @@ class AnovaDialog(QDialog):
         bottom.addWidget(guide)
         bottom.addStretch(1)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        add_reference_button(buttons, self)
         buttons.button(QDialogButtonBox.Ok).setText("Run")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -1054,6 +1058,7 @@ class NestedDialog(QDialog):
     """Nested t test (two columns) or nested one-way ANOVA (three or more) of a table with replicates: every value is used, with
     the replicate it came from. Tails for two groups; multiple comparisons for three or more; alpha, CI level and P value style;
     Advanced: the denominator df and the number of comparisons the correction counts."""
+    reference = "nested"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, table: ColumnTable, replicates: ReplicateTable, options: dict | None = None):
         super().__init__(parent)
@@ -1146,6 +1151,7 @@ class NestedDialog(QDialog):
         self.note.setVisible(False)
         layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        add_reference_button(buttons, self)
         buttons.button(QDialogButtonBox.Ok).setText("Run")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -1284,6 +1290,7 @@ def two_way_methods(goal: str, family: str) -> list[str]:
 
 class TwoWayDialog(QDialog):
     """Two-way ANOVA of a grouped table: the model (with or without interaction) and which means to compare."""
+    reference = "twoway"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, grouped: GroupedTable, options: dict | None = None):
         super().__init__(parent)
@@ -1347,6 +1354,7 @@ class TwoWayDialog(QDialog):
         self.note.setVisible(False)
         layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        add_reference_button(buttons, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -1419,6 +1427,7 @@ class XYDialog(QDialog):
     def __init__(self, parent, xy: XYTable, kind: str, options: dict | None = None):
         super().__init__(parent)
         self.xy, self.kind = xy, kind
+        self.reference = kind
         self.setWindowTitle("Linear regression" if kind == "linreg" else "Correlation")
         options = {**(LINREG_DEFAULTS if kind == "linreg" else XYCORR_DEFAULTS), **(options or {})}
         layout = QVBoxLayout(self)
@@ -1477,6 +1486,7 @@ class XYDialog(QDialog):
         self.note.setVisible(False)
         layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        add_reference_button(buttons, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -1565,6 +1575,7 @@ class FixedParameters(QWidget):
 
 class CurveFitDialog(QDialog):
     """Nonlinear regression of an XY table's data sets: the model, fixed parameters, a comparison and interpolation."""
+    reference = "curvefit"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, xy: XYTable, options: dict | None = None):
         super().__init__(parent)
@@ -1655,6 +1666,7 @@ class CurveFitDialog(QDialog):
         self.note.setVisible(False)
         layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        add_reference_button(buttons, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -1724,6 +1736,7 @@ CONTINGENCY_DEFAULTS = {"test": "auto", "yates": False, "diagnostic": False, "tr
 
 class ContingencyDialog(QDialog):
     """Analyze a contingency table: the test, Yates' correction and, for a 2 × 2 table, effect sizes or a diagnostic test."""
+    reference = "contingency"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, table: ContingencyTable, options: dict | None = None):
         super().__init__(parent)
@@ -1795,6 +1808,7 @@ class ContingencyDialog(QDialog):
         self.note.setVisible(False)
         layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        add_reference_button(buttons, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -1857,6 +1871,31 @@ def _two_column_dialog(dialog: QDialog, title: str, intro: str, minimum: int = 4
     return layout, form
 
 
+def add_reference_button(buttons: QDialogButtonBox, dialog: QDialog) -> None:
+    """A How is it calculated? button opening the statistics reference at the dialog's analysis (its ``reference``
+    kind and the options chosen so far). The reference is the dialog's own window, so it takes input while the dialog is open."""
+
+    def open_page() -> None:
+        from cellquant.gui.quantanalysis import reference
+        from cellquant.gui.quantanalysis.reference_window import ReferenceWindow
+        from cellquant.gui.quantanalysis.window import statistics_text
+
+        try:
+            options = dialog.options()
+        except Exception:  # noqa: BLE001 - a half-filled dialog opens the analysis's general page
+            options = {}
+        window = getattr(dialog, "_reference", None)
+        if window is None:
+            window = dialog._reference = ReferenceWindow(dialog, reference.text(), statistics_text())
+        window.show_sheet(getattr(dialog, "reference", ""), options)
+        window.show()
+        window.raise_()
+
+    button = buttons.addButton("How is it calculated?", QDialogButtonBox.HelpRole)
+    button.setToolTip(tips.HOW_CALCULATED_DIALOG)
+    button.clicked.connect(open_page)
+
+
 def _dialog_footer(dialog: QDialog, layout: QVBoxLayout) -> QLabel:
     note = QLabel()
     note.setWordWrap(True)
@@ -1864,6 +1903,7 @@ def _dialog_footer(dialog: QDialog, layout: QVBoxLayout) -> QLabel:
     note.setVisible(False)
     layout.addWidget(note)
     buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    add_reference_button(buttons, dialog)
     buttons.button(QDialogButtonBox.Ok).setText("Run")
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
@@ -1873,6 +1913,7 @@ def _dialog_footer(dialog: QDialog, layout: QVBoxLayout) -> QLabel:
 
 class RocDialog(QDialog):
     """ROC curve: the controls and patients columns, which direction is positive, and the interval and P value options."""
+    reference = "roc"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, table: ColumnTable, options: dict | None = None):
         super().__init__(parent)
@@ -1930,6 +1971,7 @@ class RocDialog(QDialog):
 
 class BlandAltmanDialog(QDialog):
     """Bland-Altman agreement: the two methods' columns (paired by row), the measure of disagreement and the interval."""
+    reference = "blandaltman"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, table: ColumnTable, options: dict | None = None):
         super().__init__(parent)
@@ -1977,6 +2019,7 @@ SURVIVAL_DEFAULTS = {"trend": False, "ci": 0.95, "alpha": 0.05, "style": "classi
 
 class SurvivalDialog(QDialog):
     """Survival curves (Kaplan-Meier) of an XY table: the interval, alpha and P value style, and whether the groups are in order."""
+    reference = "survival"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, xy, options: dict | None = None):
         super().__init__(parent)
@@ -2030,6 +2073,7 @@ OUTLIER_DEFAULTS = {"method": "rout", "q": 0.01, "alpha": 0.05, "columns": None,
 
 class OutlierDialog(QDialog):
     """Identify outliers: ROUT (Q), Grubbs' or iterative Grubbs' (alpha), for each ticked column."""
+    reference = "outliers"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, table: ColumnTable, options: dict | None = None):
         super().__init__(parent)
@@ -2081,6 +2125,7 @@ class OutlierDialog(QDialog):
         self.note.setVisible(False)
         layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        add_reference_button(buttons, self)
         buttons.button(QDialogButtonBox.Ok).setText("Run")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -2123,6 +2168,7 @@ PROCESS_DEFAULTS = {
 
 class ProcessDialog(QDialog):
     """Transform, normalize, fraction of total, remove baseline or column math: the options of one kind of processing."""
+    reference = "process"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, table: ColumnTable, kind: str, options: dict | None = None):
         super().__init__(parent)
@@ -2217,6 +2263,7 @@ class ProcessDialog(QDialog):
         self.note.setVisible(False)
         layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        add_reference_button(buttons, self)
         buttons.button(QDialogButtonBox.Ok).setText("Create table")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -2284,6 +2331,7 @@ PSTACK_DEFAULTS = {"text": "", "method": "bky", "alpha": 0.05, "style": "classic
 
 class PStackDialog(QDialog):
     """Analyze a stack of P values: paste P values, correct them for multiple testing."""
+    reference = "pstack"  # the statistics reference page its How is it calculated? button opens
 
     def __init__(self, parent, options: dict | None = None):
         super().__init__(parent)
@@ -2329,6 +2377,7 @@ class PStackDialog(QDialog):
         self.note.setVisible(False)
         layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        add_reference_button(buttons, self)
         buttons.button(QDialogButtonBox.Ok).setText("Run")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
