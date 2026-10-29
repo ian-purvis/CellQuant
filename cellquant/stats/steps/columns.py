@@ -751,6 +751,10 @@ def _comparison_blocks(result: Any, options: dict, names: list[str], estimates: 
 
     rows = (getattr(result, "values", None) or {}).get("comparisons")
     if not rows:
+        if options.get("comparisons") in (None, "none") and not options.get("trend"):
+            return [Block("Multiple comparisons", note="None were asked for in this analysis. Choose them with Change options… "
+                                                       "(Multiple comparisons) and each pair's difference, SE, statistic and adjusted P "
+                                                       "are worked out here.")]
         return []
     method = result.values.get("comparison_method", "")
     title = next((s.title for s in result.sections if s.title.startswith("Multiple comparisons: ")), "Multiple comparisons")
@@ -898,7 +902,8 @@ def _ordinary(table: Any, options: dict, result: Any) -> list[Block]:
         bf.add("SS between (of z)", "Σ n_i (z̄_i − z̄)²", zc["ss_b"])
         bf.add("SS within (of z)", "Σ Σ (z − z̄_i)²", zc["ss_w"])
         bf.add("F", f"MS_between / MS_within = {_g(zc['ms_b'])} / {_g(zc['ms_w'])}", zc["f"], _ev(result, "bf_f"))
-        bf.add("df (between, within)", f"k − 1 = {zc['df_b']}, N − k = {zc['df_w']}", zc["df_w"], _ev(result, "bf_dfd"))
+        bf.add("df between", f"k − 1 = {zc['df_b']}", zc["df_b"], _ev(result, "bf_dfn"))
+        bf.add("df within", f"N − k = {zc['df_w']}", zc["df_w"], _ev(result, "bf_dfd"))
         bf.add("P value", f"P(F{_sub(zc['df_b'])},{_sub(zc['df_w'])} > {_g(zc['f'])})", float(stats.f.sf(zc["f"], zc["df_b"], zc["df_w"])) if math.isfinite(zc["f"]) else NAN, _ev(result, "bf_p"))
         blocks.append(bf)
         v = np.array([np.var(s, ddof=1) for s in samples])

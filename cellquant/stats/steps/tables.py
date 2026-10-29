@@ -524,9 +524,11 @@ def _survival(source: Any, options: dict, result: Any) -> list[Block]:
     for name, (t, e) in zip(names, data):
         km = _km_table(t, e)
         engine = _eng(result, "curves", name)
-        block = Block(f"Kaplan-Meier table: {name}", table=km,
+        shown = km.rename(columns={"G": "Greenwood Σ"}).replace([np.inf, -np.inf], np.nan)
+        block = Block(f"Kaplan-Meier table: {name}", table=shown,
                       note="At each distinct time: at risk n = subjects with time ≥ t, events d, censored c. S = S(previous) · (1 − d / n). "
-                           "G = Σ d / (n (n − d)) (Greenwood sum) and SE = S · √G.")
+                           "Greenwood Σ = Σ d / (n (n − d)) over the event times so far, and SE = S · √(Greenwood Σ). Once every "
+                           "subject still at risk has the event (d = n), S is 0 and the sum and SE are undefined, so they are blank.")
         last = km.iloc[-1]
         block.add("Subjects", "rows of this group", int(t.size), _eng(result, "subjects") if len(data) == 1 else None)
         block.add("Events", "Σ d", int(e.sum()))

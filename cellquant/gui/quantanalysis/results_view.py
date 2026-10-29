@@ -301,7 +301,10 @@ class ResultSheetView(QWidget):
         on = available and self.working_box.isChecked()
         self.working.setVisible(on)
         self.working_export.setVisible(on)
-        if on:
+        if on and self.project.fit_pending(self.sheet.id):
+            self.working.setHtml(f"{WORKING_CSS}<p><b>Recomputing…</b> The table changed and the curve fit is being redone; the results "
+                                 "above are the old fit and the working appears when the new one is ready.</p>")
+        elif on:
             blocks = self.blocks()
             self.working.setHtml(working_html(blocks) if blocks else "<p>No working for this sheet (it could not be computed).</p>")
 

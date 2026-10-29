@@ -380,6 +380,11 @@ class Project(QObject):
         for copy in [item for item in self.data.values() if item.processed_from == data_id]:
             self.refresh_processed(copy, renamed)
 
+    def fit_pending(self, result_id: str) -> bool:
+        """True while a curve fit waits to be refitted after its table changed (its sheet still shows the old fit)."""
+
+        return result_id in self._pending_fits
+
     def flush_fits(self) -> None:
         """Refit the curve fits whose table changed since they were last fitted, and redraw what shows them."""
 
