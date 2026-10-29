@@ -208,12 +208,15 @@ def test_closing_during_a_run_asks_first(tmp_path: Path, settings, monkeypatch):
         window.show()
         QApplication.processEvents()
         assert shell._allow_close()  # nothing running: no question
-        shell._job = object()  # a run going on
+        from types import SimpleNamespace
+
+        shell._job = SimpleNamespace(cancelled=False, isRunning=lambda: False)  # a run going on
         answers.append(False)
         assert window.close() is False and window.isVisible()  # Stay
         answers.append(True)
-        assert shell._allow_close()  # Exit
-        assert not answers
+        assert shell._allow_close()  # Exit: the run is asked to stop
+        assert not answers and shell._job.cancelled
+        assert shell.wait_for_run_to_stop(1)
         shell._job = None
     finally:
         viewer.close()
@@ -293,3 +296,88 @@ def test_a_run_stopped_by_an_error_is_not_called_cancelled(tmp_path: Path, monke
     unfinished = controller.unfinished_run()
     assert unfinished is not None and not unfinished.cancelled and unfinished.done == 1
     assert "stopped after 1 of 3" in (controller.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
+
+
+def test_a_continued_run_that_stops_again_keeps_the_whole_count(tmp_path: Path):
+    controller = _experiment(tmp_path, 4)
+    controller.run_images(should_continue=iter([True, False]).__next__)
+    first = controller.unfinished_run()
+    assert (first.done, first.total) == (1, 4)
+    controller.run_analyses(work=first.remaining, continuing=True, should_continue=iter([True, True, False]).__next__)
+    second = controller.unfinished_run()
+    assert (second.done, second.total) == (2, 4)
+    assert second.remaining == [(controller.recipe.recipe_id, [record.image_id for record in controller.experiment.images][2:])]
+    controller.run_analyses(work=second.remaining, continuing=True)
+    assert controller.unfinished_run() is None
+
+
+def test_closing_during_a_run_is_logged_once_and_not_as_a_cancel(tmp_path: Path):
+    controller = _experiment(tmp_path, 3)
+
+    def close_after_first() -> bool:
+        if controller._journal["done"]:
+            controller.note_closing()  # the window's Exit: the run is then stopped like Cancel
+            return False
+        return True
+
+    controller.run_images(should_continue=close_after_first)
+    reopened = AnalysisController.open(controller.directory)
+    unfinished = reopened.unfinished_run()
+    assert unfinished is not None and not unfinished.cancelled and unfinished.done == 1
+    log = (controller.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
+    assert "closed during the run, after 1 of 3 images" in log
+    assert "stopped after" not in log
+
+
+def test_replacing_an_experiment_removes_its_unfinished_run(tmp_path: Path):
+    from cellquant.experiment import experiment_files
+
+    controller = _experiment(tmp_path, 2)
+    controller.run_images(should_continue=iter([True, False]).__next__)
+    assert controller.directory / UNFINISHED_RUN_FILE in experiment_files(controller.directory)
+
+
+def test_replacing_an_experiment_deletes_experiment_json_last(tmp_path: Path, monkeypatch):
+    from cellquant import experiment as experiment_module
+
+    controller = _experiment(tmp_path, 2)
+    controller.run_images(should_continue=iter([True, False]).__next__)
+    order = []
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        order.append(self.name)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    experiment_module.delete_experiment_files(controller.directory)
+    files = [name for name in order if name in ("experiment.json", UNFINISHED_RUN_FILE)]
+    assert files == [UNFINISHED_RUN_FILE, "experiment.json"]
+
+
+def test_after_exit_the_window_waits_a_bounded_time_for_the_run(tmp_path: Path, settings):
+    from qtpy.QtCore import QThread
+
+    class Step(QThread):
+        def __init__(self, seconds):
+            super().__init__()
+            self.seconds = seconds
+
+        def run(self):
+            time.sleep(self.seconds)
+
+    viewer, shell = _window()
+    try:
+        quick, slow = Step(0.3), Step(3)
+        shell._batch = quick
+        quick.start()
+        assert shell.wait_for_run_to_stop(5)
+        shell._batch = slow
+        slow.start()
+        started = time.monotonic()
+        assert not shell.wait_for_run_to_stop(0.3)
+        assert time.monotonic() - started < 2
+        slow.wait()
+        shell._batch = None
+    finally:
+        viewer.close()

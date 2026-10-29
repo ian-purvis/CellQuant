@@ -220,7 +220,7 @@ def save_experiment(experiment: Experiment) -> Path:
 
 # CellQuant's own folders inside an experiment. They are never imported as images.
 _EXPERIMENT_FOLDERS = {"runs", "working", ".cache", "exports", "edits", "recipes", "analyses", "logs"}
-_EXPERIMENT_FILES = ("experiment.json", "experiment.json.tmp")
+_EXPERIMENT_FILES = ("experiment.json", "experiment.json.tmp", "unfinished_run.json", "unfinished_run.json.tmp")
 
 
 def experiment_files(directory: str | Path) -> list[Path]:
@@ -265,7 +265,7 @@ def delete_experiment_files(directory: str | Path) -> list[Path]:
             if inside is not None:
                 raise PermissionError(f"{image} is one of this experiment's images and lies inside {inside}; nothing was deleted.")
     # experiment.json goes last: if something cannot be deleted, the old experiment still opens.
-    doomed.sort(key=lambda path: path.name in _EXPERIMENT_FILES)
+    doomed.sort(key=lambda path: path.name.startswith("experiment.json"))
     failed: list[tuple[Path, OSError]] = []
 
     def stuck(_function, name, exc_info) -> None:
