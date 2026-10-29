@@ -7,6 +7,7 @@ GUI code: the window registers a function with ``set_problem_handler`` to be tol
 from __future__ import annotations
 
 import datetime as _dt
+import atexit
 import errno
 import faulthandler
 import importlib.metadata
@@ -17,6 +18,7 @@ import platform
 import sys
 import threading
 import traceback
+import time
 import zipfile
 from pathlib import Path
 
@@ -400,6 +402,7 @@ def build_report(
     No images or data go in. Returns the names stored in the zip.
     """
 
+    flush_session_log()
     folder = Path(folder)
     sources: list[tuple[Path, str]] = []
     sources += [(path, f"logs/{path.name}") for path in sorted(folder.glob(LOG_NAME + "*")) if path.is_file()]
@@ -427,18 +430,61 @@ def build_report(
 # -- the session log in the experiment folder ----------------------------------------------------------------------
 
 
+_SESSION_FLUSH_SECONDS = 5.0
+_SESSION_MAX_LINES = 2000
+_session: dict = {"dir": None, "lines": [], "last_flush": 0.0, "warned": False}
+
+
 def append_session_line(experiment_dir: str | Path | None, text: str, now: _dt.datetime | None = None) -> None:
-    """Add a timestamped line to <experiment>/logs/session_<date>.log. Skipped without an experiment. Never raises."""
+    """Add a timestamped line to <experiment>/logs/session_<date>.log. Skipped without an experiment. Never raises.
+
+    Lines are buffered and written at most every few seconds (and at once for a Problem), with the file closed in
+    between, so a cloud-synced folder is not touched on every progress message and Overwrite can delete logs/.
+    """
 
     if not experiment_dir:
         return
     try:
         now = now or _dt.datetime.now()
-        folder = Path(experiment_dir) / "logs"
-        folder.mkdir(exist_ok=True)
+        directory = Path(experiment_dir)
+        if _session["dir"] != directory:
+            flush_session_log()
+            _session["lines"].clear()  # lines the old folder would not take must not land in the new one
+            _session["dir"] = directory
+            _logger.info("Experiment folder: %s", directory)
         stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+        day = now.strftime("%Y-%m-%d")
         lines = str(text).splitlines() or [""]
-        with (folder / f"session_{now.strftime('%Y-%m-%d')}.log").open("a", encoding="utf-8") as handle:
-            handle.write("".join(f"{stamp}\t{line}\n" for line in lines))
+        _session["lines"].extend((day, f"{stamp}\t{line}\n") for line in lines)
+        del _session["lines"][:-_SESSION_MAX_LINES]
+        if str(text).startswith("Problem:") or time.monotonic() - _session["last_flush"] >= _SESSION_FLUSH_SECONDS:
+            flush_session_log()
     except Exception:  # noqa: BLE001
         pass
+
+
+def flush_session_log() -> None:
+    """Write the buffered session lines. On failure they stay buffered for the next try. Never raises."""
+
+    directory, pending = _session["dir"], _session["lines"]
+    _session["last_flush"] = time.monotonic()
+    if directory is None or not pending:
+        return
+    try:
+        folder = directory / "logs"
+        folder.mkdir(exist_ok=True)
+        by_day: dict[str, list[str]] = {}
+        for day, line in pending:
+            by_day.setdefault(day, []).append(line)
+        for day, lines in by_day.items():
+            with (folder / f"session_{day}.log").open("a", encoding="utf-8") as handle:
+                handle.write("".join(lines))
+        pending.clear()
+        _session["warned"] = False
+    except Exception as exc:  # noqa: BLE001
+        if not _session["warned"]:
+            _session["warned"] = True
+            _logger.warning("The session log in %s could not be written (%s); will try again.", directory, exc)
+
+
+atexit.register(flush_session_log)

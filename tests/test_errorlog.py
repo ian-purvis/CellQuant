@@ -214,13 +214,40 @@ def test_report_zip_has_logs_and_no_data(tmp_path):
 
 
 def test_session_log_lines_are_timestamped_and_lazy(tmp_path):
+    errorlog._session.update(dir=None, lines=[])
     errorlog.append_session_line(None, "ignored")
     errorlog.append_session_line(tmp_path, "first\nsecond")
+    errorlog.flush_session_log()
     files = list((tmp_path / "logs").glob("session_*.log"))
     assert len(files) == 1
     lines = files[0].read_text(encoding="utf-8").splitlines()
     assert [line.split("\t")[1] for line in lines] == ["first", "second"]
     assert lines[0].split("\t")[0][:4].isdigit()
+
+
+def test_session_log_is_buffered_and_written_at_once_for_a_problem(tmp_path, monkeypatch):
+    errorlog._session.update(dir=None, lines=[])
+    monkeypatch.setattr(errorlog.time, "monotonic", lambda: 1000.0)
+    errorlog.append_session_line(tmp_path, "opened")
+    errorlog.flush_session_log()
+    errorlog.append_session_line(tmp_path, "Step 2: image 1 of 9")  # within a few seconds: kept in memory
+    log = next((tmp_path / "logs").glob("session_*.log"))
+    assert "Step 2" not in log.read_text(encoding="utf-8")
+    errorlog.append_session_line(tmp_path, "Problem: it broke")
+    text = log.read_text(encoding="utf-8")
+    assert "Step 2: image 1 of 9" in text and "Problem: it broke" in text
+    assert not errorlog._session["lines"]
+
+
+def test_session_log_keeps_lines_when_the_folder_cannot_be_written(tmp_path):
+    blocked = tmp_path / "not_a_folder"
+    blocked.write_text("x")
+    errorlog.append_session_line(blocked, "Problem: kept")
+    assert errorlog._session["lines"]  # still buffered for the next try
+    errorlog.append_session_line(tmp_path, "elsewhere")
+    errorlog.flush_session_log()
+    assert "kept" not in next((tmp_path / "logs").glob("session_*.log")).read_text(encoding="utf-8")
+    errorlog._session.update(dir=None, lines=[])
 
 
 def test_logs_folder_counts_as_a_cellquant_folder(tmp_path):
