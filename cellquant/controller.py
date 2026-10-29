@@ -70,6 +70,7 @@ from cellquant.storage import (
     persist_image_result,
     read_persisted_result,
     save_edits,
+    save_run,
     start_run,
     unit_summary,
 )
@@ -103,6 +104,45 @@ class BatchReport:
     @property
     def failed(self) -> int:
         return sum(job.status == "Failure" for job in self.jobs)
+
+
+# Beside experiment.json while a batch runs; removed when the batch reaches its last image.
+UNFINISHED_RUN_FILE = "unfinished_run.json"
+
+
+@dataclass
+class UnfinishedRun:
+    """A batch that stopped before its last image: cancelled, closed, crashed or cut off by a restart."""
+
+    work: list[tuple[str, list[str]]]  # (analysis, image ids) as planned, in order
+    remaining: list[tuple[str, list[str]]]  # the same, without the images that finished
+    cancelled: bool  # stopped with Cancel (otherwise CellQuant or the computer stopped)
+    started: str
+
+    @property
+    def total(self) -> int:
+        return sum(len(images) for _recipe_id, images in self.work)
+
+    @property
+    def left(self) -> int:
+        return sum(len(images) for _recipe_id, images in self.remaining)
+
+    @property
+    def done(self) -> int:
+        return self.total - self.left
+
+
+def read_unfinished_run(directory: str | Path) -> dict | None:
+    """The record of a batch that stopped part-way in this experiment folder, or None."""
+
+    path = Path(directory) / UNFINISHED_RUN_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("work"), list):
+        return None
+    return data
 
 
 # Loaded images kept for fast re-measuring after an edit. Only the most recent
@@ -167,6 +207,8 @@ class AnalysisController:
         self.run_dir: Path | None = None
         self.run_log: RunLog | None = None
         self.last_results: dict[str, ImageResult] = ResultCache()  # older results' masks are moved out of memory
+        self._journal: dict | None = None  # the batch being run, as saved in UNFINISHED_RUN_FILE
+        self._fresh_segmentation = False  # find objects again instead of reusing saved ones
         self._written: dict[str, tuple] = {}  # image id -> (result, its edits, folder) last saved to the working folder
         # Images whose approval the last cutoff change cleared, and marker columns kept between cutoff moves.
         self.cleared_approvals: list[str] = []
@@ -591,7 +633,10 @@ class AnalysisController:
                 if status == "Warning":
                     self.run_record.warnings.append(f"{record.filename}: {message}")
             self.experiment.latest_run_id = self.run_record.run_id
-            finish_run(self.run_dir, self.run_record, "completed")
+            if new_run:
+                finish_run(self.run_dir, self.run_record, "completed")
+            else:
+                save_run(self.run_dir, self.run_record)  # a batch is finished by run_images, after its last image
             self.save()
         return result
 
@@ -604,6 +649,16 @@ class AnalysisController:
     ) -> BatchReport:
         selected = list(image_ids) if image_ids is not None else self.included_ids()
         records = [self.experiment.image(image_id) for image_id in selected]
+        owner = self._start_journal([(self.recipe.recipe_id, selected)])
+        finished = False
+        try:
+            report = self._run_records(records, on_progress, should_continue)
+            finished = not report.cancelled
+        finally:
+            self._end_journal(owner, finished)
+        return report
+
+    def _run_records(self, records, on_progress, should_continue) -> BatchReport:
         self._ensure_run(records, fresh=True)
         assert self.run_dir is not None and self.run_record is not None and self.run_log is not None
         jobs: list[ImageJobResult] = []
@@ -633,7 +688,9 @@ class AnalysisController:
                 self.run_log.write(record.filename, "batch", str(message), exc)
                 self.run_record.errors.append(f"{record.filename}: {message}")
                 jobs.append(ImageJobResult(record.image_id, record.filename, "Failure", str(message)))
+                self._journal_done(record.image_id)
             else:
+                self._journal_done(record.image_id)
                 status, message = _job_status(result)
                 jobs.append(
                     ImageJobResult(
@@ -660,6 +717,143 @@ class AnalysisController:
         return BatchReport(
             self.run_record.run_id, str(self.run_dir), jobs, analysis=self.active_analysis().name, cancelled=cancelled
         )
+
+    # -- unfinished runs ---------------------------------------------------------------------------
+    # A batch is written down before its first image and crossed off image by image, so a batch that
+    # stops part-way (Cancel, CellQuant closed, a crash or a restart of the computer) can be continued.
+
+    def _start_journal(self, work: list[tuple[str, list[str]]]) -> bool:
+        """Write down the batch about to run. False when a batch around this one already did."""
+
+        if self._journal is not None:
+            return False
+        from cellquant.storage import _now
+
+        self._journal = {
+            "format": 1,
+            "started": _now(),
+            "work": [[recipe_id, list(images)] for recipe_id, images in work],
+            "done": [],
+            "cancelled": False,
+            "logged": False,
+        }
+        self._write_journal()
+        return True
+
+    def _journal_done(self, image_id: str) -> None:
+        if self._journal is None:
+            return
+        self._journal["done"].append([self.recipe.recipe_id, image_id])
+        self._write_journal()
+
+    def _end_journal(self, owner: bool, finished: bool) -> None:
+        """A batch that reached its last image is crossed out; one that stopped stays, to be continued."""
+
+        if not owner or self._journal is None:
+            return
+        journal, self._journal = self._journal, None
+        if finished:
+            self._unfinished_path().unlink(missing_ok=True)
+            return
+        journal["cancelled"] = True  # stopped while CellQuant was running: Cancel, or an error
+        journal["logged"] = True  # the run log already says why it stopped
+        self._journal = journal
+        try:
+            self._write_journal()
+        finally:
+            self._journal = None
+
+    def _unfinished_path(self) -> Path:
+        return self.directory / UNFINISHED_RUN_FILE
+
+    def _write_journal(self) -> None:
+        path = self._unfinished_path()
+        temporary = path.with_suffix(".json.tmp")
+        try:
+            temporary.write_text(json.dumps(self._journal, indent=1), encoding="utf-8")
+            temporary.replace(path)
+        except OSError:
+            pass  # a batch never stops because its record could not be written
+
+    def has_unfinished_run(self) -> bool:
+        return self._unfinished_path().is_file()
+
+    def unfinished_run(self) -> UnfinishedRun | None:
+        """The batch that stopped before its last image, with what is left of it, or None.
+
+        The first time a batch stopped by a closed CellQuant, a crash or a restart is found, its run
+        log says so.
+        """
+
+        data = read_unfinished_run(self.directory)
+        if data is None:
+            return None
+        known = {item.recipe_id for item in self.analyses()}
+        listed = {record.image_id for record in self.experiment.images}
+        done = {(str(item[0]), str(item[1])) for item in data.get("done", []) if isinstance(item, list) and len(item) == 2}
+        work = []
+        for item in data["work"]:
+            if not (isinstance(item, list) and len(item) == 2 and str(item[0]) in known and isinstance(item[1], list)):
+                continue
+            images = [str(image) for image in item[1] if str(image) in listed]
+            if images:
+                work.append((str(item[0]), images))
+        remaining = [(recipe_id, [image for image in images if (recipe_id, image) not in done]) for recipe_id, images in work]
+        remaining = [(recipe_id, images) for recipe_id, images in remaining if images]
+        if not remaining:
+            self.forget_unfinished_run()
+            return None
+        unfinished = UnfinishedRun(work, remaining, bool(data.get("cancelled")), str(data.get("started") or ""))
+        if not data.get("logged"):
+            self._log_interruption(unfinished)
+            data["logged"] = True
+            self._journal = data
+            try:
+                self._write_journal()
+            finally:
+                self._journal = None
+        return unfinished
+
+    def _log_interruption(self, unfinished: UnfinishedRun) -> None:
+        run_dir = self._latest_run_dir()
+        if run_dir is None:
+            return
+        try:
+            RunLog(run_dir).write(
+                "",
+                "batch",
+                f"The run stopped after {unfinished.done} of {unfinished.total} images: CellQuant was closed, "
+                "stopped unexpectedly or the computer restarted. Finished images are kept.",
+            )
+            record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+            if record.get("processing_status") == "running":
+                record["processing_status"] = "interrupted"
+                temporary = run_dir / "run.json.tmp"
+                temporary.write_text(json.dumps(record, indent=2), encoding="utf-8")
+                temporary.replace(run_dir / "run.json")
+        except (OSError, ValueError):
+            pass
+
+    def forget_unfinished_run(self, note: str | None = None) -> None:
+        """Stop offering to continue the unfinished batch; ``note`` goes to the run log."""
+
+        if note:
+            run_dir = self._latest_run_dir()
+            if run_dir is not None:
+                try:
+                    RunLog(run_dir).write("", "batch", note)
+                except OSError:
+                    pass
+        self._unfinished_path().unlink(missing_ok=True)
+
+    def note_in_run_log(self, message: str) -> None:
+        """A line in the log of the run going on now (for example, CellQuant closed during it)."""
+
+        if self.run_log is not None:
+            try:
+                self.run_log.write("", "batch", message)
+            except OSError:
+                pass
 
     def preview(self, image_id: str, crop: tuple[int, int, int, int] | None = None) -> np.ndarray:
         """Segment a crop. The result is not cached and is not a saved run."""
@@ -1945,7 +2139,7 @@ class AnalysisController:
         signature, digest = self._fingerprint(record)
         record.file_signature = signature
         record.content_hash = digest
-        persisted = self._persisted_segmentation(record, loaded, digest)
+        persisted = None if self._fresh_segmentation else self._persisted_segmentation(record, loaded, digest)
         if persisted is not None:
             # Objects loaded from a results folder or a cluster run: measured again here without the segmentation engine.
             key = str(persisted.provenance.get("segmentation_key") or "")
@@ -2000,8 +2194,9 @@ class AnalysisController:
             # Only when cropping is on, so keys of analyses without it do not change.
             segmentation_payload["crop"] = rectangles
         segmentation_id = stage_key("segmentation", segmentation_payload)
-        automated = self.cache.get_labels(segmentation_id)
-        details = self.cache.get_meta(segmentation_id) or {}
+        # Starting a run over with "find objects again": the saved objects are not reused.
+        automated = None if self._fresh_segmentation else self.cache.get_labels(segmentation_id)
+        details = {} if self._fresh_segmentation else self.cache.get_meta(segmentation_id) or {}
         if automated is None or automated.shape != loaded.spatial_shape:
             if not remeasure:
                 return None
@@ -2381,27 +2576,40 @@ class AnalysisController:
         on_progress=None,
         should_continue=None,
         on_analysis=None,
+        work: list[tuple[str, list[str]]] | None = None,
+        fresh: bool = False,
     ) -> list[BatchReport]:
         """Run each analysis over the same images, one after another. The active analysis is restored.
 
         ``on_progress(index, total, filename, status)`` counts across all analyses; ``filename`` is
         prefixed with the analysis name. ``on_analysis(index, total, name)`` is called as each starts.
         Stopping ends the current analysis's run (finished images are kept) and skips the rest.
+        ``work`` gives each analysis's images instead (continuing an unfinished run); ``fresh`` finds
+        the objects again instead of reusing saved ones.
         """
 
-        chosen = [item.recipe_id for item in self.analyses()] if recipe_ids is None else list(recipe_ids)
-        for recipe_id in chosen:
-            self._analysis(recipe_id)
+        if work is None:
+            chosen = [item.recipe_id for item in self.analyses()] if recipe_ids is None else list(recipe_ids)
+            for recipe_id in chosen:
+                self._analysis(recipe_id)
+            # Without a list of images, each analysis runs the images its plan ticks.
+            work = [(recipe_id, list(image_ids) if image_ids is not None else self.planned_images(recipe_id)) for recipe_id in chosen]
+        else:
+            known = {item.recipe_id for item in self.analyses()}
+            listed = {record.image_id for record in self.experiment.images}
+            work = [(recipe_id, [image for image in images if image in listed]) for recipe_id, images in work if recipe_id in known]
         original = self.recipe.recipe_id
-        # Without a list of images, each analysis runs the images its plan ticks.
-        work = [(recipe_id, list(image_ids) if image_ids is not None else self.planned_images(recipe_id)) for recipe_id in chosen]
         work = [(recipe_id, images) for recipe_id, images in work if images]
         total = sum(len(images) for _recipe_id, images in work)
         reports: list[BatchReport] = []
         offset = 0
+        owner = self._start_journal(work)
+        stopped = False
+        self._fresh_segmentation = fresh
         try:
             for position, (recipe_id, images) in enumerate(work):
                 if should_continue is not None and not should_continue():
+                    stopped = True
                     break
                 self.switch_analysis(recipe_id)
                 name = self.active_analysis().name
@@ -2416,8 +2624,11 @@ class AnalysisController:
                 report = self.run_images(images, on_progress=progress_across, should_continue=should_continue)
                 reports.append(report)
                 if report.cancelled:
+                    stopped = True
                     break
         finally:
+            self._fresh_segmentation = False
+            self._end_journal(owner, finished=not stopped and len(reports) == len(work))
             if original and original != self.recipe.recipe_id and any(item.recipe_id == original for item in self.analyses()):
                 self.switch_analysis(original)
         return reports
