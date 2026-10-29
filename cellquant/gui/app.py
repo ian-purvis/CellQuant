@@ -7,6 +7,7 @@ as a batch run.
 
 from __future__ import annotations
 
+import html
 import json
 import math
 import re
@@ -56,7 +57,7 @@ from qtpy.QtWidgets import (
 )
 
 from cellquant import keep_awake
-from cellquant.controller import AnalysisController, display_z
+from cellquant.controller import AnalysisController, display_z, read_unfinished_run
 from cellquant.count_area import outside
 from cellquant.errors import CellQuantError, RecipeValidationError
 from cellquant.gui import guide
@@ -165,13 +166,23 @@ def launch(experiment_dir: str | Path | None = None) -> None:
         print("CellQuant: this computer's graphics cannot draw the viewer. Reopening with software graphics.", flush=True)
         raise SystemExit(graphics.GRAPHICS_EXIT_CODE)
     graphics.watch_viewer_errors(QApplication.instance())
-    CellQuantWindow(viewer, experiment_dir)
+    window = CellQuantWindow(viewer, experiment_dir)
     napari.run()
+    if window.is_busy():
+        # Closed with Exit during a run: finished images are saved, and the run is offered again on opening.
+        # The image being analyzed cannot be stopped part-way, so the program ends without waiting for it.
+        import os
+
+        _settings().sync()
+        sys.stdout.flush()
+        os._exit(0)
     if graphics.restart_requested:
         raise SystemExit(graphics.GRAPHICS_EXIT_CODE)
 
 
 _OBJECT_LAYERS = ("Object fills", "Objects", "Classification", "Object IDs")
+# QSettings key: the experiment folder whose last run stopped part-way, offered when CellQuant starts.
+_UNFINISHED_KEY = "run/unfinished_experiment"
 # Polygons drawn in step 5; only objects whose center is inside them are counted.
 COUNT_AREA_LAYER = "Count area"
 # Step 5 examples mode: the objects marked positive or negative.
@@ -889,6 +900,8 @@ class CellQuantWindow:
         self._watch_settings()
         if experiment_dir:
             self.open_experiment(experiment_dir)
+        else:
+            QTimer.singleShot(0, self._offer_last_unfinished_run)
         self.refresh_guidance()
 
     # -- guidance ------------------------------------------------------------
@@ -1180,7 +1193,7 @@ class CellQuantWindow:
         if lock is not None and lock is not self._folder_lock:
             lock.release()
 
-    def open_experiment(self, directory: str | Path) -> None:
+    def open_experiment(self, directory: str | Path, offer_unfinished: bool = True) -> None:
         lock = self._lock_folder(directory)
         if lock is None:
             return
@@ -1197,6 +1210,8 @@ class CellQuantWindow:
         self._find_moved_images(controller)
         self._refresh_all()
         self.go_to_start()
+        if offer_unfinished and controller.has_unfinished_run():
+            QTimer.singleShot(0, self._offer_unfinished_run)
 
     def _find_moved_images(self, controller: AnalysisController) -> None:
         """An experiment made on another computer or folder: find its images here, or ask where they are."""
@@ -1734,14 +1749,26 @@ class CellQuantWindow:
 
         self._start_job(lambda: controller.preview(image_id, crop), finish)
 
-    def start_batch(self, image_ids: list[str] | None, analyses: list[str] | None = None) -> None:
-        """Run the images with the current analysis, or (``analyses``) with each of those analyses in turn."""
+    def start_batch(
+        self,
+        image_ids: list[str] | None,
+        analyses: list[str] | None = None,
+        *,
+        work: list[tuple[str, list[str]]] | None = None,
+        fresh: bool = False,
+    ) -> None:
+        """Run the images with the current analysis, or (``analyses``) with each of those analyses in turn.
+
+        ``work`` runs each analysis's own images (an unfinished run); ``fresh`` finds objects again.
+        """
 
         controller = self.require_controller()
         if controller is None or self._batch is not None or self._job is not None:
             return
         self._panels_to_recipe()
-        worker = BatchWorker(controller, image_ids, analyses)
+        worker = BatchWorker(controller, image_ids, analyses, work=work, fresh=fresh)
+        # Remembered until the run reaches its last image: the next start of CellQuant offers to continue it.
+        _settings().setValue(_UNFINISHED_KEY, str(controller.directory))
         worker.progress.connect(self._footer.update_progress)
         worker.step.connect(self._footer.show_step)
         worker.finished_ok.connect(self._batch_finished)
@@ -1830,6 +1857,7 @@ class CellQuantWindow:
         planned = getattr(self._footer, "_batch_total", 0)
         self._batch = None
         self.set_busy(False)
+        self._remember_unfinished()
         if isinstance(report, list):
             self._analyses_finished(report, planned)
             return
@@ -1851,9 +1879,134 @@ class CellQuantWindow:
 
         self._batch = None
         self.set_busy(False)
+        self._remember_unfinished()
         self._experiment_panel.refresh_table()
         self.refresh_guidance()
         self.show_error(f"The run stopped: {message} Images finished before it stopped are kept.")
+
+    # -- runs stopped part-way -----------------------------------------------------------------
+
+    def _allow_close(self) -> bool:
+        """Closing CellQuant during a run asks first: Exit (finished images are kept) or Stay."""
+
+        window = self.viewer.window._qt_window
+        if not self.is_busy() or not window.isVisible():
+            return True
+        from qtpy.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None and app.isSavingSession():
+            return True  # the computer is shutting down or restarting: the run is offered again next time
+        if not self._confirm_exit_during_run():
+            return False
+        if self.controller is not None:
+            self.controller.note_in_run_log("CellQuant was closed during the run.")
+        return True
+
+    def _confirm_exit_during_run(self) -> bool:
+        box = QMessageBox(self.viewer.window._qt_window)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("CellQuant is running")
+        box.setText("CellQuant is running.")
+        status = self._footer.status.text().strip()
+        if self._batch is not None:
+            detail = (
+                "If you exit now, the image being analyzed is lost. Finished images are saved, and CellQuant "
+                "offers to continue the run from the last saved image the next time it opens."
+            )
+        else:
+            detail = "If you exit now, the analysis going on is lost."
+        box.setInformativeText((f"{status}\n\n" if status else "") + detail)
+        exit_button = box.addButton("Exit", QMessageBox.DestructiveRole)
+        stay_button = box.addButton("Stay", QMessageBox.RejectRole)
+        exit_button.setToolTip("Close CellQuant now.")
+        stay_button.setToolTip("Keep CellQuant open and let the run go on.")
+        box.setDefaultButton(stay_button)
+        box.setEscapeButton(stay_button)
+        box.exec()
+        return box.clickedButton() is exit_button
+
+    def _remember_unfinished(self) -> None:
+        """Keep (or drop) the folder of a run that stopped part-way, for the next start of CellQuant."""
+
+        settings = _settings()
+        if self.controller is not None and self.controller.has_unfinished_run():
+            settings.setValue(_UNFINISHED_KEY, str(self.controller.directory))
+        elif self.controller is not None and settings.value(_UNFINISHED_KEY, "") == str(self.controller.directory):
+            settings.remove(_UNFINISHED_KEY)
+
+    def _offer_last_unfinished_run(self) -> None:
+        """At start: a run that stopped part-way last time (closed, crashed or restarted) is offered again."""
+
+        if self.controller is not None or self.is_busy():
+            return
+        settings = _settings()
+        folder = str(settings.value(_UNFINISHED_KEY, "") or "")
+        if not folder:
+            return
+        data = read_unfinished_run(folder)
+        if data is None or not (Path(folder) / "experiment.json").is_file():
+            settings.remove(_UNFINISHED_KEY)
+            return
+        try:
+            name = json.loads((Path(folder) / "experiment.json").read_text(encoding="utf-8")).get("experiment_name") or Path(folder).name
+        except (OSError, ValueError):
+            name = Path(folder).name
+        total = sum(len(item[1]) for item in data["work"] if isinstance(item, list) and len(item) == 2 and isinstance(item[1], list))
+        done = len(data.get("done") or [])
+        choice, fresh = self._ask_unfinished(name, min(done, total), total, bool(data.get("cancelled")), folder=folder)
+        if choice is None:
+            return  # Not now: asked again next time
+        self.open_experiment(folder, offer_unfinished=False)
+        if self.controller is None or Path(self.controller.directory) != Path(folder).resolve():
+            return
+        unfinished = self.controller.unfinished_run()
+        if unfinished is None:
+            self._remember_unfinished()
+            self.message("Every image of that run is finished: nothing is left to run.")
+            return
+        self._act_on_unfinished(unfinished, choice, fresh)
+
+    def _offer_unfinished_run(self) -> None:
+        """On opening an experiment whose last run stopped part-way: continue it, keep what finished, or start over."""
+
+        controller = self.controller
+        if controller is None or self.is_busy():
+            return
+        unfinished = controller.unfinished_run()
+        if unfinished is None:
+            self._remember_unfinished()
+            return
+        choice, fresh = self._ask_unfinished(
+            controller.experiment.experiment_name, unfinished.done, unfinished.total, unfinished.cancelled
+        )
+        self._act_on_unfinished(unfinished, choice, fresh)
+
+    def _ask_unfinished(self, name: str, done: int, total: int, cancelled: bool, folder: str | None = None):
+        """(choice, find objects again): choice is "continue", "analysis", "restart" or None (Not now)."""
+
+        dialog = UnfinishedRunDialog(self.viewer.window._qt_window, name, done, total, cancelled, folder)
+        dialog.exec()
+        return dialog.choice, dialog.fresh.isChecked()
+
+    def _act_on_unfinished(self, unfinished, choice: str | None, fresh: bool) -> None:
+        controller = self.controller
+        if controller is None or choice is None:
+            return
+        if choice == "analysis":
+            controller.forget_unfinished_run(
+                f"Not continued: carrying on with the {unfinished.done} finished image{'s' if unfinished.done != 1 else ''}."
+            )
+            self._remember_unfinished()
+            self.message(
+                f"Carrying on with the {unfinished.done} finished images. The {unfinished.left} left can be run from step 2 at any time."
+            )
+            return
+        self._exclusive = True  # the run may switch between analyses
+        if choice == "continue":
+            self.start_batch(None, work=unfinished.remaining)
+        else:
+            self.start_batch(None, work=unfinished.work, fresh=fresh)
 
     def _show_failed_images(self, count: int, reports=()) -> None:
         if not count:
@@ -2002,7 +2155,7 @@ class CellQuantWindow:
             elif isinstance(widget, QCheckBox):
                 widget.clicked.connect(lambda *_args: save_soon())
         self._tabs.currentChanged.connect(lambda _index: save_soon())
-        self._close_watcher = CloseWatcher(self._save_settings_quietly, self._dock)
+        self._close_watcher = CloseWatcher(self._save_settings_quietly, self._dock, allow_close=self._allow_close)
         self.viewer.window._qt_window.installEventFilter(self._close_watcher)
 
     def _save_settings_quietly(self) -> None:
@@ -7841,18 +7994,76 @@ class WindowWatcher(QObject):
 
 
 class CloseWatcher(QObject):
-    """Call a function when the window it watches is about to close, while its widgets still exist."""
+    """Call a function when the window it watches is about to close, while its widgets still exist.
 
-    def __init__(self, on_close, parent=None):
+    ``allow_close`` (optional) is asked first; when it says no, the window stays open.
+    """
+
+    def __init__(self, on_close, parent=None, allow_close=None):
         super().__init__(parent)
         self._on_close = on_close
+        self._allow_close = allow_close
 
     def eventFilter(self, watched, event) -> bool:
         from qtpy.QtCore import QEvent
 
         if event.type() == QEvent.Close:
+            if self._allow_close is not None and not self._allow_close():
+                event.ignore()
+                return True
             self._on_close()
         return False
+
+
+class UnfinishedRunDialog(QDialog):
+    """A run that stopped part-way: continue it, carry on with the finished images, or start it over."""
+
+    def __init__(self, parent, name: str, done: int, total: int, cancelled: bool, folder: str | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Unfinished run")
+        self.choice: str | None = None
+        why = (
+            "it was cancelled"
+            if cancelled
+            else "CellQuant was closed, stopped unexpectedly or the computer restarted"
+        )
+        text = QLabel(
+            f"The last run in <b>{html.escape(name)}</b> stopped after <b>{done} of {total}</b> images: {why}. "
+            "Finished images are saved."
+            + (f"<br><small>{html.escape(folder)}</small>" if folder else "")
+        )
+        self.setMinimumWidth(460)
+        text.setWordWrap(True)
+        layout = QVBoxLayout(self)
+        layout.addWidget(text)
+        left = total - done
+        buttons = [
+            ("continue", f"Continue the run ({left} left)", "Run only the images that did not finish, starting after the last saved image."),
+            ("analysis", "Continue with the analysis", "Keep the finished images and run nothing now. The rest can be run from step 2 later."),
+            ("restart", f"Start over ({total} images)", "Run every image of this run again from the first."),
+        ]
+        for key, label, tip in buttons:
+            button = QPushButton(label)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _checked=False, key=key: self._choose(key))
+            layout.addWidget(button)
+            if key == "continue":
+                button.setDefault(True)
+            if key == "restart":
+                self.fresh = QCheckBox("Find objects again in finished images")
+                self.fresh.setToolTip(
+                    "Ticked: objects are found again in every image (slow).\n"
+                    "Not ticked: finished images reuse their saved objects, so only the unfinished ones take long."
+                )
+                layout.addWidget(self.fresh)
+        later = QPushButton("Not now")
+        later.setToolTip("Decide later: CellQuant asks again the next time this experiment is opened.")
+        later.clicked.connect(self.reject)
+        layout.addWidget(later)
+
+    def _choose(self, key: str) -> None:
+        self.choice = key
+        self.accept()
 
 
 class WheelGuard(QObject):
@@ -7938,11 +8149,21 @@ class BatchWorker(QThread):
     finished_ok = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, controller: AnalysisController, image_ids: list[str] | None, analyses: list[str] | None = None):
+    def __init__(
+        self,
+        controller: AnalysisController,
+        image_ids: list[str] | None,
+        analyses: list[str] | None = None,
+        *,
+        work: list[tuple[str, list[str]]] | None = None,
+        fresh: bool = False,
+    ):
         super().__init__()
         self.controller = controller
         self.image_ids = image_ids
         self.analyses = analyses
+        self.work = work  # each analysis's images, when an unfinished run is continued or started over
+        self.fresh = fresh
         self.paused = False
         self.cancelled = False
 
@@ -7968,7 +8189,14 @@ class BatchWorker(QThread):
                 lambda text, fraction: self.step.emit(text, -1.0 if fraction is None else float(fraction)),
                 stop_requested,
             ):
-                if self.analyses is not None:
+                if self.work is not None:
+                    report = self.controller.run_analyses(
+                        work=self.work,
+                        fresh=self.fresh,
+                        on_progress=on_progress,
+                        should_continue=should_continue,
+                    )
+                elif self.analyses is not None:
                     report = self.controller.run_analyses(
                         self.analyses,
                         self.image_ids,
