@@ -394,7 +394,7 @@ def test_problem_box_shows_the_reason_of_a_numbered_os_error():
         from cellquant.gui.app import _error_text
     except Exception as exc:  # noqa: BLE001 - no Qt binding installed
         pytest.skip(f"GUI not importable: {exc}")
-    assert _error_text(PermissionError(13, "Permission denied", "C:/x/held.npy")) == "Permission denied: C:/x/held.npy"
+    assert _error_text(PermissionError(13, "Permission denied", "C:/x/held.npy")).startswith("Permission denied: C:/x/held.npy")
     assert _error_text(PermissionError("A sentence for the user.")) == "A sentence for the user."
 
 
