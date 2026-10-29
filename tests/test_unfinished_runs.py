@@ -335,3 +335,49 @@ def test_replacing_an_experiment_removes_its_unfinished_run(tmp_path: Path):
     controller = _experiment(tmp_path, 2)
     controller.run_images(should_continue=iter([True, False]).__next__)
     assert controller.directory / UNFINISHED_RUN_FILE in experiment_files(controller.directory)
+
+
+def test_replacing_an_experiment_deletes_experiment_json_last(tmp_path: Path, monkeypatch):
+    from cellquant import experiment as experiment_module
+
+    controller = _experiment(tmp_path, 2)
+    controller.run_images(should_continue=iter([True, False]).__next__)
+    order = []
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        order.append(self.name)
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    experiment_module.delete_experiment_files(controller.directory)
+    files = [name for name in order if name in ("experiment.json", UNFINISHED_RUN_FILE)]
+    assert files == [UNFINISHED_RUN_FILE, "experiment.json"]
+
+
+def test_after_exit_the_window_waits_a_bounded_time_for_the_run(tmp_path: Path, settings):
+    from qtpy.QtCore import QThread
+
+    class Step(QThread):
+        def __init__(self, seconds):
+            super().__init__()
+            self.seconds = seconds
+
+        def run(self):
+            time.sleep(self.seconds)
+
+    viewer, shell = _window()
+    try:
+        quick, slow = Step(0.3), Step(3)
+        shell._batch = quick
+        quick.start()
+        assert shell.wait_for_run_to_stop(5)
+        shell._batch = slow
+        slow.start()
+        started = time.monotonic()
+        assert not shell.wait_for_run_to_stop(0.3)
+        assert time.monotonic() - started < 2
+        slow.wait()
+        shell._batch = None
+    finally:
+        viewer.close()

@@ -1916,12 +1916,40 @@ class CellQuantWindow:
         return True
 
     def wait_for_run_to_stop(self, seconds: float) -> bool:
-        """After the window closed during a run: wait (up to ``seconds``) for it to stop. True when nothing runs."""
+        """After the window closed during a run: wait (up to ``seconds``) for it to stop. True when nothing runs.
 
-        for worker in (self._batch, self._job):
-            if worker is not None and worker.isRunning() and not worker.wait(int(seconds * 1000)):
-                return False
-        return True
+        A small window says what is happening meanwhile, so a slow step does not look like a hang.
+        """
+
+        import time
+
+        from qtpy.QtWidgets import QApplication
+
+        workers = [worker for worker in (self._batch, self._job) if worker is not None and worker.isRunning()]
+        if not workers:
+            return True
+        for worker in workers:
+            # The window is closed: nothing may update it when the worker ends.
+            for signal in ("progress", "step", "finished_ok", "failed", "succeeded"):
+                try:
+                    getattr(worker, signal).disconnect()
+                except (AttributeError, TypeError, RuntimeError):
+                    pass
+        note = QLabel(
+            "Stopping the run…\nCellQuant closes when the current step ends. Finished images are saved."
+        )
+        note.setWindowTitle("CellQuant")
+        note.setMargin(16)
+        note.show()
+        end = time.monotonic() + seconds
+        try:
+            while any(worker.isRunning() for worker in workers) and time.monotonic() < end:
+                QApplication.processEvents()
+                for worker in workers:
+                    worker.wait(50)
+        finally:
+            note.close()
+        return not any(worker.isRunning() for worker in workers)
 
     def _confirm_exit_during_run(self) -> bool:
         box = QMessageBox(self.viewer.window._qt_window)
