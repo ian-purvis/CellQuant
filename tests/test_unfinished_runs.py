@@ -275,3 +275,21 @@ def test_starting_cellquant_offers_the_last_unfinished_run(tmp_path: Path, setti
         _wait(shell)
     finally:
         viewer.close()
+
+
+def test_a_run_stopped_by_an_error_is_not_called_cancelled(tmp_path: Path, monkeypatch):
+    controller = _experiment(tmp_path, 3)
+    ids = [record.image_id for record in controller.experiment.images]
+    real = controller.run_image
+
+    def fail_badly(image_id, **kwargs):
+        if image_id == ids[1]:
+            raise KeyboardInterrupt  # escapes the per-image error handling, like a crash of the run itself
+        return real(image_id, **kwargs)
+
+    monkeypatch.setattr(controller, "run_image", fail_badly)
+    with pytest.raises(KeyboardInterrupt):
+        controller.run_analyses([controller.recipe.recipe_id], ids)
+    unfinished = controller.unfinished_run()
+    assert unfinished is not None and not unfinished.cancelled and unfinished.done == 1
+    assert "stopped after 1 of 3" in (controller.run_dir / "logs" / "run.log").read_text(encoding="utf-8")

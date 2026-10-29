@@ -650,12 +650,11 @@ class AnalysisController:
         selected = list(image_ids) if image_ids is not None else self.included_ids()
         records = [self.experiment.image(image_id) for image_id in selected]
         owner = self._start_journal([(self.recipe.recipe_id, selected)])
-        finished = False
+        report = None
         try:
             report = self._run_records(records, on_progress, should_continue)
-            finished = not report.cancelled
         finally:
-            self._end_journal(owner, finished)
+            self._end_journal(owner, finished=report is not None and not report.cancelled, cancelled=report is not None)
         return report
 
     def _run_records(self, records, on_progress, should_continue) -> BatchReport:
@@ -746,8 +745,11 @@ class AnalysisController:
         self._journal["done"].append([self.recipe.recipe_id, image_id])
         self._write_journal()
 
-    def _end_journal(self, owner: bool, finished: bool) -> None:
-        """A batch that reached its last image is crossed out; one that stopped stays, to be continued."""
+    def _end_journal(self, owner: bool, finished: bool, cancelled: bool = True) -> None:
+        """A batch that reached its last image is crossed out; one that stopped stays, to be continued.
+
+        ``cancelled``: stopped with Cancel (the run log says so); otherwise an error stopped it.
+        """
 
         if not owner or self._journal is None:
             return
@@ -755,8 +757,8 @@ class AnalysisController:
         if finished:
             self._unfinished_path().unlink(missing_ok=True)
             return
-        journal["cancelled"] = True  # stopped while CellQuant was running: Cancel, or an error
-        journal["logged"] = True  # the run log already says why it stopped
+        journal["cancelled"] = cancelled
+        journal["logged"] = cancelled  # Cancel is in the run log already
         self._journal = journal
         try:
             self._write_journal()
@@ -2605,6 +2607,7 @@ class AnalysisController:
         offset = 0
         owner = self._start_journal(work)
         stopped = False
+        completed = False
         self._fresh_segmentation = fresh
         try:
             for position, (recipe_id, images) in enumerate(work):
@@ -2626,9 +2629,10 @@ class AnalysisController:
                 if report.cancelled:
                     stopped = True
                     break
+            completed = True  # reached the end, or stopped with Cancel; not an error
         finally:
             self._fresh_segmentation = False
-            self._end_journal(owner, finished=not stopped and len(reports) == len(work))
+            self._end_journal(owner, finished=completed and not stopped, cancelled=completed)
             if original and original != self.recipe.recipe_id and any(item.recipe_id == original for item in self.analyses()):
                 self.switch_analysis(original)
         return reports
