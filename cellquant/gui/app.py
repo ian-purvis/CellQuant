@@ -1892,6 +1892,8 @@ class CellQuantWindow:
         window = self.viewer.window._qt_window
         if not self.is_busy() or not window.isVisible():
             return True
+        from qtpy.QtWidgets import QApplication
+
         app = QApplication.instance()
         if app is not None and app.isSavingSession():
             return True  # the computer is shutting down or restarting: the run is offered again next time
@@ -1909,8 +1911,8 @@ class CellQuantWindow:
         status = self._footer.status.text().strip()
         if self._batch is not None:
             detail = (
-                "If you exit now, the image being analyzed is lost. Finished images are saved, and the next time "
-                "this experiment is opened CellQuant offers to continue the run from the last saved image."
+                "If you exit now, the image being analyzed is lost. Finished images are saved, and CellQuant "
+                "offers to continue the run from the last saved image the next time it opens."
             )
         else:
             detail = "If you exit now, the analysis going on is lost."
@@ -8020,12 +8022,17 @@ class UnfinishedRunDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Unfinished run")
         self.choice: str | None = None
-        how = "was cancelled" if cancelled else "stopped (CellQuant was closed, stopped unexpectedly or the computer restarted)"
-        where = f"<b>{html.escape(name)}</b>" + (f"<br>{html.escape(folder)}" if folder else "")
-        text = QLabel(
-            f"The last run in {where} {how} after <b>{done} of {total}</b> images. "
-            "Finished images are saved."
+        why = (
+            "it was cancelled"
+            if cancelled
+            else "CellQuant was closed, stopped unexpectedly or the computer restarted"
         )
+        text = QLabel(
+            f"The last run in <b>{html.escape(name)}</b> stopped after <b>{done} of {total}</b> images: {why}. "
+            "Finished images are saved."
+            + (f"<br><small>{html.escape(folder)}</small>" if folder else "")
+        )
+        self.setMinimumWidth(460)
         text.setWordWrap(True)
         layout = QVBoxLayout(self)
         layout.addWidget(text)

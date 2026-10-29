@@ -156,6 +156,8 @@ Tips:
 ## Step 6: Results
 
 1. Click **Run all images** (included images, with the analysis shown), or select rows in step 1 and click **Run selected images**. The bar at the bottom shows the image and step, for example *Image 3 of 9: Finding objects: slice 2 of 7*. **Pause** waits after the current step and **Resume** carries on; **Cancel** stops after it, keeping the images already finished. One image failing does not stop the others; the red box at the top lists each failed image and why. To re-run with new settings, change them and click **Run all images** again. With several analyses (see below), **Run all analyses** runs each of them.
+
+   Each image is saved as soon as it finishes. Closing CellQuant during a run asks first (**Exit** or **Stay**). If a run stops part-way (Cancel, CellQuant closed, a crash or a restart of the computer), CellQuant asks the next time it starts or the experiment is opened: **Continue the run** runs only the images left, **Continue with the analysis** keeps what finished and runs nothing, and **Start over** runs every image of that run again (tick **Find objects again in finished images** to segment those again too; otherwise their saved objects are reused). The run log says when and how the run stopped.
 2. Click **Export results…** and choose a folder.
 
 The **Results** box shows the numbers for the image on screen, for example *Marker A+ among all objects: 10 of 40 (25.0%)*.
