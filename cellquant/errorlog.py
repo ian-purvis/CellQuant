@@ -6,8 +6,8 @@ GUI code: the window registers a function with ``set_problem_handler`` to be tol
 
 from __future__ import annotations
 
-import datetime as _dt
 import atexit
+import datetime as _dt
 import errno
 import faulthandler
 import importlib.metadata
@@ -17,8 +17,8 @@ import os
 import platform
 import sys
 import threading
-import traceback
 import time
+import traceback
 import zipfile
 from pathlib import Path
 
@@ -286,6 +286,7 @@ def _report_unexpected(exc: BaseException) -> None:
     _state["busy"] = True
     try:
         log_exception(exc, "Uncaught exception")
+        flush_session_log()
         handler = _state["problem_handler"]
         if handler is not None and not isinstance(exc, (KeyboardInterrupt, SystemExit)):
             handler(unexpected_error_text(exc))
@@ -432,14 +433,16 @@ def build_report(
 
 _SESSION_FLUSH_SECONDS = 5.0
 _SESSION_MAX_LINES = 2000
-_session: dict = {"dir": None, "lines": [], "last_flush": 0.0, "warned": False}
+_session: dict = {"dir": None, "lines": [], "last_flush": 0.0, "warned": False, "timer": None, "dropped": 0}
+_session_lock = threading.RLock()  # the Run log can be written from worker threads as well as the GUI thread
 
 
 def append_session_line(experiment_dir: str | Path | None, text: str, now: _dt.datetime | None = None) -> None:
     """Add a timestamped line to <experiment>/logs/session_<date>.log. Skipped without an experiment. Never raises.
 
-    Lines are buffered and written at most every few seconds (and at once for a Problem), with the file closed in
-    between, so a cloud-synced folder is not touched on every progress message and Overwrite can delete logs/.
+    Lines are buffered and written every few seconds by a background timer (and at once for a Problem), with the
+    file closed in between, so a cloud-synced folder is not touched on every progress message and Overwrite can
+    delete logs/.
     """
 
     if not experiment_dir:
@@ -447,18 +450,23 @@ def append_session_line(experiment_dir: str | Path | None, text: str, now: _dt.d
     try:
         now = now or _dt.datetime.now()
         directory = Path(experiment_dir)
-        if _session["dir"] != directory:
-            flush_session_log()
-            _session["lines"].clear()  # lines the old folder would not take must not land in the new one
-            _session["dir"] = directory
-            _logger.info("Experiment folder: %s", directory)
-        stamp = now.strftime("%Y-%m-%d %H:%M:%S")
-        day = now.strftime("%Y-%m-%d")
-        lines = str(text).splitlines() or [""]
-        _session["lines"].extend((day, f"{stamp}\t{line}\n") for line in lines)
-        del _session["lines"][:-_SESSION_MAX_LINES]
-        if str(text).startswith("Problem:") or time.monotonic() - _session["last_flush"] >= _SESSION_FLUSH_SECONDS:
-            flush_session_log()
+        with _session_lock:
+            if _session["dir"] != directory:
+                flush_session_log()
+                _session["lines"].clear()  # lines the old folder would not take must not land in the new one
+                _session["dir"] = directory
+                _logger.info("Experiment folder: %s", directory)
+            stamp = now.strftime("%Y-%m-%d %H:%M:%S")
+            day = now.strftime("%Y-%m-%d")
+            lines = str(text).splitlines() or [""]
+            _session["lines"].extend((day, f"{stamp}\t{line}\n") for line in lines)
+            extra = len(_session["lines"]) - _SESSION_MAX_LINES
+            if extra > 0:
+                del _session["lines"][:extra]
+                _session["dropped"] += extra
+            if str(text).startswith("Problem:"):
+                flush_session_log()
+        _start_session_timer()
     except Exception:  # noqa: BLE001
         pass
 
@@ -466,25 +474,47 @@ def append_session_line(experiment_dir: str | Path | None, text: str, now: _dt.d
 def flush_session_log() -> None:
     """Write the buffered session lines. On failure they stay buffered for the next try. Never raises."""
 
-    directory, pending = _session["dir"], _session["lines"]
-    _session["last_flush"] = time.monotonic()
-    if directory is None or not pending:
-        return
-    try:
-        folder = directory / "logs"
-        folder.mkdir(exist_ok=True)
-        by_day: dict[str, list[str]] = {}
-        for day, line in pending:
-            by_day.setdefault(day, []).append(line)
-        for day, lines in by_day.items():
-            with (folder / f"session_{day}.log").open("a", encoding="utf-8") as handle:
-                handle.write("".join(lines))
-        pending.clear()
-        _session["warned"] = False
-    except Exception as exc:  # noqa: BLE001
-        if not _session["warned"]:
-            _session["warned"] = True
-            _logger.warning("The session log in %s could not be written (%s); will try again.", directory, exc)
+    with _session_lock:
+        directory, pending = _session["dir"], _session["lines"]
+        _session["last_flush"] = time.monotonic()
+        if directory is None or not pending:
+            return
+        try:
+            folder = directory / "logs"
+            folder.mkdir(exist_ok=True)
+            by_day: dict[str, list[str]] = {}
+            for day, line in pending:
+                by_day.setdefault(day, []).append(line)
+            if _session["dropped"]:
+                first = next(iter(by_day))
+                by_day[first].insert(0, f"({_session['dropped']} earlier line(s) could not be written and were dropped)\n")
+            for day, lines in by_day.items():
+                with (folder / f"session_{day}.log").open("a", encoding="utf-8") as handle:
+                    handle.write("".join(lines))
+            pending.clear()
+            _session.update(warned=False, dropped=0)
+        except Exception as exc:  # noqa: BLE001
+            if not _session["warned"]:
+                _session["warned"] = True
+                _logger.warning("The session log in %s could not be written (%s); will try again.", directory, exc)
+
+
+def _start_session_timer() -> None:
+    """A daemon thread that writes the buffered lines every few seconds, so a quiet window still saves them."""
+
+    with _session_lock:
+        timer = _session["timer"]
+        if timer is not None and timer.is_alive():
+            return
+
+        def tick() -> None:
+            while True:
+                time.sleep(_SESSION_FLUSH_SECONDS)
+                flush_session_log()
+
+        timer = threading.Thread(target=tick, name="cellquant-session-log", daemon=True)
+        _session["timer"] = timer
+        timer.start()
 
 
 atexit.register(flush_session_log)

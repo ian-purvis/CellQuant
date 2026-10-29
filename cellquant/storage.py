@@ -497,8 +497,18 @@ def read_persisted_result(run_dir: Path, image_id: str):
     )
 
 
+def save_run(run_dir: Path, record: RunRecord) -> None:
+    """Save the run record as it stands, without marking the run finished (after each image of a batch)."""
+
+    _write_run(run_dir, record)
+
+
 def _write_run(run_dir: Path, record: RunRecord) -> None:
-    (run_dir / "run.json").write_text(json.dumps(record.to_json(), indent=2), encoding="utf-8")
+    # Written beside and swapped in, so a run stopped while saving keeps its previous record.
+    path = run_dir / "run.json"
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(record.to_json(), indent=2), encoding="utf-8")
+    temporary.replace(path)
 
 
 def _concat_csv(directory: Path, suffix: str) -> pd.DataFrame:

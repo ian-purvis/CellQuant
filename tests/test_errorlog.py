@@ -239,6 +239,19 @@ def test_session_log_is_buffered_and_written_at_once_for_a_problem(tmp_path, mon
     assert not errorlog._session["lines"]
 
 
+def test_session_log_timer_writes_lines_while_the_window_is_quiet(tmp_path, monkeypatch):
+    import time
+
+    errorlog._session.update(dir=None, lines=[], timer=None)
+    monkeypatch.setattr(errorlog, "_SESSION_FLUSH_SECONDS", 0.05)
+    errorlog.append_session_line(tmp_path, "Step 2: image 3 of 9")
+    deadline = time.monotonic() + 5
+    while not list((tmp_path / "logs").glob("session_*.log")) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert "image 3 of 9" in next((tmp_path / "logs").glob("session_*.log")).read_text(encoding="utf-8")
+    errorlog._session.update(dir=None, lines=[], timer=None)
+
+
 def test_session_log_keeps_lines_when_the_folder_cannot_be_written(tmp_path):
     blocked = tmp_path / "not_a_folder"
     blocked.write_text("x")
