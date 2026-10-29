@@ -334,6 +334,70 @@ def test_overwrite_refuses_when_an_image_lies_in_a_folder_it_would_delete(tmp_pa
     assert (results / "exports" / "a.tif").is_file()
 
 
+def test_overwrite_names_a_locked_file_and_keeps_the_experiment_openable(tmp_path: Path, monkeypatch):
+    """A file another program holds (or OneDrive is syncing) stopped Overwrite after experiment.json was gone."""
+
+    import os
+
+    from cellquant import experiment as experiment_module
+    from cellquant.experiment import delete_experiment_files, load_experiment
+
+    results = tmp_path / "Outputs"
+    AnalysisController.create(results, "Old").save()
+    (results / ".cache" / "labels").mkdir(parents=True, exist_ok=True)
+    (results / ".cache" / "labels" / "held.npy").write_bytes(b"x")
+    (results / "runs").mkdir(exist_ok=True)
+    (results / "runs" / "free.csv").write_text("x", encoding="utf-8")
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if str(path).endswith("held.npy"):
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", unlink)
+    monkeypatch.setattr(experiment_module, "_remove_with_retries", lambda path, waits=(): False)
+    with pytest.raises(PermissionError) as raised:
+        delete_experiment_files(results)
+    message = str(raised.value)
+    assert "held.npy: Permission denied" in message and "1 file(s)" in message
+    assert "still opens" in message
+    assert not (results / "runs").exists()
+    load_experiment(results)  # still opens
+
+
+def test_read_only_files_are_deleted_on_retry(tmp_path: Path):
+    import stat
+
+    from cellquant.experiment import _remove_with_retries
+
+    path = tmp_path / "read only.txt"
+    path.write_text("x", encoding="utf-8")
+    path.chmod(stat.S_IREAD)
+    assert _remove_with_retries(path, waits=(0.0,))
+    assert not path.exists()
+
+
+def test_opening_a_folder_left_by_an_unfinished_overwrite_says_so(tmp_path: Path):
+    from cellquant.experiment import load_experiment
+
+    (tmp_path / "runs").mkdir()
+    with pytest.raises(FileNotFoundError, match="Overwrite that did not finish"):
+        load_experiment(tmp_path)
+    with pytest.raises(FileNotFoundError, match="not a CellQuant results folder"):
+        load_experiment(tmp_path / "empty")
+
+
+def test_problem_box_shows_the_reason_of_a_numbered_os_error():
+    pytest.importorskip("qtpy")
+    try:
+        from cellquant.gui.app import _error_text
+    except Exception as exc:  # noqa: BLE001 - no Qt binding installed
+        pytest.skip(f"GUI not importable: {exc}")
+    assert _error_text(PermissionError(13, "Permission denied", "C:/x/held.npy")) == "Permission denied: C:/x/held.npy"
+    assert _error_text(PermissionError("A sentence for the user.")) == "A sentence for the user."
+
+
 def test_create_new_folder_picks_a_free_name_beside_the_used_one(tmp_path: Path):
     pytest.importorskip("qtpy")
     try:

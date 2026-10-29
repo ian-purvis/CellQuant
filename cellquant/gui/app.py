@@ -7906,6 +7906,9 @@ def _error_text(exc: BaseException) -> str:
     _log_developer_error(exc)
     # These carry sentences written for the user; others (KeyError 'x', TypeError, ...) would read as noise.
     if isinstance(exc, (CellQuantError, ValueError, OSError, RuntimeError)) and not isinstance(exc, (KeyError, IndexError)):
+        if isinstance(exc, OSError) and exc.strerror and isinstance(exc.args[0], int):
+            # OSError(13, "Permission denied", file): args[0] is only the number
+            return f"{exc.strerror}: {exc.filename}" if exc.filename else exc.strerror
         return str(exc.args[0] if exc.args else exc) or "The analysis failed."
     detail = str(exc) or "no details"
     return f"Unexpected error ({type(exc).__name__}: {detail}). Details are in cellquant_developer.log (see Start here: When something looks wrong)."
