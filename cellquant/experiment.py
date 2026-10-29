@@ -7,6 +7,7 @@ image files stay where the user imported them and are never modified.
 from __future__ import annotations
 
 import json
+import sys
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -190,7 +191,15 @@ def load_experiment(directory: str | Path) -> Experiment:
     root = Path(directory)
     path = root / "experiment.json" if root.is_dir() else root
     if not path.is_file():
-        raise FileNotFoundError(f"Experiment file could not be opened: {path}")
+        folder = path.parent if path.name == "experiment.json" else path
+        leftovers = [item.name for item in experiment_files(folder) if item.name not in _EXPERIMENT_FILES]
+        if leftovers:
+            raise FileNotFoundError(
+                f"There is no experiment.json in {folder}, only part of an earlier CellQuant run "
+                f"({', '.join(leftovers)}), perhaps from an Overwrite that did not finish. "
+                "To reuse this folder, choose it in New experiment and pick Overwrite."
+            )
+        raise FileNotFoundError(f"There is no experiment.json in {folder}: it is not a CellQuant results folder.")
     data = json.loads(path.read_text(encoding="utf-8"))
     # The folder the experiment is opened from, not the one it was saved in: a moved or
     # copied experiment then writes into its own folder.
@@ -255,12 +264,75 @@ def delete_experiment_files(directory: str | Path) -> list[Path]:
             inside = next((folder for folder in folders if folder in image.parents), None)
             if inside is not None:
                 raise PermissionError(f"{image} is one of this experiment's images and lies inside {inside}; nothing was deleted.")
+    # experiment.json goes last: if something cannot be deleted, the old experiment still opens.
+    doomed.sort(key=lambda path: path.name in _EXPERIMENT_FILES)
+    failed: list[tuple[Path, OSError]] = []
+
+    def stuck(_function, name, exc_info) -> None:
+        error = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+        if not _remove_with_retries(Path(name)):
+            failed.append((Path(name), error))
+
     for path in doomed:
         if path.is_dir() and not path.is_symlink():
-            shutil.rmtree(path)
+            if sys.version_info >= (3, 12):
+                shutil.rmtree(path, onexc=stuck)
+            else:
+                shutil.rmtree(path, onerror=stuck)
+        elif failed:
+            break  # keep experiment.json while anything else is left
         else:
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError as exc:
+                if not _remove_with_retries(path):
+                    failed.append((path, exc))
+    # A folder left behind only because a file inside it was: name the file, not the folder too.
+    failed = [(path, error) for path, error in failed if not any(path in other.parents for other, _ in failed)]
+    if failed:
+        shown = "\n".join(f"  {path}: {_reason(error)}" for path, error in failed[:3])
+        more = f"\n  ...and {len(failed) - 3} more" if len(failed) > 3 else ""
+        kept = " experiment.json was kept, so the old experiment still opens." if (root / "experiment.json").is_file() else ""
+        raise PermissionError(
+            f"{len(failed)} file(s) could not be deleted:\n{shown}{more}\n"
+            "Another program may have them open, or OneDrive may still be syncing them. "
+            f"Close that program or wait for OneDrive, then choose Overwrite again.{kept}"
+        )
     return doomed
+
+
+def _reason(error: BaseException) -> str:
+    return getattr(error, "strerror", None) or str(error) or type(error).__name__
+
+
+def _remove_with_retries(path: Path, waits: tuple[float, ...] = (0.0, 0.2, 0.5, 1.0)) -> bool:
+    """Delete one file or empty folder that refused once: clear its read-only flag and try a few more times.
+
+    Windows refuses to delete read-only files, and a file a sync program (OneDrive) is reading for a
+    moment. True when it is gone.
+    """
+
+    import os
+    import stat
+    import time
+
+    for wait in waits:
+        time.sleep(wait)
+        try:
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD | (stat.S_IEXEC if path.is_dir() else 0))
+        except OSError:
+            pass
+        try:
+            if path.is_dir() and not path.is_symlink():
+                path.rmdir()
+            else:
+                path.unlink()
+        except FileNotFoundError:
+            return True
+        except OSError:
+            continue
+        return True
+    return not path.exists()
 
 
 @dataclass
