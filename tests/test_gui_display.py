@@ -152,6 +152,95 @@ def test_new_experiment_keeps_results_out_of_the_image_folder(tmp_path: Path, mo
         viewer.close()
 
 
+def test_new_experiment_can_overwrite_earlier_results(tmp_path: Path, monkeypatch):
+    from qtpy.QtWidgets import QDialog
+
+    from cellquant.controller import AnalysisController
+    from cellquant.gui import app as gui_app
+
+    images = tmp_path / "images"
+    images.mkdir()
+    _write_squares(images / "a.tif")
+    results = tmp_path / "Results"
+    AnalysisController.create(results, "Old", input_directory=tmp_path / "elsewhere").save()
+    (results / "my notes.txt").write_text("keep", encoding="utf-8")
+
+    class Chosen:
+        def __init__(self, parent=None):
+            pass
+
+        def exec(self):
+            return QDialog.Accepted
+
+        def experiment_name(self):
+            return "New"
+
+        def images_folder(self):
+            return str(images)
+
+        def results_folder(self):
+            return str(results)
+
+        def overwrite_results(self):
+            return True
+
+    monkeypatch.setattr(gui_app, "NewExperimentDialog", Chosen)
+    try:
+        viewer = napari.Viewer(show=False)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"napari viewer could not start: {exc}")
+    try:
+        shell = gui_app.CellQuantWindow(viewer)
+        shell.new_experiment()
+        _wait(shell)
+        assert shell.controller.experiment.experiment_name == "New"
+        assert [record.filename for record in shell.controller.experiment.images] == ["a.tif"]
+        assert (results / "my notes.txt").is_file()
+        assert "Overwrote earlier results" in shell._footer.log.toPlainText()
+    finally:
+        viewer.close()
+
+
+def test_used_results_folder_asks_overwrite_or_new_folder(tmp_path: Path, qtbot):
+    from qtpy.QtCore import QTimer
+    from qtpy.QtWidgets import QApplication, QFileDialog, QMessageBox, QPushButton
+
+    from cellquant.gui.app import _label_new_folder_button, ask_overwrite_or_new_folder
+
+    empty = tmp_path / "Empty"
+    assert ask_overwrite_or_new_folder(None, empty) == str(empty)
+    results = tmp_path / "Results"
+    (results / "runs").mkdir(parents=True)  # an unfinished earlier run
+
+    def press(label):
+        def click():
+            box = next(w for w in QApplication.topLevelWidgets() if isinstance(w, QMessageBox) and w.isVisible())
+            assert "earlier CellQuant run" in box.text()
+            next(b for b in box.buttons() if b.text() == label).click()
+
+        QTimer.singleShot(50, click)
+
+    press("Create new folder")
+    assert ask_overwrite_or_new_folder(None, results) == str(tmp_path / "Results 2")
+    press("Overwrite")
+    assert ask_overwrite_or_new_folder(None, results) == "overwrite"
+    press("Cancel")
+    assert ask_overwrite_or_new_folder(None, results) is None
+    assert (results / "runs").is_dir()  # asking never deletes
+
+    dialog = QFileDialog(None, "Pick", str(tmp_path))
+    dialog.setFileMode(QFileDialog.Directory)
+    dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+    _label_new_folder_button(dialog)
+    named = dialog.findChild(QPushButton, "namedNewFolderButton")
+    assert named.text() == "New folder"
+    dialog.setDirectory(str(tmp_path))
+    before = {path.name for path in tmp_path.iterdir()}
+    named.click()
+    QApplication.processEvents()
+    assert len({path.name for path in tmp_path.iterdir()} - before) == 1  # a new folder was made where the dialog looks
+
+
 def test_3d_results_show_as_a_volume_with_a_recommendation(tmp_path: Path):
     from cellquant.controller import AnalysisController
     from cellquant.gui.app import CellQuantWindow
