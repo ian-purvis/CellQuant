@@ -211,6 +211,56 @@ def save_experiment(experiment: Experiment) -> Path:
 
 # CellQuant's own folders inside an experiment. They are never imported as images.
 _EXPERIMENT_FOLDERS = {"runs", "working", ".cache", "exports", "edits", "recipes", "analyses"}
+_EXPERIMENT_FILES = ("experiment.json", "experiment.json.tmp")
+
+
+def experiment_files(directory: str | Path) -> list[Path]:
+    """CellQuant's own files and folders in a results folder: what replacing its experiment deletes.
+
+    Anything else in the folder (notes, figures saved there by hand, the folder lock) is not listed.
+    """
+
+    root = Path(directory)
+    names = sorted(_EXPERIMENT_FILES) + sorted(_EXPERIMENT_FOLDERS)
+    return [root / name for name in names if (root / name).exists()]
+
+
+def delete_experiment_files(directory: str | Path) -> list[Path]:
+    """Delete the experiment saved in a results folder, keeping every file CellQuant did not make.
+
+    Refuses (and deletes nothing) when one of the experiment's own images lies inside a folder
+    that would be deleted. Returns what was deleted.
+    """
+
+    import shutil
+
+    root = Path(directory)
+    doomed = experiment_files(root)
+    folders = [path.resolve() for path in doomed if path.is_dir()]
+    try:
+        records = json.loads((root / "experiment.json").read_text(encoding="utf-8")).get("images") or []
+    except (OSError, ValueError, AttributeError):
+        records = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        sources = [record.get("source_path") or ""]
+        if record.get("source_path_relative"):
+            sources.append(str(root / record["source_path_relative"]))
+        for source in filter(None, sources):
+            try:
+                image = Path(source).expanduser().resolve()
+            except OSError:
+                continue
+            inside = next((folder for folder in folders if folder in image.parents), None)
+            if inside is not None:
+                raise PermissionError(f"{image} is one of this experiment's images and lies inside {inside}; nothing was deleted.")
+    for path in doomed:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    return doomed
 
 
 @dataclass

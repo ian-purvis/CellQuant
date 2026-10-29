@@ -81,6 +81,7 @@ def choose_existing_directory(parent: QWidget | None, caption: str, start: str =
     dialog.setOption(QFileDialog.DontResolveSymlinks, True)
     if sys.platform.startswith("win"):
         dialog.setOption(QFileDialog.DontUseNativeDialog, True)
+    _label_new_folder_button(dialog)
     if not dialog.exec():
         return ""
     highlighted = _highlighted_directory(dialog)
@@ -90,6 +91,19 @@ def choose_existing_directory(parent: QWidget | None, caption: str, start: str =
     if not selected:
         return ""
     return str(Path(selected[0]).expanduser().resolve())
+
+
+def _label_new_folder_button(dialog: QFileDialog) -> None:
+    """Qt's own folder dialog makes new folders with an unlabelled icon: add a named button beside Choose."""
+
+    icon = dialog.findChild(QToolButton, "newFolderButton")
+    buttons = dialog.findChild(QDialogButtonBox, "buttonBox")
+    if icon is None or buttons is None:
+        return
+    button = buttons.addButton("New folder", QDialogButtonBox.ActionRole)
+    button.setObjectName("namedNewFolderButton")
+    button.setToolTip("Make a new folder in the folder shown, type its name, then Choose")
+    button.clicked.connect(icon.click)
 
 
 def _highlighted_directory(dialog: QFileDialog) -> str:
@@ -568,6 +582,11 @@ class NewExperimentDialog(QDialog):
     def results_folder(self) -> str:
         return self.results.text().strip()
 
+    def overwrite_results(self) -> bool:
+        """True when the user chose to overwrite earlier CellQuant results in the results folder."""
+
+        return getattr(self, "_overwrite", False)
+
     def file_types(self) -> list[str]:
         return [kind for box, kind in ((self.use_nd2, "nd2"), (self.use_tiff, "tiff")) if box.isChecked()]
 
@@ -623,15 +642,15 @@ class NewExperimentDialog(QDialog):
         if not self.file_types():
             QMessageBox.warning(self, "File types", "Tick ND2 files, TIFF files, or both.")
             return
-        existing = existing_experiment_images(results)
-        if existing is not None:
-            QMessageBox.warning(
-                self,
-                "Results folder already used",
-                f"Holds another experiment (images: {existing or 'not recorded'}).\n\n"
-                "Choose an empty folder, or use Open experiment to continue it.",
-            )
+        self._overwrite = False
+        choice = ask_overwrite_or_new_folder(self, results)
+        if choice is None:
             return
+        if choice == "overwrite":
+            self._overwrite = True
+        elif choice != results:
+            results = choice
+            self.results.setText(choice)
         images = self.images.text().strip()
         if images and not Path(images).is_dir():
             QMessageBox.warning(self, "Image folder", f"This image folder could not be found:\n{images}")
@@ -674,6 +693,58 @@ def results_inside_images(images: str | Path, results: str | Path) -> bool:
     except OSError:
         return False
     return result_root == image_root or image_root in result_root.parents
+
+
+def free_folder_beside(folder: str | Path) -> Path:
+    """A folder name next to ``folder`` that is not taken yet: "Results 2", "Results 3", ..."""
+
+    path = Path(folder).expanduser()
+    number = 2
+    while (candidate := path.with_name(f"{path.name} {number}")).exists():
+        number += 1
+    return candidate
+
+
+def ask_overwrite_or_new_folder(parent: QWidget | None, results: str | Path) -> str | None:
+    """The results folder holds outputs of an earlier CellQuant run: ask what to do.
+
+    Returns "overwrite", the path of a new folder to use instead, or None to choose again.
+    A folder without CellQuant outputs is returned unchanged without asking.
+    """
+
+    from cellquant.experiment import experiment_files
+
+    folder = Path(results).expanduser()
+    found = experiment_files(folder)
+    if not found:
+        return str(results)
+    images = existing_experiment_images(folder)
+    listed = ", ".join(f"{path.name}/" if path.is_dir() else path.name for path in found)
+    about = f"Images: {images}\n" if images else ""
+    new_folder = free_folder_beside(folder)
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Question)
+    box.setWindowTitle("Folder has CellQuant results")
+    box.setText(f"{folder.name} already has results from an earlier CellQuant run.")
+    box.setInformativeText(
+        f"{about}Found: {listed}\n\n"
+        f"Overwrite deletes these, with their edits and approvals. Other files and the images are kept.\n"
+        f"Create new folder saves to {new_folder.name} instead."
+    )
+    create = box.addButton("Create new folder", QMessageBox.AcceptRole)
+    create.setToolTip(str(new_folder))
+    overwrite = box.addButton("Overwrite", QMessageBox.DestructiveRole)
+    overwrite.setToolTip(f"Delete the earlier CellQuant results in {folder}")
+    cancel = box.addButton(QMessageBox.Cancel)
+    box.setDefaultButton(create)
+    box.setEscapeButton(cancel)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is overwrite:
+        return "overwrite"
+    if clicked is create:
+        return str(new_folder)
+    return None
 
 
 def existing_experiment_images(results: str | Path) -> str | None:
@@ -1173,11 +1244,14 @@ class CellQuantWindow:
             return
         output = Path(dialog.results_folder())
         images = dialog.images_folder()
-        if (output / "experiment.json").is_file():
+        overwrite = dialog.overwrite_results() if hasattr(dialog, "overwrite_results") else False
+        if (output / "experiment.json").is_file() and not overwrite:
             self.message("That results folder already has an experiment. Use Open experiment… to open it, or choose another folder.")
             return
         lock = self._lock_folder(output, create=True)
         if lock is None:
+            return
+        if overwrite and not self._overwrite_results(output, lock):
             return
         try:
             controller = AnalysisController.create(output, dialog.experiment_name(), input_directory=images or None)
@@ -1204,6 +1278,26 @@ class CellQuantWindow:
             self.message(f"Images are read from {images}. Results are saved in {output}.")
 
         self._start_job(lambda: controller.add_image_paths([images], file_types=file_types), listed)
+
+    def _overwrite_results(self, output: Path, lock) -> bool:
+        """Delete the earlier CellQuant results in ``output`` (already locked by this window)."""
+
+        from cellquant.experiment import delete_experiment_files
+
+        if self.controller is not None and Path(self.controller.directory).resolve() == output.resolve():
+            if self.is_busy():
+                self._drop_lock(lock)
+                self.show_error(f"{output} is still running here. Wait for it to finish, or press Stop, then try again.")
+                return False
+            self.controller = None
+        try:
+            deleted = delete_experiment_files(output)
+        except Exception as exc:  # noqa: BLE001 - shown to the user; nothing else is changed
+            self._drop_lock(lock)
+            self.show_error(f"The earlier results in {output} could not be deleted. {_error_text(exc)}")
+            return False
+        self._footer.log.append(f"Overwrote earlier results in {output}: deleted {', '.join(path.name for path in deleted)}.")
+        return True
 
     def require_controller(self) -> AnalysisController | None:
         if self.controller is None:
@@ -1397,12 +1491,15 @@ class CellQuantWindow:
         )
         if not output:
             return None
-        output = Path(output)
-        if (output / "experiment.json").is_file():
-            self.message("That folder already has an experiment. Open it with Open experiment…, or choose another folder.")
+        choice = ask_overwrite_or_new_folder(self._tabs, output)
+        if choice is None:
             return None
+        overwrite = choice == "overwrite"
+        output = Path(output if overwrite else choice)
         lock = self._lock_folder(output, create=True)
         if lock is None:
+            return None
+        if overwrite and not self._overwrite_results(output, lock):
             return None
         try:
             controller = AnalysisController.create(output, package.name)

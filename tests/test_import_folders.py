@@ -295,6 +295,58 @@ def test_new_experiment_refuses_a_results_folder_that_holds_another_experiment(t
     assert existing_experiment_images(tmp_path / "P0_P21 - CellQuant results") is None
 
 
+def test_overwriting_a_results_folder_deletes_only_cellquant_files(tmp_path: Path):
+    from cellquant.experiment import delete_experiment_files, experiment_files
+
+    _zstack(tmp_path / "images" / "a.tif")
+    results = tmp_path / "Outputs"
+    old = AnalysisController.create(results, "Old", input_directory=tmp_path / "images")
+    old.add_image_paths([tmp_path / "images"])
+    (results / "edits").mkdir(exist_ok=True)
+    (results / "edits" / "x.json").write_text("{}", encoding="utf-8")
+    (results / "my notes.txt").write_text("keep", encoding="utf-8")
+    assert {path.name for path in experiment_files(results)} >= {"experiment.json", "edits", "recipes"}
+    delete_experiment_files(results)
+    assert experiment_files(results) == []
+    assert (results / "my notes.txt").read_text(encoding="utf-8") == "keep"
+    assert (tmp_path / "images" / "a.tif").is_file()
+    # Results of an unfinished run (no experiment.json) count too.
+    (results / "runs").mkdir()
+    assert [path.name for path in experiment_files(results)] == ["runs"]
+
+
+def test_overwrite_refuses_when_an_image_lies_in_a_folder_it_would_delete(tmp_path: Path):
+    from cellquant.experiment import delete_experiment_files
+
+    results = tmp_path / "Outputs"
+    _zstack(results / "exports" / "a.tif")
+    old = AnalysisController.create(results, "Old")
+    old.experiment.images = []
+    old.save()
+    import json
+
+    data = json.loads((results / "experiment.json").read_text(encoding="utf-8"))
+    data["images"] = [{"source_path": str(results / "exports" / "a.tif")}]
+    (results / "experiment.json").write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(PermissionError):
+        delete_experiment_files(results)
+    assert (results / "experiment.json").is_file()
+    assert (results / "exports" / "a.tif").is_file()
+
+
+def test_create_new_folder_picks_a_free_name_beside_the_used_one(tmp_path: Path):
+    pytest.importorskip("qtpy")
+    try:
+        from cellquant.gui.app import free_folder_beside
+    except Exception as exc:  # noqa: BLE001 - no Qt binding installed
+        pytest.skip(f"GUI not importable: {exc}")
+    used = tmp_path / "Results"
+    used.mkdir()
+    assert free_folder_beside(used) == tmp_path / "Results 2"
+    (tmp_path / "Results 2").mkdir()
+    assert free_folder_beside(used) == tmp_path / "Results 3"
+
+
 def test_image_counts_per_subfolder_show_a_parent_folder_pick(tmp_path: Path):
     """Picking the parent of E14.5_E17.5 must be visible before import: both subfolders are listed."""
 
