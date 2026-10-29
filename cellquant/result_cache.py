@@ -36,6 +36,14 @@ def _spill_folder() -> Path:
         return _folder
 
 
+def remove_spill_folder() -> None:
+    """Delete the masks moved out of memory now (when the program ends without running its exit handlers)."""
+
+    with _folder_lock:
+        if _folder is not None:
+            shutil.rmtree(_folder, True)
+
+
 class SpilledLabels:
     """A mask array written to a temporary file. Shared by a result's two masks when they are the
     same array, so they come back as one array. The file is removed when nothing refers to it."""

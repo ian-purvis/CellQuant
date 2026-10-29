@@ -209,6 +209,7 @@ class AnalysisController:
         self.last_results: dict[str, ImageResult] = ResultCache()  # older results' masks are moved out of memory
         self._journal: dict | None = None  # the batch being run, as saved in UNFINISHED_RUN_FILE
         self._fresh_segmentation = False  # find objects again instead of reusing saved ones
+        self._closing = False  # CellQuant is being closed during the batch
         self._written: dict[str, tuple] = {}  # image id -> (result, its edits, folder) last saved to the working folder
         # Images whose approval the last cutoff change cleared, and marker columns kept between cutoff moves.
         self.cleared_approvals: list[str] = []
@@ -721,12 +722,24 @@ class AnalysisController:
     # A batch is written down before its first image and crossed off image by image, so a batch that
     # stops part-way (Cancel, CellQuant closed, a crash or a restart of the computer) can be continued.
 
-    def _start_journal(self, work: list[tuple[str, list[str]]]) -> bool:
-        """Write down the batch about to run. False when a batch around this one already did."""
+    def _start_journal(self, work: list[tuple[str, list[str]]], continuing: bool = False) -> bool:
+        """Write down the batch about to run. False when a batch around this one already did.
+
+        ``continuing``: the rest of an unfinished batch, crossed off in that batch's own record, so
+        its count of images stays that of the whole batch if it stops again.
+        """
 
         if self._journal is not None:
             return False
         from cellquant.storage import _now
+
+        self._closing = False
+        earlier = read_unfinished_run(self.directory) if continuing else None
+        if earlier is not None:
+            earlier["cancelled"], earlier["logged"] = False, False
+            self._journal = earlier
+            self._write_journal()
+            return True
 
         self._journal = {
             "format": 1,
@@ -757,8 +770,10 @@ class AnalysisController:
         if finished:
             self._unfinished_path().unlink(missing_ok=True)
             return
+        if self._closing:
+            cancelled = False  # stopped because CellQuant was closed (said in the run log), not with Cancel
         journal["cancelled"] = cancelled
-        journal["logged"] = cancelled  # Cancel is in the run log already
+        journal["logged"] = cancelled or self._closing  # the run log already says why it stopped
         self._journal = journal
         try:
             self._write_journal()
@@ -806,6 +821,7 @@ class AnalysisController:
             self.forget_unfinished_run()
             return None
         unfinished = UnfinishedRun(work, remaining, bool(data.get("cancelled")), str(data.get("started") or ""))
+        self._mark_interrupted()
         if not data.get("logged"):
             self._log_interruption(unfinished)
             data["logged"] = True
@@ -827,6 +843,16 @@ class AnalysisController:
                 f"The run stopped after {unfinished.done} of {unfinished.total} images: CellQuant was closed, "
                 "stopped unexpectedly or the computer restarted. Finished images are kept.",
             )
+        except OSError:
+            pass
+
+    def _mark_interrupted(self) -> None:
+        """The run left "running" by a batch that never reached its end is recorded as interrupted."""
+
+        run_dir = self._latest_run_dir()
+        if run_dir is None or (self.run_dir is not None and run_dir == self.run_dir and self._journal is not None):
+            return
+        try:
             record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
             if record.get("processing_status") == "running":
                 record["processing_status"] = "interrupted"
@@ -848,9 +874,18 @@ class AnalysisController:
                     pass
         self._unfinished_path().unlink(missing_ok=True)
 
-    def note_in_run_log(self, message: str) -> None:
-        """A line in the log of the run going on now (for example, CellQuant closed during it)."""
+    def note_closing(self) -> None:
+        """CellQuant is being closed during a run: say so in the run log, once, and not as a Cancel."""
 
+        self._closing = True
+        journal = self._journal
+        if journal is not None:
+            done, total = len(journal["done"]), sum(len(item[1]) for item in journal["work"])
+            message = f"CellQuant was closed during the run, after {done} of {total} images. Finished images are kept."
+            journal["logged"] = True
+            self._write_journal()
+        else:
+            message = "CellQuant was closed during the run."
         if self.run_log is not None:
             try:
                 self.run_log.write("", "batch", message)
@@ -2580,14 +2615,15 @@ class AnalysisController:
         on_analysis=None,
         work: list[tuple[str, list[str]]] | None = None,
         fresh: bool = False,
+        continuing: bool = False,
     ) -> list[BatchReport]:
         """Run each analysis over the same images, one after another. The active analysis is restored.
 
         ``on_progress(index, total, filename, status)`` counts across all analyses; ``filename`` is
         prefixed with the analysis name. ``on_analysis(index, total, name)`` is called as each starts.
         Stopping ends the current analysis's run (finished images are kept) and skips the rest.
-        ``work`` gives each analysis's images instead (continuing an unfinished run); ``fresh`` finds
-        the objects again instead of reusing saved ones.
+        ``work`` gives each analysis's images instead; ``continuing``: they are the rest of the unfinished
+        run. ``fresh`` finds the objects again instead of reusing saved ones.
         """
 
         if work is None:
@@ -2605,7 +2641,7 @@ class AnalysisController:
         total = sum(len(images) for _recipe_id, images in work)
         reports: list[BatchReport] = []
         offset = 0
-        owner = self._start_journal(work)
+        owner = self._start_journal(work, continuing=continuing)
         stopped = False
         completed = False
         self._fresh_segmentation = fresh

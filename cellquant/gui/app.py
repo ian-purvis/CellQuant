@@ -168,11 +168,14 @@ def launch(experiment_dir: str | Path | None = None) -> None:
     graphics.watch_viewer_errors(QApplication.instance())
     window = CellQuantWindow(viewer, experiment_dir)
     napari.run()
-    if window.is_busy():
-        # Closed with Exit during a run: finished images are saved, and the run is offered again on opening.
-        # The image being analyzed cannot be stopped part-way, so the program ends without waiting for it.
+    if not window.wait_for_run_to_stop(_EXIT_WAIT_SECONDS):
+        # Closed with Exit during a step that cannot stop part-way (Cellpose's whole-volume 3D step):
+        # finished images are saved and the run is offered again, so the program ends without waiting.
         import os
 
+        from cellquant import result_cache
+
+        result_cache.remove_spill_folder()
         _settings().sync()
         sys.stdout.flush()
         os._exit(0)
@@ -181,6 +184,8 @@ def launch(experiment_dir: str | Path | None = None) -> None:
 
 
 _OBJECT_LAYERS = ("Object fills", "Objects", "Classification", "Object IDs")
+# Closing with Exit during a run waits this long for it to stop after the current step.
+_EXIT_WAIT_SECONDS = 20
 # QSettings key: the experiment folder whose last run stopped part-way, offered when CellQuant starts.
 _UNFINISHED_KEY = "run/unfinished_experiment"
 # Polygons drawn in step 5; only objects whose center is inside them are counted.
@@ -1756,17 +1761,19 @@ class CellQuantWindow:
         *,
         work: list[tuple[str, list[str]]] | None = None,
         fresh: bool = False,
+        continuing: bool = False,
     ) -> None:
         """Run the images with the current analysis, or (``analyses``) with each of those analyses in turn.
 
-        ``work`` runs each analysis's own images (an unfinished run); ``fresh`` finds objects again.
+        ``work`` runs each analysis's own images (``continuing``: the rest of an unfinished run);
+        ``fresh`` finds objects again.
         """
 
         controller = self.require_controller()
         if controller is None or self._batch is not None or self._job is not None:
             return
         self._panels_to_recipe()
-        worker = BatchWorker(controller, image_ids, analyses, work=work, fresh=fresh)
+        worker = BatchWorker(controller, image_ids, analyses, work=work, fresh=fresh, continuing=continuing)
         # Remembered until the run reaches its last image: the next start of CellQuant offers to continue it.
         _settings().setValue(_UNFINISHED_KEY, str(controller.directory))
         worker.progress.connect(self._footer.update_progress)
@@ -1900,7 +1907,20 @@ class CellQuantWindow:
         if not self._confirm_exit_during_run():
             return False
         if self.controller is not None:
-            self.controller.note_in_run_log("CellQuant was closed during the run.")
+            self.controller.note_closing()
+        if self._batch is not None:
+            self._batch.paused = False
+            self._batch.cancelled = True  # stops after the current step; the image being analyzed is not kept
+        if self._job is not None:
+            self._job.cancelled = True
+        return True
+
+    def wait_for_run_to_stop(self, seconds: float) -> bool:
+        """After the window closed during a run: wait (up to ``seconds``) for it to stop. True when nothing runs."""
+
+        for worker in (self._batch, self._job):
+            if worker is not None and worker.isRunning() and not worker.wait(int(seconds * 1000)):
+                return False
         return True
 
     def _confirm_exit_during_run(self) -> bool:
@@ -2004,7 +2024,7 @@ class CellQuantWindow:
             return
         self._exclusive = True  # the run may switch between analyses
         if choice == "continue":
-            self.start_batch(None, work=unfinished.remaining)
+            self.start_batch(None, work=unfinished.remaining, continuing=True)
         else:
             self.start_batch(None, work=unfinished.work, fresh=fresh)
 
@@ -8157,6 +8177,7 @@ class BatchWorker(QThread):
         *,
         work: list[tuple[str, list[str]]] | None = None,
         fresh: bool = False,
+        continuing: bool = False,
     ):
         super().__init__()
         self.controller = controller
@@ -8164,6 +8185,7 @@ class BatchWorker(QThread):
         self.analyses = analyses
         self.work = work  # each analysis's images, when an unfinished run is continued or started over
         self.fresh = fresh
+        self.continuing = continuing
         self.paused = False
         self.cancelled = False
 
@@ -8193,6 +8215,7 @@ class BatchWorker(QThread):
                     report = self.controller.run_analyses(
                         work=self.work,
                         fresh=self.fresh,
+                        continuing=self.continuing,
                         on_progress=on_progress,
                         should_continue=should_continue,
                     )

@@ -208,12 +208,15 @@ def test_closing_during_a_run_asks_first(tmp_path: Path, settings, monkeypatch):
         window.show()
         QApplication.processEvents()
         assert shell._allow_close()  # nothing running: no question
-        shell._job = object()  # a run going on
+        from types import SimpleNamespace
+
+        shell._job = SimpleNamespace(cancelled=False, isRunning=lambda: False)  # a run going on
         answers.append(False)
         assert window.close() is False and window.isVisible()  # Stay
         answers.append(True)
-        assert shell._allow_close()  # Exit
-        assert not answers
+        assert shell._allow_close()  # Exit: the run is asked to stop
+        assert not answers and shell._job.cancelled
+        assert shell.wait_for_run_to_stop(1)
         shell._job = None
     finally:
         viewer.close()
@@ -293,3 +296,42 @@ def test_a_run_stopped_by_an_error_is_not_called_cancelled(tmp_path: Path, monke
     unfinished = controller.unfinished_run()
     assert unfinished is not None and not unfinished.cancelled and unfinished.done == 1
     assert "stopped after 1 of 3" in (controller.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
+
+
+def test_a_continued_run_that_stops_again_keeps_the_whole_count(tmp_path: Path):
+    controller = _experiment(tmp_path, 4)
+    controller.run_images(should_continue=iter([True, False]).__next__)
+    first = controller.unfinished_run()
+    assert (first.done, first.total) == (1, 4)
+    controller.run_analyses(work=first.remaining, continuing=True, should_continue=iter([True, True, False]).__next__)
+    second = controller.unfinished_run()
+    assert (second.done, second.total) == (2, 4)
+    assert second.remaining == [(controller.recipe.recipe_id, [record.image_id for record in controller.experiment.images][2:])]
+    controller.run_analyses(work=second.remaining, continuing=True)
+    assert controller.unfinished_run() is None
+
+
+def test_closing_during_a_run_is_logged_once_and_not_as_a_cancel(tmp_path: Path):
+    controller = _experiment(tmp_path, 3)
+
+    def close_after_first() -> bool:
+        if controller._journal["done"]:
+            controller.note_closing()  # the window's Exit: the run is then stopped like Cancel
+            return False
+        return True
+
+    controller.run_images(should_continue=close_after_first)
+    reopened = AnalysisController.open(controller.directory)
+    unfinished = reopened.unfinished_run()
+    assert unfinished is not None and not unfinished.cancelled and unfinished.done == 1
+    log = (controller.run_dir / "logs" / "run.log").read_text(encoding="utf-8")
+    assert "closed during the run, after 1 of 3 images" in log
+    assert "stopped after" not in log
+
+
+def test_replacing_an_experiment_removes_its_unfinished_run(tmp_path: Path):
+    from cellquant.experiment import experiment_files
+
+    controller = _experiment(tmp_path, 2)
+    controller.run_images(should_continue=iter([True, False]).__next__)
+    assert controller.directory / UNFINISHED_RUN_FILE in experiment_files(controller.directory)
