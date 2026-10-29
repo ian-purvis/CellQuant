@@ -210,7 +210,7 @@ def save_experiment(experiment: Experiment) -> Path:
 
 
 # CellQuant's own folders inside an experiment. They are never imported as images.
-_EXPERIMENT_FOLDERS = {"runs", "working", ".cache", "exports", "edits", "recipes", "analyses"}
+_EXPERIMENT_FOLDERS = {"runs", "working", ".cache", "exports", "edits", "recipes", "analyses", "logs"}
 _EXPERIMENT_FILES = ("experiment.json", "experiment.json.tmp")
 
 
