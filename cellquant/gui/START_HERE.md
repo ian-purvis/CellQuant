@@ -211,7 +211,7 @@ Open CellQuant, click **Open experiment…**, and choose the results folder. You
 | "This image has 3 channels, but the experiment's channel list has 4" | Channels are matched by the names stored in the file. Check that image (⚠ in the **Plan**), or set its channel in the Plan. |
 | Units say pixels | Enter the pixel size in step 1. |
 | Next is greyed out | Read the text beside it: it says what is missing. |
-| A red box says the run stopped | Read the message; the full details are in `cellquant_developer.log` in `%LOCALAPPDATA%\CellQuant` (Windows) or `~/.cellquant` (Mac, Linux). |
+| A red box says the run stopped | Read the message. **Copy details** puts the problem, the technical details and your software versions on the clipboard, and **Open log folder** opens the folder with `cellquant.log` (`%LOCALAPPDATA%\CellQuant` on Windows, `~/.cellquant` on Mac and Linux). To send everything to whoever is helping you, choose **Help → Report a problem…**: it saves a zip of the logs, with no images or data. |
 | Nothing is found, or everything is one blob | Check that **Default channel** (or the image's own channel) is the nuclear stain, and try Preview with different settings. |
 | Cellpose is slow | Without an NVIDIA GPU, Cellpose runs on the CPU. Use Classic Cellpose, or the classical method. |
 | "These settings were made for Cellpose-SAM" (or classic) | Close CellQuant and open it again with the engine the settings were made with, or choose a model for the engine you have. |

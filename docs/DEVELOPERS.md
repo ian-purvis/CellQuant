@@ -30,6 +30,6 @@ On Linux, run the window tests under `xvfb-run -a python -m pytest tests -q`.
 ## Conventions
 
 - Words shown to users are plain and consistent: *cutoff* (not threshold) for marker calls, *settings* (not recipe) in the window, US spelling (color, analyze).
-- Errors meant for users are `CellQuantError` subclasses (`cellquant/errors.py`) with a sentence the window shows as-is in the red problem box. Unexpected errors are shown with their type, and their traceback is written to `cellquant_developer.log` (`%LOCALAPPDATA%\CellQuant` on Windows, `~/.cellquant` elsewhere).
+- Errors meant for users are `CellQuantError` subclasses (`cellquant/errors.py`) with a sentence the window shows as-is in the red problem box. Unexpected errors are shown with their type, and their traceback is written to the CellQuant log, `cellquant.log` (`%LOCALAPPDATA%\CellQuant` on Windows, `~/.cellquant` elsewhere), which rotates at 2 MB with 5 backups. `cellquant/errorlog.py` sets it up at launch (`setup_logging`), logs uncaught exceptions from any thread and shows them in the problem box, keeps native crash stacks in `cellquant_crash.log`, turns file errors into plain sentences (`os_error_text`) and builds the report zip behind Help → Report a problem. The Run log is also saved to `logs/session_<date>.log` in the open experiment.
 - After changing `docs/START_HERE.md`, copy it to `cellquant/gui/START_HERE.md`.
 - Record user-visible changes in `CHANGELOG.md`.

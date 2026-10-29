@@ -147,6 +147,9 @@ def folder_image_counts(folder: str | Path) -> list[tuple[str, int]]:
 
 
 def launch(experiment_dir: str | Path | None = None) -> None:
+    from cellquant import errorlog
+
+    errorlog.setup_logging()
     import napari
 
     from cellquant.gui import graphics
@@ -167,13 +170,18 @@ def launch(experiment_dir: str | Path | None = None) -> None:
         raise SystemExit(graphics.GRAPHICS_EXIT_CODE)
     graphics.watch_viewer_errors(QApplication.instance())
     window = CellQuantWindow(viewer, experiment_dir)
+    errorlog.install_hooks()  # napari may have installed its own hook since; log first, then pass on to it
     napari.run()
     if window.is_busy():
         # Closed with Exit during a run: finished images are saved, and the run is offered again on opening.
         # The image being analyzed cannot be stopped part-way, so the program ends without waiting for it.
+        import logging
         import os
 
         _settings().sync()
+        logging.getLogger("cellquant.gui").warning("Closed with Exit during a run.")
+        errorlog.flush_session_log()  # os._exit skips atexit
+        errorlog.shutdown_logging()
         sys.stdout.flush()
         os._exit(0)
     if graphics.restart_requested:
@@ -771,6 +779,12 @@ class CellQuantWindow:
         self._edit_cells = None  # step 5 Edit cells window, made when first opened
         self._quantanalysis = None  # the QuantAnalysis statistics window, made on first use
         self._folder_lock = None  # this window's hold on the open experiment folder
+        self._problem_text = ""  # what the Problem box shows now, for Copy details
+        self._problem_bridge = _ProblemBridge()  # unexpected errors from any thread reach the Problem box on this one
+        self._problem_bridge.raised.connect(self.show_error)
+        from cellquant import errorlog
+
+        errorlog.set_problem_handler(self._problem_bridge.raised.emit)
         self._managed: set[str] = set()
         self._contrast_hooks: dict[str, object] = {}  # channel layer name -> its contrast callback
         self._ids_image_id: str | None = None  # image whose object numbers the Object IDs layer shows
@@ -843,7 +857,15 @@ class CellQuantWindow:
         dismiss.setToolTip("Hide this message.")
         dismiss.setFixedWidth(28)
         dismiss.clicked.connect(lambda: self._error_box.setVisible(False))
+        copy_details = QPushButton("Copy details")
+        copy_details.setToolTip("Copy this problem, the technical details and your software versions, to paste into a message.")
+        copy_details.clicked.connect(self.copy_problem_details)
+        open_logs = QPushButton("Open log folder")
+        open_logs.setToolTip("Open the folder that holds the CellQuant log.")
+        open_logs.clicked.connect(self.open_log_folder)
         error_row.addWidget(self._error_note, 1)
+        error_row.addWidget(copy_details)
+        error_row.addWidget(open_logs)
         error_row.addWidget(dismiss)
         self._error_box.setVisible(False)
         dock_layout.addWidget(self._error_box)
@@ -964,9 +986,67 @@ class CellQuantWindow:
 
         import html
 
+        from cellquant import errorlog
+
+        self._problem_text = text
         self._error_note.setText(f"<b>⚠ Problem:</b> {html.escape(text)}")
         self._error_box.setVisible(True)
+        errorlog.log_problem(text)
         self._footer.message(f"Problem: {text}")
+
+    def copy_problem_details(self) -> None:
+        """Put the problem, the last traceback logged and the software versions on the clipboard."""
+
+        from cellquant import errorlog
+
+        from qtpy.QtWidgets import QApplication
+
+        try:
+            QApplication.clipboard().setText(errorlog.problem_details(self._problem_text))
+            self._footer.message("Problem details copied.")
+        except Exception:  # noqa: BLE001 - copying must never add a second problem
+            pass
+
+    def open_log_folder(self) -> None:
+        from qtpy.QtCore import QUrl
+        from qtpy.QtGui import QDesktopServices
+
+        from cellquant import errorlog
+
+        try:
+            folder = errorlog.current_folder()
+            folder.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def report_problem(self) -> None:
+        """Help → Report a problem…: zip the logs (no images or data) where the person chooses."""
+
+        from cellquant import errorlog
+
+        suggested = Path.home() / "Desktop"
+        if not suggested.is_dir():
+            suggested = Path.home()
+        name, _filter = QFileDialog.getSaveFileName(
+            self._tabs, "Save the problem report", str(suggested / errorlog.report_name()), "Zip file (*.zip)"
+        )
+        if not name:
+            return
+        try:
+            errorlog.build_report(name, errorlog.current_folder(), self._experiment_directory())
+        except Exception as exc:  # noqa: BLE001
+            self.show_error(f"The report could not be saved to {name}. {_error_text(exc)}")
+            return
+        QMessageBox.information(
+            self._tabs,
+            "Problem report saved",
+            f"The report was saved to:\n{name}\n\nIt contains CellQuant's log files and your software versions. "
+            "It contains no images or data.",
+        )
+
+    def _experiment_directory(self) -> Path | None:
+        return Path(self.controller.directory) if self.controller is not None else None
 
     def open_guide(self) -> None:
         guide.GuideDialog(self._tabs, guide.guide_text()).exec()
@@ -1035,6 +1115,10 @@ class CellQuantWindow:
             return
         self._glossary_action = menu.addAction("Output glossary…")
         self._glossary_action.triggered.connect(lambda _checked=False: self.open_output_glossary())
+        self._report_action = menu.addAction("Report a problem…")
+        self._report_action.triggered.connect(lambda _checked=False: self.report_problem())
+        self._log_folder_action = menu.addAction("Open log folder")
+        self._log_folder_action.triggered.connect(lambda _checked=False: self.open_log_folder())
 
     def open_experiment_dialog(self) -> None:
         directory = QFileDialog.getExistingDirectory(self._tabs, "Open an experiment folder")
@@ -1154,6 +1238,13 @@ class CellQuantWindow:
         options = self._results_panel.summary_options()
         self._start_job(lambda: controller.export(directory, **options), done)
 
+    @staticmethod
+    def _note_gpu(status) -> None:
+        from cellquant import errorlog
+
+        if isinstance(status, dict):
+            errorlog.note_gpu(status)
+
     def _start_gpu_check(self) -> None:
         """Load PyTorch in the background to learn whether a GPU is usable."""
 
@@ -1164,6 +1255,7 @@ class CellQuantWindow:
 
         self._gpu_check = CallWorker(gpu_status)
         self._gpu_check.succeeded.connect(self._objects_panel.show_gpu_status)
+        self._gpu_check.succeeded.connect(self._note_gpu)
         self._gpu_check.failed.connect(lambda message: self._objects_panel.show_gpu_status({"available": False, "reason": message}))
         self._gpu_check.start()
 
@@ -7550,6 +7642,12 @@ class Footer(QWidget):
         self.status.setText(text)
         self.status.setToolTip(text)
         self.log.append(text)
+        from cellquant import errorlog
+
+        try:
+            errorlog.append_session_line(self.shell._experiment_directory(), text)
+        except Exception:  # noqa: BLE001 - the session log is a convenience
+            pass
 
     def _show_time_left(self) -> None:
         """Time left beside the progress bar, refreshed every second; how it is worked out is in its tooltip."""
@@ -8107,40 +8205,37 @@ class CallWorker(QThread):
             else:
                 value = self._fn()
             self.succeeded.emit(value)
-        except Exception as exc:  # noqa: BLE001 - shown to the user, with the traceback in the developer log
+        except Exception as exc:  # noqa: BLE001 - shown to the user, with the traceback in the CellQuant log
             self.failed.emit(_error_text(exc))
 
 
 def _error_text(exc: BaseException) -> str:
-    """A message for the red problem box. Unexpected errors name their type; the traceback goes to the developer log."""
+    """A message for the red problem box. Unexpected errors name their type; the traceback goes to the CellQuant log."""
 
-    _log_developer_error(exc)
+    from cellquant import errorlog
+
+    errorlog.log_exception(exc)
     # These carry sentences written for the user; others (KeyError 'x', TypeError, ...) would read as noise.
-    if isinstance(exc, (CellQuantError, ValueError, OSError, RuntimeError)) and not isinstance(exc, (KeyError, IndexError)):
-        if isinstance(exc, OSError) and exc.strerror and isinstance(exc.args[0], int):
-            # OSError(13, "Permission denied", file): args[0] is only the number
-            return f"{exc.strerror}: {exc.filename}" if exc.filename else exc.strerror
+    if isinstance(exc, OSError):
+        return errorlog.os_error_text(exc)
+    if isinstance(exc, (CellQuantError, ValueError, RuntimeError)) and not isinstance(exc, (KeyError, IndexError)):
         return str(exc.args[0] if exc.args else exc) or "The analysis failed."
     detail = str(exc) or "no details"
-    return f"Unexpected error ({type(exc).__name__}: {detail}). Details are in cellquant_developer.log (see Start here: When something looks wrong)."
+    return f"Unexpected error ({type(exc).__name__}: {detail}). {errorlog.LOG_POINTER}"
 
 
 def _log_developer_error(exc: BaseException) -> None:
-    """Append the traceback to the developer log beside the per-computer settings."""
+    """Kept for older callers; the traceback goes to the CellQuant log."""
 
-    import traceback
+    from cellquant import errorlog
 
-    import os
+    errorlog.log_exception(exc)
 
-    try:
-        # Beside the per-computer install record on Windows (%LOCALAPPDATA%\\CellQuant); ~/.cellquant elsewhere.
-        local = os.environ.get("LOCALAPPDATA")
-        folder = Path(local) / "CellQuant" if local else Path.home() / ".cellquant"
-        folder.mkdir(parents=True, exist_ok=True)
-        with (folder / "cellquant_developer.log").open("a", encoding="utf-8") as handle:
-            handle.write("".join(traceback.format_exception(exc)) + "\n")
-    except Exception:  # noqa: BLE001 - logging must never hide the original problem
-        pass
+
+class _ProblemBridge(QObject):
+    """Carries an unexpected error from any thread to the window's Problem box on the GUI thread."""
+
+    raised = Signal(str)
 
 
 class BatchWorker(QThread):

@@ -611,6 +611,14 @@ For `integrated` the background is multiplied by the number of pixels in the reg
 
 **What it means:** The results folder makes it for you, but nothing is written into it unless you choose it as the export folder in step 6. Most people export somewhere else, so the results folder stays untouched.
 
+### `logs/` — the Run log, saved
+
+<!-- data: folder logs/ -->
+
+**In short:** The messages from the Run log at the bottom of the window, saved by day. Only exists once something was logged.
+
+**What it means:** `logs/session_<date>.log` has one line per message: the time, a tab, then the message. A new file starts each day. It is separate from the logs inside each run folder. Safe to delete, and **Overwrite** treats the folder as CellQuant's own.
+
 ### `runs/run_…/` and `working/`
 
 Each press of **Run** that starts a new batch creates a run folder, `runs/run_xxxxxxxx/`. It is a record of that batch and does not change afterwards (apart from the run record being finished). The `working/` folder holds the open results you see in the app, updated as you edit and review. It has the same layout as a run folder, without `run.json`, `recipe_snapshot.yaml` and the logs. The first analysis keeps its open results in `working/`. Each further analysis keeps them in `analyses/<analysis>/working/`. Per-image files are named with the `image_id` (`img_6f553c7b` below), shown as `<image>` in this glossary.
