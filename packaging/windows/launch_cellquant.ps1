@@ -1,8 +1,8 @@
-# Start CellQuant with one of the installed Cellpose engines.
-# Started by "Open CellQuant.bat". Asks which engine to use when both are installed.
+# Start CellQuant with one of the installed Cellpose engines, or QuantAnalysis on its own.
+# Started by "Open CellQuant.bat". Asks which engine to use, or QuantAnalysis only.
 
 param(
-    [ValidateSet('ask', 'default', 'cellpose4', 'cellpose3')]
+    [ValidateSet('ask', 'default', 'cellpose4', 'cellpose3', 'analysis')]
     [string]$Engine = 'ask',
     [string]$Experiment = ''
 )
@@ -39,16 +39,21 @@ if ($Record.default_engine -and $Installed.Contains([string]$Record.default_engi
     $DefaultEngine = [string]$Record.default_engine
 }
 
-if ($Engine -eq 'ask' -and $Installed.Count -gt 1) {
-    $Keys = @($Installed.Keys)
+if ($Engine -eq 'ask') {
+    # The last choice opens QuantAnalysis alone (statistics and graphs), in the default engine's environment.
+    $Keys = @($Installed.Keys) + 'analysis'
     Write-Host ''
-    Write-Host 'Which Cellpose engine?'
+    Write-Host 'Open which?'
     for ($Index = 0; $Index -lt $Keys.Count; $Index++) {
         $Note = ''
         if ($Keys[$Index] -eq 'cellpose4') { $Note = ' - most accurate; best with an NVIDIA GPU' }
         if ($Keys[$Index] -eq 'cellpose3') { $Note = ' - lighter; faster without a GPU' }
         if ($Keys[$Index] -eq $Record.recommended_engine) { $Note += ' (recommended for this computer)' }
-        Write-Host "  $($Index + 1)) $(Get-CellQuantEngineLabel -Engine $Keys[$Index])$Note"
+        if ($Keys[$Index] -eq 'analysis') {
+            Write-Host "  $($Index + 1)) QuantAnalysis only - statistics and graphs of saved results; no image viewer"
+        } else {
+            Write-Host "  $($Index + 1)) CellQuant with $(Get-CellQuantEngineLabel -Engine $Keys[$Index])$Note"
+        }
     }
     $DefaultNumber = [array]::IndexOf($Keys, $DefaultEngine) + 1
     $Answer = Read-Host "Choose [1-$($Keys.Count)] (Enter = $DefaultNumber)"
@@ -57,8 +62,23 @@ if ($Engine -eq 'ask' -and $Installed.Count -gt 1) {
     if ($Answer -and [int]::TryParse($Answer.Trim(), [ref]$Number) -and $Number -ge 1 -and $Number -le $Keys.Count) {
         $Engine = $Keys[$Number - 1]
     }
-} elseif ($Engine -eq 'ask' -or $Engine -eq 'default') {
+} elseif ($Engine -eq 'default') {
     $Engine = $DefaultEngine
+}
+
+if ($Engine -eq 'analysis') {
+    $Prefix = $Installed[$DefaultEngine]
+    Write-Host ''
+    Write-Host 'Starting QuantAnalysis on its own...'
+    Write-Host "  Environment: $Prefix"
+    Write-Host '  Keep this window open while you work.'
+    Install-CellQuantStatsPackages -CondaExe $CondaExe -Prefix $Prefix
+    $Arguments = @('run', '--no-capture-output', '--prefix', $Prefix, 'python', '-m', 'cellquant', 'analyze')
+    if ($Experiment) {
+        $Arguments += $Experiment
+    }
+    & $CondaExe @Arguments
+    exit $LASTEXITCODE
 }
 
 if (-not $Installed.Contains($Engine)) {

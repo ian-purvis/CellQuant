@@ -8,7 +8,7 @@ Notation: a column has n values x₁…xₙ; x̄ is the mean and s the standard 
 
 QuantAnalysis analyses and graphs CellQuant results the way the standard column-table workflow does. It opens as its own window.
 
-**Open it.** In step 6, **Analyze…** (next to **Export results…**) opens it with the open experiment. **Analyze a results folder…** on the Start page and in step 1 opens a saved results folder (with `experiment.json`) or an export folder (with `image_summary.csv`), so earlier results can be analysed without going through the steps. Inside the window, **File → Open CellQuant results folder…** does the same. The window is made once and reused.
+**Open it.** In step 6, **Analyze…** (next to **Export results…**) opens it with the open experiment. **Analyze a results folder…** on the Start page and in step 1 opens a saved results folder (with `experiment.json`) or an export folder (with `image_summary.csv`), so earlier results can be analysed without going through the steps. Inside the window, **File → Open CellQuant results folder…** does the same. The window is made once and reused. To open QuantAnalysis on its own, without the image viewer or Cellpose, choose **QuantAnalysis only** when **Open CellQuant** asks what to open (or run `cellquant analyze`). QuantAnalysis opens only when you ask for it.
 
 **Import.** The **Import CellQuant results** dialog builds a data table:
 
