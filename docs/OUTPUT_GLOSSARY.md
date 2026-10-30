@@ -868,9 +868,9 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 
 **In short:** The unit of this image's size columns, written on every row.
 
-**What it means:** `area_unit` is `um2` (µm²) or `px2` (pixels). `volume_unit` (3D only) is `um3` (µm³), `voxels`, or blank when the image has a pixel size but no Z step. `length_unit` is `um` or `px` and applies to `centroid_x`, `centroid_y`, `centroid_z` and to length measurements such as `equivalent_diameter`. Images in one experiment can differ, so check these columns before pooling rows from different images.
+**What it means:** `area_unit` is `um2` (µm²) or `px2` (pixels). `volume_unit` (3D only) is `um3` (µm³), `voxels`, or blank when the image has a pixel size but no Z step. `length_unit` is `um` or `px` and applies to `centroid_x`, `centroid_y` and to length measurements such as `equivalent_diameter`. Images in one experiment can differ, so check these columns before pooling rows from different images.
 
-**Good to know:** Marker brightness columns (`<marker>_mean` and the other intensity statistics) are in the image's own intensity units, not µm. `centroid_z` is in µm and is blank without a Z step.
+**Good to know:** Marker brightness columns (`<marker>_mean` and the other intensity statistics) are in the image's own intensity units, not µm. `centroid_z` is always in µm, whatever `length_unit` says, and is blank without a Z step.
 
 **For experts:** `quantify.add_unit_columns`. They follow `spatial_unit` in the provenance file. Results saved by earlier versions have no unit columns; their unit is `spatial_unit`.
 
