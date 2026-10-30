@@ -39,6 +39,9 @@ RESERVED_COLUMN_NAMES = frozenset(
         "z_last",
         "z_flag",
         "at_crop_edge",
+        "area_unit",
+        "volume_unit",
+        "length_unit",
     }
 )
 

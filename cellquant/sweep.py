@@ -337,7 +337,7 @@ def counts_from_objects(objects: pd.DataFrame, channels: list[str], deltas: dict
 
 
 
-_OBJECT_COLUMNS = ["object_id", "centroid_x", "centroid_y", "centroid_z", "area", "volume", "z_slices", "z_first", "z_last", "z_flag"]
+_OBJECT_COLUMNS = ["object_id", "centroid_x", "centroid_y", "centroid_z", "length_unit", "area", "area_unit", "volume", "volume_unit", "z_slices", "z_first", "z_last", "z_flag"]
 
 
 def _object_table(objects: pd.DataFrame, mean_columns: dict[str, str], cellprob: float) -> pd.DataFrame:

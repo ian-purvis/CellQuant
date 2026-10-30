@@ -121,6 +121,8 @@ def test_synthetic_population_is_exact():
     objects = result.objects
     assert list(objects["object_id"]) == list(range(1, 11))
     assert objects["area"].tolist() == [100] * 10
+    assert set(objects["area_unit"]) == {"px2"} and set(objects["length_unit"]) == {"px"}
+    assert "volume_unit" not in objects.columns
     for object_id, (y, x) in zip(objects["object_id"], origins, strict=True):
         row = objects.loc[objects["object_id"] == object_id].iloc[0]
         assert row["centroid_x"] == pytest.approx(x + 4.5)
@@ -286,6 +288,7 @@ def test_physical_units_scale_area_and_centroid():
     row = result.objects.iloc[0]
     assert result.spatial_unit == "um"
     assert row["area"] == pytest.approx(25)
+    assert row["area_unit"] == "um2" and row["length_unit"] == "um"
     assert row["centroid_x"] == pytest.approx((x + 4.5) * 0.5)
     assert row["centroid_y"] == pytest.approx((y + 4.5) * 0.5)
     assert result.qc.median_area == pytest.approx(25)

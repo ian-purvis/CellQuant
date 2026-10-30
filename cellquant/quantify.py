@@ -387,6 +387,7 @@ def image_summary_row(
     n_unmeasured: int = 0,
     count_area: float | None = None,
     n_called_by_hand: int = 0,
+    count_area_unit: str | None = None,
 ) -> pd.DataFrame:
     row: dict[str, object] = {
         "sample_name": sample_name,
@@ -396,6 +397,8 @@ def image_summary_row(
     }
     if count_area is not None:
         row["count_area"] = count_area  # in the object table's area unit (µm² or px²)
+        if count_area_unit:
+            row["count_area_unit"] = count_area_unit
     row |= {
         "n_unmeasured": n_unmeasured,
         "n_called_by_hand": n_called_by_hand,
@@ -432,6 +435,19 @@ def _counted_objects(
     unmeasured = _unmeasured_mask(table, columns) if columns else np.zeros(len(table), dtype=bool)
     n_unmeasured = int((keep & unmeasured).sum())
     return table.loc[keep & ~unmeasured].reset_index(drop=True), n_unmeasured
+
+
+def add_unit_columns(frame: pd.DataFrame, pixel_size: float | None, pixel_size_z: float | None) -> pd.DataFrame:
+    """Add ``area_unit`` and ``length_unit`` (and ``volume_unit`` for 3D tables) beside the columns they describe, saying what each image's numbers are in."""
+
+    frame = frame.copy()
+    frame.insert(frame.columns.get_loc("area") + 1, "area_unit", "px2" if pixel_size is None else "um2")
+    last_position = "centroid_z" if "centroid_z" in frame.columns else "centroid_y"
+    frame.insert(frame.columns.get_loc(last_position) + 1, "length_unit", "px" if pixel_size is None else "um")
+    if "volume" in frame.columns:
+        unit = "voxels" if pixel_size is None else "um3" if pixel_size_z else ""  # blank: no Z step, so no volume
+        frame.insert(frame.columns.get_loc("volume") + 1, "volume_unit", unit)
+    return frame
 
 
 def _base_table(labels: np.ndarray, linear_scale: float, area_scale: float) -> pd.DataFrame:
