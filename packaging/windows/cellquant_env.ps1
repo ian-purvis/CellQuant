@@ -38,8 +38,16 @@ function Install-CellQuantStatsPackages {
         [Parameter(Mandatory)][string]$Prefix
     )
 
-    & $CondaExe run --prefix $Prefix python -m cellquant.stats._deps_check
-    if ($LASTEXITCODE -ne 3) {
+    # Exit 3 (missing) is expected; conda run reports any non-zero exit as an ERROR line, so its stderr is discarded.
+    $PreviousEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $CondaExe run --prefix $Prefix python -m cellquant.stats._deps_check 2>$null | Out-Null
+        $Code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $PreviousEap
+    }
+    if ($Code -ne 3) {
         return
     }
     Write-Host '  Adding the statistics libraries (matplotlib, statsmodels) for QuantAnalysis...'

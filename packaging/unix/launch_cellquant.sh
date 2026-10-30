@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Start CellQuant with one of the installed Cellpose engines (Mac and Linux).
+# Start CellQuant with one of the installed Cellpose engines, or QuantAnalysis on its own (Mac and Linux).
 # Started by "Open CellQuant.command" (Mac) or "Open CellQuant.sh" (Linux).
-# Asks which engine to use when both are installed. Mirrors
+# Asks which engine to use, or QuantAnalysis only. Mirrors
 # packaging/windows/launch_cellquant.ps1.
 #
-# Usage: launch_cellquant.sh [--engine ask|default|cellpose4|cellpose3] [EXPERIMENT_FOLDER]
+# Usage: launch_cellquant.sh [--engine ask|default|cellpose4|cellpose3|analysis] [EXPERIMENT_FOLDER]
 
 set -u
 
@@ -53,13 +53,15 @@ if [ "$(uname -s)" = 'Darwin' ]; then
     cq_mac_notice "$(echo "$INSTALLED" | awk -F '\t' -v e="$DEFAULT_ENGINE" '$1 == e {print $2}')"
 fi
 
-COUNT=$(echo "$KEYS" | grep -c .)
-if [ "$ENGINE" = 'ask' ] && [ "$COUNT" -gt 1 ] && [ -t 0 ]; then
+# The last choice opens QuantAnalysis alone (statistics and graphs), in the default engine's environment.
+CHOICES=$(printf '%s\nanalysis' "$KEYS")
+COUNT=$(echo "$CHOICES" | grep -c .)
+if [ "$ENGINE" = 'ask' ] && [ -t 0 ]; then
     echo
-    echo 'Which Cellpose engine?'
+    echo 'Open which?'
     NUMBER=0
     DEFAULT_NUMBER=1
-    for KEY in $KEYS; do
+    for KEY in $CHOICES; do
         NUMBER=$((NUMBER + 1))
         NOTE=''
         [ "$KEY" = 'cellpose4' ] && NOTE=' - most accurate; best with an NVIDIA GPU'
@@ -68,15 +70,25 @@ if [ "$ENGINE" = 'ask' ] && [ "$COUNT" -gt 1 ] && [ -t 0 ]; then
         [ "$KEY" = 'cellpose3' ] && NOTE=' - lighter; faster without a GPU'
         [ "$KEY" = "$RECOMMENDED" ] && NOTE="$NOTE (recommended for this computer)"
         [ "$KEY" = "$DEFAULT_ENGINE" ] && DEFAULT_NUMBER=$NUMBER
-        echo "  $NUMBER) $(cq_engine_label "$KEY")$NOTE"
+        if [ "$KEY" = 'analysis' ]; then
+            echo "  $NUMBER) QuantAnalysis only - statistics and graphs of saved results; no image viewer"
+        else
+            echo "  $NUMBER) CellQuant with $(cq_engine_label "$KEY")$NOTE"
+        fi
     done
     read -r -p "Choose [1-$COUNT] (Enter = $DEFAULT_NUMBER) " ANSWER || ANSWER=''
     ENGINE="$DEFAULT_ENGINE"
     case "$ANSWER" in
         ''|*[!0-9]*) ;;
-        *) if [ "$ANSWER" -ge 1 ] && [ "$ANSWER" -le "$COUNT" ]; then ENGINE=$(echo "$KEYS" | sed -n "${ANSWER}p"); fi ;;
+        *) if [ "$ANSWER" -ge 1 ] && [ "$ANSWER" -le "$COUNT" ]; then ENGINE=$(echo "$CHOICES" | sed -n "${ANSWER}p"); fi ;;
     esac
 elif [ "$ENGINE" = 'ask' ] || [ "$ENGINE" = 'default' ]; then
+    ENGINE="$DEFAULT_ENGINE"
+fi
+
+ANALYSIS_ONLY=''
+if [ "$ENGINE" = 'analysis' ]; then
+    ANALYSIS_ONLY=1
     ENGINE="$DEFAULT_ENGINE"
 fi
 
@@ -96,11 +108,22 @@ fi
 
 cq_install_stats_packages "$CQ_CONDA" "$PREFIX"
 
+cd "$PROJECT_ROOT" || exit 1
+if [ -n "$ANALYSIS_ONLY" ]; then
+    echo
+    echo 'Starting QuantAnalysis on its own...'
+    echo "  Environment: $PREFIX"
+    echo '  Keep this window open while you work.'
+    if [ -n "$EXPERIMENT" ]; then
+        exec "$CQ_CONDA" run --no-capture-output --prefix "$PREFIX" python -m cellquant analyze "$EXPERIMENT"
+    fi
+    exec "$CQ_CONDA" run --no-capture-output --prefix "$PREFIX" python -m cellquant analyze
+fi
+
 echo
 echo "Starting CellQuant with $(cq_engine_label "$ENGINE")..."
 echo "  Environment: $PREFIX"
 echo '  The napari window can take a minute to appear. Keep this window open while you work.'
-cd "$PROJECT_ROOT" || exit 1
 if [ -n "$EXPERIMENT" ]; then
     exec "$CQ_CONDA" run --no-capture-output --prefix "$PREFIX" python -m cellquant "$EXPERIMENT"
 fi

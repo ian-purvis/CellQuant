@@ -207,6 +207,37 @@ def test_packaged_statistics_guide_matches_docs():
     assert (root / "cellquant" / "gui" / "STATISTICS.md").read_bytes() == (root / "docs" / "STATISTICS.md").read_bytes()
 
 
+def test_cellquant_analyze_opens_quantanalysis_alone(qtbot, tmp_path, monkeypatch):
+    """``cellquant analyze [FOLDER]`` (the launcher's "QuantAnalysis only"): QuantAnalysis is the only window, with no
+    napari viewer, and the folder is imported; closing it ends the program."""
+
+    from qtpy.QtWidgets import QApplication
+
+    from cellquant import __main__ as cli
+    from cellquant.gui import quantanalysis
+    from cellquant.gui.quantanalysis.window import QuantAnalysisWindow
+
+    opened = {}
+    monkeypatch.setattr(quantanalysis, "launch_alone", lambda folder: opened.setdefault("folder", folder))
+    cli.main(["analyze", "D:/saved"])
+    cli.main(["analyze"])
+    assert opened == {"folder": "D:/saved"}
+    monkeypatch.undo()
+
+    app = QApplication.instance()
+    monkeypatch.setattr(app, "exec", lambda: None)
+    monkeypatch.setattr(QuantAnalysisWindow, "_import", lambda self, source, origin, spec, accept: setattr(self, "_opened", origin))
+    folder = make_results(tmp_path / "saved")
+    windows = []
+    real_open = quantanalysis.open_window
+    monkeypatch.setattr(quantanalysis, "open_window", lambda *args: windows.append(real_open(*args)) or windows[-1])
+    quantanalysis.launch_alone(str(folder))
+    window = windows[0]
+    qtbot.addWidget(window)
+    assert window.isVisible() and window.parent() is None and window._opened == str(folder)
+    assert [w for w in QApplication.topLevelWidgets() if w.isVisible() and w is not window and w.parent() is None] == []
+
+
 def test_entry_points_from_cellquant(tmp_path, monkeypatch):
     napari = pytest.importorskip("napari")
     from qtpy.QtWidgets import QPushButton
