@@ -627,7 +627,7 @@ def _example_volume(source: Source, column: str, frame, page: DataPage) -> str:
     x, y, z = (provenance.get(key) for key in ("pixel_size_x_um", "pixel_size_y_um", "pixel_size_z_um"))
     row = frame.dropna(subset=[column]).iloc[0]
     if not (x and y and z):
-        return _live(f"No full pixel size, so the volume is a voxel count: {_eq(_num(row[column]))}")
+        return _live(f"No full pixel size, so the volume is a voxel count: {_eq(_num(row[column]) + ' voxels')}")
     voxels = round(float(row[column]) / (x * y * z))
     return _live(f"Object {int(row['object_id'])} covers <b>{voxels}</b> voxels of {x:.3g} × {y:.3g} × {z:.3g} µm:<br>"
                  + _eq(f"{voxels} × {x:.3g} × {y:.3g} × {z:.3g} µm³ = {_num(row[column])} µm³"))

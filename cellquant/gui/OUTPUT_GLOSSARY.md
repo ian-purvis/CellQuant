@@ -407,7 +407,7 @@ IoU means intersection over union. Each outline links to its best-overlapping pa
 
 **What it means:** Each entry has an `id` (the column name), a display `name`, the `channel` (counting from 0), the `region` it is measured in, a `statistic`, and a `background` correction. You set these in step 4. The marker setup makes `<marker>_mean` (and `<marker>_pct`) for you.
 
-**For experts:** `recipe.MeasurementSpec`. An `id` cannot be one of the reserved column names (`experiment_id`, `run_id`, `sample_name`, `image_id`, `filename`, `object_set`, `object_id`, `centroid_x`, `centroid_y`, `area`, `phenotype`, `excluded`, `unmeasured`, `centroid_z`, `volume`, `z_slices`, `z_first`, `z_last`, `z_flag`, `at_crop_edge`).
+**For experts:** `recipe.MeasurementSpec`. An `id` cannot be one of the reserved column names (`experiment_id`, `run_id`, `sample_name`, `image_id`, `filename`, `object_set`, `object_id`, `centroid_x`, `centroid_y`, `area`, `phenotype`, `excluded`, `unmeasured`, `centroid_z`, `volume`, `z_slices`, `z_first`, `z_last`, `z_flag`, `at_crop_edge`, `area_unit`, `volume_unit`, `length_unit`).
 
 **Related:** `<measurement>`, `measurement_definitions`
 
@@ -864,6 +864,18 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 
 **Related:** `area`, `pixel_size_z`
 
+##### `area_unit`, `volume_unit`, `length_unit`
+
+**In short:** The unit of this image's size columns, written on every row.
+
+**What it means:** `area_unit` is `um2` (µm²) or `px2` (pixels). `volume_unit` (3D only) is `um3` (µm³), `voxels`, or blank when the image has a pixel size but no Z step. `length_unit` is `um` or `px` and applies to `centroid_x`, `centroid_y`, `centroid_z` and to length measurements such as `equivalent_diameter`. Images in one experiment can differ, so check these columns before pooling rows from different images.
+
+**Good to know:** Marker brightness columns (`<marker>_mean` and the other intensity statistics) are in the image's own intensity units, not µm. `centroid_z` is in µm and is blank without a Z step.
+
+**For experts:** `quantify.add_unit_columns`. They follow `spatial_unit` in the provenance file. Results saved by earlier versions have no unit columns; their unit is `spatial_unit`.
+
+**Related:** `spatial_unit`, `area`, `volume`
+
 ##### `z_slices`, `z_first`, `z_last`
 
 **In short:** How many slices the object spans and the first and last of them. 3D only.
@@ -1070,11 +1082,11 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 
 **Related:** `n_objects`, `report_N_denominator`
 
-##### `count_area`
+##### `count_area`, `count_area_unit`
 
-**In short:** The size of the counting region you drew. Only when a count area is drawn.
+**In short:** The size of the counting region you drew, and its unit. Only when a count area is drawn.
 
-**What it means:** In µm² (or px² without a pixel size). Use it to turn counts into counts per area, for example cells per mm².
+**What it means:** In µm² (or px² without a pixel size); `count_area_unit` says which (`um2` or `px2`). Use it to turn counts into counts per area, for example cells per mm².
 
 **How it's calculated:**
 
@@ -1455,7 +1467,7 @@ These are: the Z-stack mode and slice (and the 3D settings only for the modes th
 
 **In short:** `um` if sizes are in µm, `px` if the image has no pixel size.
 
-**What it means:** It tells you the unit of `area`, `centroid_x`, `centroid_y`, `volume` and the other size columns.
+**What it means:** It tells you the unit of `area`, `centroid_x`, `centroid_y`, `volume` and the other size columns. The object table repeats it per row as `area_unit`, `volume_unit` and `length_unit`.
 
 ##### Z-stack
 

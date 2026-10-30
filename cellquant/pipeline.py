@@ -23,6 +23,7 @@ from cellquant.edits import EditOperation, apply_edits, edited_object_ids, exclu
 from cellquant.errors import ChannelMismatchError
 from cellquant.image import LoadedImage, load_image
 from cellquant.quantify import (
+    add_unit_columns,
     classify_objects,
     count_by_hand,
     count_unmeasured,
@@ -342,6 +343,8 @@ def assemble_result(
         object_set=parsed.object_set.name,
     )
     pixel_size = isotropic_pixel_size(loaded.pixel_size_x, loaded.pixel_size_y)
+    if "area" in objects.columns and "area_unit" not in objects.columns:
+        objects = add_unit_columns(objects, pixel_size, loaded.pixel_size_z)
     polygons = count_areas.clean(count_area)
     objects = count_areas.mark_objects(objects, polygons, pixel_size)
     area_counted = count_areas.area(polygons, tuple(np.asarray(labels).shape[-2:]), pixel_size)
@@ -408,6 +411,7 @@ def assemble_result(
         n_unmeasured=count_unmeasured(with_phenotypes),
         n_called_by_hand=count_by_hand(with_phenotypes),
         count_area=area_counted,
+        count_area_unit="px2" if pixel_size is None else "um2",
     )
     provenance = {
         "software": "cellquant",
@@ -528,6 +532,7 @@ def apply_count_area(result: ImageResult, count_area: list | None) -> ImageResul
         n_unmeasured=count_unmeasured(objects),
         n_called_by_hand=count_by_hand(objects),
         count_area=area_counted,
+        count_area_unit="px2" if pixel_size is None else "um2",
     )
     return ImageResult(
         labels=result.labels,
@@ -668,6 +673,7 @@ def reclassify_result(result: ImageResult, recipe: Recipe | dict | str | Path) -
         n_unmeasured=count_unmeasured(with_phenotypes),
         n_called_by_hand=count_by_hand(with_phenotypes),
         count_area=result.provenance.get("count_area_size"),
+        count_area_unit="um2" if result.provenance.get("spatial_unit") == "um" else "px2",
     )
     provenance = dict(result.provenance)
     provenance["recipe"] = parsed.canonical_dict()
@@ -954,8 +960,11 @@ def measurement_values(result: ImageResult, recipe: Recipe) -> pd.DataFrame:
         "centroid_x",
         "centroid_y",
         "centroid_z",
+        "length_unit",
         "area",
+        "area_unit",
         "volume",
+        "volume_unit",
         "z_slices",
         "z_first",
         "z_last",

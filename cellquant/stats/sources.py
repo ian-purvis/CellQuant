@@ -34,7 +34,7 @@ DOTS = ("image", "unit", "object")
 _IMAGE_ID_COLUMNS = {"sample_name", "filename", "image_id", "experiment_id", "run_id", "qc_status", "n_unmeasured", "n_called_by_hand", "summary_note"}
 # Per-object columns that are never a measure.
 _OBJECT_NOT_MEASURES = {
-    "object_id", "centroid_x", "centroid_y", "centroid_z", "z_first", "z_last", "excluded", "unmeasured",
+    "object_id", "area_unit", "volume_unit", "length_unit", "centroid_x", "centroid_y", "centroid_z", "z_first", "z_last", "excluded", "unmeasured",
     "in_count_area", "at_crop_edge", "z_flag", "experiment_id", "run_id", "position", "manual_edit_status", "object_set",
 }
 
@@ -90,7 +90,7 @@ class Source:
         if "total_objects" in self.images.columns:
             out.append(Measure("total_objects", "Objects counted (total_objects)", "image", "count"))
         if "count_area" in self.images.columns and pd.to_numeric(self.images["count_area"], errors="coerce").notna().any():
-            out.append(Measure("count_area", "Count area (count_area)", "image", "area"))
+            out.append(Measure("count_area", f"Count area (count_area{unit_suffix(self.images, 'count_area_unit')})", "image", "area"))
         if self.objects is not None:
             for column in self.objects.columns:
                 if column in _OBJECT_NOT_MEASURES or str(column).endswith("_pos"):
@@ -98,7 +98,8 @@ class Source:
                 series = self.objects[column]
                 if series.dtype == bool or not pd.api.types.is_numeric_dtype(series) or series.isna().all():
                     continue
-                out.append(Measure(str(column), f"{object_measure_name(str(column), self.measurements)} per object", "object", "value"))
+                unit = unit_suffix(self.objects, {"area": "area_unit", "volume": "volume_unit"}.get(str(column), ""))
+                out.append(Measure(str(column), f"{object_measure_name(str(column), self.measurements)}{unit} per object", "object", "value"))
         return out
 
     def measure(self, key: str) -> Measure:
@@ -139,6 +140,23 @@ def report_name(images: pd.DataFrame, prefix: str, names: dict[str, str]) -> str
     if not numerator:
         return f"{prefix}_percent"
     return f"% {readable(numerator, names)} of {readable(first(f'{prefix}_denominator_expression'), names)}"
+
+
+_UNIT_TEXT = {"um2": "µm²", "um3": "µm³", "um": "µm", "px2": "px²", "px": "px"}
+
+
+def unit_suffix(table: pd.DataFrame | None, column: str) -> str:
+    """`` in µm²`` when every row of ``table[column]`` has one unit, `` in mixed units`` when images differ, else blank
+    (no unit column, as in results saved before units were written)."""
+
+    if table is None or not column or column not in table.columns:
+        return ""
+    units = {str(value) for value in table[column].dropna() if str(value)}
+    if not units:
+        return ""
+    if len(units) > 1:
+        return " in mixed units (see " + column + ")"
+    return f" in {_UNIT_TEXT.get(next(iter(units)), next(iter(units)))}"
 
 
 def object_measure_name(column: str, measurements: dict[str, str]) -> str:
