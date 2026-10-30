@@ -97,7 +97,23 @@ def test_stats_extra_is_installed_and_added_at_launch():
     assert sorted(re.findall(r"'([^']+)'", packages)) == sorted(stats)
     # An environment made before the stats extra gets it on its next launch, before CellQuant starts.
     assert launcher.index("Install-CellQuantStatsPackages -CondaExe $CondaExe -Prefix $Prefix") < launcher.index("$Arguments = @('run'")
-    assert "if ($LASTEXITCODE -ne 3)" in env_script
+    assert "if ($Code -ne 3)" in env_script
+    # Exit 3 is the expected "install them" answer; conda run's ERROR line for it must not reach the console.
+    assert "python -m cellquant.stats._deps_check 2>$null | Out-Null" in env_script
+
+
+def test_launcher_offers_quantanalysis_alone():
+    """The menu's last choice opens QuantAnalysis on its own (``cellquant analyze``) in the default engine's
+    environment, after adding the statistics libraries; it is offered even with one engine installed."""
+
+    launcher = (WINDOWS / "launch_cellquant.ps1").read_text(encoding="ascii")
+    assert "[ValidateSet('ask', 'default', 'cellpose4', 'cellpose3', 'analysis')]" in launcher
+    assert "$Keys = @($Installed.Keys) + 'analysis'" in launcher
+    assert "if ($Engine -eq 'ask') {" in launcher  # not only when two engines are installed
+    alone = launcher[launcher.index("if ($Engine -eq 'analysis') {"):]
+    alone = alone[: alone.index("exit $LASTEXITCODE")]
+    assert "$Prefix = $Installed[$DefaultEngine]" in alone
+    assert alone.index("Install-CellQuantStatsPackages") < alone.index("'python', '-m', 'cellquant', 'analyze')")
 
 
 def test_stats_check_is_a_module_not_a_python_c_string():
@@ -110,7 +126,7 @@ def test_stats_check_is_a_module_not_a_python_c_string():
         assert not re.search(r"python\s+-c\b", text), f"{path.name} passes code to python -c"
         assert "find_spec" not in text, path.name
     env_script = (WINDOWS / "cellquant_env.ps1").read_text(encoding="ascii")
-    call = re.search(r"& \$CondaExe run --prefix \$Prefix python (-m \S+)\r?\n", env_script).group(1)
+    call = re.search(r"& \$CondaExe run --prefix \$Prefix python (-m \S+)", env_script).group(1)
     assert call == "-m cellquant.stats._deps_check"
     assert not set(call) & set("();\"'&|^%")
 

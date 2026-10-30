@@ -13,7 +13,7 @@ This guide is for Windows. If you have never used CellQuant, do the practice run
    - **Classic Cellpose (Cellpose 3)**: lighter. Faster on computers without a GPU.
 
    Press Enter to accept each suggested answer. Installing both engines (the default) lets you choose later. Leave the window open until it says **Install finished**. It can take 10 to 30 minutes.
-2. Double-click **`Open CellQuant.bat`**. If both engines are installed, it asks which one; press Enter for the recommended one. The napari window can take a minute to appear. Keep the black window open while you work.
+2. Double-click **`Open CellQuant.bat`**. It asks what to open: CellQuant with an installed engine (press Enter for the recommended one), or **QuantAnalysis only** for statistics and graphs of saved results, without the image viewer. The napari window can take a minute to appear. Keep the black window open while you work.
 
 **Success check:** a napari window opens with a **CellQuant** panel on the right. The panel's first tab is **Start**.
 

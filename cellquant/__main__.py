@@ -11,10 +11,11 @@ def main(argv: list[str] | None = None) -> None:
         prog="cellquant",
         description="Open the CellQuant window, or analyze an experiment without it.",
         epilog="Examples:\n  cellquant                      open the window\n  cellquant \"D:/My results\"     open that experiment\n"
-        "  cellquant run --experiment \"D:/My results\" --recipe recipe.yaml",
+        "  cellquant run --experiment \"D:/My results\" --recipe recipe.yaml\n"
+        "  cellquant analyze               open QuantAnalysis on its own, without the image viewer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub = parser.add_subparsers(dest="command", metavar="run")
+    sub = parser.add_subparsers(dest="command", metavar="run | analyze")
     run = sub.add_parser(
         "run",
         help="Analyze every included image of an experiment, without the window",
@@ -22,6 +23,12 @@ def main(argv: list[str] | None = None) -> None:
     )
     run.add_argument("--experiment", dest="run_experiment", required=True, metavar="FOLDER", help="The experiment's results folder (it holds experiment.json).")
     run.add_argument("--recipe", metavar="FILE", help="A recipe.yaml to use instead of the experiment's own settings, for example from an export.")
+    analyze = sub.add_parser(
+        "analyze",
+        help="Open QuantAnalysis (statistics and graphs) on its own, without the image viewer or Cellpose",
+        description="Open QuantAnalysis on its own. Results folders and tables are opened from its File menu.",
+    )
+    analyze.add_argument("folder", nargs="?", metavar="FOLDER", help="A CellQuant results or export folder to import.")
     parser.add_argument("experiment", nargs="?", metavar="FOLDER", help="Open this experiment's results folder in the window.")
     args = parser.parse_args(argv)
     if args.command == "run":
@@ -45,6 +52,11 @@ def main(argv: list[str] | None = None) -> None:
         )
         if report.failed:
             sys.exit(1)
+        return
+    if args.command == "analyze":
+        from cellquant.gui.quantanalysis import launch_alone
+
+        launch_alone(args.folder)
         return
     from cellquant.gui.app import launch
 

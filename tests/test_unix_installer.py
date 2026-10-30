@@ -98,3 +98,28 @@ def test_env_record_reads_smoke_test_output(tmp_path: Path):
     assert _record(tmp_path, "smoke", stdin=good).startswith("ok\tTest passed: 2 objects, 50% positive.")
     bad = 'CELLQUANT_SMOKE {"ok": false, "error": "Cellpose is not installed in this environment."}\n'
     assert _record(tmp_path, "smoke", stdin=bad).strip() == "fail\tCellpose is not installed in this environment."
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Mac and Linux launcher")
+def test_launcher_opens_quantanalysis_alone_or_cellquant(tmp_path: Path):
+    """``--engine analysis`` (the menu's last choice) starts ``cellquant analyze`` in the default engine's environment;
+    an engine starts CellQuant itself."""
+
+    prefix = tmp_path / "envs" / "cellquant2-cellpose4"
+    (prefix / "bin").mkdir(parents=True)
+    (prefix / "bin" / "python").write_text("")
+    _record(tmp_path, "save", "cellpose4", str(prefix), "4.0.6", "", "", "cellpose4", "cellpose4", str(tmp_path / "envs"), str(ROOT))
+    conda = tmp_path / "conda"
+    calls = tmp_path / "calls"
+    conda.write_text(f"#!/usr/bin/env bash\necho \"$@\" >> {calls}\n")
+    conda.chmod(0o755)
+    env = dict(os.environ, HOME=str(tmp_path), XDG_DATA_HOME=str(tmp_path / "data"), CONDA_EXE=str(conda), DISPLAY=":0")
+    for engine, started in (("analysis", "python -m cellquant analyze"), ("default", "python -m cellquant")):
+        calls.write_text("")
+        result = subprocess.run(
+            ["bash", str(UNIX / "launch_cellquant.sh"), "--engine", engine], env=env, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        last = calls.read_text().splitlines()[-1]
+        assert last == f"run --no-capture-output --prefix {prefix} {started}", last
