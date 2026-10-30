@@ -53,6 +53,7 @@ class Source:
     objects: pd.DataFrame | None = None     # one row per object, or None
     names: dict[str, str] = field(default_factory=dict)          # marker id (af594_pos) -> name (AF594)
     measurements: dict[str, str] = field(default_factory=dict)   # measurement column (af594_mean) -> marker name
+    statistics: dict[str, str] = field(default_factory=dict)     # measurement column -> its statistic (area, mean…)
     label: str = ""                         # where it came from, for titles and the log
     path: Path | None = None
 
@@ -66,7 +67,7 @@ class Source:
         out = []
         for name in self.images.columns:
             text = str(name)
-            if text in _IMAGE_ID_COLUMNS or text == "approved" or text in ("total_objects", "count_area") or text.startswith("report_"):
+            if text in _IMAGE_ID_COLUMNS or text == "approved" or text in ("total_objects", "count_area", "count_area_unit") or text.startswith("report_"):
                 continue
             out.append(text)
         return out
@@ -98,7 +99,8 @@ class Source:
                 series = self.objects[column]
                 if series.dtype == bool or not pd.api.types.is_numeric_dtype(series) or series.isna().all():
                     continue
-                unit = unit_suffix(self.objects, {"area": "area_unit", "volume": "volume_unit"}.get(str(column), ""))
+                geometry = {"area": "area_unit", "equivalent_diameter": "length_unit", "centroid_x": "length_unit", "centroid_y": "length_unit"}
+                unit = unit_suffix(self.objects, {"area": "area_unit", "volume": "volume_unit"}.get(str(column)) or geometry.get(self.statistics.get(str(column), ""), ""))
                 out.append(Measure(str(column), f"{object_measure_name(str(column), self.measurements)}{unit} per object", "object", "value"))
         return out
 
@@ -201,14 +203,14 @@ def read_results_folder(path: str | Path) -> Source:
     if (folder / "image_summary.csv").is_file():
         images = pd.read_csv(folder / "image_summary.csv")
         objects = pd.read_csv(folder / "objects.csv") if (folder / "objects.csv").is_file() else None
-        names, measurements = _recipe_names(folder / "recipe.yaml")
-        return Source(images, objects, names, measurements, label=f"export folder {folder.name}", path=folder)
+        names, measurements, statistics = _recipe_names(folder / "recipe.yaml")
+        return Source(images, objects, names, measurements, statistics, label=f"export folder {folder.name}", path=folder)
     if (folder / "summaries").is_dir():
         experiment = next((parent for parent in (folder.parent, folder.parent.parent, folder.parent.parent.parent)
                            if (parent / "experiment.json").is_file()), None)
         statuses = _statuses(experiment / "experiment.json", folder) if experiment else None
-        names, measurements = _recipe_names(folder / "recipe_snapshot.yaml")
-        return _read_tables(folder, statuses, names, measurements, label=folder.name, path=folder)
+        names, measurements, statistics = _recipe_names(folder / "recipe_snapshot.yaml")
+        return _read_tables(folder, statuses, names, measurements, statistics, label=folder.name, path=folder)
     raise StatisticsError(
         f"{folder} is not a CellQuant results or export folder: it has no experiment.json, image_summary.csv or summaries folder."
     )
@@ -222,8 +224,8 @@ def _read_experiment(folder: Path) -> Source:
     if not (working / "summaries").is_dir():
         raise StatisticsError(f"{folder} has no saved results yet (no {working.name}/summaries folder). Run some images first.")
     statuses = {record.get("image_id"): record.get("processing_status") for record in document.get("images", []) if record.get("include", True)}
-    names, measurements = _recipe_names(folder / "recipes" / f"{active}.yaml")
-    return _read_tables(working, statuses, names, measurements, label=document.get("experiment_name") or folder.name, path=folder)
+    names, measurements, statistics = _recipe_names(folder / "recipes" / f"{active}.yaml")
+    return _read_tables(working, statuses, names, measurements, statistics, label=document.get("experiment_name") or folder.name, path=folder)
 
 
 def _statuses(experiment_json: Path, working: Path) -> dict[str, str] | None:
@@ -240,7 +242,7 @@ def _statuses(experiment_json: Path, working: Path) -> dict[str, str] | None:
     return {record.get("image_id"): record.get("processing_status") for record in document.get("images", []) if record.get("include", True)}
 
 
-def _read_tables(folder: Path, statuses: dict[str, str] | None, names, measurements, label: str, path: Path) -> Source:
+def _read_tables(folder: Path, statuses: dict[str, str] | None, names, measurements, statistics, label: str, path: Path) -> Source:
     images = _concat(folder / "summaries")
     if images.empty:
         raise StatisticsError(f"{folder / 'summaries'} has no image summaries.")
@@ -250,7 +252,7 @@ def _read_tables(folder: Path, statuses: dict[str, str] | None, names, measureme
         images["approved"] = images["image_id"].map(lambda image_id: statuses.get(image_id) in APPROVED)
         if not objects.empty and "image_id" in objects.columns:
             objects = objects.loc[objects["image_id"].isin(statuses)].reset_index(drop=True)
-    return Source(images, None if objects.empty else objects, names, measurements, label=label, path=path)
+    return Source(images, None if objects.empty else objects, names, measurements, statistics, label=label, path=path)
 
 
 def _concat(directory: Path) -> pd.DataFrame:
@@ -258,7 +260,7 @@ def _concat(directory: Path) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def _recipe_names(path: Path) -> tuple[dict[str, str], dict[str, str]]:
+def _recipe_names(path: Path) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """Marker names by classification id, and by the measurement column each one reads."""
 
     try:
@@ -266,12 +268,12 @@ def _recipe_names(path: Path) -> tuple[dict[str, str], dict[str, str]]:
 
         document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, ValueError, ImportError, AttributeError):
-        return {}, {}
+        return {}, {}, {}
     return _names_from(document)
 
 
-def _names_from(document: dict) -> tuple[dict[str, str], dict[str, str]]:
-    names, measurements = {}, {}
+def _names_from(document: dict) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    names, measurements, statistics = {}, {}, {}
     try:
         for item in document.get("classifications") or []:
             names[str(item["id"])] = str(item.get("name") or item["id"])
@@ -280,6 +282,7 @@ def _names_from(document: dict) -> tuple[dict[str, str], dict[str, str]]:
         channels = {}
         for item in document.get("measurements") or []:
             channels.setdefault(item.get("channel"), []).append(str(item.get("id")))
+            statistics[str(item.get("id"))] = str(item.get("statistic"))
         # A marker's other statistics on the same channel (af594_pct next to af594_mean) take its name too.
         for ids in channels.values():
             named = next((measurements[key] for key in ids if key in measurements), None)
@@ -288,7 +291,7 @@ def _names_from(document: dict) -> tuple[dict[str, str], dict[str, str]]:
                     measurements.setdefault(key, named)
     except (KeyError, TypeError, AttributeError):
         pass
-    return names, measurements
+    return names, measurements, statistics
 
 
 def from_controller(controller) -> Source:
@@ -302,8 +305,8 @@ def from_controller(controller) -> Source:
     statuses = {record.image_id: record.processing_status for record in controller.experiment.images if record.include}
     if "image_id" in images.columns:
         images["approved"] = images["image_id"].map(lambda image_id: statuses.get(image_id) in APPROVED)
-    names, measurements = _names_from(controller.recipe.model_dump(mode="json"))
-    return Source(images, objects if not objects.empty else None, names, measurements,
+    names, measurements, statistics = _names_from(controller.recipe.model_dump(mode="json"))
+    return Source(images, objects if not objects.empty else None, names, measurements, statistics,
                   label=controller.experiment.experiment_name, path=controller.directory)
 
 

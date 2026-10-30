@@ -343,8 +343,8 @@ def assemble_result(
         object_set=parsed.object_set.name,
     )
     pixel_size = isotropic_pixel_size(loaded.pixel_size_x, loaded.pixel_size_y)
-    if "area" in objects.columns and "area_unit" not in objects.columns:
-        objects = add_unit_columns(objects, pixel_size, loaded.pixel_size_z)
+    if "area" in objects.columns:
+        objects = add_unit_columns(objects.drop(columns=["area_unit", "length_unit", "volume_unit"], errors="ignore"), pixel_size, loaded.pixel_size_z)
     polygons = count_areas.clean(count_area)
     objects = count_areas.mark_objects(objects, polygons, pixel_size)
     area_counted = count_areas.area(polygons, tuple(np.asarray(labels).shape[-2:]), pixel_size)
@@ -960,11 +960,8 @@ def measurement_values(result: ImageResult, recipe: Recipe) -> pd.DataFrame:
         "centroid_x",
         "centroid_y",
         "centroid_z",
-        "length_unit",
         "area",
-        "area_unit",
         "volume",
-        "volume_unit",
         "z_slices",
         "z_first",
         "z_last",

@@ -160,3 +160,25 @@ def test_readable_names():
     assert sources.group_label("a_pos", "True", names) == "A+"
     assert sources.group_label("a_pos", False, names) == "A−"
     assert np.isnan(pd.to_numeric(pd.Series([""]), errors="coerce")[0])
+
+
+def test_units_appear_in_labels_and_are_not_group_columns(tmp_path):
+    folder = make_results(tmp_path / "units")
+    for path in (folder / "working" / "summaries").glob("*.csv"):
+        table = pd.read_csv(path)
+        table["count_area"], table["count_area_unit"] = 5.0, "um2"
+        table.to_csv(path, index=False)
+    for path in (folder / "working" / "measurements").glob("*.csv"):
+        table = pd.read_csv(path)
+        table["area_unit"], table["length_unit"] = "um2", "um"
+        table["a_diam"] = 3.0
+        table.to_csv(path, index=False)
+    recipe = folder / "recipes" / "r1.yaml"
+    recipe.write_text(recipe.read_text(encoding="utf-8") + "- id: a_diam\n  channel: 1\n  statistic: equivalent_diameter\n", encoding="utf-8")
+    source = sources.read_results_folder(folder)
+    assert "count_area_unit" not in source.metadata_columns()
+    labels = {item.key: item.label for item in source.measures()}
+    assert labels["area"].startswith("Area in µm²")
+    assert "in µm" in labels["a_diam"] and "in µm²" not in labels["a_diam"]
+    assert "area_unit" not in labels and "length_unit" not in labels
+    assert "in µm²" in labels["count_area"]

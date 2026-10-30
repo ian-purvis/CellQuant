@@ -90,6 +90,19 @@ def test_recorded_edits_match_a_full_measurement(volume, monkeypatch):
     assert np.array_equal(partial.labels, full.labels)
 
 
+@pytest.mark.parametrize("volume", [False, True])
+def test_units_stay_filled_after_an_incremental_measurement(volume):
+    image, labels = _scene(volume)
+    recipe = _recipe()
+    if volume:
+        recipe["z_stack"] = "full_3d"
+    before = process_image(image, recipe, image_id="img", automated_labels=labels)
+    after = process_image(image, recipe, image_id="img", automated_labels=labels, manual_edits=_edits(labels), previous=before)
+    assert set(after.objects["area_unit"]) == {"um2"} and set(after.objects["length_unit"]) == {"um"}
+    if volume:
+        assert set(after.objects["volume_unit"]) == {"um3"}
+
+
 def test_global_background_measures_everything(monkeypatch):
     image, labels = _scene()
     recipe = _recipe({"type": "global"})
