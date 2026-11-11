@@ -792,6 +792,8 @@ class CellQuantWindow:
         errorlog.set_problem_handler(self._problem_bridge.raised.emit)
         self._managed: set[str] = set()
         self._contrast_hooks: dict[str, object] = {}  # channel layer name -> its contrast callback
+        self._name_hooks: dict[str, object] = {}  # channel layer name -> the callback for the user renaming it
+        self._naming_layer = False  # True while CellQuant itself names a channel layer
         self._ids_image_id: str | None = None  # image whose object numbers the Object IDs layer shows
         self._channel_defaults: dict[str, object] = {}  # channel layer name -> colormap from the file
         self._mask_colors_set: dict[str, tuple] = {}  # object layer name -> (colors, layer, colormap) last set
@@ -2517,7 +2519,16 @@ class CellQuantWindow:
         self._edit_panel.keep_drawing()
         self._labels_image_id = None
         file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
-        names = format_channel_labels(file_names, loaded.n_channels)
+        # Contrast is remembered per experiment channel, matched by the names stored in the file.
+        by_index = {channel.channel_index: channel for channel in self.controller.experiment.channels}
+        owners = self.controller.display_channels(record, loaded.n_channels)
+        # A channel is shown under the experiment's name for it: the file's name, or the one the user
+        # gave it by renaming its layer (see _channel_layer_renamed).
+        shown_names = [
+            by_index[owner].channel_name if owner in by_index else (file_names[position] if position < len(file_names) else "")
+            for position, owner in enumerate(owners)
+        ]
+        names = format_channel_labels(shown_names, loaded.n_channels)
         # Removing and adding napari layers is most of the time a switch takes: when the next image
         # has the same channels and size (the usual case), its layers are kept and given the new pixels.
         layers = self._reusable_channel_layers(names, loaded)
@@ -2526,9 +2537,6 @@ class CellQuantWindow:
         self._shown_image_id = record.image_id
         self._shown_z = display_z(result)
         self._edit_panel.clear_selection()
-        # Contrast is remembered per experiment channel, matched by the names stored in the file.
-        by_index = {channel.channel_index: channel for channel in self.controller.experiment.channels}
-        owners = self.controller.display_channels(record, loaded.n_channels)
         colormaps = channel_colormaps(loaded)
         self.set_pixel_scale(record)
         if layers is None:
@@ -2545,6 +2553,9 @@ class CellQuantWindow:
                 hook = self._contrast_hooks.pop(layer.name, None)
                 if hook is not None:
                     layer.events.contrast_limits.disconnect(hook)  # the new pixels' contrast is not a choice to remember
+                hook = self._name_hooks.pop(layer.name, None)
+                if hook is not None:
+                    layer.events.name.disconnect(hook)  # connected again below, for this image's channels
             self._refill_channel_layers(layers, loaded, colormaps, self._channels_shown(record.image_id, len(layers), result))
         self._channel_defaults = {layer.name: colormap for layer, colormap in zip(layers, colormaps, strict=False)}
         for layer, owner in zip(layers, owners, strict=False):
@@ -2559,6 +2570,12 @@ class CellQuantWindow:
                 lambda event, index=channel.channel_index, layer=layer: self._store_contrast(index, layer)
             )
             layer.events.contrast_limits.connect(hook)
+            shown = {"label": layer.name}  # the name CellQuant gave the layer, to tell the user's renaming from it
+            hook = self._name_hooks[layer.name] = (
+                lambda event, index=channel.channel_index, position=layers.index(layer), layer=layer, shown=shown:
+                self._channel_layer_renamed(index, position, layer, shown)
+            )
+            layer.events.name.connect(hook)
         self._view_box.reset()
         if result is not None:
             self._show_segmented_channel_only(record.image_id, layers)
@@ -2611,6 +2628,66 @@ class CellQuantWindow:
             return [True] * count
         segmented = self.controller.segmentation_channel_for(image_id)[0]
         return [position == segmented for position in range(count)] if 0 <= segmented < count else [True] * count
+
+    def _channel_layer_renamed(self, index: int, position: int, layer, shown: dict) -> None:
+        """The user renamed a channel layer in napari's layer list: the channel takes that name.
+
+        The name is saved with the experiment and used from then on by the layer in every image, the
+        channel lists, markers named after the channel and the exported column names. ``shown`` holds
+        the label CellQuant gave the layer; a name that cannot be used puts that label back.
+        """
+
+        label = shown["label"]
+        if self._naming_layer or layer.name == label:
+            return
+        typed = re.sub(r"^\s*Channel\s+\d+\s*=\s*", "", str(layer.name), flags=re.I).strip()
+        controller = self.controller
+        problem = ""
+        if controller is None:
+            problem = "Open an experiment before renaming a channel."
+        elif self.is_busy():
+            problem = "Wait for the current analysis to finish before renaming a channel."
+        elif not typed:
+            problem = "A channel needs a name."
+        else:
+            try:
+                controller.rename_channel(index, typed)
+            except (CellQuantError, OSError) as exc:
+                problem = str(exc)
+        self._naming_layer = True
+        try:
+            layer.name = label if problem else channel_label(position, typed)
+        finally:
+            self._naming_layer = False
+        named = layer.name  # napari adds a number when another layer has the name
+        if named != label:
+            # What CellQuant keeps about this layer is filed under its name.
+            self._managed.discard(label)
+            self._managed.add(named)
+            for filed in (self._contrast_hooks, self._name_hooks, self._channel_defaults, self._view_box._stacks):
+                if label in filed:
+                    filed[named] = filed.pop(label)
+            shown["label"] = named
+        if problem:
+            self.message(problem)
+            return
+        self.message(f"Channel {position + 1} is now called {typed}. Markers named after it and exported columns use this name.")
+        QTimer.singleShot(0, self._channel_names_changed)  # after napari has finished with the rename
+
+    def _channel_names_changed(self) -> None:
+        """Every list that names channels or markers shows the names as they are now."""
+
+        if self.controller is None or self.is_busy():
+            return
+        self._panels_to_recipe()  # settings typed but not yet stored are kept
+        self._analysis_bar.refresh()
+        self._refresh_plan()
+        self._experiment_panel.refresh()
+        self._objects_panel.refresh()
+        self._measurements_panel.refresh()
+        self._results_panel.refresh()
+        self._marker_setup.refresh()
+        self._experiment_panel.set_notices(self.controller.channel_notices())
 
     def _store_contrast(self, index: int, layer) -> None:
         if self.controller is None:
@@ -2834,6 +2911,7 @@ class CellQuantWindow:
             self.viewer.layers.remove(name)
         self._managed.discard(name)
         self._contrast_hooks.pop(name, None)
+        self._name_hooks.pop(name, None)
         if name == "Object IDs":
             self._ids_image_id = None
 
