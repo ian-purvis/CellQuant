@@ -710,7 +710,9 @@ def test_layers_are_named_by_the_channel_they_hold(tmp_path: Path):
         shell.show_current()
         _wait(shell)
         names = [layer.name for layer in viewer.layers if layer.name.startswith("Channel ")]
-        assert names[:2] == ["Channel 1 = Red", "Channel 2 = DAPI"]
+        # Each layer has the experiment's name for the channel it holds (the file's name unless the
+        # user renamed the channel): the file's first channel, Red, is the experiment's "Marker".
+        assert names[:2] == ["Channel 1 = Marker", "Channel 2 = Nuclei"]
     finally:
         viewer.close()
 
