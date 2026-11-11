@@ -85,8 +85,8 @@ def test_export_writes_unit_tables_for_condition_and_retina_folders(tmp_path: Pa
     controller.run_images()
     out = controller.export(tmp_path / "export", group_by="Folder 1")
     units = pd.read_csv(out / "units_by_Folder 2.csv").set_index(["Folder 1", "Folder 2"])
-    # Marker A+ among all nuclei (report_1). Practice answers: 10/40, 20/40, 30/40.
-    assert units.loc[("Control", "Retina 1"), "report_1_unit_pooled_percent"] == pytest.approx(100 * 30 / 80)
+    # Marker A+ among all nuclei, named for the marker in an export. Practice answers: 10/40, 20/40, 30/40.
+    assert units.loc[("Control", "Retina 1"), "Marker_A_pos_unit_pooled_percent"] == pytest.approx(100 * 30 / 80)
     equal = pd.read_csv(out / "grouped_by_Folder 1_equal_units.csv").set_index("Folder 1")
-    assert equal.loc["Control", "report_1_equal_unit_mean_percent"] == pytest.approx((37.5 + 75.0) / 2)
+    assert equal.loc["Control", "Marker_A_pos_equal_unit_mean_percent"] == pytest.approx((37.5 + 75.0) / 2)
     assert equal.loc["Treated", "n_units"] == 1

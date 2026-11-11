@@ -416,6 +416,164 @@ def image_summary_row(
     return pd.DataFrame([row])
 
 
+REPORT_SUFFIXES = ("_count", "_percent", "_denominator", "_numerator", "_denominator_expression")
+_EVERY_OBJECT = {"all_objects", "all_measured_objects"}
+
+
+def report_prefixes(columns) -> list[str]:
+    """The reports of an image summary, by column prefix: ``report_1`` in a saved run, ``OTX2_pos`` in an export.
+
+    A report is recognised by its ``<prefix>_numerator`` column beside ``<prefix>_percent``.
+    """
+
+    names = [str(column) for column in columns]
+    known = set(names)
+    return [
+        name[: -len("_numerator")]
+        for name in names
+        if name.endswith("_numerator") and f"{name[: -len('_numerator')]}_percent" in known
+    ]
+
+
+def report_columns(columns) -> set[str]:
+    """Every column that belongs to a report (see ``report_prefixes``)."""
+
+    known = {str(column) for column in columns}
+    return {f"{prefix}{suffix}" for prefix in report_prefixes(columns) for suffix in REPORT_SUFFIXES} & known
+
+
+def report_key(numerator: object, denominator: object, names: dict[str, str]) -> str:
+    """A report named for what it counts: ``OTX2_pos``, ``OTX2_pos_and_PAX6_neg``, ``OTX2_pos_of_mCherry_pos``.
+
+    ``names`` gives each marker's name by its id (a marker is named after its channel unless the user
+    named it). The name keeps its capitals; anything but letters, digits and ``_`` becomes ``_``, so
+    the column loads unchanged in R, Python and spreadsheets. "Among all objects" adds nothing.
+    """
+
+    def part(expression: object) -> str:
+        text = str(expression).strip()
+        if not text or text.casefold() in _EVERY_OBJECT | {"nan", "none"}:
+            return ""
+        words = []
+        for token in _AND.split(text):
+            token = token.strip()
+            negated = token.casefold().startswith("not ")
+            marker = token.split(None, 1)[1].strip() if negated else token
+            label = re.sub(r"\W+", "_", str(names.get(marker) or re.sub(r"_pos$", "", marker))).strip("_")
+            words.append(f"{label or 'marker'}_{'neg' if negated else 'pos'}")
+        return "_and_".join(words)
+
+    counted = part(numerator) or "all_objects"
+    among = part(denominator)
+    return f"{counted}_of_{among}" if among else counted
+
+
+def name_reports(summary: pd.DataFrame, names: dict[str, str]) -> pd.DataFrame:
+    """An image summary with its report columns named for what was counted (see ``report_key``).
+
+    Saved runs number their reports (``report_1_percent``): the number is only a position, and says
+    nothing in a table read outside CellQuant. Each summary names its columns from its own
+    expressions, so images analyzed with other result rows never share a column by position. Two
+    reports that would get one name are told apart with ``_2``, ``_3``…
+    """
+
+    renames: dict[str, str] = {}
+    taken = {str(column) for column in summary.columns} - report_columns(summary.columns)
+    for prefix in report_prefixes(summary.columns):
+        expressions = []
+        for column in (f"{prefix}_numerator", f"{prefix}_denominator_expression"):
+            values = summary[column].dropna() if column in summary.columns else []
+            expressions.append(str(values.iloc[0]) if len(values) else "")
+        base = key = report_key(expressions[0], expressions[1], names)
+        counter = 2
+        while any(f"{key}{suffix}" in taken for suffix in REPORT_SUFFIXES):
+            key = f"{base}_{counter}"
+            counter += 1
+        for suffix in REPORT_SUFFIXES:
+            if f"{prefix}{suffix}" in summary.columns:
+                renames[f"{prefix}{suffix}"] = f"{key}{suffix}"
+                taken.add(f"{key}{suffix}")
+    return summary.rename(columns=renames) if renames else summary
+
+
+def rename_in_expression(expression: object, ids: dict[str, str], names: dict[str, str] | None = None) -> object:
+    """A report expression (``af594_pos AND NOT pax6_pos``) with its markers renamed: ``ids`` by id,
+    ``names`` by name (an expression may use either). Anything else is returned as it is."""
+
+    if not isinstance(expression, str) or not expression.strip() or expression.strip().casefold() in _EVERY_OBJECT:
+        return expression
+    words = []
+    for token in _AND.split(expression.strip()):
+        token = token.strip()
+        negated = token.casefold().startswith("not ")
+        marker = token.split(None, 1)[1].strip() if negated else token
+        marker = ids.get(marker) or (names or {}).get(marker) or marker
+        words.append(f"NOT {marker}" if negated else marker)
+    return " AND ".join(words)
+
+
+def rename_recipe_markers(data: dict, ids: dict[str, str], names: dict[str, str]) -> dict:
+    """Recipe data with measurement and marker ids renamed (``ids``: old id -> new id) and markers
+    shown under ``names`` (marker id, before renaming -> name). Every reference follows: a marker's
+    measurement and the result rows' expressions. Nothing else changes."""
+
+    out = {**data}
+    old_names = {str(item.get("name")): names[str(item.get("id"))] for item in data.get("classifications") or [] if str(item.get("id")) in names}
+    old_names = {old: new for old, new in old_names.items() if old != new}
+    out["measurements"] = [{**item, "id": ids.get(item.get("id"), item.get("id"))} for item in data.get("measurements") or []]
+    out["classifications"] = [
+        {
+            **item,
+            "id": ids.get(item.get("id"), item.get("id")),
+            "name": names.get(str(item.get("id")), item.get("name")),
+            "measurement": ids.get(item.get("measurement"), item.get("measurement")),
+        }
+        for item in data.get("classifications") or []
+    ]
+    out["reports"] = [
+        {
+            **item,
+            "numerator": rename_in_expression(item.get("numerator"), ids, old_names),
+            "denominator": rename_in_expression(item.get("denominator"), ids, old_names),
+        }
+        for item in data.get("reports") or []
+    ]
+    return out
+
+
+def rename_object_columns(objects: pd.DataFrame, ids: dict[str, str], names: list[tuple[str, str]]) -> pd.DataFrame:
+    """An object table with measurement and marker columns renamed (``ids``: old column -> new, a
+    marker's ``<id>_by_hand`` with it) and ``phenotype`` written with the markers' names now.
+
+    ``names`` lists the table's markers in order as (name the phenotype was written with, name now).
+    """
+
+    renames = {}
+    for old, new in ids.items():
+        for suffix in ("", "_by_hand"):
+            if f"{old}{suffix}" in objects.columns and f"{new}{suffix}" not in objects.columns:
+                renames[f"{old}{suffix}"] = f"{new}{suffix}"
+    out = objects.rename(columns=renames) if renames else objects
+    if "phenotype" in out.columns and any(old != new for old, new in names):
+        def rewritten(value):
+            parts = str(value).split("|")
+            if len(parts) != len(names):
+                return value  # not these markers' phenotype: left as it was written
+            pieces = []
+            for part, (old, new) in zip(parts, names, strict=True):
+                if not part.startswith(old) or len(part) != len(old) + 1:
+                    return value
+                pieces.append(f"{new}{part[-1]}")
+            return "|".join(pieces)
+
+        if out is objects:
+            out = objects.copy()
+        present = out["phenotype"].notna()
+        mapping = {value: rewritten(value) for value in out.loc[present, "phenotype"].unique()}
+        out.loc[present, "phenotype"] = out.loc[present, "phenotype"].map(mapping).astype(out["phenotype"].dtype)
+    return out
+
+
 def _counted_objects(
     table: pd.DataFrame,
     classifications: list[ClassificationSpec],

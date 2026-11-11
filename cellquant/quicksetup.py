@@ -87,6 +87,13 @@ def marker_recipe(
     return data
 
 
+def channel_slug(name: str, channel_index: int) -> str:
+    """The start of the ids quick setup makes for a marker channel: ``AF 594`` gives ``af_594``
+    (then ``af_594_mean``, ``af_594_pos``). The same rule as in ``marker_recipe``."""
+
+    return re.sub(r"[^a-z0-9]+", "_", str(name).casefold()).strip("_") or f"channel_{channel_index}"
+
+
 def uses_pixel_level(recipe, classification) -> bool:
     """True when a classification counts pixels at or above a level (percent_above)."""
 

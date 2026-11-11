@@ -24,6 +24,7 @@ import numpy as np
 import pandas as pd
 
 from cellquant.errors import StatisticsError
+from cellquant.quantify import report_columns, report_prefixes
 from cellquant.stats.grouped import GroupedTable
 from cellquant.stats.tables import ColumnTable
 from cellquant.storage import default_unit_column, unit_summary
@@ -41,7 +42,7 @@ _OBJECT_NOT_MEASURES = {
 
 @dataclass(frozen=True)
 class Measure:
-    key: str          # the column, e.g. report_1_percent, total_objects, area, af594_mean
+    key: str          # the column, e.g. report_1_percent (OTX2_pos_percent in an export), total_objects, area, af594_mean
     label: str        # shown, e.g. "% AF594+ of all objects"
     level: str        # "image" or "object"
     kind: str         # "percent", "count", "area" or "value"
@@ -65,9 +66,10 @@ class Source:
         """Group columns of step 1 (``Folder 1``, ``group``…), in the summaries' order."""
 
         out = []
+        reports = report_columns(self.images.columns)  # numbered (report_1_…) in a saved run, named (OTX2_pos_…) in an export
         for name in self.images.columns:
             text = str(name)
-            if text in _IMAGE_ID_COLUMNS or text == "approved" or text in ("total_objects", "count_area", "count_area_unit") or text.startswith("report_"):
+            if text in _IMAGE_ID_COLUMNS or text == "approved" or text in ("total_objects", "count_area", "count_area_unit") or text.startswith("report_") or text in reports:
                 continue
             out.append(text)
         return out
@@ -84,10 +86,12 @@ class Source:
 
     def measures(self) -> list[Measure]:
         out = []
+        named = set(report_prefixes(self.images.columns))
         for column in self.images.columns:
-            match = re.fullmatch(r"(report_\d+)_percent", str(column))
-            if match:
-                out.append(Measure(column, report_name(self.images, match.group(1), self.names), "image", "percent"))
+            text = str(column)
+            prefix = text[: -len("_percent")] if text.endswith("_percent") else ""
+            if prefix and (prefix in named or re.fullmatch(r"report_\d+", prefix)):
+                out.append(Measure(column, report_name(self.images, prefix, self.names), "image", "percent"))
         if "total_objects" in self.images.columns:
             out.append(Measure("total_objects", "Objects counted (total_objects)", "image", "count"))
         if "count_area" in self.images.columns and pd.to_numeric(self.images["count_area"], errors="coerce").notna().any():
@@ -305,7 +309,11 @@ def from_controller(controller) -> Source:
     statuses = {record.image_id: record.processing_status for record in controller.experiment.images if record.include}
     if "image_id" in images.columns:
         images["approved"] = images["image_id"].map(lambda image_id: statuses.get(image_id) in APPROVED)
-    names, measurements, statistics = _names_from(controller.recipe.model_dump(mode="json"))
+    document = controller.recipe.model_dump(mode="json")
+    shown = controller.marker_names()  # a marker named after a channel the user renamed has the channel's name now
+    for item in document.get("classifications") or []:
+        item["name"] = shown.get(item.get("id"), item.get("name"))
+    names, measurements, statistics = _names_from(document)
     return Source(images, objects if not objects.empty else None, names, measurements, statistics,
                   label=controller.experiment.experiment_name, path=controller.directory)
 

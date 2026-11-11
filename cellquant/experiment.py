@@ -38,6 +38,8 @@ class ChannelRecord(BaseModel):
     channel_name: str
     display_name: str
     display_settings: dict[str, Any] = Field(default_factory=dict)
+    # Names this channel had before the user renamed it: a marker named after one of them is this channel's.
+    earlier_names: list[str] = Field(default_factory=list)
 
 
 class ImageRecord(BaseModel):
