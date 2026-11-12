@@ -1075,6 +1075,9 @@ class CellQuantWindow:
         # Short names fit the dock (460 px); if a narrower one cuts the strip, it scrolls instead of eliding the names.
         self._tabs.setUsesScrollButtons(True)
         self._tabs.setElideMode(Qt.ElideNone)
+        # Seven named tabs, each with its ✓, are wider than the panel with the theme's padding:
+        # with less they all fit (the scroll buttons stay for a narrower panel or a wider font).
+        self._tabs.tabBar().setStyleSheet("QTabBar::tab { padding-left: 3px; padding-right: 3px; }")
         self._analysis_bar = AnalysisBar(self)
         self._dock = QWidget()
         dock_layout = QVBoxLayout(self._dock)
