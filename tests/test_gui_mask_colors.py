@@ -59,7 +59,7 @@ def test_mask_colors_option(tmp_path: Path, open_window):  # noqa: F811
     dialog.swatches[red].setChecked(True)
     dialog.swatches[blue].setChecked(True)
     assert mask_colors() == [red, blue]
-    assert panel.mask_colors_button.text() == "2 colours"
+    assert panel.mask_colors_button.text() == "2 colors"
     for layer in layers:
         colors = _colors(layer, ids)
         assert colors[0] == colors[2] == colors[4] == (1.0, 0.0, 0.0, 1.0)

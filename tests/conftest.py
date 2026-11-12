@@ -37,3 +37,15 @@ def _no_run_prompts(monkeypatch):
         return
     monkeypatch.setattr(CellQuantWindow, "_confirm_exit_during_run", lambda self: True)
     monkeypatch.setattr(CellQuantWindow, "_ask_unfinished", lambda self, *args, **kwargs: (None, False))
+
+
+@pytest.fixture(autouse=True)
+def _no_unrecorded_drawing_prompt(monkeypatch):
+    """Closing CellQuant (or opening another experiment) with drawing not recorded yet asks Record / Discard / Cancel;
+    in tests the answer is "discard", which is what closing did before the question existed."""
+
+    try:
+        from cellquant.gui.app import CellQuantWindow
+    except Exception:  # noqa: BLE001 - no Qt here
+        return
+    monkeypatch.setattr(CellQuantWindow, "_ask_unrecorded", lambda self, images: "discard")

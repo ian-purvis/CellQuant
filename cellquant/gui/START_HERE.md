@@ -33,12 +33,12 @@ The log is `install_last.log` in the CellQuant folder.
 The CellQuant panel has a **Start** tab and six numbered tabs, each showing its number and name (hover a tab for its full name). Work from left to right. Every tab has a one-line "what to do" at the top (hover it for details and how to tell it worked) and a **Next →** button. If Next is greyed out, the line beside it says why. A tab you cannot open yet is greyed out too, and the line under the tabs says why, for example *Steps 3-6 unlock after step 2: Run this image first.*
 
 1. **Start → Try practice images** (first time) or **New experiment…**
-2. **1 Images**: add images and name the channels.
+2. **1 Images**: add images and check the channel names.
 3. **2 Find** (*Find objects*): pick the nuclear channel, **Preview**, then **Run this image**.
-4. **3 Edit objects** (optional): delete debris or fix outlines.
-5. **4 Markers**: tick the marker channels, **Set up markers**.
-6. **5 Check**: drag the **Cutoff** slider until the green (positive) objects look right, then **Approve**.
-7. **6 Results**: **Run all images**, then **Export results…**
+4. **3 Fix** (*Fix outlines*, optional): delete debris or fix outlines.
+5. **4 Markers**: tick the marker channels, **Set up markers** (afterwards, ticking or unticking a channel applies by itself).
+6. **5 Check**: drag the **Cutoff** slider until the green (positive) objects look right (choose under **Applies to** whether it is for this image or all images), then **Approve**.
+7. **6 Results**: **Run all images**, then **Export results…** (it makes a new dated folder inside the folder you choose).
 
 A ✓ appears next to the name on each tab as you finish it. The **Start** tab shows your progress and a **Continue** button that takes you to the next unfinished step. It also has a **More tools** group: **Plan…**, **Measure…**, **Output glossary…** and **Keyboard shortcuts…** (also under **Help**). **Open a results folder in QuantAnalysis…** there opens saved results for statistics and graphs without going through the steps.
 
@@ -71,7 +71,7 @@ The bar at the bottom of the window is shared by all steps. It shows which image
 2. CellQuant finds every file of the chosen types in the image folder and in all its subfolders. **Add folder…** and **Add images…** (at the top of this tab) add more to the same experiment later, taking the file types chosen in **New experiment…**. With no experiment open, this tab says to go to the Start tab.
 3. **Check the list before going on.** Each image is shown by its path inside the folder you chose, for example *mCherry cont/Retina 2/image.nd2*, so files with the same name in different folders are told apart. Hover over a path to see the full location. The list also shows each image's number of **Slices**, its **Channels**, **µm/pixel** and **Objective**. Subfolder names are copied into **Folder 1**, **Folder 2**, … columns, which identify the experimental condition and can group results.
 4. Read the yellow notes above the list. They say which folder was searched, how many images were found, which folders had none, and anything to watch for, such as images taken at different magnifications or Z-stacks.
-5. Open an image and check the blue **channel order** box, for example *Channel 1 = Green · Channel 2 = Red · Channel 3 = Far Red*. Names come from the file. Napari layers use the same labels. Do not rename channels to label experimental conditions — use Sample name and Folder columns for that.
+5. Open an image and check the blue **channel order** box, for example *Channel 1 = Green · Channel 2 = Red · Channel 3 = Far Red*. Names come from the file. Napari layers use the same labels. To call a channel by what it stains (for example *OTX2* instead of *AF594*), rename its layer in napari's layer list (double-click the name and type): CellQuant keeps that name for every image, and the channel lists, markers and exported columns use it. Rename before **Set up markers** in step 4 when you can. Do not rename channels to label experimental conditions — use Sample name and Folder columns for that.
 6. If **µm/pixel** says *not set*, enter the pixel size (from the microscope software's image properties) and click **Set sizes (µm)**. The menu below it chooses which images change: this image and every image without a size (the default), this image only, or every included image. Without a pixel size, sizes are in pixels. For Z-stacks, **Z step** is the distance between slices; ND2 files include it (the **Slices** column shows, for example, *7 × 1.5 µm*). 3D volumes need it.
 7. Choose which images to analyze. Everything listed is included at first. Untick **Include** to leave an image out. **Show ND2 only** / **Show TIFF only** and the filter box (for example *Retina 2* or *Control*) narrow the list.
 
@@ -112,13 +112,13 @@ If it is not right:
 - Debris counted as nuclei: raise **Min size**, or lower the typical diameter if Cellpose is finding too much.
 - Faint nuclei missed: lower **Cell probability threshold** (cellpose), or use a manual threshold (classical, Threshold: Manual threshold).
 
-## Step 3: Edit objects
+## Step 3: Fix outlines
 
-Fix the objects before markers are measured. Skip this step if step 2 looked right.
+Fix the outlines before markers are measured. Skip this step if step 2 looked right.
 
 1. To remove something that is not a real object: click **Delete objects**, then click the object in the image; it is deleted at once. **Back** or **Esc** stops. To pick several, click **Select objects**, click an object (**Shift**+click adds more; a deleted object can be picked where it was), then **Delete selected** or **Restore selected**. **Undo** (**Ctrl+Z**) brings back the last one; **Undo all** reverses every edit on the image.
 2. To remove many objects at once: click **Draw area**, outline them (click the corners, double-click to finish), then click **Delete in area**. Every object lying entirely inside is deleted (objects crossing the edge stay); **Undo** brings them all back.
-3. To redraw outlines: select the *Objects* layer, paint or erase with napari's tools, then click **Record drawn edits** to keep them. Drawing stays when you move to another image; **Record all images** saves every image's drawing at once.
+3. To redraw outlines: select the *Objects* layer and paint or erase with napari's tools. While some drawing is waiting, **Unrecorded drawing on this image** shows beside the record buttons. It is recorded by itself when you move to another image, leave step 3 for another tab, start a run or an export; **Record drawn edits** records it at once, and **Record all images** saves every image's drawing at once. If recording does not work, the drawing is kept and the reason is shown under the buttons. Closing CellQuant (or opening another experiment) with drawing not recorded asks **Record**, **Discard** or **Cancel**.
 
 The objects found in step 2 are kept; edits are saved as a list applied on top. Running step 2 again with new settings gives new objects, and these edits no longer apply to them.
 
@@ -127,26 +127,29 @@ The objects found in step 2 are kept; edits are saved as a list applied on top. 
 ## Step 4: Markers
 
 1. Tick the channels you want to count. The channel used to find objects is not listed.
-2. Under **Positive when**, choose how a cell is called positive:
-   - **mean brightness > cutoff** (the usual choice): one number per cell, compared with a cutoff.
-   - **enough pixels bright**: each pixel of the cell is compared with a *pixel level*, and the cell is positive when at least the **Min % of cell** (for example 30%) is at or above that level. Useful when staining is patchy or covers only part of a nucleus. This is the "positive fraction" rule of CellQuant v1.
-3. Click **Set up markers**.
+2. Under **Positive when**, choose how an object is called positive:
+   - **mean brightness > cutoff** (the usual choice): one number per object, compared with a cutoff.
+   - **enough pixels bright**: each pixel of the object is compared with a *pixel level*, and the object is positive when at least the **Min % of object** (for example 30%) is at or above that level. Useful when staining is patchy or covers only part of a nucleus. This is the "positive fraction" rule of CellQuant v1.
+3. The first time, click **Set up markers**.
 
-CellQuant measures each marker inside every object and calls each object positive or negative. It picks a starting cutoff (or, for the percent rule, a starting pixel level) automatically and moves you to step 5.
+CellQuant measures each marker inside every object and calls each object positive or negative. It picks a starting cutoff (or, for the percent rule, a starting pixel level) automatically, says *Markers measured. Next: check the cutoffs in step 5.* and leaves you here; click **Next** when you are ready.
 
-**Success check:** step 5 opens with objects colored green (positive) and magenta (negative).
+Once markers exist, the button is gone: ticking or unticking a channel, or changing **Positive when** or **Min % of object**, applies by itself a moment after the last change. A newly ticked channel gets its marker measured; an unticked one has its marker (and the result rows that use it) removed. Markers that stay keep their cutoffs, the cutoffs of single images, objects called by hand and approvals, and result rows you added that do not use a removed marker are kept. CellQuant asks first only when something you made would be lost, and says exactly what: objects called by hand, result rows or approvals tied to a marker that is removed, or cutoffs that start again because you changed the rule.
+
+**Success check:** every marker you want is listed, and step 5 shows objects colored green (positive) and magenta (negative).
 
 *Advanced:* **Advanced** lets you measure other statistics (median, total, percent of pixels at or above a level), choose whether a value equal to the cutoff is positive (**at least**) or negative (**above**), measure a ring around each object, subtract background, or set cutoffs by hand. **Remove marker** removes the marker selected in the Markers table, and the result rows that use it.
 
 ## Step 5: Check
 
 1. Choose a marker under **Display objects by**. Objects glow green when positive and magenta when negative (a pair that stays distinct with red-green color blindness). Under **Advanced**, **Positive color** and **Negative color** change the colors (remembered on this computer); **Default colors** puts green and magenta back.
-2. Drag the **Cutoff** slider, or type a number beside it. The slider runs from the dimmest to the brightest object for this marker; the objects recolor and the counts below change as you drag. The slider (and **Auto**, **Reset cutoff**) changes this image only. To use this image's cutoff everywhere, press **Apply to all images** at the bottom; if some images are already approved, it asks whether to change them too or only the unapproved ones.
-   With the percent rule, the slider is the minimum percent of each cell's pixels that must pass (0-100%). To change the pixel level, type it under **Percent-of-cell rule** and click **Apply pixel level**: this image is measured again (objects and your edits are kept). Tick **at most** to ignore pixels brighter than a second level, such as saturated spots. The line above the counts says the rule in words, for example *at least 30% of pixels ≥ 1200*.
-   With two or more markers, choose **All markers** under **Display objects by** to set every marker's cutoff for this image at once and see which cells are positive for several markers. Each marker has its own histogram and slider. Each object is colored by its *mix*, the exact set of markers it is positive for: a marker's own color when it is positive for that marker only, a color of its own for each overlap (for example A + B, or A + B + C), and grey when it is negative for all. **Mixes of markers** lists every mix with its count and percent of the counted objects that have a call for every marker; untick **Show** to hide a mix in the image, click its color to change it (remembered on this computer), and **Default colors** puts the starting colors back. **Apply to all images** under it gives every image this image's cutoff for every marker. **Pop out** moves these controls to a window of their own; close the window (or **Put back**) to return them to step 5. Step 6 also lists how many objects are positive for each set of two or more markers that no report already counts (with three markers, for example, all three together); the counts are saved in `classifications/<image>_combinations.csv`.
-3. Optional: to count only part of the tissue, click **Draw** under **Count area**, outline it in the image (double-click to finish), then **Use for this image** or **Use for all images**. Only objects whose center is inside are counted; **Clear** counts the whole image again.
-4. Optional: to correct single cells, click **Edit cells…**. Select cells in the image (click; Shift+click adds or removes one; **Select in area** to draw around several; **Select all…** by call), then click **Positive**, **Negative** or **Use cutoff**. Those cells keep that call for the marker shown whatever the cutoff; every other cell still follows the cutoff. Cells called by hand get a small yellow diamond, are listed in the window (click a row to go to the cell) and are marked in the results (`<marker>_pos_by_hand`, `n_called_by_hand`). **Undo** takes back the last call. Calls are made one marker at a time, for the marker chosen under **Display objects by** (not while all markers are shown together). An approval is cleared only if the percent positive changes.
-5. When the image looks right, click **Approve** (key **A**); the next image that is not yet approved opens. Use the eye icons in napari's layer list to show or hide boundaries, fills and IDs. After a run, **Check: Needs a look** or **Failed** makes Previous / Next go through only those (the bottom bar says so); **All included** goes back.
+2. Drag the **Cutoff** slider, or type a number beside it. The slider runs from the dimmest to the brightest object for this marker; the objects recolor and the counts below change as you drag. **Applies to** (beside the slider) says where a cutoff change goes. **This image** (the default) gives the image shown its own cutoff, marked * in the Images table. **All images** gives the other images this image's cutoff straight away (if some images are already approved, it asks whether to change them too or only the unapproved ones; **Cancel** leaves it on **This image**), and while it stays on **All images**, every later change (the slider, a typed value, **Auto**, **Reset cutoff**, the minimum percent) goes to the same images without asking again. Choose **This image** to stop. It goes back to **This image** when you open another experiment or analysis, or show another marker.
+   When a cutoff change clears the approval of images whose percent positive changed, a banner at the top of step 5 says so, with **Undo**, which puts back both the cutoffs and the approvals as they were before the change. The banner goes away when you approve an image, undo, or click ✕.
+   With the percent rule, the slider is the minimum percent of each object's pixels that must pass (0-100%). To change the pixel level, type it under **Percent-of-object rule** and click **Apply pixel level**: this image is measured again (objects and your edits are kept). Tick **at most** to ignore pixels brighter than a second level, such as saturated spots. The line above the counts says the rule in words, for example *at least 30% of pixels ≥ 1200*.
+   With two or more markers, choose **All markers** under **Display objects by** to set every marker's cutoff for this image at once and see which cells are positive for several markers. Each marker has its own histogram and slider. Each object is colored by its *mix*, the exact set of markers it is positive for: a marker's own color when it is positive for that marker only, a color of its own for each overlap (for example A + B, or A + B + C), and grey when it is negative for all. **Mixes of markers** lists every mix with its count and percent of the counted objects that have a call for every marker; untick **Show** to hide a mix in the image, click its color to change it (remembered on this computer), and **Default colors** puts the starting colors back. **Apply to all images** under it gives every image this image's cutoff for every marker (this view has no **Applies to** choice). **Pop out** moves these controls to a window of their own; close the window (or **Put back**) to return them to step 5. Step 6 also lists how many objects are positive for each set of two or more markers that no report already counts (with three markers, for example, all three together); the counts are saved in `classifications/<image>_combinations.csv`.
+3. Optional: to count only part of the tissue, open **Count area (optional)** (a section under the Images table, closed until you open it or an area is set), click **Draw**, outline it in the image (double-click to finish), then **Use for this image** or **Use for all images**. Only objects whose center is inside are counted; **Clear** counts the whole image again.
+4. Optional: to correct single objects, click **Override calls…** (at the bottom, beside **Approve**). Select objects in the image (click; Shift+click adds or removes one; **Select in area** to draw around several; **Select all…** by call), then click **Positive**, **Negative** or **Use cutoff**. Those objects keep that call for the marker shown whatever the cutoff; every other object still follows the cutoff. Objects called by hand get a small yellow diamond, are listed in the window (click a row to go to the object) and are marked in the results (`<marker>_pos_by_hand`, `n_called_by_hand`). **Undo** takes back the last call. Calls are made one marker at a time, for the marker chosen under **Display objects by** (not while all markers are shown together). An approval is cleared only if the percent positive changes.
+5. When the image looks right, click **Approve** (key **A**); the next image that is not yet approved opens. The status line with **Approve** stays at the bottom of the step, so it is always in view. Use the eye icons in napari's layer list to show or hide boundaries, fills and IDs. After a run, open **Review queue**: **Needs a look** or **Failed** makes Previous / Next go through only those (the bottom bar says so); **All included** goes back.
 
 **Success check:** the green objects are the ones you would call positive by eye.
 
@@ -159,16 +162,16 @@ Tips:
 1. Click **Run all images** (included images, with the analysis shown), or select rows in step 1 and click **Run selected images**. The bar at the bottom shows the image and step, for example *Image 3 of 9: Finding objects: slice 2 of 7*. **Pause** waits after the current step and **Resume** carries on; **Cancel** stops after it, keeping the images already finished. One image failing does not stop the others; the red box at the top lists each failed image and why. To re-run with new settings, change them and click **Run all images** again. With several analyses (see below), **Run all analyses** runs each of them.
 
    Each image is saved as soon as it finishes. Closing CellQuant during a run asks first (**Exit** or **Stay**). If a run stops part-way (Cancel, CellQuant closed, a crash or a restart of the computer), CellQuant asks the next time it starts or the experiment is opened: **Continue the run** runs only the images left, **Continue with the analysis** keeps what finished and runs nothing, and **Start over** runs every image of that run again (tick **Find objects again in finished images** to segment those again too; otherwise their saved objects are reused). The run log says when and how the run stopped.
-2. Click **Export results…** and choose a folder.
+2. Under **Export**, choose **Group by** and **Unit** if you want grouped tables; the list **Files that will be written** follows your choices. Click **Export results…** and choose a folder: CellQuant makes a new folder inside it, named like `2026-03-09_1405_Analysis_1` (date, time and the analysis name), and saves the results there, so an earlier export is never overwritten (a second export in the same minute adds `_2`). **Open export folder** opens that new folder. **Open in QuantAnalysis…** opens the statistics window.
 
 The **Results** box shows the numbers for the image on screen, for example *Marker A+ among all objects: 10 of 40 (25.0%)*.
 
-**Success check:** the export folder contains:
+**Success check:** the new export folder contains:
 
 | File | What it holds |
 |---|---|
 | `objects.csv` | One row per object: its position, size, each marker's brightness, and positive/negative calls. In 3D it also has `centroid_z` and `volume` (µm³), the slices each object spans (`z_slices`, `z_first`, `z_last`), and `z_flag` (*one_slice* or *possibly_merged*, for checking). `area` is the largest cross-section. |
-| `image_summary.csv` | One row per image: object count and each percentage. |
+| `image_summary.csv` | One row per image: object count and each percentage. Columns are named after your markers, for example `OTX2_pos_count`, `OTX2_pos_percent` and `OTX2_pos_and_PAX6_pos_percent`. |
 | `settings_index.csv` | Which settings produced each image's results. |
 | `recipe.yaml` | The settings. **Load settings…** (step 6, *Advanced*) uses it to analyze new images the same way. |
 
@@ -184,7 +187,7 @@ The **Analysis** list at the top of the CellQuant panel, with its **Analyses ▾
 - **Analyses ▾ → New analysis…**: a copy of the current settings under a new name. Change what you need in steps 2-5, for example the channel in step 2.
 - Choose an analysis in the list to see, change, check or run it. Steps 2-5 always show the analysis chosen.
 - **Run all analyses** (step 6) runs every included image with each analysis, one after another. Pause and Cancel work as for one analysis; Cancel keeps what is finished and skips the analyses not started.
-- **Export all analyses…** (step 6) saves each analysis in its own folder, plus `all_analyses_image_summary.csv`: every analysis's per-image numbers in one table, with `analysis` and `segmentation_channel` columns.
+- **Export all analyses…** (step 6) saves each analysis in its own folder, plus `all_analyses_image_summary.csv`: every analysis's per-image numbers in one table, with `analysis` and `segmentation_channel` columns. They go into a new folder inside the one you choose, named like `2026-03-09_1405_all_analyses`.
 - **Analyses ▾ → Rename…** and **Remove** change the list. Removing only takes an analysis off the list; its settings and results stay in the experiment folder.
 
 **Success check:** after **Run all analyses**, choosing each analysis in the list shows outlines found in its channel.

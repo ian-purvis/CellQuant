@@ -66,7 +66,8 @@ def test_image_strip(tmp_path: Path, monkeypatch):
             row == shown_row for row in range(table.rowCount())
         ]
         assert table.item(shown_row, 1).text().startswith("0 /")
-        panel.apply_all.click()
+        panel.scope.setCurrentIndex(panel.scope.findData("all"))  # Applies to: All images
+        panel._scope_chosen()
         _settle()
         assert not any(table.item(row, 1).text().endswith(" *") for row in range(table.rowCount()))
         assert all(table.item(row, 1).text().startswith("0 /") for row in range(table.rowCount()))
