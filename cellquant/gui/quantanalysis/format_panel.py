@@ -1,10 +1,9 @@
-"""The format panel of a graph sheet, and the Format graph, Format axes and Make-this-graph-look-like dialogs.
+"""The format panel of a graph sheet, and the Make-this-graph-look-like dialog.
 
 Each part of the format is one section widget (Graph, Data sets, Frame, Axis, Text and legend, Text
-boxes and arrows, Significance, Styles). The side panel stacks them as collapsible sections; the
-Format graph… and Format axes… dialogs show fresh copies of the same sections as tabs. Every copy
-edits the sheet's GraphFormat and calls ``view.format_changed``, which redraws the graph and refills
-the other copies, so the panel and an open dialog always agree.
+boxes and arrows, Significance, Styles). The side panel stacks them as collapsible sections. Every section
+edits the sheet's GraphFormat and calls ``view.format_changed``, which redraws the graph and refills the
+other sections. The panel's search box hides the rows whose label matches nothing (``Section.set_filter``).
 """
 
 from __future__ import annotations
@@ -14,6 +13,7 @@ import copy
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
+    QAbstractButton,
     QAbstractItemView,
     QAbstractSpinBox,
     QApplication,
@@ -34,10 +34,8 @@ from qtpy.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QScrollArea,
     QSizePolicy,
     QSpinBox,
-    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -59,19 +57,94 @@ def _no_buttons(widget):
     return widget
 
 
-def _row_visible(form: QFormLayout, widget, visible: bool) -> None:
-    """Show or hide a form row by its field: a widget or a layout of widgets."""
+def _leaves(item) -> list:
+    """The widgets of a layout item: itself when it is a widget, else those of the layout it holds (not those inside a group box)."""
 
+    if item is None:
+        return []
+    if item.widget() is not None:
+        return [item.widget()]
+    layout = item.layout()
+    return [leaf for index in range(layout.count()) for leaf in _leaves(layout.itemAt(index))] if layout is not None else []
+
+
+def _apply_row(form: QFormLayout, row: int) -> None:
+    """A row shows when the graph's state asks for it (``_row_visible``) and the panel's search has not filtered it out. Both are kept as
+    properties of the form, so they combine whichever changes last."""
+
+    on = form.property(f"cq_ctx_{row}") is not False and form.property(f"cq_off_{row}") is not True
     if hasattr(form, "setRowVisible"):
-        form.setRowVisible(widget, visible)
+        form.setRowVisible(row, on)
     else:  # Qt before 6.4
-        parts = [widget] if isinstance(widget, QWidget) else [widget.itemAt(i).widget() for i in range(widget.count())]
-        for part in parts:
-            if part is not None:
-                part.setVisible(visible)
-        label = form.labelForField(widget)
-        if label is not None:
-            label.setVisible(visible)
+        for role in (QFormLayout.LabelRole, QFormLayout.FieldRole, QFormLayout.SpanningRole):
+            for widget in _leaves(form.itemAt(row, role)):
+                widget.setVisible(on)
+
+
+def _row_visible(form: QFormLayout, widget, visible: bool) -> None:
+    """Show or hide a form row by its field: a widget or a layout of widgets (the graph's state; the search may keep it hidden)."""
+
+    row, _role = form.getWidgetPosition(widget) if isinstance(widget, QWidget) else form.getLayoutPosition(widget)
+    if row < 0:
+        if isinstance(widget, QWidget):
+            widget.setVisible(visible)
+        return
+    form.setProperty(f"cq_ctx_{row}", bool(visible))
+    _apply_row(form, row)
+
+
+def _row_text(form: QFormLayout, row: int) -> str:
+    """What a row says: its label, and the text of the labels, check boxes and buttons in it (a group box: its title), lower case."""
+
+    parts = []
+    for role in (QFormLayout.LabelRole, QFormLayout.FieldRole, QFormLayout.SpanningRole):
+        for widget in _leaves(form.itemAt(row, role)):
+            if isinstance(widget, QGroupBox):
+                parts.append(widget.title())
+            elif isinstance(widget, (QLabel, QAbstractButton)):
+                parts.append(widget.text())
+    return " ".join(parts).lower().replace("&", "")
+
+
+def _hits(words: list, text: str) -> bool:
+    return all(word in text for word in words)
+
+
+def filter_form(form: QFormLayout, words: list, context: str = "") -> bool:
+    """Hide the rows of ``form`` whose text (and heading, and group box title) lacks one of ``words``; no words shows every row the graph's state
+    allows. True when some shown row matches. A heading stays while a row under it matches."""
+
+    found, heading_row, heading_found = False, None, False
+
+    def close_heading() -> None:
+        if heading_row is not None and words:
+            form.setProperty(f"cq_off_{heading_row}", not heading_found)
+            _apply_row(form, heading_row)
+
+    heading = ""
+    for row in range(form.rowCount()):
+        shown_by_graph = form.property(f"cq_ctx_{row}") is not False  # a row the graph's state hides cannot match
+        span = form.itemAt(row, QFormLayout.SpanningRole)
+        widget = span.widget() if span is not None else None
+        text = _row_text(form, row)
+        is_heading = isinstance(widget, QLabel)
+        if is_heading:
+            close_heading()
+            heading_row, heading_found, heading = row, False, text
+        around = f"{context} {'' if is_heading else heading}"
+        if isinstance(widget, QGroupBox) and isinstance(widget.layout(), QFormLayout):
+            title_hit = _hits(words, f"{around} {text}")
+            inner = filter_form(widget.layout(), [] if title_hit else words, f"{around} {text}")
+            matched = shown_by_graph and (title_hit or inner)
+        else:
+            matched = shown_by_graph and _hits(words, f"{around} {text}")
+        form.setProperty(f"cq_off_{row}", bool(words) and not matched and not is_heading)
+        if not is_heading:
+            _apply_row(form, row)
+            heading_found = heading_found or matched
+        found = found or matched
+    close_heading()
+    return found or not words
 
 
 class ColorButton(QPushButton):
@@ -251,6 +324,13 @@ class Section(QWidget):
             self.load()
         finally:
             self._filling = False
+
+    def set_filter(self, words: list) -> bool:
+        """Show only the rows that match every word of the panel's search (no words: all). True when something here matches."""
+
+        found = filter_form(self.form, words)
+        self.fill()  # a row that was hidden and shown again shows all its controls: load puts back the ones the graph's state hides
+        return found
 
     def changed(self, *_args) -> None:
         if self._filling:
@@ -655,8 +735,8 @@ class DataSetSection(Section):
         name = self.current()
         fmt = self.fmt
         kind = self.view.sheet.kind
-        self.bars.setVisible(kind == "bar")
-        self.boxes.setVisible(kind in ("box", "violin"))
+        _row_visible(self.form, self.bars, kind == "bar")
+        _row_visible(self.form, self.boxes, kind in ("box", "violin"))
         for widget in (self.pair_lines, self.pair_color, self.pair_width):
             widget.setEnabled(kind == "before_after")
         self.setEnabled(name is not None)
@@ -983,10 +1063,10 @@ class AxesSection(QWidget):
         self.frame = FrameSection(view)
         self.axis = AxisSection(view)
         layout.addWidget(self.frame)
-        line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setStyleSheet("color: #414851;")
-        layout.addWidget(line)
+        self.divider = QFrame()
+        self.divider.setFrameShape(QFrame.HLine)
+        self.divider.setStyleSheet("color: #414851;")
+        layout.addWidget(self.divider)
         layout.addWidget(self.axis)
 
     def sections(self):
@@ -1302,80 +1382,6 @@ SECTIONS = (GraphSection, DataSetSection, AxesSection, TextSection, AnnotationSe
 
 
 # --- Dialogs -------------------------------------------------------------------------------------------------------------
-
-
-class FormatDialog(QDialog):
-    """The Format graph or Format axes dialog: the same sections as the side panel, as tabs. Changes show at once;
-    Cancel puts back the format the graph had when the dialog opened."""
-
-    def __init__(self, view, which: str = "graph", tab: str | None = None):
-        super().__init__(view)
-        self.view = view
-        self.which = which
-        self.setWindowTitle("Format graph" if which == "graph" else "Format axes")
-        self._before = (view.sheet.format.copy(), view.sheet.kind, view.sheet.result_id)
-        layout = QVBoxLayout(self)
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs)
-        if which == "graph":
-            pages = [("datasets", "Data sets", DataSetSection(view)), ("graph", "Graph", GraphSection(view)),
-                     ("text", "Title, legend", TextSection(view)), ("annotations", "Text, arrows", AnnotationSection(view)),
-                     ("significance", "Significance", SignificanceSection(view))]
-        else:
-            pages = [("frame", "Frame and origin", FrameSection(view)), ("y", "Left Y axis", AxisSection(view, "y")),
-                     ("x", "X axis", AxisSection(view, "x")), ("right", "Right Y axis", AxisSection(view, "right"))]
-        self.pages = {}
-        for key, name, section in pages:
-            page = QScrollArea()
-            page.setWidgetResizable(True)
-            page.setFrameShape(QFrame.NoFrame)
-            holder = QWidget()
-            column = QVBoxLayout(holder)
-            column.setContentsMargins(0, 0, 0, 0)
-            column.addWidget(section)
-            column.addStretch(1)
-            page.setWidget(holder)
-            self.tabs.addTab(page, name)
-            section.page = page
-            self.tabs.setTabToolTip(self.tabs.count() - 1, section.tip)
-            self.pages[key] = section
-            view.add_section(section)
-            section.fill()
-        if tab in self.pages:
-            self.tabs.setCurrentWidget(self.pages[tab].page)
-        hint = QLabel("Changes show on the graph at once. " + tips.SELECT)
-        hint.setWordWrap(True)
-        hint.setStyleSheet(NOTE_STYLE)
-        layout.addWidget(hint)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.button(QDialogButtonBox.Cancel).setToolTip("Put back the format the graph had when this dialog opened.")
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self.setMinimumWidth(500)
-        self.resize(500, 760 if which == "graph" else 600)
-        self.finished.connect(self._closed)
-
-    def show_tab(self, key: str) -> None:
-        if key in self.pages:
-            self.tabs.setCurrentWidget(self.pages[key].page)
-
-    def current(self):
-        """The section on the tab shown."""
-
-        return next((section for section in self.pages.values() if section.page is self.tabs.currentWidget()), None)
-
-    def reject(self) -> None:
-        fmt, kind, result_id = self._before
-        self.view.sheet.format = fmt
-        self.view.sheet.kind, self.view.sheet.result_id = kind, result_id
-        self.view.format_changed(None)
-        super().reject()
-
-    def _closed(self, _result) -> None:
-        for section in self.pages.values():
-            self.view.remove_section(section)
-        self.view.dialogs.pop(self.which, None)
 
 
 class MagicDialog(QDialog):

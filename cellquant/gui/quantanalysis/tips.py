@@ -63,9 +63,17 @@ GROUP_BY = "The column whose values become the table's columns (the groups or co
 ORDER = "Drag to set the column order; untick a group to leave it out. Put the control or reference group first: differences are B − A."
 APPROVED = "Use only images you approved in step 5. Unchecked images may still have wrong objects or cutoffs."
 SUGGESTED = (
-    "One click sets the usual analysis for image data: % of target (or % of segmented cells), one dot per biological replicate (N) "
-    "pooled from its images (n), and a SuperPlot with mean ± SD. Then compare two groups with Welch's t test (difference and 95% CI, estimation plot), "
-    "or Mann-Whitney when you cannot assume a Gaussian distribution (it needs N ≥ 4 per group to reach P < 0.05)."
+    "Fill the fields below with the usual setup for image data: % of target (or % of segmented cells), one dot per biological replicate (N) "
+    "pooled from its images (n), grouped by the first other metadata column. It only sets the fields; the graph and test are made by the "
+    "checkbox below."
+)
+EXPORT_TABLE = ("Save this data table as a CSV file with the same headers and layout as the table (a Replicate column first when it has replicates). "
+                "File → Import CSV… reads it back.")
+SUGGESTED_ANALYSIS = (
+    "Make the usual analysis of image data as well: a SuperPlot with mean ± SD and, for two groups, Welch's t test (difference and 95% CI, estimation plot); "
+    "for three or more groups, Kruskal-Wallis with Dunn's tests; for a table with data sets, a two-way ANOVA and a bar graph. "
+    "Untick it to import only the data table. You can always change the test (or Mann-Whitney, when you cannot assume a Gaussian "
+    "distribution; it needs N ≥ 4 per group to reach P < 0.05) later with Change options…."
 )
 
 ERROR = {
@@ -226,11 +234,14 @@ GRAPH_COMPARISON = ("The comparison whose P values the brackets show, and whose 
                     "regression or curve fit whose lines or curves to draw.")
 LETTER_STYLE = "How the letters are written: A B C (the default), a b c, or numbers 1 2 3. Groups that share one are not significantly different."
 
-# --- Formatting graphs (Format graph, Format axes, styles) -----------------------------------------------------------
+# --- Formatting graphs (the format panel, styles) -----------------------------------------------------------
 
-FORMAT_GRAPH = "Open the Format graph dialog: every data set's symbols, bars, error bars and lines, the title, legend, text boxes and significance marks."
-FORMAT_AXES = "Open the Format axes dialog: the frame, each axis's range, scale, ticks, numbering, breaks and title."
-SELECT = "Click any part of the graph (a data set, an axis, the title, the legend or a text box) to edit it here; double-click opens its dialog."
+FORMAT_SEARCH = ("Type part of a control's name (for example \"tick\", \"font\" or \"error\") to show only the controls that match; "
+                 "sections with a match open. Clear it to put the sections back as they were.")
+FORMAT_RESET = ("Put the whole graph's format back to the defaults for its kind: fonts, colours, axes, titles, text boxes, size. The data and the "
+                "comparison stay. Undo reset puts it back.")
+SELECT = ("Click any part of the graph (a data set, an axis, the title, the legend or a text box) to edit it in the panel on the right; "
+          "double-click scrolls the panel to it.")
 FORMAT = {
     # The graph
     "font_family": "The font of every text on the graph. Journals often ask for Arial or Helvetica; a font that is not installed shows as the default sans-serif.",

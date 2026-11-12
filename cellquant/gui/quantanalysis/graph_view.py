@@ -1,11 +1,11 @@
 """A graph sheet: the figure (white, as it will be exported), its format panel, click-to-edit, and graph export.
 
-The format panel is a column of collapsible sections (format_panel.py); Format graph… and Format axes…
-open the same sections as tabbed dialogs. Clicking the graph selects what was clicked: matplotlib pick
-events name the artist, and every artist that ``graphs.draw`` makes clickable carries a tag (a data
-set, an axis, the title, the legend, a text box). The selection is kept as that tag, not as the artist,
-so it survives every redraw; it is outlined on screen only (exports draw a fresh figure). Double-click
-opens the matching dialog tab; dragging a text box, arrow or the legend moves it and saves where.
+The format panel is a column of collapsible sections (format_panel.py) under a search box and a Reset graph
+button. Clicking the graph selects what was clicked: matplotlib pick events name the artist, and every artist
+that ``graphs.draw`` makes clickable carries a tag (a data set, an axis, the title, the legend, a text box).
+The selection is kept as that tag, not as the artist, so it survives every redraw; it is outlined on screen
+only (exports draw a fresh figure). Clicking opens the matching section of the panel and double-clicking scrolls
+the panel to it; dragging a text box, arrow or the legend moves it and saves where.
 
 matplotlib is imported here only, when the first graph is shown, so the window opens without it.
 """
@@ -15,7 +15,7 @@ from __future__ import annotations
 import html
 from pathlib import Path
 
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import QPoint, Qt, QTimer
 from qtpy.QtWidgets import (
     QComboBox,
     QDialog,
@@ -79,19 +79,19 @@ def export_figure(data, graph: GraphSheet, result, path: str | Path, kind: str, 
     return path
 
 
-def section_for(target) -> tuple[str, str, str]:
-    """(side-panel section, dialog, dialog tab) that formats ``target``."""
+def section_for(target) -> str:
+    """The key of the side-panel section that formats ``target``."""
 
     kind = target[0]
     if kind in ("dataset", "connect"):
-        return "datasets", "graph", "datasets"
+        return "datasets"
     if kind == "axis":
-        return "axes", "axes", target[1]
+        return "axes"
     if kind in ("title", "legend"):
-        return "text", "graph", "text"
+        return "text"
     if kind == "annotation":
-        return "annotations", "graph", "annotations"
-    return "significance", "graph", "significance"
+        return "annotations"
+    return "significance"
 
 
 def _extent(artist, renderer):
@@ -127,7 +127,8 @@ class GraphSheetView(QWidget):
         self.project = project
         self.sheet = sheet
         self.sections: list = []
-        self.dialogs: dict = {}
+        self._reset_undo = None        # the format before Reset graph, until the next format change (Undo reset puts it back)
+        self._section_state: dict | None = None  # which sections were open before a search, put back when it is cleared
         self.selection = None          # the tag of the selected part, e.g. ("dataset", "Control")
         self._highlights: list = []
         self._picked = None            # [mouse event, tag, artist] of the front-most artist under the last click
@@ -139,10 +140,8 @@ class GraphSheetView(QWidget):
         self.source = QLabel()
         self.source.setStyleSheet(NOTE_STYLE)
         top.addWidget(self.source, 1)
-        for text, tip, slot in (("Format graph…", tips.FORMAT_GRAPH, lambda: self.format_dialog("graph")),
-                                ("Format axes…", tips.FORMAT_AXES, lambda: self.format_dialog("axes")),
-                                ("Export graph…", "Save as SVG, PDF, EPS, PNG, TIFF (300 to 1200 dpi, LZW) or JPEG, at a size in mm or inches.",
-                                 self.export_dialog)):
+        for text, tip, slot in (("Export graph…", "Save as SVG, PDF, EPS, PNG, TIFF (300 to 1200 dpi, LZW) or JPEG, at a size in mm or inches.",
+                                 self.export_dialog),):
             button = QPushButton(text)
             button.setToolTip(tip)
             button.clicked.connect(lambda _checked=False, slot=slot: slot())
@@ -210,6 +209,30 @@ class GraphSheetView(QWidget):
         scroll.setFixedWidth(372)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.panel_scroll = scroll
+        outer = QWidget()
+        outer.setFixedWidth(372)
+        stack = QVBoxLayout(outer)
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(4)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 6, 0)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search the format controls…")
+        self.search.setClearButtonEnabled(True)
+        self.search.setToolTip(tips.FORMAT_SEARCH)
+        self.search.textChanged.connect(self.search_changed)
+        self.reset_button = QPushButton("Reset graph")
+        self.reset_button.setToolTip(tips.FORMAT_RESET)
+        self.reset_button.clicked.connect(self.reset_or_undo)
+        top.addWidget(self.search, 1)
+        top.addWidget(self.reset_button)
+        stack.addLayout(top)
+        self.no_match = QLabel()
+        self.no_match.setStyleSheet(NOTE_STYLE)
+        self.no_match.setWordWrap(True)
+        self.no_match.setVisible(False)
+        stack.addWidget(self.no_match)
+        stack.addWidget(scroll, 1)
         panel = QWidget()
         column = QVBoxLayout(panel)
         column.setContentsMargins(0, 0, 6, 0)
@@ -233,7 +256,7 @@ class GraphSheetView(QWidget):
         for name in ("bracket", "bracket_mode", "hide_ns", "letters", "letter_style"):
             setattr(self, name, getattr(significance, name))
         self.show_n = self.panel["axes"].axis.show_n
-        return scroll
+        return outer
 
     def add_section(self, section) -> None:
         if section not in self.sections:
@@ -253,6 +276,9 @@ class GraphSheetView(QWidget):
     def format_changed(self, source=None) -> None:
         """A section changed the format: redraw at once (after a short pause while typing) and refresh the other sections."""
 
+        self._reset_undo = None  # a change after Reset graph: it can no longer be undone as one step
+        self.reset_button.setText("Reset graph")
+        self.reset_button.setToolTip(tips.FORMAT_RESET)
         for section in list(self.sections):
             if section is not source:
                 section.fill()
@@ -273,19 +299,67 @@ class GraphSheetView(QWidget):
         self.panel["significance"].fill()
         self.draw()
 
-    def format_dialog(self, which: str = "graph", tab: str | None = None):
-        if self.figure is None:
-            self.window.status('Graphs need matplotlib: pip install "cellquant[stats]"')
-            return None
-        dialog = self.dialogs.get(which)
-        if dialog is None:
-            dialog = format_panel.FormatDialog(self, which, tab)
-            self.dialogs[which] = dialog
-        elif tab:
-            dialog.show_tab(tab)
-        dialog.show()
-        dialog.raise_()
-        return dialog
+    # --- Search and reset -----------------------------------------------------------------------------------------
+
+    def _parts(self, key: str) -> list:
+        section = self.panel[key]
+        return list(section.sections()) if hasattr(section, "sections") else [section]
+
+    def search_changed(self, text: str) -> None:
+        """Show only the controls whose label has every word typed: sections with a match open, the others hide, and rows that do not
+        match hide. Clearing the box puts every section back as it was."""
+
+        words = text.lower().split()
+        if words and self._section_state is None:
+            self._section_state = {key: box.expanded() for key, box in self.collapsibles.items()}
+        any_match = False
+        for key, box in self.collapsibles.items():
+            title_hit = bool(words) and all(word in f"{box.header.text()} {self.panel[key].title}".lower() for word in words)
+            found = [part.set_filter([] if title_hit else words) for part in self._parts(key)]  # a section's own name shows all of it
+            for part, hit in zip(self._parts(key), found):
+                part.setVisible(hit or not words)  # the Axes section's frame and axis parts: one with no match goes entirely
+            divider = getattr(self.panel[key], "divider", None)
+            if divider is not None:
+                divider.setVisible(all(found) or not words)
+            matched = not words or title_hit or any(found)
+            any_match = any_match or matched
+            box.setVisible(matched)
+            if words:
+                box.expand(matched)
+            elif self._section_state is not None:
+                box.expand(self._section_state.get(key, box.expanded()))
+        if not words:
+            self._section_state = None
+        self.no_match.setText(f"No format control matches “{text.strip()}”." if words and not any_match else "")
+        self.no_match.setVisible(bool(words) and not any_match)
+
+    def reset_or_undo(self) -> None:
+        if self._reset_undo is None:
+            self.reset_format()
+        else:
+            self.undo_reset()
+
+    def reset_format(self) -> None:
+        """Put the whole graph's format back to the defaults for its kind (the data, the comparison and the kind of graph stay). The button then
+        reads Undo reset until the next format change."""
+
+        before = self.sheet.format.copy()
+        data = self.project.data.get(self.sheet.data_id)
+        self.sheet.format = gf.as_format(self.window.graph_defaults(self.sheet.kind, data))
+        self.format_changed(None)
+        self._reset_undo = before
+        self.reset_button.setText("Undo reset")
+        self.reset_button.setToolTip("Put back the format the graph had before Reset graph. Any change to the format first makes this the new graph.")
+        self.window.status("Graph format reset to the defaults. Undo reset puts it back.")
+        self.window.log(f"graph {self.sheet.name}: format reset")
+
+    def undo_reset(self) -> None:
+        before, self._reset_undo = self._reset_undo, None
+        if before is None:
+            return
+        self.sheet.format = before
+        self.format_changed(None)
+        self.window.status("Format put back.")
 
     # --- Styles ---------------------------------------------------------------------------------------------------
 
@@ -376,23 +450,27 @@ class GraphSheetView(QWidget):
         self._highlight()
 
     def _reveal(self, target) -> None:
-        key, _which, tab = section_for(target)
+        key = section_for(target)
         box = self.collapsibles.get(key)
+        if box is not None and box.isHidden() and self.search.text():
+            self.search.clear()  # a search that hides the section clicked on: put every section back first
         if box is not None:
             box.expand(True)
         section = self.panel.get(key)
-        sections = [section] + [page for dialog in self.dialogs.values() for page in dialog.pages.values()]
-        for part in sections:
-            if target[0] == "dataset" and isinstance(part, format_panel.DataSetSection):
-                part.show_dataset(target[1])
-            elif target[0] == "axis" and isinstance(part, format_panel.AxesSection):
-                part.axis.show_axis(target[1])
-            elif target[0] == "annotation" and isinstance(part, format_panel.AnnotationSection):
-                part.show_annotation(target[1])
-        for dialog in self.dialogs.values():
-            dialog.show_tab(tab)
+        if target[0] == "dataset" and isinstance(section, format_panel.DataSetSection):
+            section.show_dataset(target[1])
+        elif target[0] == "axis" and isinstance(section, format_panel.AxesSection):
+            section.axis.show_axis(target[1])
+        elif target[0] == "annotation" and isinstance(section, format_panel.AnnotationSection):
+            section.show_annotation(target[1])
         if box is not None:
-            QTimer.singleShot(0, lambda: self.panel_scroll.ensureWidgetVisible(box, 0, 0))
+            QTimer.singleShot(0, lambda: self.scroll_to(box))
+
+    def scroll_to(self, box) -> None:
+        """Scroll the panel so ``box`` (a section) starts at its top."""
+
+        top = box.mapTo(self.panel_scroll.widget(), QPoint(0, 0)).y()
+        self.panel_scroll.verticalScrollBar().setValue(top)
 
     def _highlight(self) -> None:
         """Outline the selected part (on screen only)."""
@@ -493,8 +571,7 @@ class GraphSheetView(QWidget):
         if target is None:
             return
         if event.dblclick:
-            _key, which, tab = section_for(target)
-            self.format_dialog(which, tab)
+            self._reveal(target)  # opens its section of the panel and scrolls to it, even if it was closed since the click
             return
         if target[0] in DRAGGABLE:
             self._start_drag(target, event)
@@ -620,6 +697,7 @@ class GraphSheetView(QWidget):
         self.project.flush_fits()
         data = self.project.data[self.sheet.data_id]
         written = export_figure(data, self.sheet, self.linked_result(), path, kind, dpi, width, height, units, self.project.flags(data.id))
+        self.window.remember_export(written)
         self.window.status(f"Saved {written}")
         self.window.log(f"graph {self.sheet.name} exported to {written} ({kind}, {dpi} dpi)")
         return written
@@ -663,8 +741,7 @@ class GraphExportDialog(QDialog):
         size.addWidget(self.height)
         size.addWidget(self.units)
         form.addRow("Size", size)
-        safe = "".join(" " if character in '\\/:*?"<>|' else character for character in sheet.name).strip()
-        self.file = QLineEdit(str(Path.home() / f"{' '.join(safe.split())}.svg"))
+        self.file = QLineEdit(parent.window.export_path(f"{sheet.name}.svg", sheet))
         self.file.setMinimumWidth(320)
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse)

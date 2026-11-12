@@ -13,6 +13,20 @@ def _no_save_prompts(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_recovery_prompts(monkeypatch, tmp_path_factory):
+    """QuantAnalysis keeps recovery copies of unsaved work: in tests they go to a temporary folder (never the user's), and the offer to
+    restore one is declined instead of asking."""
+
+    try:
+        from cellquant.gui.quantanalysis import window as window_module
+    except Exception:  # noqa: BLE001 - no Qt or no stats libraries here
+        return
+    folder = tmp_path_factory.mktemp("recovery")
+    monkeypatch.setattr(window_module, "recovery_folder", lambda: folder)
+    monkeypatch.setattr(window_module.QuantAnalysisWindow, "ask_restore", lambda self, name, when: False)
+
+
+@pytest.fixture(autouse=True)
 def _no_run_prompts(monkeypatch):
     """A window never stops a test with a question about runs: closing during a run exits, and an
     unfinished run from an earlier test is left for later."""

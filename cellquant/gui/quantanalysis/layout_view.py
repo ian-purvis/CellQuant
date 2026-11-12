@@ -56,7 +56,7 @@ class LayoutSheetView(QWidget):
         source = QLabel("A page of graphs, as it will be exported. It follows its graphs and their data.")
         source.setStyleSheet(NOTE_STYLE)
         top.addWidget(source, 1)
-        export = QPushButton("Export layout…")
+        export = QPushButton("Export page layout…")
         export.setToolTip(tips.LAYOUT_EXPORT)
         export.clicked.connect(lambda _checked=False: self.export_dialog())
         top.addWidget(export)
@@ -369,6 +369,7 @@ class LayoutSheetView(QWidget):
 
     def export(self, path, kind: str, dpi: int = 600) -> Path:
         written = layouts.export(self.sheet, self.project, path, kind, dpi)
+        self.window.remember_export(written)
         self.window.status(f"Saved {written}")
         self.window.log(f"page layout {self.sheet.name} exported to {written} ({kind}, {dpi} dpi)")
         return written
@@ -391,8 +392,7 @@ class LayoutExportDialog(QDialog):
         self.dpi_box.setCurrentIndex(1)
         self.dpi_box.setToolTip("Dots per inch for PNG, TIFF and JPEG. 300 for screens and drafts, 600 for print.")
         form.addRow("Resolution", self.dpi_box)
-        safe = "".join(" " if character in '\\/:*?"<>|' else character for character in sheet.name).strip()
-        self.file = QLineEdit(str(Path.home() / f"{' '.join(safe.split())}.svg"))
+        self.file = QLineEdit(parent.window.export_path(f"{sheet.name}.svg", sheet))
         self.file.setMinimumWidth(320)
         browse = QPushButton("Browse…")
         browse.clicked.connect(self._browse)
