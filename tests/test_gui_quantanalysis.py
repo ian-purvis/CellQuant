@@ -262,7 +262,7 @@ def test_entry_points_from_cellquant(tmp_path, monkeypatch):
     _wait(shell)
     try:
         texts = {button.text() for button in shell._tabs.findChildren(QPushButton)}
-        assert {"Analyze…", "Open a results folder in QuantAnalysis…"} <= texts
+        assert {"Open in QuantAnalysis…", "Open a results folder in QuantAnalysis…"} <= texts
         # One home: the Start tab (step 1 no longer repeats it).
         assert sum(button.text() == "Open a results folder in QuantAnalysis…" for button in shell._tabs.findChildren(QPushButton)) == 1
         window = shell.open_quantanalysis()

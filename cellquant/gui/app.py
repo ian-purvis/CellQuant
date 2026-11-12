@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -60,6 +61,7 @@ from cellquant import keep_awake
 from cellquant.controller import AnalysisController, display_z, read_unfinished_run
 from cellquant.count_area import outside
 from cellquant.errors import CellQuantError, RecipeValidationError
+from cellquant.export_folder import new_export_folder
 from cellquant.gui import guide
 from cellquant.segmentation import FULL_3D_FLOW_SMOOTH, FULL_3D_NITER, FULL_3D_TILE_OVERLAP, TILE_OVERLAP_RANGE
 from napari import layers as napari_layers
@@ -1011,7 +1013,7 @@ class CellQuantWindow:
         self.viewer = viewer
         self.controller: AnalysisController | None = None
         self._glossary_window = None
-        self._edit_cells = None  # step 5 Edit cells window, made when first opened
+        self._edit_cells = None  # step 5 Override calls window, made when first opened
         self._quantanalysis = None  # the QuantAnalysis statistics window, made on first use
         self._folder_lock = None  # this window's hold on the open experiment folder
         self._problem_text = ""  # what the Problem box shows now, for Copy details
@@ -1171,7 +1173,10 @@ class CellQuantWindow:
     def _markers_page_shown(self) -> None:
         """Step 4 lists every channel but the one objects are found in, so read that from step 2 first."""
 
-        if self._tabs.currentWidget() is not self._step_pages[3] or self.controller is None or self.is_busy():
+        if self._tabs.currentWidget() is not self._step_pages[3]:
+            self._marker_setup.flush()  # a tick made a moment ago is applied, not lost, when the user moves on
+            return
+        if self.controller is None or self.is_busy():
             return
         self._panels_to_recipe()
         self._marker_setup.refresh()
@@ -1382,7 +1387,7 @@ class CellQuantWindow:
 
     def start_practice(self) -> None:
         folder = guide.choose_practice_folder(self._tabs)
-        if folder is None:
+        if folder is None or not self._settle_unrecorded_drawing():
             return
         from cellquant.practice import create_practice_experiment
 
@@ -1419,6 +1424,7 @@ class CellQuantWindow:
         controller = self.require_controller()
         if controller is None:
             return
+        self._record_drawing_first()
         self._panels_to_recipe()
         controller.set_recipe(
             guide.marker_recipe(controller.recipe.model_dump(mode="json"), chosen, rule=rule, min_percent=min_percent)
@@ -1427,16 +1433,75 @@ class CellQuantWindow:
         self._measurements_panel.refresh()
         self._results_panel.refresh()
         self._marker_setup.refresh()
-        if not self._nav_ids:
+        self._measure_new_markers(None, rerun=True, first=True)
+
+    def apply_marker_merge(self, plan, *, clear_approvals: bool = False, min_percent: float | None = None) -> None:
+        """Step 4 after markers exist: ticking or unticking a channel (or the rule) changed the markers.
+
+        Markers that stay keep their cutoffs, cutoffs of single images, calls by hand and approvals (see
+        ``quicksetup.merge_marker_recipe``); added ones are measured; ``min_percent`` is the new minimum
+        percent for the percent markers that stay. The user stays on step 4.
+        """
+
+        controller = self.require_controller()
+        if controller is None:
+            return
+        self._record_drawing_first()
+        if plan.changes:
+            controller.set_recipe(plan.data)
+        if clear_approvals:
+            controller.clear_all_approvals("Approval was cleared because the markers changed.")
+        image_id = self._nav_ids[self._nav_index] if self._nav_ids else controller.current_image_id
+        if min_percent is not None and image_id is not None:
+            # A shared minimum percent, like moving the slider: approved images keep the one they were approved with.
+            stay = {
+                item.id: float(min_percent)
+                for item in controller.recipe.classifications
+                if item.id not in plan.new_ids and guide.uses_pixel_level(controller.recipe, item)
+            }
+            if stay:
+                controller.update_thresholds(image_id, stay)
+        controller.save()
+        self._measurements_panel.refresh()
+        self._results_panel.refresh()
+        self._marker_setup.refresh()
+        self._experiment_panel.refresh_status()
+        if plan.added or plan.reset:
+            self._measure_new_markers(set(plan.new_ids), rerun=False, first=False)
+            return
+        # Nothing to measure: markers were taken away (or the minimum changed); show the image at the new settings.
+        self.markers_changed()
+        if image_id is not None and not self.is_busy():
+            self._measure_new_markers(set(), rerun=False, first=False, removed=plan.removed)
+        elif plan.removed:
+            self.message(f"Removed the marker{'s' if len(plan.removed) != 1 else ''} {', '.join(plan.removed)}.")
+
+    def _measure_new_markers(self, only: set[str] | None, *, rerun: bool, first: bool, removed: list[str] | None = None) -> None:
+        """Measure the markers in the image shown and give the markers in ``only`` (None: all) a starting cutoff.
+
+        ``rerun`` runs the image again (the first setup); otherwise its objects are measured as they are, which
+        keeps its approval. The user is not moved to another step.
+        """
+
+        controller = self.controller
+        if controller is None or not self._nav_ids:
             return
         image_id = self._nav_ids[self._nav_index]
         self.message("Measuring the markers in this image...")
+
+        def work():
+            if rerun:
+                return controller.run_image(image_id)
+            try:
+                return controller.measure_markers(image_id)
+            except CellQuantError:
+                return controller.run_image(image_id)  # never run: the objects are found first
 
         def measured(result) -> None:
             recipe = controller.recipe
             levels = {}
             for item in recipe.classifications:
-                if not guide.uses_pixel_level(recipe, item):
+                if (only is not None and item.id not in only) or not guide.uses_pixel_level(recipe, item):
                     continue
                 spec = next(m for m in recipe.measurements if m.id == item.measurement)
                 reference = next(
@@ -1450,27 +1515,32 @@ class CellQuantWindow:
             starting = {
                 item.id: guide.starting_threshold(result.objects[item.measurement].to_numpy(dtype=float))
                 for item in controller.recipe.classifications
-                if item.measurement in result.objects.columns and not guide.uses_pixel_level(controller.recipe, item)
+                if (only is None or item.id in only)
+                and item.measurement in result.objects.columns
+                and not guide.uses_pixel_level(controller.recipe, item)
             }
-            updated = controller.update_thresholds(image_id, starting) or result
+            if first:
+                updated = controller.update_thresholds(image_id, starting) or result
+            else:  # markers added to an experiment being checked: no approval is cleared by their first cutoff
+                updated = (controller.set_starting_cutoffs(image_id, starting) if starting else None) or result
             controller.save()
             self._measurements_panel.refresh()
             self._marker_setup.refresh()
             self._experiment_panel.refresh_status()  # measuring new markers can clear an approval
             self.show_result(updated)
-            self.go_to_step(4)
-            first = controller.recipe.classifications[0].id if controller.recipe.classifications else None
-            panel = self._review_panel
-            if first is not None and panel.display.findData(first) >= 0:
-                panel.display.setCurrentIndex(panel.display.findData(first))
-            if levels:
-                self.message(
-                    "Markers measured. Check the starting pixel levels and the Cutoff slider."
-                )
+            if first:
+                # Step 5 starts on the first marker; the user opens it with Next.
+                panel = self._review_panel
+                first_id = controller.recipe.classifications[0].id if controller.recipe.classifications else None
+                if first_id is not None and panel.display.findData(first_id) >= 0:
+                    panel.display.setCurrentIndex(panel.display.findData(first_id))
+            if removed:
+                self.message(f"Removed the marker{'s' if len(removed) != 1 else ''} {', '.join(removed)}.")
             else:
-                self.message("Markers measured. Check the starting cutoffs with the Cutoff slider.")
+                self.message("Markers measured. Next: check the cutoffs in step 5.")
+            self.refresh_guidance()
 
-        self._start_job(lambda: controller.run_image(image_id), measured)
+        self._start_job(work, measured)
 
     def export_dialog(self) -> None:
         controller = self.require_controller()
@@ -1483,6 +1553,9 @@ class CellQuantWindow:
         )
         if not directory:
             return
+        self._record_drawing_first()
+        # A new dated folder inside the chosen one, so an earlier export is never overwritten.
+        folder = new_export_folder(directory, controller.active_analysis().name)
 
         def done(path) -> None:
             self._exported_to = Path(path)
@@ -1491,7 +1564,7 @@ class CellQuantWindow:
             self.refresh_guidance()
 
         options = self._results_panel.summary_options()
-        self._start_job(lambda: controller.export(directory, **options), done)
+        self._start_job(lambda: controller.export(folder, **options), done)
 
     @staticmethod
     def _note_gpu(status) -> None:
@@ -1541,6 +1614,8 @@ class CellQuantWindow:
             lock.release()
 
     def open_experiment(self, directory: str | Path, offer_unfinished: bool = True) -> None:
+        if not self._settle_unrecorded_drawing():
+            return
         lock = self._lock_folder(directory)
         if lock is None:
             return
@@ -1588,6 +1663,8 @@ class CellQuantWindow:
     def new_experiment(self) -> None:
         dialog = NewExperimentDialog(self._tabs)
         if dialog.exec() != QDialog.Accepted:
+            return
+        if not self._settle_unrecorded_drawing():
             return
         output = Path(dialog.results_folder())
         images = dialog.images_folder()
@@ -1646,6 +1723,54 @@ class CellQuantWindow:
         self._footer.log.append(f"Overwrote earlier results in {output}: deleted {', '.join(path.name for path in deleted)}.")
         return True
 
+    def _record_drawing_first(self) -> bool:
+        """Record drawing in the Objects layer that is not recorded yet (before leaving, running or exporting)."""
+
+        try:
+            return self._edit_panel.record_unrecorded()
+        except RuntimeError:
+            return True  # the panel is already gone (the window is closing)
+
+    def _ask_unrecorded(self, images: int) -> str:
+        """Drawing not recorded yet, and CellQuant is about to forget it: "record", "discard" or "cancel"."""
+
+        box = QMessageBox(self.viewer.window._qt_window)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Unrecorded drawing")
+        box.setText(f"The drawing on {images} image{'s' if images != 1 else ''} is not recorded yet.")
+        box.setInformativeText("Record it to keep it, or discard it.")
+        record = box.addButton("Record", QMessageBox.AcceptRole)
+        discard = box.addButton("Discard", QMessageBox.DestructiveRole)
+        cancel = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(record)
+        box.setEscapeButton(cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        return "record" if clicked is record else "discard" if clicked is discard else "cancel"
+
+    def _settle_unrecorded_drawing(self, saving: bool = False) -> bool:
+        """Before the drawing would be forgotten (closing, another experiment): ask Record / Discard / Cancel.
+
+        False when the user cancelled, or recording failed (the drawing is kept and the reason shown).
+        """
+
+        count = self._edit_panel.unrecorded_count()
+        if not count:
+            return True
+        answer = "record" if saving else self._ask_unrecorded(count)
+        if answer == "record":
+            return self._edit_panel.record_unrecorded()
+        if answer == "discard":
+            self._edit_panel.discard_unrecorded()
+            return True
+        return False
+
+    def _tab_changed_from_drawing(self) -> None:
+        """Leaving step 3 for another tab records the drawing."""
+
+        if self._tabs.currentWidget() is not self._step_pages[2]:
+            self._record_drawing_first()
+
     def require_controller(self) -> AnalysisController | None:
         if self.controller is None:
             self._footer.message("Open an experiment first: go to the Start tab.")
@@ -1662,6 +1787,8 @@ class CellQuantWindow:
                 self._footer.set_position(0, 0, "")
             return
         image_id = self._nav_ids[self._nav_index]
+        if image_id != self._labels_image_id:
+            self._record_drawing_first()  # leaving an image: its unrecorded drawing is recorded, not lost
         controller.current_image_id = image_id
         record = controller.experiment.image(image_id)
         result = controller.recall(image_id, measure=False) if controller else None
@@ -1791,6 +1918,7 @@ class CellQuantWindow:
         if not self._nav_ids:
             self.message("No images to run: add images in step 1, or tick Include for at least one.")
             return
+        self._record_drawing_first()
         self._panels_to_recipe()
         image_id = self._nav_ids[self._nav_index]
         self._start_job(lambda: controller.run_image(image_id, new_run=True), self._run_finished)
@@ -2121,6 +2249,7 @@ class CellQuantWindow:
         controller = self.require_controller()
         if controller is None or self._batch is not None or self._job is not None:
             return
+        self._record_drawing_first()
         self._panels_to_recipe()
         worker = BatchWorker(controller, image_ids, analyses, work=work, fresh=fresh, continuing=continuing)
         # Remembered until the run reaches its last image: the next start of CellQuant offers to continue it.
@@ -2246,11 +2375,18 @@ class CellQuantWindow:
         """Closing CellQuant during a run asks first: Exit (finished images are kept) or Stay."""
 
         window = self.viewer.window._qt_window
-        if not self.is_busy() or not window.isVisible():
-            return True
         from qtpy.QtWidgets import QApplication
 
         app = QApplication.instance()
+        if not self.is_busy():
+            # Drawing not recorded yet would be lost: ask first (recorded without asking when the computer shuts down).
+            try:
+                return self._settle_unrecorded_drawing(saving=app is not None and app.isSavingSession())
+            except Exception as exc:  # noqa: BLE001 - closing must never fail because of this question
+                _log_developer_error(exc)
+                return True
+        if not window.isVisible():
+            return True
         if app is not None and app.isSavingSession():
             return True  # the computer is shutting down or restarting: the run is offered again next time
         if not self._confirm_exit_during_run():
@@ -2447,6 +2583,8 @@ class CellQuantWindow:
         )
         if not directory or self.is_busy():
             return
+        self._record_drawing_first()
+        folder = new_export_folder(directory)  # a new dated folder inside the chosen one
         self._panels_to_recipe()
         self._exclusive = True
 
@@ -2457,7 +2595,7 @@ class CellQuantWindow:
             self.refresh_guidance()
 
         options = self._results_panel.summary_options()
-        self._start_job(lambda: controller.export_all(directory, **options), done)
+        self._start_job(lambda: controller.export_all(folder, **options), done)
 
     # -- analyses ----------------------------------------------------------------------------------
 
@@ -2469,6 +2607,7 @@ class CellQuantWindow:
             self.message("Wait for the current analysis to finish before switching.")
             self._analysis_bar.refresh()
             return
+        self._record_drawing_first()  # drawing belongs to the analysis being left
         self._panels_to_recipe()  # the settings on screen belong to the analysis being left
         try:
             controller.switch_analysis(recipe_id)
@@ -2552,6 +2691,7 @@ class CellQuantWindow:
             elif isinstance(widget, QCheckBox):
                 widget.clicked.connect(lambda *_args: save_soon())
         self._tabs.currentChanged.connect(lambda _index: save_soon())
+        self._tabs.currentChanged.connect(lambda _index: self._tab_changed_from_drawing())
         self._close_watcher = CloseWatcher(self._save_settings_quietly, self._dock, allow_close=self._allow_close)
         self.viewer.window._qt_window.installEventFilter(self._close_watcher)
 
@@ -2687,7 +2827,7 @@ class CellQuantWindow:
         self.viewer.camera.center = tuple(world[-2:])
 
     def open_edit_cells(self) -> None:
-        """Step 5 Edit cells: call single objects positive or negative by hand (one window, reused)."""
+        """Step 5 Override calls: call single objects positive or negative by hand (one window, reused)."""
 
         from cellquant.gui.cell_calls_window import EditCellsWindow
 
@@ -2932,7 +3072,10 @@ class CellQuantWindow:
     def _channel_names_changed(self) -> None:
         """Every list that names channels or markers shows the names as they are now."""
 
-        if self.controller is None or self.is_busy():
+        if self.controller is None:
+            return
+        if self.is_busy():
+            QTimer.singleShot(300, self._channel_names_changed)  # a run started meanwhile: once it is done
             return
         self._panels_to_recipe()  # settings typed but not yet stored are kept
         self._analysis_bar.refresh()
@@ -2943,6 +3086,7 @@ class CellQuantWindow:
         self._results_panel.refresh()
         self._marker_setup.refresh()
         self._experiment_panel.set_notices(self.controller.channel_notices())
+        self.markers_changed()  # steps 5 and 6 name the markers of the image on screen
 
     def _store_contrast(self, index: int, layer) -> None:
         if self.controller is None:
@@ -3975,41 +4119,49 @@ class ManifestTable(QTableWidget):
 
 
 class CollapsibleSection(QWidget):
-    """A titled section with an arrow that opens and closes it; closed until opened."""
+    """A heading that opens and closes the box under it (closed until it is opened, or something in it is in use).
 
-    def __init__(self, title: str) -> None:
+    Give it the box (``body``), or leave it out and fill an empty one with ``add_widget``.
+    """
+
+    def __init__(self, title: str, body: QWidget | None = None, tip: str = ""):
         super().__init__()
-        column = QVBoxLayout(self)
-        column.setContentsMargins(0, 0, 0, 0)
-        self.toggle = QToolButton()
-        self.toggle.setText(title)
-        self.toggle.setCheckable(True)
-        self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        self.toggle.setArrowType(Qt.RightArrow)
-        self.toggle.setStyleSheet("QToolButton { border: none; font-weight: bold; }")
-        self.toggle.toggled.connect(self._toggled)
-        self.body = QWidget()
-        self._body_layout = QVBoxLayout(self.body)
-        self._body_layout.setContentsMargins(12, 0, 0, 0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        self.title = title
+        self.header = QToolButton()
+        self.header.setText(title)
+        self.header.setCheckable(True)
+        self.header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.header.setArrowType(Qt.RightArrow)
+        self.header.setStyleSheet("QToolButton { border: none; font-weight: bold; text-align: left; }")
+        self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        if tip:
+            self.header.setToolTip(tip)
+        self.header.toggled.connect(self.set_open)
+        self.toggle = self.header
+        if body is None:
+            body = QWidget()
+            inner = QVBoxLayout(body)
+            inner.setContentsMargins(12, 0, 0, 0)
+        self.body = body
         self.body.setVisible(False)
-        row = QHBoxLayout()
-        row.addWidget(self.toggle)
-        row.addStretch(1)
-        column.addLayout(row)
-        column.addWidget(self.body)
+        outer.addWidget(self.header)
+        outer.addWidget(self.body)
 
     def add_widget(self, widget: QWidget) -> None:
-        self._body_layout.addWidget(widget)
+        self.body.layout().addWidget(widget)
 
     def is_open(self) -> bool:
-        return self.toggle.isChecked()
+        return self.header.isChecked()
 
-    def set_open(self, opened: bool) -> None:
-        self.toggle.setChecked(opened)
-
-    def _toggled(self, opened: bool) -> None:
-        self.toggle.setArrowType(Qt.DownArrow if opened else Qt.RightArrow)
-        self.body.setVisible(opened)
+    def set_open(self, on: bool) -> None:
+        self.header.blockSignals(True)
+        self.header.setChecked(on)
+        self.header.blockSignals(False)
+        self.header.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
+        self.body.setVisible(on)
 
 
 class ObjectsPanel(QWidget):
@@ -5207,7 +5359,7 @@ class MeasurementsPanel(QWidget):
         users = [item["name"] for item in data["classifications"] if item["measurement"] == removed]
         if users:
             self.shell.message(
-                f"{removed} is used by {', '.join(users)}. Remove or change that classification first."
+                f"{removed} is used by {', '.join(users)}. Remove or change that marker first."
             )
             return
         del data["measurements"][row]
@@ -5283,11 +5435,11 @@ class MaskColorDialog(QDialog):
 
     def __init__(self, on_change, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Mask colours")
+        self.setWindowTitle("Mask colors")
         self._on_change = on_change
         layout = QVBoxLayout(self)
         self.all_different = QCheckBox("All different")
-        self.all_different.setToolTip("Every object gets its own colour, with no limit on how many. Untick to pick colours.")
+        self.all_different.setToolTip("Every object gets its own color, with no limit on how many. Untick to pick colors.")
         self.all_different.toggled.connect(self._changed)
         layout.addWidget(self.all_different)
         self._grid_holder = QWidget()
@@ -5307,7 +5459,7 @@ class MaskColorDialog(QDialog):
             grid.addWidget(button, index // 8, index % 8)
             self.swatches[color] = button
         layout.addWidget(self._grid_holder)
-        self.note = QLabel("Tick one or more colours; they are used in turn.")
+        self.note = QLabel("Tick one or more colors; they are used in turn.")
         layout.addWidget(self.note)
         self._loading = False
 
@@ -5377,6 +5529,13 @@ class EditPanel(QWidget):
             layout.addWidget(holder)
             self._rows.append((holder, names))
         self.undo_button = self._buttons["Undo"]
+        # Shown next to the record buttons while the image on screen has drawing that is not recorded yet.
+        self.unrecorded_note = QLabel("● Unrecorded drawing on this image")
+        self.unrecorded_note.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.25); border-radius: 4px; padding: 3px; font-weight: bold; }")
+        self.unrecorded_note.setToolTip("It is recorded when you move to another image or tab, run or export, or click Record drawn edits.")
+        self.unrecorded_note.setWordWrap(True)
+        self.unrecorded_note.hide()
+        layout.insertWidget(layout.indexOf(self._buttons["Record drawn edits"].parentWidget()), self.unrecorded_note)
         # Circle: diameter in pixels; the default is the median object size until the user sets it.
         self.circle_size_label = QLabel("Size")
         self.circle_size = QSpinBox()
@@ -5406,9 +5565,9 @@ class EditPanel(QWidget):
         self.mask_colors_row = QWidget()
         colors_line = QHBoxLayout(self.mask_colors_row)
         colors_line.setContentsMargins(0, 0, 0, 0)
-        colors_line.addWidget(QLabel("Mask colours"))
+        colors_line.addWidget(QLabel("Mask colors"))
         self.mask_colors_button = QPushButton()
-        self.mask_colors_button.setToolTip("Colours of the object masks: every object its own colour, or the colours you tick, used in turn. Remembered on this computer.")
+        self.mask_colors_button.setToolTip("Colors of the object masks: every object its own color, or the colors you tick, used in turn. Remembered on this computer.")
         self.mask_colors_button.clicked.connect(self._pick_mask_colors)
         colors_line.addWidget(self.mask_colors_button)
         colors_line.addStretch(1)
@@ -5428,7 +5587,7 @@ class EditPanel(QWidget):
         self._closed: tuple[str | None, set[int]] = (None, set())
         self._filling = False
         self.pending_note = QLabel("")
-        self.pending_note.setToolTip("Drawing on these images is kept until you record it or close CellQuant.")
+        self.pending_note.setToolTip("Drawing on these images is recorded when you move to another image or tab, run or export, or click Record all images.")
         self.pending_note.hide()
         layout.addWidget(self.pending_note)
         # Why Record drawn edits did nothing, or that it worked; blank otherwise.
@@ -5453,7 +5612,7 @@ class EditPanel(QWidget):
         "home": "Pick a task: delete objects or add new ones.",
         "delete": "Click an object to delete it, or <b>Delete circle</b> and click or drag a circle. <b>Back</b> or Esc to stop.",
         "select": "Click an object to select it (Shift+click adds more), then <b>Delete selected</b> or <b>Restore selected</b>. <b>Back</b> or Esc stops.",
-        "add": "<b>Draw new object</b> and outline each cell, or <b>Circle</b> and click a cell: each is recorded as a new object.",
+        "add": "<b>Draw new object</b> and outline each object, or <b>Circle</b> and click one: each is recorded as a new object.",
     }
 
     def _apply_mode(self) -> None:
@@ -5465,7 +5624,7 @@ class EditPanel(QWidget):
             holder.setVisible(any(name in wanted for name in names))
         self.circle_size_row.setVisible("Circle" in wanted or "Delete circle" in wanted)
         self.mask_colors_row.setVisible(everything or self._mode == "home")
-        hint = "Delete: click <b>Delete objects</b>, then click objects. Add: outline cells after <b>Draw new object</b>." if everything else self._MODE_HINT[self._mode]
+        hint = "Delete: click <b>Delete objects</b>, then click objects. Add: outline objects after <b>Draw new object</b>." if everything else self._MODE_HINT[self._mode]
         card = getattr(self.shell, "_step_pages", None)
         card = getattr(card[2], "todo_card", None) if card else None
         if card is not None:
@@ -5473,7 +5632,7 @@ class EditPanel(QWidget):
 
     def _show_mask_colors(self) -> None:
         chosen = mask_colors()
-        self.mask_colors_button.setText(f"{len(chosen)} colours" if chosen else "All different")
+        self.mask_colors_button.setText(f"{len(chosen)} colors" if chosen else "All different")
 
     def _pick_mask_colors(self) -> None:
         if self._mask_dialog is None:
@@ -5755,6 +5914,7 @@ class EditPanel(QWidget):
         """After a brush stroke or polygon with the new object's number: check whether it closed an outline."""
 
         layer = self._labels
+        QTimer.singleShot(0, self._show_unrecorded)  # after napari has finished the stroke
         if self._filling or layer is None or self._drawing_label is None:
             return
         label = int(layer.selected_label)
@@ -5856,6 +6016,97 @@ class EditPanel(QWidget):
         count = sum(1 for analysis, _image in self._pending if analysis == self._key("")[0])
         self.pending_note.setText(f"Not recorded yet: {count} image{'s' if count != 1 else ''}." if count else "")
         self.pending_note.setVisible(bool(count))
+        self._show_unrecorded()
+
+    def _drawing_on_shown_image(self) -> bool:
+        """Drawing on the Objects layer (or kept for the image shown) that is not recorded yet."""
+
+        image_id, layer = self.shell._labels_image_id, self._labels
+        if image_id is None or layer is None or layer not in self.shell.viewer.layers:
+            return False
+        shown_id, base = self._shown if self._shown is not None else (None, None)
+        if shown_id == image_id and base is not None:
+            drawn = np.asarray(layer.data)
+            return drawn.shape == base.shape and not np.array_equal(drawn, base)
+        return self._key(image_id) in self._pending
+
+    def _show_unrecorded(self) -> None:
+        self.unrecorded_note.setVisible(self._drawing_on_shown_image())
+
+    def _live_pending(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        """Drawing of this analysis not recorded yet that can still be recorded: made on the objects the image has now."""
+
+        controller = self.shell.controller
+        analysis = self._key("")[0]
+        live = {}
+        for (owner, image_id), (base, drawn) in list(self._pending.items()):
+            if owner != analysis or controller is None:
+                continue
+            current = controller.recall(image_id, measure=False)
+            if current is None or current.labels.shape != base.shape or not np.array_equal(current.labels, base):
+                self._pending.pop((owner, image_id), None)  # the objects changed since: the drawing no longer applies
+                continue
+            live[image_id] = (base, drawn)
+        return live
+
+    def unrecorded_count(self) -> int:
+        """How many images have drawing not recorded yet (the one on screen included)."""
+
+        if self.shell.controller is None:
+            return 0
+        self.keep_drawing()
+        return len(self._live_pending())
+
+    def discard_unrecorded(self) -> None:
+        """Forget all drawing not recorded yet, on screen too."""
+
+        for image_id in list(self._live_pending()):
+            self._discard_drawing(image_id)
+        self._pending.clear()
+        self._show_pending()
+
+    def record_unrecorded(self) -> bool:
+        """Record all drawing not recorded yet, now (only the drawn objects are measured, so it is quick).
+
+        Used when the user moves to another image or tab, or starts a run or an export, so that drawing
+        is never lost by accident. True when nothing is left unrecorded; when recording fails the drawing
+        is kept and the reason is shown under the record buttons.
+        """
+
+        controller = self.shell.controller
+        if controller is None:
+            return True
+        self.keep_drawing()
+        todo = self._live_pending()
+        if not todo:
+            self._show_pending()
+            return True
+        if self.shell.is_busy():
+            self._say("Not recorded: wait for the current analysis to finish.")
+            return False
+        shown = self.shell._labels_image_id
+        recorded, failed, on_screen = [], [], None
+        for image_id, (_base, drawn) in todo.items():
+            try:
+                result = controller.commit_drawn_labels(image_id, drawn)
+            except Exception as exc:  # noqa: BLE001 - the drawing stays; the reason is shown
+                failed.append(str(exc) or exc.__class__.__name__)
+                continue
+            recorded.append(image_id)
+            self._pending.pop(self._key(image_id), None)
+            if self._closed[0] == image_id:
+                self._closed = (None, set())
+            if image_id == shown:
+                on_screen = result
+        if recorded:
+            self._edited(on_screen)
+        self._show_pending()
+        if failed:
+            self._say(f"Not recorded: {failed[0]}")
+            self.shell.message(f"Drawing was not recorded: {failed[0]}")
+            return False
+        self._say(f"Recorded the drawing on {len(recorded)} image{'s' if len(recorded) != 1 else ''}.")
+        return True
 
     def keep_drawing(self) -> None:
         """Before the Objects layer changes: keep what was drawn on the image it shows."""
@@ -5887,6 +6138,7 @@ class EditPanel(QWidget):
         kept = self._pending.get(key)
         current = controller.last_results.get(image_id)
         if kept is None or current is None:
+            self._show_unrecorded()
             return
         base, drawn = kept
         if base.shape == current.labels.shape and np.array_equal(base, current.labels):
@@ -6397,14 +6649,57 @@ class CutoffHistogram(QWidget):
 
 
 class ReviewPanel(QWidget):
+    """Step 5: the cutoff of one marker (or of every marker), and Approve.
+
+    Top to bottom: a banner when a change cleared approvals, then a scrolling area (Display objects by,
+    the cutoff and where it applies, the counts, the Images table, the optional boxes, Advanced), and under
+    it, always visible, the approval status with Approve.
+    """
+
     def __init__(self, shell: CellQuantWindow):
         super().__init__()
         self.shell = shell
         self._labels = None
         self._fills = None
-        layout = QVBoxLayout(self)
+        self._undo_state: dict | None = None  # cutoffs and approvals before the change the banner reports
+        self._undo_cleared: set[str] = set()
+        self._context: tuple | None = None  # (experiment, analysis) this panel last showed
+        self._scope_approved: bool | None = None  # "All images": were approved images included when it was chosen
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        # Said when a cutoff, example or minimum-percent change cleared approvals; Undo puts both back.
+        self.cleared_banner = QWidget()
+        banner = QHBoxLayout(self.cleared_banner)
+        banner.setContentsMargins(0, 0, 0, 0)
+        self.cleared_text = QLabel("")
+        self.cleared_text.setWordWrap(True)
+        self.cleared_text.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.25); border-radius: 4px; padding: 4px; }")
+        self.undo_cleared = QPushButton("Undo")
+        self.undo_cleared.setToolTip("Put back the cutoffs and the approvals as they were before this change.")
+        self.undo_cleared.clicked.connect(self._undo_cleared_approvals)
+        dismiss = QToolButton()
+        dismiss.setText("✕")
+        dismiss.setToolTip("Hide this message.")
+        dismiss.clicked.connect(self._hide_banner)
+        banner.addWidget(self.cleared_text, 1)
+        banner.addWidget(self.undo_cleared)
+        banner.addWidget(dismiss)
+        self.cleared_banner.setVisible(False)
+        outer.addWidget(self.cleared_banner)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Takes whatever height is left, so the step page never needs a second scroll bar around this panel.
+        self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+        self.scroll.setMinimumHeight(90)
+        content = QWidget()
+        content.setMinimumWidth(0)
+        self.scroll.setWidget(content)
+        outer.addWidget(self.scroll, 1)
+        layout = QVBoxLayout(content)
         self.display = QComboBox()
-        self.display.currentIndexChanged.connect(lambda _index: self._recolor())
+        self.display.currentIndexChanged.connect(lambda _index: self._display_changed())
         layout.addWidget(QLabel("Display objects by"))
         layout.addWidget(self.display)
         # "All markers": every marker's cutoff at once, objects colored by their mix of markers.
@@ -6430,6 +6725,19 @@ class ReviewPanel(QWidget):
         self.threshold_slider.setRange(0.0, 1.0)
         self.threshold_slider.valueChanged.connect(self._slider_moved)
         layout.addWidget(self.threshold_slider)
+        # Where a cutoff change goes: the image shown (the default), or every image.
+        self.scope_row = QWidget()
+        scope_line = QHBoxLayout(self.scope_row)
+        scope_line.setContentsMargins(0, 0, 0, 0)
+        self.scope = QComboBox()
+        self.scope.addItem("This image", "this")
+        self.scope.addItem("All images", "all")
+        self.scope.setItemData(0, "A cutoff change applies to the image shown only (it gets its own cutoff).", Qt.ToolTipRole)
+        self.scope.setItemData(1, "This image's cutoff goes to the other images now, and every later change here follows to them.", Qt.ToolTipRole)
+        self.scope.activated.connect(lambda _index: self._scope_chosen())
+        scope_line.addWidget(QLabel("Applies to:"))
+        scope_line.addWidget(self.scope, 1)
+        layout.addWidget(self.scope_row)
         self.cutoff_tools = QWidget()
         tools = QFormLayout(self.cutoff_tools)
         tools.setContentsMargins(0, 0, 0, 0)
@@ -6464,19 +6772,13 @@ class ReviewPanel(QWidget):
         self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
         layout.addWidget(self.counts)
         layout.addWidget(self._strip_box())
-        layout.addWidget(self._count_area_box())
-        self.status_line = QLabel("")
-        layout.addWidget(self.status_line)
-        self.edit_cells = QPushButton("Edit cells…")
-        self.edit_cells.setToolTip("Select single cells and call them positive or negative by hand, whatever the cutoff.")
-        self.edit_cells.clicked.connect(lambda _checked=False: self.shell.open_edit_cells())
-        layout.addWidget(self.edit_cells)
-        self.approve_button = QPushButton("Approve")
-        self.approve_button.clicked.connect(lambda _checked=False: self._set_status("approved"))
-        layout.addWidget(self.approve_button)
-        # Previous / Next image go through only these images until "Check all included images".
-        queue_buttons = QHBoxLayout()
-        queue_buttons.addWidget(QLabel("Check"))
+        # Optional boxes, closed until opened (or until something in them is in use).
+        self.count_area_section = CollapsibleSection("Count area (optional)", self._count_area_box(), self._count_area_tip)
+        layout.addWidget(self.count_area_section)
+        # Previous / Next image go through only these images until "All included".
+        queue = QWidget()
+        queue_buttons = QHBoxLayout(queue)
+        queue_buttons.setContentsMargins(0, 0, 0, 0)
         for text, mode, tip in (
             ("Needs a look", "flagged", "Previous / Next image go through only images with warnings."),
             ("Failed", "failed", "Previous / Next image go through only images that failed."),
@@ -6486,7 +6788,8 @@ class ReviewPanel(QWidget):
             button.setToolTip(tip)
             button.clicked.connect(lambda _checked=False, value=mode: self.shell._results_panel._filter_nav(value))
             queue_buttons.addWidget(button)
-        layout.addLayout(queue_buttons)
+        self.queue_section = CollapsibleSection("Review queue", queue, "Make Previous / Next go through only the images that need a look, or only the failed ones.")
+        layout.addWidget(self.queue_section)
         self.advanced_toggle = QCheckBox("Advanced")
         self.advanced_box = QGroupBox("Advanced")
         self.advanced_box.setVisible(False)
@@ -6523,10 +6826,24 @@ class ReviewPanel(QWidget):
         self.qc.setWordWrap(True)
         layout.addWidget(self.qc)
         layout.addStretch(1)
-        # The cutoff tools change this image only; this copies its cutoff to the other images.
-        self.apply_all = QPushButton("Apply to all images")
-        self.apply_all.clicked.connect(self._apply_to_all)
-        layout.addWidget(self.apply_all)
+        # Pinned under the scrolling area, so Approve is always in view.
+        pinned = QWidget()
+        bottom = QVBoxLayout(pinned)
+        bottom.setContentsMargins(0, 4, 0, 0)
+        self.status_line = QLabel("")
+        self.status_line.setWordWrap(True)
+        bottom.addWidget(self.status_line)
+        buttons = QHBoxLayout()
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.setMinimumHeight(30)
+        self.approve_button.clicked.connect(lambda _checked=False: self._set_status("approved"))
+        self.edit_cells = QPushButton("Override calls…")
+        self.edit_cells.setToolTip("Select single objects and call them positive or negative by hand, whatever the cutoff.")
+        self.edit_cells.clicked.connect(lambda _checked=False: self.shell.open_edit_cells())
+        buttons.addWidget(self.approve_button, 1)
+        buttons.addWidget(self.edit_cells, 1)
+        bottom.addLayout(buttons)
+        outer.addWidget(pinned)
 
     def _examples_box(self) -> QWidget:
         """Examples mode (chosen per marker in step 4): click objects positive or negative."""
@@ -6640,14 +6957,21 @@ class ReviewPanel(QWidget):
             self.shell.message("Wait for the image to finish loading, then click the object again.")
             return
         old = classification.threshold_for(image_id)
+        before = self._snapshot()
         try:
             result = controller.mark_example(classification.id, image_id, object_id, positive)
         except CellQuantError as exc:
             self.shell.message(str(exc))
             return
         new = self._current_classification().threshold_for(image_id)
+        if not self._this_image_only() and new != old:
+            # Applies to: All images: the cutoff the examples give goes to every image, like a slider move.
+            cleared = list(controller.cleared_approvals)
+            controller.apply_cutoff_to_all(classification.id, new, include_approved=self._all_include_approved())
+            controller.cleared_approvals = sorted({*cleared, *controller.cleared_approvals})
+            result = controller.classified_now(image_id)
         text = f"{classification.name} cutoff from the examples: {old:g} → {new:g}." if new != old else ""
-        self._after_cutoff_change(result, text)
+        self._after_cutoff_change(result, text, before)
 
     def _clear_examples(self, _checked: bool = False) -> None:
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
@@ -6836,16 +7160,18 @@ class ReviewPanel(QWidget):
         scope = "Ticked images" if selected else "All images"
         self.strip_total.setText(f"{scope}: {total_positive} / {total_counted} positive ({overall})")
 
-    def _count_area_box(self) -> QGroupBox:
+    def _count_area_box(self) -> QWidget:
         """Optional area to count in, drawn on the image after objects are found."""
 
-        box = QGroupBox("Count area (optional) ⓘ")
-        box.setToolTip(
+        box = QWidget()
+        self._count_area_tip = (
             "Count only objects whose center is inside the drawn area, for example to skip damaged tissue. "
             "Objects outside stay in objects.csv with in_count_area = False. No area: the whole image counts. "
             "Not the same as cropping in step 2, which limits where objects are found."
         )
+        box.setToolTip(self._count_area_tip)
         row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
         for text, slot, tip in (
             ("Draw", self._draw_count_area, "Draw polygons in the Count area layer: click the corners, double-click to finish."),
             ("Use for this image", lambda: self._use_count_area(every_image=False), "Count only inside the drawn area in this image."),
@@ -6904,7 +7230,7 @@ class ReviewPanel(QWidget):
     def _pixel_level_box(self) -> QGroupBox:
         """Shown for a marker called by the percent of its pixels: the two numbers that decide it."""
 
-        box = QGroupBox("Percent-of-cell rule")
+        box = QGroupBox("Percent-of-object rule")
         form = QFormLayout(box)
         self.min_percent = QDoubleSpinBox()
         self.min_percent.setRange(0.0, 100.0)
@@ -6912,7 +7238,7 @@ class ReviewPanel(QWidget):
         self.min_percent.setSingleStep(1.0)
         self.min_percent.setSuffix(" %")
         self.min_percent.setKeyboardTracking(False)
-        self.min_percent.setToolTip("A cell is positive when at least this percent of its pixels pass the pixel level.")
+        self.min_percent.setToolTip("An object is positive when at least this percent of its pixels pass the pixel level.")
         guide.add_range_tip(self.min_percent)
         self.min_percent.valueChanged.connect(self._min_percent_changed)
         self.pixel_level = QDoubleSpinBox()
@@ -6932,7 +7258,7 @@ class ReviewPanel(QWidget):
         self.apply_level = QPushButton("Apply pixel level")
         self.apply_level.setToolTip("Measure this image again with the new pixel level. Objects and edits are kept.")
         self.apply_level.clicked.connect(self._apply_pixel_level)
-        form.addRow("Min % of cell", self.min_percent)
+        form.addRow("Min % of object", self.min_percent)
         form.addRow("Pixel level", self.pixel_level)
         form.addRow("Upper pixel level", high)
         form.addRow(self.apply_level)
@@ -7020,8 +7346,9 @@ class ReviewPanel(QWidget):
         current = self.display.currentData()
         self.display.clear()
         self.display.addItem("Objects", "")
+        shown = self.shell.controller.marker_names()  # a marker follows its channel when the user renames it
         for classification in self.shell.controller.recipe.classifications:
-            self.display.addItem(classification.name, classification.id)
+            self.display.addItem(shown.get(classification.id, classification.name), classification.id)
         if len(self.shell.controller.recipe.classifications) > 1:
             from cellquant.gui.combined_markers import ALL_MARKERS
 
@@ -7084,7 +7411,7 @@ class ReviewPanel(QWidget):
             self.combined.show_result(result, self.shell.controller)
         classification_id = self.classification_id()
         examples = self._examples_mode()
-        for widget in (self.cutoff_label, self.histogram, self.strip, self.apply_all):
+        for widget in (self.cutoff_label, self.histogram, self.strip, self.scope_row):
             widget.setVisible(bool(classification_id))
         for widget in (self.threshold_slider, self.cutoff_tools):
             widget.setVisible(bool(classification_id) and not examples)
@@ -7132,7 +7459,7 @@ class ReviewPanel(QWidget):
 
         if percent_rule:
             low, high, decimals = 0.0, 100.0, 1
-            self.cutoff_label.setText("Cutoff (min % of cell)")
+            self.cutoff_label.setText("Cutoff (min % of object)")
         else:
             finite = np.asarray(values, dtype=float)
             finite = finite[np.isfinite(finite)]
@@ -7165,16 +7492,52 @@ class ReviewPanel(QWidget):
             widget.setEnabled(not percent_rule)
 
     def _this_image_only(self) -> bool:
-        return True  # every cutoff tool changes the image shown; Apply to all images copies it
+        """Cutoff changes go to the image shown, unless "Applies to: All images" is chosen (one marker shown)."""
+
+        return self.scope.currentData() != "all" or self.showing_all_markers()
+
+    def _all_include_approved(self) -> bool:
+        """Under "All images": whether approved images were included when it was chosen (asked once, then kept)."""
+
+        return self._scope_approved is not False
+
+    def _set_scope(self, value: str) -> None:
+        self.scope.blockSignals(True)
+        self.scope.setCurrentIndex(max(0, self.scope.findData(value)))
+        self.scope.blockSignals(False)
+        if value != "all":
+            self._scope_approved = None
+
+    def _scope_chosen(self) -> None:
+        """"All images": give the other images this image's cutoff now (asking about approved images); "This image": stop."""
+
+        if self.scope.currentData() == "all":
+            if not self._apply_to_all():
+                self._set_scope("this")  # cancelled, or nothing to apply
+        else:
+            self._scope_approved = None
+
+    def _display_changed(self) -> None:
+        self._set_scope("this")  # the scope belongs to the marker whose cutoff was shown
+        self._recolor()
 
     def _shown_image_id(self) -> str | None:
         if self.shell.controller is None or not self.shell._nav_ids:
             return None
         return self.shell._nav_ids[self.shell._nav_index]
 
+    def _set_cutoff_value(self, classification_id: str, image_id: str, value: float):
+        """Move the marker's cutoff to ``value`` for the image shown, or (Applies to: All images) for every image."""
+
+        controller = self.shell.controller
+        if self._this_image_only():
+            return controller.update_thresholds(image_id, {classification_id: value}, this_image_only=True)
+        controller.apply_cutoff_to_all(classification_id, value, include_approved=self._all_include_approved())
+        return controller.classified_now(image_id)
+
     def _auto_method_chosen(self) -> None:
-        """Remember the method and move the cutoff to its value, like a slider move: for all images
-        (from every measured image) or for this image only. Own cutoffs of other images stay."""
+        """Remember the method and move the cutoff to its value, like a slider move: for this image only,
+        or (Applies to: All images) for every image, from every measured image."""
 
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
         if classification is None or image_id is None:
@@ -7192,11 +7555,66 @@ class ReviewPanel(QWidget):
             self.shell.message(f"{exc} The method is kept for later.")
             return
         old = classification.threshold_for(image_id)
-        result = controller.update_thresholds(image_id, {classification.id: value}, this_image_only=self._this_image_only())
+        before = self._snapshot()
+        result = self._set_cutoff_value(classification.id, image_id, value)
         source = "this image" if self._this_image_only() else f"{used} image{'s' if used != 1 else ''}"
-        self._after_cutoff_change(result, f"{classification.name} cutoff ({self.auto_method.currentText()}, from {source}): {old:g} → {value:g}.")
+        self._after_cutoff_change(result, f"{classification.name} cutoff ({self.auto_method.currentText()}, from {source}): {old:g} → {value:g}.", before)
 
-    def _after_cutoff_change(self, result, text: str = "") -> None:
+    # -- the banner: approvals a cutoff change cleared, with Undo -------------------------------------
+
+    def _snapshot(self) -> dict | None:
+        """Cutoffs and approvals as they are now, for Undo. Only when an image is approved (only then can a change
+        clear an approval), and not while a banner already holds the older state it would go back to."""
+
+        controller = self.shell.controller
+        if controller is None or self._undo_state is not None:
+            return None
+        if not any(record.processing_status == "approved" for record in controller.experiment.images):
+            return None
+        return controller.cutoff_state()
+
+    def _show_cleared(self, before: dict | None, cleared: list[str]) -> None:
+        if self._undo_state is None and before is not None:
+            self._undo_state, self._undo_cleared = before, set()
+        if self._undo_state is None:
+            return
+        self._undo_cleared |= set(cleared)
+        count = len(self._undo_cleared)
+        self.cleared_text.setText(f"Approval cleared for {count} image{'s' if count != 1 else ''} whose percent positive changed.")
+        self.cleared_banner.setVisible(True)
+
+    def _hide_banner(self, _checked: bool = False) -> None:
+        self._undo_state, self._undo_cleared = None, set()
+        self.cleared_banner.setVisible(False)
+
+    def _undo_cleared_approvals(self, _checked: bool = False) -> None:
+        """Put back the cutoffs and the approvals as they were before the change the banner reports."""
+
+        controller, state = self.shell.controller, self._undo_state
+        if controller is None or state is None:
+            self._hide_banner()
+            return
+        if self.shell.is_busy():
+            self.shell.message("Wait for the current analysis to finish, then click Undo again.")
+            return
+        try:
+            result = controller.restore_cutoff_state(state, self._shown_image_id())
+        except (CellQuantError, KeyError) as exc:
+            self.shell.message(str(exc))
+            self._hide_banner()
+            return
+        self._hide_banner()
+        self._set_scope("this")
+        controller.save()
+        if result is not None:
+            self.shell.show_classification(result)
+        self.shell._experiment_panel.refresh_table()
+        self.shell._refresh_plan()
+        self.update_status_line()
+        self.shell.refresh_guidance()
+        self.shell.message("Cutoffs and approvals put back as they were.")
+
+    def _after_cutoff_change(self, result, text: str = "", before: dict | None = None) -> None:
         """Save, show the new calls, and say (and show) which approvals the change cleared."""
 
         controller = self.shell.controller
@@ -7209,6 +7627,7 @@ class ReviewPanel(QWidget):
         cleared = len(controller.cleared_approvals)
         if cleared:
             text = f"{text} Approval cleared for {cleared} image{'s' if cleared != 1 else ''} whose percent positive changed.".strip()
+            self._show_cleared(before, list(controller.cleared_approvals))
             self.shell._experiment_panel.refresh_table()
             self.shell._refresh_plan()
             self.update_status_line()
@@ -7216,13 +7635,16 @@ class ReviewPanel(QWidget):
         if text:
             self.shell.message(text)
 
-    def _apply_to_all(self, _checked: bool = False) -> None:
-        """This image's cutoff for the marker shown, for every image. Approved images are asked about."""
+    def _apply_to_all(self, _checked: bool = False) -> bool:
+        """This image's cutoff for the marker shown, for every image. Approved images are asked about.
+
+        True when it was applied. The choice about approved images is kept for "Applies to: All images".
+        """
 
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
         if classification is None or image_id is None:
             self.shell.message("Choose a marker under Display objects by first.")
-            return
+            return False
         value = classification.threshold_for(image_id)
         approved = [
             record.image_id
@@ -7231,10 +7653,13 @@ class ReviewPanel(QWidget):
         ]
         include_approved = self._ask_include_approved(classification.name, value, len(approved)) if approved else True
         if include_approved is None:
-            return
+            return False
+        before = self._snapshot()
         controller.apply_cutoff_to_all(classification.id, value, include_approved=include_approved)
+        self._scope_approved = include_approved
         which = "every image" if include_approved else "every unapproved image"
-        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff {value:g} applied to {which}.")
+        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff {value:g} applied to {which}.", before)
+        return True
 
     def _ask_include_approved(self, name: str, value: float | None, approved: int) -> bool | None:
         """Change the approved images too (True), only the unapproved ones (False), or nothing (None)."""
@@ -7255,36 +7680,34 @@ class ReviewPanel(QWidget):
         return box.clickedButton() is every
 
     def _reset_cutoff(self, _checked: bool = False) -> None:
-        """Back to the automatic cutoff: for this image's own objects (This image only), or found
-        again from every measured included image (All images; then no image keeps its own)."""
+        """Back to the automatic cutoff: for this image's own objects, or (Applies to: All images) found
+        again from every measured included image for every image."""
 
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
         if classification is None or image_id is None:
             return
         this_image = self._this_image_only()
-        own = [] if this_image else list(classification.image_thresholds)
-        approved = [
-            record.image_id
-            for record in controller.experiment.images
-            if record.processing_status == "approved" and (not this_image or record.image_id == image_id)
-        ]
-        if own or approved:
-            lines = [f"Set the {classification.name} cutoff to its automatic value ({self.auto_method.currentText()})"
-                     + (" for this image?" if this_image else " for all images?")]
-            if own:
-                lines.append(f"{len(own)} image{'s' if len(own) != 1 else ''} with {'their' if len(own) != 1 else 'its'} own cutoff will use the shared one.")
-            if approved:
-                lines.append("Approved images whose percent positive changes will need approving again.")
+        if this_image and controller.experiment.image(image_id).processing_status == "approved":
+            lines = [
+                f"Set the {classification.name} cutoff to its automatic value ({self.auto_method.currentText()}) for this image?",
+                "Approved images whose percent positive changes will need approving again.",
+            ]
             answer = QMessageBox.question(self, "Reset cutoff", "\n".join(lines), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
+        before = self._snapshot()
         try:
-            old, new, used = controller.reset_cutoff(classification.id, image_id, this_image_only=this_image, pool=self.strip_pool())
+            if this_image:
+                old, new, used = controller.reset_cutoff(classification.id, image_id, this_image_only=True, pool=self.strip_pool())
+            else:
+                old = classification.threshold_for(image_id)
+                new, used = controller.auto_cutoff(classification.id, image_id, this_image_only=False, pool=self.strip_pool())
+                controller.apply_cutoff_to_all(classification.id, new, include_approved=self._all_include_approved())
         except CellQuantError as exc:
             self.shell.message(str(exc))
             return
         source = "this image" if this_image else f"{used} image{'s' if used != 1 else ''}"
-        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff (from {source}): {old:g} → {new:g}.")
+        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff (from {source}): {old:g} → {new:g}.", before)
 
     def _slider_moved(self, value: float) -> None:
         self._pending_cutoff = float(value)
@@ -7348,9 +7771,15 @@ class ReviewPanel(QWidget):
         if not cutoffs:
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
-        result = controller.update_thresholds(image_id, cutoffs, this_image_only=self._this_image_only())
+        before = self._snapshot()
+        if self._this_image_only():
+            result = controller.update_thresholds(image_id, cutoffs, this_image_only=True)
+        else:
+            for classification_id, value in cutoffs.items():
+                controller.apply_cutoff_to_all(classification_id, value, include_approved=self._all_include_approved())
+            result = controller.classified_now(image_id)
         if controller.cleared_approvals or controller.kept_approvals:
-            self._after_cutoff_change(result)
+            self._after_cutoff_change(result, "", before)
         elif result is not None:
             self.shell.show_classification(result)
 
@@ -7372,6 +7801,7 @@ class ReviewPanel(QWidget):
         include_approved = self._ask_include_approved("this image's cutoff for every marker", None, len(approved)) if approved else True
         if include_approved is None:
             return
+        before = self._snapshot()
         kept, cleared = set(), set()
         for classification in classifications:
             controller.apply_cutoff_to_all(classification.id, classification.threshold_for(image_id), include_approved=include_approved)
@@ -7379,7 +7809,7 @@ class ReviewPanel(QWidget):
             cleared.update(controller.cleared_approvals)
         controller.kept_approvals, controller.cleared_approvals = sorted(kept), sorted(cleared)
         which = "every image" if include_approved else "every unapproved image"
-        self._after_cutoff_change(controller.classified_now(image_id), f"This image's cutoffs for all {len(classifications)} markers applied to {which}.")
+        self._after_cutoff_change(controller.classified_now(image_id), f"This image's cutoffs for all {len(classifications)} markers applied to {which}.", before)
 
     def _recolor(self) -> None:
         controller = self.shell.controller
@@ -7390,8 +7820,38 @@ class ReviewPanel(QWidget):
         if result is not None:
             self.shell.show_classification(result)
 
+    def _check_context(self) -> None:
+        """Another experiment or analysis: "Applies to" goes back to This image and the banner goes."""
+
+        controller = self.shell.controller
+        context = (controller.experiment.experiment_id, controller.recipe.recipe_id) if controller is not None else None
+        if context != self._context:
+            self._context = context
+            self._set_scope("this")
+            self._hide_banner()
+            self._sections_in_use = {"count_area": False, "queue": False}
+
+    _sections_in_use: dict = {"count_area": False, "queue": False}
+
+    def _open_sections_in_use(self) -> None:
+        """A section whose contents are in use (a count area is set, a queue is active) opens itself, once."""
+
+        controller = self.shell.controller
+        if controller is None:
+            return
+        now = {
+            "count_area": any(record.count_area for record in controller.experiment.images if record.include),
+            "queue": bool(self.shell._nav_filter),
+        }
+        for key, section in (("count_area", self.count_area_section), ("queue", self.queue_section)):
+            if now[key] and not self._sections_in_use.get(key):
+                section.set_open(True)
+        self._sections_in_use = now
+
     def update_status_line(self) -> None:
         controller = self.shell.controller
+        self._check_context()
+        self._open_sections_in_use()
         if controller is None or not self.shell._nav_ids:
             self.status_line.setText("")
             return
@@ -7410,6 +7870,7 @@ class ReviewPanel(QWidget):
             self.shell.message("Run this image first.")
             return
         controller.set_status(image_id, status)
+        self._hide_banner()
         self.shell._autosave()
         self.shell._experiment_panel.refresh_table()
         self.shell._refresh_plan()
@@ -7483,31 +7944,22 @@ class ResultsPanel(QWidget):
         settings.addWidget(load)
         settings.addStretch(1)
         layout.addLayout(settings)
-        # Summaries in the export: by group, and per biological unit (for example per retina).
-        summaries = QHBoxLayout()
-        group_label = QLabel("Group by")
-        group_label.setToolTip("A column of step 1, for example Folder 1 (the condition). Export adds grouped_by_<column>.csv.")
-        summaries.addWidget(group_label)
+        # Summaries in the export: by group, and per biological unit (for example per retina). They are shown
+        # in step 6's Export box (see ResultsSummary), since they decide which files an export writes.
         self.group_by = QComboBox()
-        self.group_by.setToolTip(group_label.toolTip())
-        summaries.addWidget(self.group_by, 1)
-        unit_label = QLabel("Unit")
-        unit_label.setToolTip(
+        self.group_by.setToolTip("A column of step 1, for example Folder 1 (the condition). Export adds grouped_by_<column>.csv.")
+        self.unit = QComboBox()
+        self.unit.setToolTip(
             "The biological unit, for example the retina (by default the folder that holds the images). Export adds "
             "units_by_<column>.csv (each unit's images pooled) and, when grouped, grouped_by_<group>_equal_units.csv: "
             "the mean of the units' percents, so every retina counts once, with n units and SD."
         )
-        summaries.addWidget(unit_label)
-        self.unit = QComboBox()
-        self.unit.setToolTip(unit_label.toolTip())
-        summaries.addWidget(self.unit, 1)
-        layout.addLayout(summaries)
 
     def refresh(self) -> None:
         controller = self.shell.controller
         if controller is None:
             return
-        names = {item.id: item.name for item in controller.recipe.classifications}
+        names = controller.marker_names()
         self.reports.setRowCount(len(controller.recipe.reports))
         for row, report in enumerate(controller.recipe.reports):
             for column, expression in ((0, report.numerator), (1, report.denominator)):
@@ -7561,6 +8013,9 @@ class ResultsPanel(QWidget):
             index = box.findData(keep)
             box.setCurrentIndex(index if index >= 0 else 0)
             box.blockSignals(False)
+        summary = getattr(self.shell, "_results_summary", None)
+        if summary is not None:
+            summary.show_files()  # the files an export writes follow the choices
 
     def summary_options(self) -> dict:
         """``group_by`` and ``unit`` for exports, as chosen here (None: no grouping / the default unit)."""

@@ -1,4 +1,4 @@
-"""Step 5 Edit cells: select objects and call them positive or negative by hand for a marker.
+"""Step 5 Override calls: select objects and call them positive or negative by hand for a marker.
 
 Selecting works like QuPath: click an object, Shift+click to add or remove one, draw around
 objects, or select every object with a call. The chosen call then overrides the cutoff for those
@@ -39,7 +39,7 @@ class EditCellsWindow(QDialog):
     def __init__(self, shell, parent=None):
         super().__init__(parent)
         self.shell = shell
-        self.setWindowTitle("Edit cells")
+        self.setWindowTitle("Override calls")
         self.setWindowFlag(Qt.WindowType.Tool, True)
         self.setModal(False)
         self.selected: set[int] = set()
@@ -85,7 +85,7 @@ class EditCellsWindow(QDialog):
         for widget in (self.click_button, self.area_button, self.select_all, clear):
             line.addWidget(widget)
         rows.addLayout(line)
-        self.selection_line = QLabel("No cells selected.")
+        self.selection_line = QLabel("No objects selected.")
         rows.addWidget(self.selection_line)
         return box
 
@@ -96,25 +96,25 @@ class EditCellsWindow(QDialog):
         self.positive_button = QPushButton("Positive")
         self.negative_button = QPushButton("Negative")
         self.cutoff_button = QPushButton("Use cutoff")
-        self.positive_button.setToolTip("Call the selected cells positive, whatever the cutoff.")
-        self.negative_button.setToolTip("Call the selected cells negative, whatever the cutoff.")
-        self.cutoff_button.setToolTip("Let the cutoff call the selected cells again.")
+        self.positive_button.setToolTip("Call the selected objects positive, whatever the cutoff.")
+        self.negative_button.setToolTip("Call the selected objects negative, whatever the cutoff.")
+        self.cutoff_button.setToolTip("Let the cutoff call the selected objects again.")
         for button, call in ((self.positive_button, True), (self.negative_button, False), (self.cutoff_button, None)):
             button.clicked.connect(lambda _checked=False, call=call: self.call_selected(call))
             line.addWidget(button)
         line.addStretch(1)
         rows.addLayout(line)
-        note = QLabel("The cutoff no longer decides these cells for this marker until you click Use cutoff.")
+        note = QLabel("The cutoff no longer decides these objects for this marker until you click Use cutoff.")
         note.setWordWrap(True)
         rows.addWidget(note)
         return box
 
     def _selected_box(self) -> QGroupBox:
-        box = QGroupBox("Selected cells, every marker")
+        box = QGroupBox("Selected objects, every marker")
         rows = QVBoxLayout(box)
         self.selected_table = QTableWidget(0, 6)
-        self.selected_table.setHorizontalHeaderLabels(["Cell", "Marker", "Value", "Cutoff", "By cutoff", "Call"])
-        self.selected_table.horizontalHeaderItem(5).setToolTip("Set any marker's call for that cell here.")
+        self.selected_table.setHorizontalHeaderLabels(["Object", "Marker", "Value", "Cutoff", "By cutoff", "Call"])
+        self.selected_table.horizontalHeaderItem(5).setToolTip("Set any marker's call for that object here.")
         self.selected_table.verticalHeader().setVisible(False)
         self.selected_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         rows.addWidget(self.selected_table)
@@ -124,11 +124,11 @@ class EditCellsWindow(QDialog):
         self.called_box = QGroupBox("Called by hand in this image")
         rows = QVBoxLayout(self.called_box)
         self.called_table = QTableWidget(0, 4)
-        self.called_table.setHorizontalHeaderLabels(["Cell", "Marker", "By cutoff", "Call"])
+        self.called_table.setHorizontalHeaderLabels(["Object", "Marker", "By cutoff", "Call"])
         self.called_table.verticalHeader().setVisible(False)
         self.called_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.called_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.called_table.setToolTip("Click a row to select that cell and center the image on it.")
+        self.called_table.setToolTip("Click a row to select that object and center the image on it.")
         self.called_table.cellClicked.connect(self._called_row_clicked)
         rows.addWidget(self.called_table)
         line = QHBoxLayout()
@@ -136,7 +136,7 @@ class EditCellsWindow(QDialog):
         self.undo_button.setToolTip("Take back the last call made by hand in this image.")
         self.undo_button.clicked.connect(self._undo)
         self.clear_button = QPushButton("Use cutoff for all…")
-        self.clear_button.setToolTip("Let the cutoff call every cell of this image again, for the marker shown.")
+        self.clear_button.setToolTip("Let the cutoff call every object of this image again, for the marker shown.")
         self.clear_button.clicked.connect(self._clear_all)
         line.addWidget(self.undo_button)
         line.addWidget(self.clear_button)
@@ -207,10 +207,10 @@ class EditCellsWindow(QDialog):
     def _show_selection(self, result) -> None:
         ids = sorted(self.selected)
         if not ids:
-            self.selection_line.setText("No cells selected.")
+            self.selection_line.setText("No objects selected.")
         else:
             shown = ", ".join(f"#{value}" for value in ids[:8]) + (" …" if len(ids) > 8 else "")
-            self.selection_line.setText(f"{len(ids)} cell{'s' if len(ids) != 1 else ''} selected ({shown}).")
+            self.selection_line.setText(f"{len(ids)} object{'s' if len(ids) != 1 else ''} selected ({shown}).")
         self._fill_selected_table(result)
         self._show_selected_layer(result)
 
@@ -396,7 +396,7 @@ class EditCellsWindow(QDialog):
         layer.events.data.connect(lambda _event: QTimer.singleShot(0, self._area_drawn))
         shell.viewer.layers.selection.active = layer
         layer.mode = "add_polygon_lasso" if "add_polygon_lasso" in _modes(layer) else "add_polygon"
-        shell.message("Draw around the cells to select.")
+        shell.message("Draw around the objects to select.")
 
     def _area_drawn(self) -> None:
         shell = self.shell
@@ -414,7 +414,7 @@ class EditCellsWindow(QDialog):
         found = set(objects_inside(result.labels, polygons))
         self.set_selection(found)
         self.area_button.setChecked(False)
-        shell.message(f"{len(found)} cell{'s' if len(found) != 1 else ''} selected." if found else "No cell lies entirely inside the area.")
+        shell.message(f"{len(found)} object{'s' if len(found) != 1 else ''} selected." if found else "No object lies entirely inside the area.")
 
     def _select_by_call(self) -> None:
         choice = self.select_all.currentData()
@@ -454,7 +454,7 @@ class EditCellsWindow(QDialog):
             self.shell.message("Choose a marker under Display objects by first.")
             return
         if not self.selected:
-            self.shell.message("Select cells first: click them in the image, or draw around them.")
+            self.shell.message("Select objects first: click them in the image, or draw around them.")
             return
         self._apply(classification.id, sorted(self.selected), call)
 
@@ -471,7 +471,7 @@ class EditCellsWindow(QDialog):
         except CellQuantError as exc:
             self.shell.message(str(exc))
             return
-        self._after_call(result, was, f"{len(object_ids)} cell{'s' if len(object_ids) != 1 else ''}: {CALL_WORDS[call].lower()}.")
+        self._after_call(result, was, f"{len(object_ids)} object{'s' if len(object_ids) != 1 else ''}: {CALL_WORDS[call].lower()}.")
 
     def _ready(self, controller, image_id) -> bool:
         """Calls change the settings: never while an analysis runs or another image is loading."""
@@ -499,19 +499,19 @@ class EditCellsWindow(QDialog):
             return
         count = len(controller.cell_calls(image_id, classification.id))
         if not count:
-            self.shell.message(f"No cell of this image is called by hand for {classification.name}.")
+            self.shell.message(f"No object of this image is called by hand for {classification.name}.")
             return
         answer = QMessageBox.question(
             self,
-            "Use the cutoff for every cell?",
-            f"Let the cutoff call the {count} cell{'s' if count != 1 else ''} called by hand for {classification.name} in this image? Undo brings the calls back.",
+            "Use the cutoff for every object?",
+            f"Let the cutoff call the {count} object{'s' if count != 1 else ''} called by hand for {classification.name} in this image? Undo brings the calls back.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if answer != QMessageBox.Yes or not self._ready(controller, image_id):
             return
         was = controller.experiment.image(image_id).processing_status
-        self._after_call(controller.clear_cell_calls(image_id, classification.id), was, "The cutoff calls every cell again.")
+        self._after_call(controller.clear_cell_calls(image_id, classification.id), was, "The cutoff calls every object again.")
 
     def _after_call(self, result, was: str, text: str) -> None:
         """Save, show the new calls everywhere, and say whether the approval was cleared."""

@@ -49,8 +49,23 @@ def test_renaming_a_channel_layer_names_the_channel(tmp_path: Path, open_window)
     layers[2].name = "   "
     assert layers[2].name == "Channel 3 = PAX6"
 
+    # Markers set up before a rename follow their channel in the lists that name them.
+    shell.run_current()  # started before the lists were refreshed for PAX6: they catch up after the run
+    assert _wait(shell, 120)
+    _events(0.6)
+    assert [box.text() for box in shell._marker_setup.boxes] == ["OTX2", "PAX6"]
+    shell._marker_setup.button.click()
+    assert _wait(shell, 120)
+    display = shell._review_panel.display
+    assert [display.itemText(row) for row in range(display.count())][1:3] == ["OTX2", "PAX6"]
+    layers[1].name = "CRX"
+    _events(0.3)
+    assert [display.itemText(row) for row in range(display.count())][1:3] == ["CRX", "PAX6"]
+    assert shell.controller.marker_names() == {"otx2_pos": "CRX", "pax6_pos": "PAX6"}
+    assert "CRX+" in shell._results_summary.summary.text()
+
     # Saved with the experiment.
-    assert [channel.channel_name for channel in AnalysisController.open(controller.directory).experiment.channels] == ["Nuclei", "OTX2", "PAX6"]
+    assert [channel.channel_name for channel in AnalysisController.open(controller.directory).experiment.channels] == ["Nuclei", "CRX", "PAX6"]
 
     # The layers are still CellQuant's own: closing the experiment's image removes them.
     shell._clear_managed()

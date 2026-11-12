@@ -1036,6 +1036,23 @@ class AnalysisController:
         self.cleared_approvals = self._clear_changed_approvals(before, [image_id] if this_image_only else None)
         return self.classified_now(image_id)
 
+    def set_starting_cutoffs(self, image_id: str, thresholds: dict[str, float]) -> ImageResult | None:
+        """The first cutoff of markers just added to an experiment that was already being checked.
+
+        A marker nobody has checked yet changes no call an approval vouches for, so no approval is cleared
+        (and no image keeps a cutoff of its own). Every image shares these cutoffs until one is changed.
+        """
+
+        data = self.recipe.model_dump(mode="json")
+        known = {item["id"]: item for item in data["classifications"]}
+        for classification_id, threshold in thresholds.items():
+            if classification_id not in known:
+                raise KeyError(classification_id)
+            known[classification_id]["threshold"] = float(threshold)
+        self.set_recipe(data)
+        self.kept_approvals, self.cleared_approvals = [], []
+        return self.classified_now(image_id)
+
     def lacks_markers(self, image_id: str) -> bool:
         """True when this image's result has no values for a marker of this analysis (it was run
         before the marker was set up)."""
@@ -1528,6 +1545,51 @@ class AnalysisController:
         self.set_recipe(data)
         self.kept_approvals = []
         self.cleared_approvals = self._clear_changed_approvals(before, [image_id])
+
+    def clear_all_approvals(self, reason: str) -> list[str]:
+        """Clear every approval (the markers changed under them). Returns the images that were approved."""
+
+        approved = [record.image_id for record in self.experiment.images if record.processing_status == "approved"]
+        self._clear_approvals(approved, reason)
+        return approved
+
+    def cutoff_state(self) -> dict:
+        """The cutoffs of every marker and the approval of every image, to put back with ``restore_cutoff_state``
+        (Undo of a cutoff change that cleared approvals)."""
+
+        return {
+            "recipe_id": self.recipe.recipe_id,
+            "classifications": [item.model_dump(mode="json") for item in self.recipe.classifications],
+            "approvals": {
+                record.image_id: (record.processing_status, record.approved_settings_sha256, record.last_message)
+                for record in self.experiment.images
+            },
+        }
+
+    def restore_cutoff_state(self, state: dict, image_id: str | None = None) -> ImageResult | None:
+        """Put back the cutoffs and approvals of ``cutoff_state``: the markers' cutoffs, then each image's approval
+        as it was. Markers added since keep their cutoffs. Returns the result of ``image_id`` at the restored cutoffs."""
+
+        if state.get("recipe_id") != self.recipe.recipe_id:
+            raise CellQuantError("The cutoffs belong to another analysis: open it to undo.")
+        data = self.recipe.model_dump(mode="json")
+        before = {item["id"]: item for item in state["classifications"]}
+        for entry in data["classifications"]:
+            old = before.get(entry["id"])
+            if old is None:
+                continue
+            for key in ("threshold", "image_thresholds"):
+                if key in old:
+                    entry[key] = old[key]
+                else:
+                    entry.pop(key, None)
+        self.set_recipe(data)
+        for record in self.experiment.images:
+            kept = state["approvals"].get(record.image_id)
+            if kept is not None:
+                record.processing_status, record.approved_settings_sha256, record.last_message = kept
+        self.cleared_approvals, self.kept_approvals = [], []
+        return self.classified_now(image_id) if image_id else None
 
     def _clear_approvals(self, image_ids: list[str], reason: str) -> None:
         for image_id in image_ids:

@@ -202,7 +202,7 @@ class _MarkerRow(QGroupBox):
         classified = counts["positive"] + counts["negative"]
         percent = counts["percent_positive"]
         percent_text = "—" if percent != percent else f"{percent:.1f}%"
-        rule = "min % of cell" if percent_rule else "cutoff"
+        rule = "min % of object" if percent_rule else "cutoff"
         text = f"Positive {counts['positive']} of {classified} ({percent_text}) · {rule} {cutoff:g}"
         # A cutoff set by clicked examples (step 4) is changed there, with this marker shown alone.
         self.slider.setVisible(not by_examples)
@@ -325,8 +325,10 @@ class CombinedMarkersView(QWidget):
         recipe = controller.recipe
         classifications = list(recipe.classifications)
         ids = [item.id for item in classifications]
-        if ids != self._ids or [item.name for item in classifications] != self._names:
-            self._build_rows(classifications)
+        shown = controller.marker_names()  # a marker follows its channel when the user renames it
+        names = [shown.get(item.id, item.name) for item in classifications]
+        if ids != self._ids or names != self._names:
+            self._build_rows(classifications, names)
         image_id = result.provenance["image_id"]
         percent_ids = {m.id for m in recipe.measurements if m.statistic == "percent_above"}
         for classification in classifications:
@@ -362,16 +364,16 @@ class CombinedMarkersView(QWidget):
         self.table.setRowCount(0)
         self.total.setText("")
 
-    def _build_rows(self, classifications) -> None:
+    def _build_rows(self, classifications, names: list[str]) -> None:
         while self.rows_box.count():
             widget = self.rows_box.takeAt(0).widget()
             if widget is not None:
                 widget.deleteLater()
         self._ids = [item.id for item in classifications]
-        self._names = [item.name for item in classifications]
+        self._names = list(names)
         self._rows = {}
-        for classification in classifications:
-            row = _MarkerRow(self, classification.id, classification.name)
+        for classification, name in zip(classifications, names, strict=True):
+            row = _MarkerRow(self, classification.id, name)
             self._rows[classification.id] = row
             self.rows_box.addWidget(row)
 

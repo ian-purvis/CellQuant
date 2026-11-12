@@ -107,7 +107,10 @@ def test_analyses_in_the_window(tmp_path: Path, monkeypatch):
         # Export all analyses.
         shell.export_all_dialog()
         _wait(shell)
-        combined = pd.read_csv(tmp_path / "export" / "all_analyses_image_summary.csv")
+        # They go into a new dated folder inside the one chosen, so an earlier export is never overwritten.
+        exported = shell._exported_to
+        assert exported.parent == tmp_path / "export" and exported.name.endswith("_all_analyses")
+        combined = pd.read_csv(exported / "all_analyses_image_summary.csv")
         assert set(combined["analysis"]) == {"Analysis 1", "Objects in OTX2", "Objects in Fluor"}
 
         # New, rename and remove.

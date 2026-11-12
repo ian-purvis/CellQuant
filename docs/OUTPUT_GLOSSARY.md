@@ -27,7 +27,7 @@ Your original images are never changed or written to.
 Every number in the tables comes from the same short chain. Knowing the chain tells you which step to go back to when a number looks wrong.
 
 1. **Step 2, Find objects.** CellQuant finds objects (nuclei or cells) and gives each one a number, its `object_id`. The result is a label image.
-2. **Step 3, Edit objects.** Your deletions and paint strokes are applied on top of the found objects. The found objects are never overwritten.
+2. **Step 3, Fix outlines.** Your deletions and paint strokes are applied on top of the found objects. The found objects are never overwritten.
 3. **Step 4, Markers.** For each marker, CellQuant measures a brightness value inside every object. By default this is the mean brightness (`<marker>_mean`).
 4. **Step 5, Check.** Each marker has a cutoff. An object is positive for a marker when its value is above the cutoff (`<marker>_pos`).
 5. **Step 6, Results.** For every image, CellQuant counts objects and turns the counts into percentages (the reports). Export then averages or pools images into groups.
@@ -518,7 +518,7 @@ For `integrated` the background is multiplied by the number of pixels in the reg
 
 **In short:** Objects called positive or negative by hand, overriding the cutoff for those objects only.
 
-**What it means:** Set in step 5 with **Edit cells…**: you select objects and click Positive, Negative or Use cutoff. Listed per image as object number, the call, and the object's centre. Every other object is still called by the cutoff, and moving a cutoff never changes a call made by hand. A call is kept only while its object is still there: same number, not deleted, and its centre within half its radius of where it was. Running the image again with new objects drops calls whose object moved.
+**What it means:** Set in step 5 with **Override calls…**: you select objects and click Positive, Negative or Use cutoff. Listed per image as object number, the call, and the object's centre. Every other object is still called by the cutoff, and moving a cutoff never changes a call made by hand. A call is kept only while its object is still there: same number, not deleted, and its centre within half its radius of where it was. Running the image again with new objects drops calls whose object moved.
 
 **Good to know:** Calls by hand are a judgement, not a measurement. Each object called by hand is marked in `<marker>_pos_by_hand`, and each image's number is `n_called_by_hand`, so readers can see how much of a result was set by hand.
 
@@ -1110,7 +1110,7 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 
 **In short:** How many counted objects have at least one marker called by hand.
 
-**What it means:** Normally 0. A higher number means some calls in this image were set in step 5 **Edit cells…** rather than by the cutoff.
+**What it means:** Normally 0. A higher number means some calls in this image were set in step 5 **Override calls…** rather than by the cutoff.
 
 **For experts:** `quantify.count_by_hand`: counted objects with any `<marker>_pos_by_hand` True.
 
@@ -1215,7 +1215,7 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 
 **In short:** How many counted objects have at least one marker called by hand.
 
-**What it means:** Normally 0. It comes from step 5 **Edit cells…**, where single objects can be called positive or negative instead of by the cutoff.
+**What it means:** Normally 0. It comes from step 5 **Override calls…**, where single objects can be called positive or negative instead of by the cutoff.
 
 **Related:** `cell_calls`, `<marker>_pos_by_hand`
 
