@@ -34,12 +34,13 @@ from qtpy.QtWidgets import (
 )
 
 from cellquant.errors import CellQuantError
-from cellquant.gui.quantanalysis import tips
+from cellquant.gui.quantanalysis import graphs, tips
 from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE
 from cellquant.gui.quantanalysis.project import (
     ANOVA_NAMES,
     COMPARE_TESTS,
     OUTLIER_NAMES,
+    STAT_DEFAULTS,
     DataSheet,
     paired,
     parse_p_values,
@@ -94,6 +95,109 @@ def _check(group: QButtonGroup, key) -> None:
     for button in group.buttons():
         if button.property("key") == key:
             button.setChecked(True)
+
+
+# --- Alpha, confidence interval and P value style: project defaults, one summary line per dialog -------------------
+
+
+def project_defaults(parent) -> dict:
+    """The project's alpha, CI level and P value style (what a new analysis starts from); {} without a project (a bare dialog)."""
+
+    defaults = getattr(getattr(parent, "project", None), "defaults", None)
+    return {key: defaults[key] for key in STAT_DEFAULTS if key in defaults} if isinstance(defaults, dict) else {}
+
+
+def starting_options(parent, base: dict, options: dict | None) -> dict:
+    """``base`` (the dialog's own defaults), then the project's defaults, then ``options``. An analysis that is opened again
+    passes its own options, which keep their alpha, CI level and P value style; a new one starts from the project's."""
+
+    return {**base, **(project_defaults(parent) if not options else {}), **(options or {})}
+
+
+def summary_text(alpha: float, ci: float, style: str) -> str:
+    return f"α {alpha:g} · {100 * ci:g}% CI · P style: {style}"
+
+
+def stats_options(dialog: QDialog, form: QFormLayout) -> QWidget:
+    """One summary line for the dialog's alpha, confidence interval and P value style (``dialog.alpha``, ``.ci``, ``.style``), with a
+    Change… button that shows the three selectors for this one analysis. The project's defaults are set in Analyze → Project defaults…."""
+
+    box = QWidget()
+    column = QVBoxLayout(box)
+    column.setContentsMargins(0, 0, 0, 0)
+    head = QHBoxLayout()
+    summary = QLabel()
+    summary.setToolTip("Alpha, confidence interval and P value style start from the project's defaults (Analyze → Project defaults…). "
+                       "Change… sets them for this analysis only.")
+    change = QPushButton("Change…")
+    change.setCheckable(True)
+    change.setToolTip("Show the alpha, confidence interval and P value style selectors for this analysis.")
+    head.addWidget(summary, 1)
+    head.addWidget(change)
+    column.addLayout(head)
+    selectors = QWidget()
+    inner = QFormLayout(selectors)
+    inner.setContentsMargins(0, 0, 0, 0)
+    inner.addRow("Alpha", dialog.alpha)
+    inner.addRow("Confidence interval", dialog.ci)
+    inner.addRow("P value style", dialog.style)
+    selectors.setVisible(False)
+    column.addWidget(selectors)
+    change.toggled.connect(selectors.setVisible)
+
+    def refresh(*_args) -> None:
+        summary.setText(summary_text(dialog.alpha.value(), dialog.ci.currentData() or 0.95, dialog.style.currentData() or "classic"))
+
+    dialog.alpha.valueChanged.connect(refresh)
+    dialog.ci.currentIndexChanged.connect(refresh)
+    dialog.style.currentIndexChanged.connect(refresh)
+    refresh()
+    dialog.stats_summary, dialog.stats_change, dialog.stats_selectors = summary, change, selectors
+    form.addRow(box)
+    return box
+
+
+class ProjectDefaultsDialog(QDialog):
+    """Analyze → Project defaults…: the alpha, confidence interval and P value style every new analysis starts from."""
+
+    def __init__(self, parent, values: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Project defaults")
+        values = {**STAT_DEFAULTS, **(values or {})}
+        layout = QVBoxLayout(self)
+        intro = QLabel("New analyses start from these. Each analysis dialog shows them on one line and can change them for that analysis only; "
+                       "analyses already made keep their own values.")
+        intro.setWordWrap(True)
+        intro.setStyleSheet(NOTE_STYLE)
+        layout.addWidget(intro)
+        form = QFormLayout()
+        self.alpha = QDoubleSpinBox()
+        self.alpha.setRange(0.0001, 0.5)
+        self.alpha.setDecimals(4)
+        self.alpha.setSingleStep(0.01)
+        self.alpha.setToolTip(tips.ALPHA)
+        self.alpha.setValue(float(values["alpha"]))
+        form.addRow("Alpha", self.alpha)
+        self.ci = QComboBox()
+        for level in (0.90, 0.95, 0.99):
+            self.ci.addItem(f"{100 * level:g}%", level)
+        self.ci.setToolTip(tips.CI_LEVEL)
+        self.ci.setCurrentIndex(max(0, self.ci.findData(values["ci"])))
+        form.addRow("Confidence interval", self.ci)
+        self.style = QComboBox()
+        for name in STYLES:
+            self.style.addItem(name, name)
+        self.style.setToolTip(tips.P_STYLE)
+        self.style.setCurrentIndex(max(0, self.style.findData(values["style"])))
+        form.addRow("P value style", self.style)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def options(self) -> dict:
+        return {"alpha": round(self.alpha.value(), 6), "ci": self.ci.currentData(), "style": self.style.currentData()}
 
 
 # --- Advanced: settings set by hand ---------------------------------------------------------------------------
@@ -267,6 +371,20 @@ def suggested_spec(source: sources.Source) -> tuple[sources.ImportSpec, str]:
     return sources.ImportSpec(measure.key, dot=dot, unit=unit, group_by=group_by, approved_only=source.approvals_known), text
 
 
+def suggested_plan(columns: int, grouped: bool, replicated: bool) -> dict:
+    """What the suggested setup makes for an imported table: the graph(s), the test and the sentence that says so. Used by the import dialog's
+    checkbox and by ``QuantAnalysisWindow.suggested_analysis``, so what is announced is what is made."""
+
+    if grouped:
+        graph_kinds, test, test_name = ["bar"], "twoway", "Two-way ANOVA"
+    else:
+        graph_kinds = ["superplot" if replicated else "scatter"] + (["estimation"] if columns == 2 else [])
+        test, test_name = (("welch_t", "Welch's t test") if columns == 2 else ("kruskal_wallis", "Kruskal-Wallis test with Dunn's tests") if columns > 2
+                           else (None, ""))
+    names = [graphs.KINDS[kind][0] for kind in graph_kinds]
+    return {"graphs": graph_kinds, "test": test, "text": " + ".join([*names, *([test_name] if test else [])])}
+
+
 class ImportDialog(QDialog):
     """Choose the measure, what a dot is, the groups and their order; the table is previewed live."""
 
@@ -274,7 +392,6 @@ class ImportDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Import CellQuant results")
         self.source = source
-        self.suggested = False
         self.imported: sources.Imported | None = None
         self.resize(640, 640)
         layout = QVBoxLayout(self)
@@ -284,7 +401,7 @@ class ImportDialog(QDialog):
         where.setToolTip(str(source.path or ""))
         head = QHBoxLayout()
         head.addWidget(where, 1)
-        suggest = QPushButton("Use suggested setup")
+        suggest = QPushButton("Reset to suggested setup")
         suggest.setToolTip(tips.SUGGESTED)
         suggest.clicked.connect(self._use_suggested)
         head.addWidget(suggest)
@@ -338,6 +455,15 @@ class ImportDialog(QDialog):
         self.warning.setWordWrap(True)
         layout.addWidget(self.warning)
         layout.addStretch(1)
+        self.make_suggested = QCheckBox("Also make the suggested graph and test")
+        self.make_suggested.setToolTip(tips.SUGGESTED_ANALYSIS)
+        self.make_suggested.setChecked(True)
+        self.make_suggested.toggled.connect(lambda _on: self._plan_text())
+        layout.addWidget(self.make_suggested)
+        self.plan = QLabel()
+        self.plan.setStyleSheet(NOTE_STYLE)
+        self.plan.setWordWrap(True)
+        layout.addWidget(self.plan)
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.button(QDialogButtonBox.Ok).setText("Import")
         self.buttons.accepted.connect(self.accept)
@@ -376,7 +502,6 @@ class ImportDialog(QDialog):
     def _use_suggested(self) -> None:
         spec, text = suggested_spec(self.source)
         self.set_spec(spec)
-        self.suggested = True
         self.preview.setToolTip(text)
 
     def _level(self) -> str:
@@ -458,6 +583,7 @@ class ImportDialog(QDialog):
             self.warning.setStyleSheet(WARNING_STYLE)
             self.warning.setVisible(True)
             ok.setEnabled(False)
+            self._plan_text()
             return
         ok.setEnabled(True)
         imported = self.imported
@@ -465,6 +591,19 @@ class ImportDialog(QDialog):
         self.warning.setText("<br>".join(f"⚠ {html.escape(text)}" for text in imported.warnings))
         self.warning.setStyleSheet(DANGER_STYLE if imported.pseudoreplicated else WARNING_STYLE)
         self.warning.setVisible(bool(imported.warnings))
+        self._plan_text()
+
+    def _plan_text(self) -> None:
+        """The one line under the checkbox: what Import will make besides the table."""
+
+        imported = self.imported
+        if imported is None:
+            self.plan.setText("")
+        elif not self.make_suggested.isChecked():
+            self.plan.setText("Only the data table is made.")
+        else:
+            plan = suggested_plan(len(imported.table), imported.grouped is not None, imported.units is not None)
+            self.plan.setText(f"Will make: {plan['text']}")
 
 
 # --- Import a CSV ---------------------------------------------------------------------------------------------
@@ -566,7 +705,7 @@ class CompareDialog(QDialog):
         self.setWindowTitle("Compare two columns")
         self.table = table
         self.sheet = sheet
-        options = {**DEFAULT_OPTIONS, **({"test": "paired_t"} if table.paired and not options else {}), **(options or {})}
+        options = starting_options(parent, {**DEFAULT_OPTIONS, **({"test": "paired_t"} if table.paired and not options else {})}, options)
         layout = QVBoxLayout(self)
         columns = QGroupBox("Columns")
         columns_form = QFormLayout(columns)
@@ -605,17 +744,15 @@ class CompareDialog(QDialog):
         self.alpha.setDecimals(4)
         self.alpha.setSingleStep(0.01)
         self.alpha.setToolTip(tips.ALPHA)
-        form.addRow("Alpha", self.alpha)
         self.ci = QComboBox()
         for value in (0.90, 0.95, 0.99):
             self.ci.addItem(f"{100 * value:g}%", value)
         self.ci.setToolTip(tips.CI_LEVEL)
-        form.addRow("Confidence interval", self.ci)
         self.style = QComboBox()
         for name in STYLES:
             self.style.addItem(name, name)
         self.style.setToolTip(tips.P_STYLE)
-        form.addRow("P value style", self.style)
+        stats_options(self, form)
         layout.addLayout(form)
         self.advanced = AdvancedBox(self, layout)
         self.advanced.basis = table_signature(table)
@@ -763,7 +900,7 @@ class AnovaDialog(QDialog):
         self.setWindowTitle("Compare three or more columns")
         self.table = table
         self.sheet = sheet
-        options = {**ANOVA_DEFAULTS, **({"test": "repeated_measures"} if table.paired and not options else {}), **(options or {})}
+        options = starting_options(parent, {**ANOVA_DEFAULTS, **({"test": "repeated_measures"} if table.paired and not options else {})}, options)
         layout = QVBoxLayout(self)
         columns = QHBoxLayout()
         left, right = QVBoxLayout(), QVBoxLayout()
@@ -790,17 +927,15 @@ class AnovaDialog(QDialog):
         self.alpha.setDecimals(4)
         self.alpha.setSingleStep(0.01)
         self.alpha.setToolTip(tips.ANOVA_ALPHA)
-        form.addRow("Alpha", self.alpha)
         self.ci = QComboBox()
         for value in (0.90, 0.95, 0.99):
             self.ci.addItem(f"{100 * value:g}%", value)
         self.ci.setToolTip(tips.ANOVA_CI)
-        form.addRow("Confidence interval", self.ci)
         self.style = QComboBox()
         for name in STYLES:
             self.style.addItem(name, name)
         self.style.setToolTip(tips.ANOVA_STYLE)
-        form.addRow("P value style", self.style)
+        stats_options(self, form)
         left.addLayout(form)
         left.addStretch(1)
         compare = QGroupBox("Multiple comparisons")
@@ -1079,7 +1214,7 @@ class NestedDialog(QDialog):
         self.table = table
         self.replicates = replicates
         self.two = len(table) == 2
-        options = {**NESTED_DEFAULTS, **(options or {})}
+        options = starting_options(parent, NESTED_DEFAULTS, options)
         layout = QVBoxLayout(self)
         counts = replicates.counts()
         intro = QLabel(f"Every value is used, with the replicate it came from; the groups are compared against the variation among replicates. "
@@ -1102,17 +1237,15 @@ class NestedDialog(QDialog):
         self.alpha.setDecimals(4)
         self.alpha.setSingleStep(0.01)
         self.alpha.setToolTip(tips.ALPHA if self.two else tips.ANOVA_ALPHA)
-        form.addRow("Alpha", self.alpha)
         self.ci = QComboBox()
         for value in (0.90, 0.95, 0.99):
             self.ci.addItem(f"{100 * value:g}%", value)
         self.ci.setToolTip(tips.CI_LEVEL)
-        form.addRow("Confidence interval", self.ci)
         self.style = QComboBox()
         for name in STYLES:
             self.style.addItem(name, name)
         self.style.setToolTip(tips.P_STYLE)
-        form.addRow("P value style", self.style)
+        stats_options(self, form)
         left.addLayout(form)
         left.addStretch(1)
         self.compare = QGroupBox("Multiple comparisons")
@@ -1308,7 +1441,7 @@ class TwoWayDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Two-way ANOVA")
         self.grouped = grouped
-        options = {**TWO_WAY_DEFAULTS, **(options or {})}
+        options = starting_options(parent, TWO_WAY_DEFAULTS, options)
         layout = QVBoxLayout(self)
         intro = QLabel(f"{len(grouped.rows)} rows × {len(grouped.columns)} data sets. {tips.TWO_WAY}")
         intro.setWordWrap(True)
@@ -1344,17 +1477,15 @@ class TwoWayDialog(QDialog):
         self.alpha.setDecimals(4)
         self.alpha.setSingleStep(0.01)
         self.alpha.setToolTip(tips.ANOVA_ALPHA)
-        form.addRow("Alpha", self.alpha)
         self.ci = QComboBox()
         for value in (0.90, 0.95, 0.99):
             self.ci.addItem(f"{100 * value:g}%", value)
         self.ci.setToolTip(tips.ANOVA_CI)
-        form.addRow("Confidence interval", self.ci)
         self.style = QComboBox()
         for name in STYLES:
             self.style.addItem(name, name)
         self.style.setToolTip(tips.ANOVA_STYLE)
-        form.addRow("P value style", self.style)
+        stats_options(self, form)
         layout.addLayout(form)
         self.advanced = AdvancedBox(self, layout)
         self.advanced.basis = table_signature(grouped)
@@ -1441,7 +1572,7 @@ class XYDialog(QDialog):
         self.xy, self.kind = xy, kind
         self.reference = kind
         self.setWindowTitle("Linear regression" if kind == "linreg" else "Correlation")
-        options = {**(LINREG_DEFAULTS if kind == "linreg" else XYCORR_DEFAULTS), **(options or {})}
+        options = starting_options(parent, LINREG_DEFAULTS if kind == "linreg" else XYCORR_DEFAULTS, options)
         layout = QVBoxLayout(self)
         intro = QLabel(f"{len(xy.sets)} data set(s) against {xy.x_title}. {tips.LINREG if kind == 'linreg' else tips.XYCORR}")
         intro.setWordWrap(True)
@@ -1473,19 +1604,17 @@ class XYDialog(QDialog):
         self.alpha.setSingleStep(0.01)
         self.alpha.setToolTip(tips.ANOVA_ALPHA)
         self.alpha.setValue(float(options["alpha"]))
-        form.addRow("Alpha", self.alpha)
         self.ci = QComboBox()
         for value in (0.90, 0.95, 0.99):
             self.ci.addItem(f"{100 * value:g}%", value)
         self.ci.setToolTip(tips.ANOVA_CI)
         self.ci.setCurrentIndex(max(0, self.ci.findData(options["ci"])))
-        form.addRow("Confidence interval", self.ci)
         self.style = QComboBox()
         for name in STYLES:
             self.style.addItem(name, name)
         self.style.setToolTip(tips.ANOVA_STYLE)
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
-        form.addRow("P value style", self.style)
+        stats_options(self, form)
         layout.addLayout(form)
         self.advanced = AdvancedBox(self, layout)
         self.advanced.basis = table_signature(xy)
@@ -1593,7 +1722,7 @@ class CurveFitDialog(QDialog):
         super().__init__(parent)
         self.xy = xy
         self.setWindowTitle("Nonlinear regression (curve fit)")
-        options = {**CURVEFIT_DEFAULTS, **(options or {})}
+        options = starting_options(parent, CURVEFIT_DEFAULTS, options)
         for key in ("fixed", "compare_fixed"):  # a damaged project may hold anything here
             if not isinstance(options[key], dict):
                 options[key] = {}
@@ -1654,19 +1783,17 @@ class CurveFitDialog(QDialog):
         self.alpha.setSingleStep(0.01)
         self.alpha.setToolTip(tips.ANOVA_ALPHA)
         self.alpha.setValue(float(options["alpha"]))
-        stats_form.addRow("Alpha", self.alpha)
         self.ci = QComboBox()
         for value in (0.90, 0.95, 0.99):
             self.ci.addItem(f"{100 * value:g}%", value)
         self.ci.setToolTip(tips.ANOVA_CI)
         self.ci.setCurrentIndex(max(0, self.ci.findData(options["ci"])))
-        stats_form.addRow("Confidence interval", self.ci)
         self.style = QComboBox()
         for name in STYLES:
             self.style.addItem(name, name)
         self.style.setToolTip(tips.ANOVA_STYLE)
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
-        stats_form.addRow("P value style", self.style)
+        stats_options(self, stats_form)
         layout.addLayout(stats_form)
         self.advanced = AdvancedBox(self, layout)
         self.advanced.basis = table_signature(xy)
@@ -1754,7 +1881,7 @@ class ContingencyDialog(QDialog):
         super().__init__(parent)
         self.table = table
         self.setWindowTitle("Contingency table")
-        options = {**CONTINGENCY_DEFAULTS, **(options or {})}
+        options = starting_options(parent, CONTINGENCY_DEFAULTS, options)
         square = table.counts.shape == (2, 2)
         layout = QVBoxLayout(self)
         intro = QLabel(f"{len(table.rows)} rows × {len(table.columns)} columns. {tips.CONTINGENCY}")
@@ -1800,19 +1927,17 @@ class ContingencyDialog(QDialog):
         self.alpha.setSingleStep(0.01)
         self.alpha.setToolTip(tips.ANOVA_ALPHA)
         self.alpha.setValue(float(options["alpha"]))
-        form.addRow("Alpha", self.alpha)
         self.ci = QComboBox()
         for value in (0.90, 0.95, 0.99):
             self.ci.addItem(f"{100 * value:g}%", value)
         self.ci.setToolTip(tips.ANOVA_CI)
         self.ci.setCurrentIndex(max(0, self.ci.findData(options["ci"])))
-        form.addRow("Confidence interval", self.ci)
         self.style = QComboBox()
         for name in STYLES:
             self.style.addItem(name, name)
         self.style.setToolTip(tips.ANOVA_STYLE)
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
-        form.addRow("P value style", self.style)
+        stats_options(self, form)
         layout.addLayout(form)
         self.note = QLabel()
         self.note.setWordWrap(True)
@@ -1930,7 +2055,7 @@ class RocDialog(QDialog):
     def __init__(self, parent, table: ColumnTable, options: dict | None = None):
         super().__init__(parent)
         self.table = table
-        options = {**ROC_DEFAULTS, **(options or {})}
+        options = starting_options(parent, ROC_DEFAULTS, options)
         layout, form = _two_column_dialog(self, "ROC curve", f"{tips.ROC} Each column of this table is one group.")
         self.controls = _column_combo(table, options["controls"], 0, tips.ROC_CONTROLS)
         self.patients = _column_combo(table, options["patients"], 1, tips.ROC_PATIENTS)
@@ -1943,20 +2068,18 @@ class RocDialog(QDialog):
         self.direction.setCurrentIndex(max(0, self.direction.findData(options["direction"])))
         form.addRow("Direction", self.direction)
         self.ci = _ci_combo(options["ci"], tips.ROC_CI)
-        form.addRow("Confidence interval", self.ci)
         self.alpha = QDoubleSpinBox()
         self.alpha.setRange(0.0001, 0.5)
         self.alpha.setDecimals(4)
         self.alpha.setSingleStep(0.01)
         self.alpha.setToolTip(tips.ALPHA)
         self.alpha.setValue(float(options["alpha"]))
-        form.addRow("Alpha", self.alpha)
         self.style = QComboBox()
         for name in STYLES:
             self.style.addItem(name, name)
         self.style.setToolTip(tips.P_STYLE)
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
-        form.addRow("P value style", self.style)
+        stats_options(self, form)
         self.note = _dialog_footer(self, layout)
         if self.controls.currentIndex() == self.patients.currentIndex() and self.patients.count() > 1:
             self.patients.setCurrentIndex(1 if self.controls.currentIndex() == 0 else 0)
@@ -2001,7 +2124,6 @@ class BlandAltmanDialog(QDialog):
         self.method.setCurrentIndex(max(0, self.method.findData(options["method"])))
         form.addRow("Measure", self.method)
         self.ci = _ci_combo(options["ci"], tips.BLAND_ALTMAN_CI)
-        form.addRow("Confidence interval", self.ci)
         self.note = _dialog_footer(self, layout)
         if self.first.currentIndex() == self.second.currentIndex() and self.second.count() > 1:
             self.second.setCurrentIndex(1 if self.first.currentIndex() == 0 else 0)
@@ -2036,7 +2158,7 @@ class SurvivalDialog(QDialog):
     def __init__(self, parent, xy, options: dict | None = None):
         super().__init__(parent)
         self.xy = xy
-        options = {**SURVIVAL_DEFAULTS, **(options or {})}
+        options = starting_options(parent, SURVIVAL_DEFAULTS, options)
         layout, form = _two_column_dialog(self, "Survival curves (Kaplan-Meier)",
                                           f"{tips.SURVIVAL} The table has {len(xy.sets)} group{'s' if len(xy.sets) != 1 else ''} (data sets).")
         self.trend = QCheckBox("Groups are in order (test for trend)")
@@ -2045,20 +2167,18 @@ class SurvivalDialog(QDialog):
         self.trend.setChecked(bool(options["trend"]) and len(xy.sets) >= 3)
         form.addRow(self.trend)
         self.ci = _ci_combo(options["ci"], tips.SURVIVAL_CI)
-        form.addRow("Confidence interval", self.ci)
         self.alpha = QDoubleSpinBox()
         self.alpha.setRange(0.0001, 0.5)
         self.alpha.setDecimals(4)
         self.alpha.setSingleStep(0.01)
         self.alpha.setToolTip(tips.ALPHA)
         self.alpha.setValue(float(options["alpha"]))
-        form.addRow("Alpha", self.alpha)
         self.style = QComboBox()
         for name in STYLES:
             self.style.addItem(name, name)
         self.style.setToolTip(tips.P_STYLE)
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
-        form.addRow("P value style", self.style)
+        stats_options(self, form)
         self.note = _dialog_footer(self, layout)
 
     def options(self) -> dict:
@@ -2118,7 +2238,7 @@ class CorrelationMatrixDialog(QDialog):
     def __init__(self, parent, table: ColumnTable, options: dict | None = None):
         super().__init__(parent)
         self.table = table
-        options = {**CORRELATION_MATRIX_DEFAULTS, **(options or {})}
+        options = starting_options(parent, CORRELATION_MATRIX_DEFAULTS, options)
         self.setWindowTitle("Correlation matrix")
         self.setMinimumWidth(460)
         layout = QVBoxLayout(self)
@@ -2151,20 +2271,18 @@ class CorrelationMatrixDialog(QDialog):
         self.adjust.setCurrentIndex(max(0, self.adjust.findData(options["adjust"])))
         form.addRow("P value adjustment", self.adjust)
         self.ci = _ci_combo(options["ci"], tips.CORR_CI)
-        form.addRow("Confidence interval", self.ci)
         self.alpha = QDoubleSpinBox()
         self.alpha.setRange(0.0001, 0.5)
         self.alpha.setDecimals(4)
         self.alpha.setSingleStep(0.01)
         self.alpha.setToolTip(tips.CORR_ALPHA)
         self.alpha.setValue(float(options["alpha"]))
-        form.addRow("Alpha", self.alpha)
         self.style = QComboBox()
         for name in STYLES:
             self.style.addItem(name, name)
         self.style.setToolTip(tips.P_STYLE)
         self.style.setCurrentIndex(max(0, self.style.findData(options["style"])))
-        form.addRow("P value style", self.style)
+        stats_options(self, form)
         self.variables = _variables_list(self, layout, table, options["variables"])
         self.note = _dialog_footer(self, layout)
 

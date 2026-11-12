@@ -183,7 +183,7 @@ def test_layout_sheet_follows_its_graphs(window, qtbot, tmp_path):
 
     written = view.export(tmp_path / "figure.png", "png", 300)
     assert written.exists() and "Saved" in window.statusBar().currentMessage()
-    menu = window.menuBar().actions()[2].menu()
+    menu = window.menuBar().actions()[3].menu()  # Graph
     assert "New page layout" in [action.text() for action in menu.actions()]
     window.project.remove(scatter.id)
     assert layout.graphs == [bar.id, None, bar.id]

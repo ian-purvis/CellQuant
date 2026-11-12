@@ -310,10 +310,11 @@ class ResultSheetView(QWidget):
 
     def export_working(self, path: str | None = None) -> str | None:
         if not path:
-            path, _ = QFileDialog.getSaveFileName(self, "Export working", f"{self.sheet.name} working.csv", "CSV (*.csv)")
+            path, _ = QFileDialog.getSaveFileName(self, "Export working", self.window.export_path(f"{self.sheet.name} working.csv", self.sheet), "CSV (*.csv)")
         if not path:
             return None
         working.to_frame(self.blocks()).to_csv(path, index=False)
+        self.window.remember_export(path)
         self.window.status(f"Saved {path}")
         return path
 
@@ -332,10 +333,11 @@ class ResultSheetView(QWidget):
 
     def export_csv(self, path: str | None = None) -> str | None:
         if not path:
-            path, _ = QFileDialog.getSaveFileName(self, "Export results", f"{self.sheet.name}.csv", "CSV (*.csv)")
+            path, _ = QFileDialog.getSaveFileName(self, "Export results", self.window.export_path(f"{self.sheet.name}.csv", self.sheet), "CSV (*.csv)")
         if not path:
             return None
         self.project.flush_fits()
         result_frame(self.sheet).to_csv(path, index=False)
+        self.window.remember_export(path)
         self.window.status(f"Saved {path}")
         return path

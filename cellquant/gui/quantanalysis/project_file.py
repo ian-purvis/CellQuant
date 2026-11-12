@@ -26,6 +26,7 @@ from cellquant.gui.quantanalysis.project import (
     LayoutSheet,
     Project,
     ResultSheet,
+    clean_defaults,
     reserve_ids,
     set_contingency,
     set_grouped,
@@ -143,6 +144,7 @@ def to_dict(project: Project, experiment_dir: str | Path | None = None, current:
                     "result_id": sheet.result_id} for sheet in project.graphs.values()],
         "layouts": [{"id": sheet.id, "name": sheet.name, "page": dict(sheet.page), "graphs": list(sheet.graphs)}
                     for sheet in project.layouts.values()],
+        "defaults": dict(project.defaults),
         "current": current,
     }
 
@@ -343,6 +345,7 @@ def load(path: str | Path, project: Project, experiment_dir: str | Path | None =
             continue
         layouts[sheet.id] = sheet
     reserve_ids([*data, *results, *graph_sheets, *layouts])
+    project.defaults = clean_defaults(content.get("defaults"))  # a file from before project defaults has none: today's values
     project.replace(data, results, graph_sheets, layouts)
     current = content.get("current")
     return (current if project.sheet(current or "") is not None else None), notes

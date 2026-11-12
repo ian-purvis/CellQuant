@@ -105,7 +105,7 @@ def test_every_kind_from_its_dialog(window, qtbot):
     assert not dialog.note.isHidden() and "Tick at least one column" in dialog.note.text()
     dialog.function.setCurrentIndex(dialog.function.findData("log2"))
     assert not dialog.k.isEnabled() and "doubling" in dialog.function_note.text()
-    menu = window.menuBar().actions()[1].menu()
+    menu = window.menuBar().actions()[2].menu()  # Analyze
     processing = next(action.menu() for action in menu.actions() if action.text() == "Data processing")
     assert [action.text() for action in processing.actions()] == ["Transform…", "Normalize…", "Fraction of total…",
                                                                   "Remove baseline…", "Column math…"]

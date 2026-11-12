@@ -47,6 +47,35 @@ LOG = logging.getLogger("cellquant.quantanalysis")
 
 _ids = itertools.count(1)
 
+# What a new analysis starts from (Analyze → Project defaults…); saved in the project file. Older files have none: these are today's values.
+STAT_DEFAULTS = {"alpha": 0.05, "ci": 0.95, "style": "classic"}
+CI_LEVELS = (0.90, 0.95, 0.99)
+
+
+def clean_defaults(values) -> dict:
+    """``STAT_DEFAULTS`` with the valid entries of ``values`` (a project file's, possibly missing or damaged) in place of the standard ones."""
+
+    from cellquant.stats import STYLES
+
+    out = dict(STAT_DEFAULTS)
+    if not isinstance(values, dict):
+        return out
+    try:
+        alpha = float(values.get("alpha", out["alpha"]))
+        if 0 < alpha <= 0.5:
+            out["alpha"] = round(alpha, 6)
+    except (TypeError, ValueError):
+        pass
+    try:
+        ci = float(values.get("ci", out["ci"]))
+        if any(abs(ci - level) < 1e-9 for level in CI_LEVELS):
+            out["ci"] = min(CI_LEVELS, key=lambda level: abs(level - ci))
+    except (TypeError, ValueError):
+        pass
+    if values.get("style") in STYLES:
+        out["style"] = values["style"]
+    return out
+
 # key: (name in menus, paired, family)
 COMPARE_TESTS = {
     "unpaired_t": ("Unpaired t test", False, "parametric"),
@@ -166,6 +195,7 @@ class Project(QObject):
         self.results: dict[str, ResultSheet] = {}
         self.graphs: dict[str, GraphSheet] = {}
         self.layouts: dict[str, LayoutSheet] = {}
+        self.defaults: dict = dict(STAT_DEFAULTS)  # alpha, CI level and P value style that every new analysis dialog starts from
         self._refreshing: set[str] = set()
         self._renamed_from: dict[str, str] = {}  # sheet id -> its name before a rename that its processed tables follow
         self.changed.connect(lambda _sheet_id: self.modified.emit())
@@ -177,6 +207,12 @@ class Project(QObject):
         self._fit_timer.timeout.connect(self.flush_fits)
 
     def touch(self) -> None:
+        self.modified.emit()
+
+    def set_defaults(self, values: dict) -> None:
+        """New project defaults. Analyses already made keep their own values."""
+
+        self.defaults = clean_defaults(values)
         self.modified.emit()
 
     def replace(self, data: dict, results: dict, graphs: dict, layouts: dict | None = None) -> None:
@@ -1056,3 +1092,43 @@ def table_with(table: ColumnTable, names: list[str], values: list[np.ndarray], p
     from cellquant.stats import Column
 
     return ColumnTable(title=table.title, columns=[Column(name, column) for name, column in zip(names, values)], paired=paired)
+
+
+def table_frame(sheet: DataSheet) -> pd.DataFrame:
+    """The sheet's table as its grid shows it, ready to write as CSV: the same headers and layout, blank cells blank, numbers at full
+    precision. A column table is one column per group; with replicates a Replicate column comes first (a blank continues the one above);
+    a grouped table has a Row column and one column per data set and replicate ("Data set 1"…), an XY table its X column then the same,
+    a contingency table a Row column and one column per outcome. File → Import CSV… reads every one of them back as columns of numbers."""
+
+    def numbers(values) -> list:
+        return [float(value) if np.isfinite(value) else None for value in values]
+
+    def padded(columns: dict, rows: int) -> pd.DataFrame:
+        return pd.DataFrame({name: pd.Series(values + [None] * (rows - len(values)), dtype=object) for name, values in columns.items()})
+
+    if sheet.grouped is not None:
+        grouped = sheet.grouped
+        frame = {"Row": list(grouped.rows)}
+        for j, name in enumerate(grouped.columns):
+            for k in range(grouped.replicates):
+                frame[f"{name} {k + 1}"] = numbers(grouped.values[:, j, k])
+        return pd.DataFrame(frame)
+    if sheet.contingency is not None:
+        counts = sheet.contingency
+        return pd.DataFrame({"Row": list(counts.rows), **{name: numbers(counts.counts[:, j]) for j, name in enumerate(counts.columns)}})
+    if sheet.xy is not None:
+        xy = sheet.xy
+        frame = {xy.x_title: numbers(xy.x)}
+        for j, name in enumerate(xy.sets):
+            for k in range(xy.replicates):
+                frame[f"{name} {k + 1}"] = numbers(xy.values[:, j, k])
+        return pd.DataFrame(frame)
+    if sheet.replicates is not None:
+        replicates = sheet.replicates
+        rows = replicates.rows
+        columns = {"Replicate": [replicates.labels[row] if row < len(replicates.labels) else "" for row in range(rows)]}
+        for name, values in zip(replicates.names, replicates.values):
+            columns[name] = numbers(values)
+        return padded(columns, rows)
+    columns = {column.name: numbers(column.values) for column in sheet.table.columns}
+    return padded(columns, max([len(values) for values in columns.values()] + [0]))
