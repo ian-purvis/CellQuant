@@ -152,7 +152,7 @@ def test_plan_dock(tmp_path: Path):
         viewer.close()
 
 
-def test_unticked_image_leaves_step_2_list(tmp_path: Path):
+def test_unticked_image_leaves_the_step_2_channel_counts(tmp_path: Path):
     from qtpy.QtCore import Qt
 
     from cellquant.gui.app import CellQuantWindow
@@ -168,17 +168,19 @@ def test_unticked_image_leaves_step_2_list(tmp_path: Path):
     try:
         _wait(shell)
         panel = shell._objects_panel
-        tree = panel.image_tree
-        leaves = lambda: [i for i in _items(tree) if i.data(0, Qt.ItemDataRole.UserRole)]  # noqa: E731
-        total = len(leaves())
+        import re
+
+        # Step 2 counts the included images per channel (the per-image channels themselves are set in the Plan).
+        leaves = lambda: sum(int(n) for n in re.findall(r": (\d+)", panel.image_channel_counts.text()))  # noqa: E731
+        total = leaves()
         assert total == len(ids)
         table = shell._experiment_panel.table
         include = next(c for c in range(table.columnCount()) if table.horizontalHeaderItem(c).text() == "Include")
         table.item(0, include).setCheckState(Qt.Unchecked)
         _settle()
-        assert len(leaves()) == total - 1
+        assert leaves() == total - 1
         table.item(0, include).setCheckState(Qt.Checked)
         _settle()
-        assert len(leaves()) == total
+        assert leaves() == total
     finally:
         viewer.close()

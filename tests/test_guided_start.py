@@ -113,9 +113,10 @@ def test_guide_describes_the_buttons_that_exist():
     ).read_text(encoding="utf-8")
     for name in [
         "Try practice images", "New experiment", "Open experiment", "Add images", "Add folder",
-        "Set sizes (µm)", "Use recommended", "Include shown", "Leave out shown", "Include only selected", "Show ND2 only", "Preview", "Run this image", "Set up markers", "Display objects by",
+        "Set sizes (µm)", "Use recommended", "Show ND2 only", "Preview", "Run this image", "Set up markers", "Display objects by",
         "Delete objects", "Undo", "Approve", "Next image ▶", "Run all images", "Export results",
-        "Advanced",
+        "Advanced", "Add column…", "Load masks…", "Find objects in all images", "Different channel for some images…",
+        "More tools", "Plan…", "Keyboard shortcuts…", "Output glossary…", "Open a results folder in QuantAnalysis…",
     ]:
         assert f"**{name}" in guide, name
         assert name in code, name

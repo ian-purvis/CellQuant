@@ -22,7 +22,10 @@ def _shown(panel, name: str) -> bool:
 def test_settings_follow_the_z_mode_and_resizing(tmp_path: Path, open_window):
     from cellquant.gui.app import _choose
 
-    shell = open_window(_experiment(tmp_path, "cellpose", {"resize_to_diameter": False}).directory)
+    controller = _experiment(tmp_path, "cellpose", {"resize_to_diameter": False})
+    controller.experiment.images[0].z_planes = 3  # the Z options are shown only for an included Z-stack
+    controller.save()
+    shell = open_window(controller.directory)
     panel = shell._objects_panel
     panel.advanced_toggle.setChecked(True)
     _choose(panel.z_stack, "max_projection")

@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -68,17 +69,17 @@ STEPS = (
         1,
         "1 Images",
         "Add your images",
-        "Click <b>New experiment</b> and choose two folders: the <b>image folder</b> (only read, never changed) "
+        "On the <b>Start</b> tab, click <b>New experiment…</b> and choose two folders: the <b>image folder</b> (only read, never changed) "
         "and the <b>results folder</b> (where CellQuant saves its work; by default a new folder beside your images). "
-        "That results folder is reloadable with <b>Open</b> — changes are saved automatically (no separate Save).<br>"
+        "That results folder is reloadable with <b>Open experiment…</b> on the Start tab — changes are saved automatically (no separate Save).<br>"
         "Every ND2 and TIFF in the image folder and its subfolders is listed. "
-        "<b>Add folder</b> and <b>Add images</b> add more to the same experiment later.<br>"
+        "<b>Add folder…</b> and <b>Add images…</b> add more to the same experiment later.<br>"
         "Check the list: each image is shown with its folder path, slices, channels, pixel size and "
         "objective. Sample name and Folder columns identify the experimental condition.<br>"
         "When an image is open, the blue box shows its channel order, for example "
         "<i>Channel 1 = Green · Channel 2 = Red</i>. Channel names come from the file; "
         "do not rename them to label conditions.<br>"
-        "Untick <i>Include</i> for any you do not want.",
+        "Untick <i>Include</i> for any you do not want. <b>Add column…</b> adds a column of your own (for example Genotype) to the list.",
         "Every image you expect is listed once, with the right folder, and channel order is clear. "
         "Read the yellow notes above the list.",
         "Add images, then check the list.",
@@ -86,19 +87,21 @@ STEPS = (
     Step(
         2,
         "2 Find objects",
-        "Find the nuclei (or cells)",
+        "Find the objects (nuclei or cells)",
         "Set <b>Default channel</b> to the nuclear channel (for example Channel 1 = Far Red). "
-        "Images that need another channel: select them under <b>Channel per image</b> and pick it in <b>Set channel…</b>.<br>"
+        "Images that need another channel: click <b>Different channel for some images…</b>, which opens the Plan.<br>"
         "<b>Method</b>: <i>Cellpose (AI model)</i>, which handles crowded or uneven nuclei well, "
         "or <i>Classical (fast, no GPU)</i>. Only the settings of the chosen method are shown.<br>"
-        "If the images are Z-stacks, choose <b>Z-stack mode</b>: "
+        "If an included image is a Z-stack, <b>Z-stack mode</b> appears: "
         "<i>2D: one slice</i>, <i>2D: max projection</i>, <i>2D + stitching</i>, or <i>True 3D</i>. "
         "The blue box recommends one for this computer; every option stays available.<br>"
-        "<b>Nucleus diameter</b> defaults to 6 µm (most nuclei are about 5–7 µm). Adjust it; "
-        "<b>Min size</b> in µm² drops debris.<br>"
+        "<b>Min size</b> in µm² drops debris. <b>Nucleus diameter</b> (default 6 µm; most nuclei are about 5–7 µm) "
+        "appears only where it is used: with classic Cellpose, with Cellpose-SAM once <b>Resize to nucleus size</b> "
+        "is ticked under <b>Advanced</b>, and in true 3D.<br>"
+        "<b>Region of interest (optional)</b> can limit the search to part of each image.<br>"
         "The box at the top says whether an NVIDIA GPU was found and whether Cellpose will use it.<br>"
         "Click <b>Preview</b> to try the settings on the area you are looking at, then "
-        "<b>Run this image</b>.",
+        "<b>Run this image</b>, or <b>Find objects in all images</b> once you are happy with the settings.",
         "Outlines sit on the nuclei, with few missed, merged, or split. If not, change the settings "
         "and run again. Zoom in to check. In 3D, move the slice slider under the image to check every slice.",
         "Pick the nuclear channel, <b>Preview</b>, then <b>Run this image</b>.",
@@ -166,11 +169,11 @@ HELP = {
     ("_objects_panel", "min_area"): "Remove found objects smaller than this (debris filter). Applied after segmentation. Defaults to 5 µm² when pixel size is known. 'none' keeps all sizes.",
     ("_objects_panel", "max_area"): "Remove found objects larger than this (clump filter). Applied after segmentation. 'none' keeps all sizes.",
     ("_objects_panel", "area_unit"): "pixels, or µm² (square micrometers; needs the pixel size).",
-    ("_objects_panel", "nucleus_diameter_um"): "Typical nucleus diameter in micrometers. Most nuclei are about 5–7 µm. Sizes the 3D smallest-object cutoff, and Cellpose's resizing when Resize to nucleus size is on.",
+    ("_objects_panel", "nucleus_diameter_um"): "Typical nucleus diameter in micrometers. Most nuclei are about 5–7 µm. Sizes the 3D smallest-object cutoff, and Cellpose's resizing (always with classic Cellpose; with Cellpose-SAM when Resize to nucleus size is on). This box is shown only when one of those applies.",
     ("_objects_panel", "watershed"): "Split touching objects. Try this if two nuclei come out as one.",
     ("_objects_panel", "cellpose_model"): "Which trained Cellpose model finds the objects. The first one listed is the usual choice. You can also type the path to a model you trained yourself.",
     ("_objects_panel", "diameter"): "Typical object width in pixels, the same in every image. Used to resize the image for classic models, for Cellpose-SAM when Resize is ticked, and to size the 3D smallest-object cutoff. 0 = use Nucleus diameter (µm) with each image's own pixel size.",
-    ("_objects_panel", "resize_to_diameter"): "Off: Cellpose-SAM sees each image at its own size (fast, good for most nuclei). On: images are scaled so nuclei are about 30 px, from Nucleus diameter; slower for small nuclei. Classic Cellpose always resizes.",
+    ("_objects_panel", "resize_to_diameter"): "Off: Cellpose-SAM sees each image at its own size (fast, good for most nuclei). On: images are scaled so nuclei are about 30 px, from Nucleus diameter; slower for small nuclei. Ticking it shows Nucleus diameter (µm) in the main settings. Classic Cellpose always resizes.",
     ("_objects_panel", "flow"): "Checks that each object's outline matches the direction Cellpose predicted. Lower = stricter: drops oddly shaped or doubtful objects. Higher = keeps more. Try lowering it if odd, ragged objects appear. Not used in true 3D (Cellpose skips this check there).",
     ("_objects_panel", "cellprob"): "How sure Cellpose must be that a pixel is part of a cell. Higher = fewer, more confident objects: raise it (try 1 to 3) if dim empty areas or phantom patches get segmented. Lower = finds fainter objects: lower it (try -1 to -3) if real dim nuclei are missed. 0 is the default.",
     ("_objects_panel", "niter_3d"): "True 3D only. How many steps Cellpose takes to trace each object. More is slower but joins large or long objects better. 200 is Cellpose's default and was quick; 1000 is the Cellpose-SAM paper's setting and can take several times longer.",
@@ -329,6 +332,35 @@ def _card(text: str, color: str) -> QLabel:
 _BLOCKER_STYLE = "QLabel { background: rgba(224, 138, 0, 0.18); border-radius: 4px; padding: 4px; font-weight: bold; }"
 
 
+# Short names for the tab strip, so seven tabs fit the dock; hovering a tab gives the full name.
+TAB_NAMES = {1: "Images", 2: "Find", 3: "Edit", 4: "Markers", 5: "Check", 6: "Results"}
+
+
+def tab_text(step: Step, mark: str = "") -> str:
+    """A tab's label: its number and short name, then ✓ (done) or → (next), e.g. "1 Images ✓"."""
+
+    return f"{step.number} {TAB_NAMES.get(step.number, step.name)}{mark}"
+
+
+def lock_note_text(blocked_after: int, blocker: str) -> str:
+    """Why the later tabs are locked, e.g. "Steps 3-6 unlock after step 2: Run this image first."."""
+
+    first, last = blocked_after + 1, len(STEPS)
+    steps = f"Step {first}" if first == last else f"Steps {first}-{last}"
+    verb = "unlocks" if first == last else "unlock"
+    return f"{steps} {verb} after step {blocked_after}: {blocker}"
+
+
+def _lock_note_label() -> QLabel:
+    """The line under the tab strip that says why later tabs are locked (empty and hidden when none is)."""
+
+    label = QLabel("")
+    label.setWordWrap(True)
+    label.setStyleSheet(_BLOCKER_STYLE)
+    label.setVisible(False)
+    return label
+
+
 class StepPage(QWidget):
     """One numbered step: instructions, optional quick actions, the panel, and Back / Next."""
 
@@ -338,6 +370,8 @@ class StepPage(QWidget):
         self.index = index
         step = STEPS[index]
         layout = QVBoxLayout(self)
+        self.lock_note = _lock_note_label()
+        layout.addWidget(self.lock_note)
         heading = QLabel(f"<b>{step.number}. {step.title}</b>")
         heading.setStyleSheet("font-size: 14px;")
         layout.addWidget(heading)
@@ -386,6 +420,10 @@ class StepPage(QWidget):
         bar.addWidget(self.next)
         layout.addLayout(bar)
 
+    def set_lock_note(self, text: str) -> None:
+        self.lock_note.setText(text)
+        self.lock_note.setVisible(bool(text))
+
     def update_state(self, state: StepState) -> None:
         self.next.setEnabled(not state.blocker)
         self.blocker.setText(state.blocker)
@@ -400,6 +438,8 @@ class StartPage(QWidget):
         super().__init__()
         self.window = window
         layout = QVBoxLayout(self)
+        self.lock_note = _lock_note_label()
+        layout.addWidget(self.lock_note)
         title = QLabel("<h2>CellQuant</h2>")
         layout.addWidget(title)
         intro = _card("Work through the tabs left to right. ⓘ", "rgba(80, 120, 200, 0.18)")
@@ -417,7 +457,7 @@ class StartPage(QWidget):
             ("Try practice images", "Makes a small practice experiment with a known answer. The best first step.", window.start_practice),
             ("New experiment…", "Choose the folder with your images and a separate folder for the results.", window.new_experiment),
             ("Open experiment…", "Open a folder you used before. Your settings and results are kept.", window.open_experiment_dialog),
-            ("Analyze a results folder…", "Statistics and graphs of saved results (a results or export folder) in QuantAnalysis, "
+            ("Open a results folder in QuantAnalysis…", "Statistics and graphs of saved results (a results or export folder) in QuantAnalysis, "
              "without going through the steps.", window.analyze_results_folder),
         ):
             button = QPushButton(text)
@@ -446,8 +486,30 @@ class StartPage(QWidget):
         guide.setToolTip("The full guide, with what to check at each step and fixes for common problems.")
         guide.clicked.connect(window.open_guide)
         layout.addWidget(guide)
+        # Tools that have no step of their own, each with one home here (they are also in menus and docks).
+        self.more_tools = QGroupBox("More tools")
+        tools = QGridLayout(self.more_tools)
+        self.tool_buttons: dict[str, QPushButton] = {}
+        for position, (text, tip, action) in enumerate(
+            (
+                ("Plan…", "Choose which images each analysis runs and which channel it finds objects in. Needs an open experiment.", "show_plan"),
+                ("Measure…", "Draw lines or shapes on the image to get length, area and volume, and export them to a CSV. Needs an open experiment.", "show_measure"),
+                ("Output glossary…", "What every column of the exported files means.", "open_output_glossary"),
+                ("Keyboard shortcuts…", "The keys that work in CellQuant.", "show_shortcuts"),
+            )
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _checked=False, action=action: getattr(window, action)())
+            tools.addWidget(button, position // 2, position % 2)
+            self.tool_buttons[text] = button
+        layout.addWidget(self.more_tools)
         layout.addStretch(1)
         self._next_index = 0
+
+    def set_lock_note(self, text: str) -> None:
+        self.lock_note.setText(text)
+        self.lock_note.setVisible(bool(text))
 
     def update_state(self, states: list[StepState]) -> None:
         controller = self.window.controller
@@ -466,6 +528,8 @@ class StartPage(QWidget):
         target = STEPS[self._next_index]
         self.continue_button.setText(f"Continue: {target.number}. {target.title} →")
         self.continue_button.setEnabled(controller is not None)
+        for name in ("Plan…", "Measure…"):
+            self.tool_buttons[name].setEnabled(controller is not None)
 
     def _continue(self) -> None:
         self.window.go_to_step(self._next_index)
