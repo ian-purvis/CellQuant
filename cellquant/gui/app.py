@@ -29,6 +29,7 @@ from qtpy.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -60,6 +61,7 @@ from cellquant import keep_awake
 from cellquant.controller import AnalysisController, display_z, read_unfinished_run
 from cellquant.count_area import outside
 from cellquant.errors import CellQuantError, RecipeValidationError
+from cellquant.export_folder import new_export_folder
 from cellquant.gui import guide
 from cellquant.segmentation import FULL_3D_FLOW_SMOOTH, FULL_3D_NITER, FULL_3D_TILE_OVERLAP, TILE_OVERLAP_RANGE
 from napari import layers as napari_layers
@@ -534,13 +536,102 @@ def release_window_size(viewer) -> None:
     window.setSizePolicy(expanding, expanding)
 
 
+_IMAGE_KINDS = {".nd2": "nd2", ".tif": "tiff", ".tiff": "tiff"}
+_KIND_LABELS = {"nd2": "ND2", "tiff": "TIFF"}
+
+
+def scan_images(folder: str | Path, cancelled=None) -> list[tuple[str, dict[str, int]]] | None:
+    """Images under ``folder`` by top-level subfolder and file type ("." for files directly inside).
+
+    Returns None when ``cancelled()`` turned true part-way: a big or network folder can take a long time to walk.
+    """
+
+    import os
+
+    from cellquant.experiment import _EXPERIMENT_FOLDERS
+
+    root = Path(folder)
+    counts: dict[str, dict[str, int]] = {}
+    for current, subfolders, names in os.walk(root):
+        if cancelled is not None and cancelled():
+            return None
+        subfolders[:] = sorted(name for name in subfolders if name not in _EXPERIMENT_FOLDERS)
+        relative = Path(current).relative_to(root).parts
+        key = relative[0] if relative else "."
+        for name in names:
+            kind = _IMAGE_KINDS.get(Path(name).suffix.lower())
+            if kind:
+                counts.setdefault(key, {"nd2": 0, "tiff": 0})[kind] += 1
+    return sorted(counts.items())
+
+
+def suggested_results_folder(images: str | Path) -> str:
+    """Beside the image folder, never inside it: "<parent>/<image folder name> CellQuant results"."""
+
+    path = Path(images).expanduser()
+    if not path.name or path.parent == path:
+        return ""  # a drive root has no name to build one from
+    return str(path.parent / f"{path.name} CellQuant results")
+
+
+class _FolderScan(QObject):
+    """Checks and counts an image folder off the interface thread, and says so by signal."""
+
+    checked = Signal(int, bool)  # (request, the folder exists)
+    counted = Signal(int, object)  # (request, scan_images result)
+
+    def __init__(self, current) -> None:
+        super().__init__()
+        self._current = current  # the number of the latest request; older ones stop
+
+    def start(self, request: int, folder: str) -> None:
+        import threading
+
+        threading.Thread(target=self._work, args=(request, folder), daemon=True).start()
+
+    def _work(self, request: int, folder: str) -> None:
+        stale = lambda: self._current() != request  # noqa: E731
+        try:
+            try:
+                exists = Path(folder).expanduser().is_dir()
+            except OSError:
+                exists = False
+            if stale():
+                return
+            self.checked.emit(request, exists)
+            if not exists:
+                return
+            try:
+                found = scan_images(Path(folder).expanduser(), stale)
+            except OSError:
+                found = []
+            if found is not None and not stale():
+                self.counted.emit(request, found)
+        except RuntimeError:
+            pass  # the dialog closed meanwhile
+
+
+_NOTE_STYLES = {
+    "info": "QLabel { background: rgba(60, 130, 220, 0.10); border-radius: 6px; padding: 6px; }",
+    "warn": "QLabel { background: rgba(217, 164, 0, 0.18); border-radius: 6px; padding: 6px; }",
+    "error": "QLabel { background: rgba(200, 50, 50, 0.22); border-radius: 6px; padding: 6px; }",
+}
+
+
 class NewExperimentDialog(QDialog):
     """Ask for the image folder and the results folder separately."""
+
+    _DEBOUNCE_MS = 250  # typing a path scans only once the typing pauses
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("New experiment")
         self.setMinimumWidth(560)
+        self._generation = 0  # the number of the latest scan request; see _FolderScan
+        self._scan_state: str | None = None  # None (no folder typed), "pending", "ok" or "missing"
+        self._found: list[tuple[str, dict[str, int]]] | None = None
+        self._results_touched = False  # once the user edits the results folder, it is no longer suggested
+        self._suggested = ""
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.name = QLineEdit()
@@ -549,24 +640,25 @@ class NewExperimentDialog(QDialog):
         self.images.setToolTip(
             "Only read, never changed. This folder and its subfolders are scanned, not folders beside it.\n"
             "After Browse, check the blue box shows the folder you meant (for example …\\E14.5_E17.5, "
-            "not the parent that also holds P0_P21).\n"
+            "not the parent that also holds P0_P21). Hover it for the count in each subfolder.\n"
             "You can leave out individual images in step 1 after they are listed."
         )
         self.results = QLineEdit()
         self.results.setToolTip(
-            "Runs, measurements and exports are written here. Pick the image folder only if you want "
-            "results next to the images."
+            "Runs, measurements and exports are written here. Suggested beside the image folder until you type "
+            "your own. Pick the image folder only if you want results next to the images."
         )
         form.addRow("Experiment name", self.name)
         form.addRow("Image folder", self._browse_row(self.images, self._pick_images))
         self.images_check = QLabel("")
         self.images_check.setWordWrap(True)
         self.images_check.setTextFormat(Qt.RichText)
-        self.images_check.setStyleSheet(
-            "QLabel { background: rgba(60, 130, 220, 0.10); border-radius: 6px; padding: 6px; }"
-        )
         form.addRow("", self.images_check)
         form.addRow("Results folder", self._browse_row(self.results, self._pick_results))
+        self.results_check = QLabel("")
+        self.results_check.setWordWrap(True)
+        self.results_check.setTextFormat(Qt.RichText)
+        form.addRow("", self.results_check)
         types = QHBoxLayout()
         self.use_nd2 = QCheckBox("ND2 files")
         self.use_tiff = QCheckBox("TIFF files")
@@ -578,13 +670,30 @@ class NewExperimentDialog(QDialog):
         types_box.setLayout(types)
         types.setContentsMargins(0, 0, 0, 0)
         form.addRow("Look for", types_box)
+        self.types_check = QLabel("")
+        self.types_check.setWordWrap(True)
+        form.addRow("", self.types_check)
         layout.addLayout(form)
-        self.images.textChanged.connect(self._update_images_check)
-        self._update_images_check()
+        self._scan = _FolderScan(lambda: self._generation)
+        self._scan.setParent(self)
+        self._scan.checked.connect(self._on_checked)
+        self._scan.counted.connect(self._on_counted)
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(self._DEBOUNCE_MS)
+        self._debounce.timeout.connect(self._start_scan)
+        self.images.textChanged.connect(self._images_changed)
+        self.results.textEdited.connect(self._results_edited)
+        self.results.textChanged.connect(lambda _text: self._update_ok())
+        for box in (self.use_nd2, self.use_tiff):
+            box.toggled.connect(lambda _checked: self._types_changed())
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
+        self.ok_button = buttons.button(QDialogButtonBox.Ok)
         layout.addWidget(buttons)
+        self._show_images_note()
+        self._update_ok()
 
     def experiment_name(self) -> str:
         return self.name.text().strip() or "Experiment"
@@ -603,6 +712,16 @@ class NewExperimentDialog(QDialog):
     def file_types(self) -> list[str]:
         return [kind for box, kind in ((self.use_nd2, "nd2"), (self.use_tiff, "tiff")) if box.isChecked()]
 
+    def scanning(self) -> bool:
+        """True while the image folder is still being checked or counted."""
+
+        return self._scan_state == "pending" or (self._scan_state == "ok" and self._found is None)
+
+    def done(self, result: int) -> None:
+        self._generation += 1  # a scan still running stops
+        self._debounce.stop()
+        super().done(result)
+
     def _browse_row(self, field: QLineEdit, slot) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
@@ -613,17 +732,107 @@ class NewExperimentDialog(QDialog):
         layout.addWidget(button)
         return row
 
-    def _update_images_check(self, _text: str = "") -> None:
+    # -- the image folder: checked and counted in the background, shown as soon as it is typed or picked --------
+
+    def _images_changed(self, _text: str = "") -> None:
+        self._generation += 1
+        self._found = None
+        self._scan_state = "pending" if self.images.text().strip() else None
+        if self._scan_state is None:
+            self._debounce.stop()
+            self._forget_suggestion()
+        else:
+            self._debounce.start()
+        self._show_images_note()
+        self._update_ok()
+
+    def _start_scan(self) -> None:
+        folder = self.images.text().strip()
+        if folder:
+            self._scan.start(self._generation, folder)
+
+    def _on_checked(self, request: int, exists: bool) -> None:
+        if request != self._generation:
+            return
+        self._scan_state = "ok" if exists else "missing"
+        if exists:
+            self._suggest_results()
+        else:
+            self._forget_suggestion()
+        self._show_images_note()
+        self._update_ok()
+
+    def _on_counted(self, request: int, found) -> None:
+        if request != self._generation:
+            return
+        self._found = list(found)
+        self._show_images_note()
+
+    def _types_changed(self) -> None:
+        self._show_images_note()
+        self._update_ok()
+
+    def _show_images_note(self) -> None:
         images = self.images.text().strip()
+        label = self.images_check
+        label.setToolTip("")
         if not images:
-            self.images_check.setText("No image folder yet.")
+            return self._say(label, "No image folder yet. You can also add images in step 1 afterwards.", "info")
+        path = Path(images).expanduser()
+        name = html.escape(path.name or str(path))
+        if self._scan_state == "missing":
+            return self._say(label, f"Not a folder: {html.escape(images)}. Check the spelling, or click Browse…", "error")
+        if self._scan_state == "pending" or self._found is None:
+            return self._say(label, f"Counting images in <b>{name}</b> and its subfolders…", "info")
+        types = self.file_types()
+        totals = {kind: sum(counts[kind] for _, counts in self._found) for kind in ("nd2", "tiff")}
+        total = sum(totals[kind] for kind in types)
+        left_out = [f"{totals[kind]} {_KIND_LABELS[kind]}" for kind in ("nd2", "tiff") if kind not in types and totals[kind]]
+        extra = f" ({' and '.join(left_out)} not ticked, left out)" if left_out else ""
+        lines = [
+            f"{'(directly in this folder)' if key == '.' else key}: {sum(counts[kind] for kind in types)}"
+            for key, counts in self._found
+            if sum(counts[kind] for kind in types)
+        ]
+        label.setToolTip("\n".join([str(path), *lines]) if lines else str(path))
+        if not total:
+            kinds = " or ".join(_KIND_LABELS[kind] for kind in types) or "ND2 or TIFF"
+            return self._say(label, f"No {kinds} images found in <b>{name}</b> or its subfolders{extra}. Check this is the right folder.", "warn")
+        parts = ", ".join(f"{totals[kind]} {_KIND_LABELS[kind]}" for kind in types if totals[kind])
+        self._say(label, f"Found <b>{total} image{'' if total == 1 else 's'}</b> ({parts}) in <b>{name}</b> and its subfolders{extra}", "info")
+
+    @staticmethod
+    def _say(label: QLabel, text: str, kind: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(_NOTE_STYLES[kind] if text else "")
+        label.setVisible(bool(text))
+
+    # -- the results folder: suggested beside the images until the user types one ------------------------------
+
+    def _suggest_results(self) -> None:
+        if self._results_touched:
             return
-        path = Path(images)
-        if not path.is_dir():
-            self.images_check.setText(f"Not a folder: {images}")
-            return
-        self.images_check.setText(f"Imports <b>{path.name}</b> + subfolders")
-        self.images_check.setToolTip(f"{path}\nSubfolders inside it are included. Folders next to it are not.")
+        self._suggested = suggested_results_folder(self.images.text().strip())
+        self.results.setText(self._suggested)  # setText does not count as the user editing it
+
+    def _forget_suggestion(self) -> None:
+        if not self._results_touched and self._suggested and self.results.text() == self._suggested:
+            self.results.setText("")
+        self._suggested = ""
+
+    def _results_edited(self, text: str) -> None:
+        self._results_touched = bool(text.strip())  # emptied again: suggest once more
+
+    def _update_ok(self) -> None:
+        results = self.results.text().strip()
+        not_a_folder = bool(results) and Path(results).expanduser().is_file()
+        self._say(self.results_check, f"Not a folder: {html.escape(results)}" if not_a_folder else "", "error")
+        no_types = not self.file_types()
+        self._say(self.types_check, "Tick ND2 files, TIFF files, or both." if no_types else "", "error")
+        blocked = not results or no_types or self._scan_state == "missing" or not_a_folder
+        self.ok_button.setEnabled(not blocked)
+        why = "Choose a results folder." if not results else "Fix the red note first." if blocked else ""
+        self.ok_button.setToolTip(why)
 
     def _pick_images(self) -> None:
         folder = choose_existing_directory(
@@ -634,9 +843,8 @@ class NewExperimentDialog(QDialog):
         if not folder:
             return
         self.images.setText(folder)
-        if not self.results.text().strip():
-            sibling = Path(folder).parent / f"{Path(folder).name} - CellQuant results"
-            self.results.setText(str(sibling))
+        self._debounce.stop()
+        self._start_scan()  # picked, not typed: no need to wait for the typing to pause
 
     def _pick_results(self) -> None:
         folder = choose_existing_directory(
@@ -645,6 +853,7 @@ class NewExperimentDialog(QDialog):
             self.results.text().strip(),
         )
         if folder:
+            self._results_touched = True
             self.results.setText(folder)
 
     def _accept(self) -> None:
@@ -668,22 +877,6 @@ class NewExperimentDialog(QDialog):
         if images and not Path(images).is_dir():
             QMessageBox.warning(self, "Image folder", f"This image folder could not be found:\n{images}")
             return
-        if images:
-            path = Path(images)
-            counts = folder_image_counts(path)
-            found = "\n".join(
-                f"  {'(directly in this folder)' if name == '.' else name}: {count}" for name, count in counts
-            )
-            found = f"{sum(count for _, count in counts)} images:\n{found}" if counts else "No images found."
-            answer = QMessageBox.question(
-                self,
-                "Confirm image folder",
-                f"Import {path.name} and its subfolders?\n\n{path}\n\n{found}",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if answer != QMessageBox.Yes:
-                return
         if images and results_inside_images(images, results):
             answer = QMessageBox.question(
                 self,
@@ -776,12 +969,51 @@ def existing_experiment_images(results: str | Path) -> str | None:
         return ""
 
 
+# The keys CellQuant binds (see Footer, where they are set up). Only keys that really do something are listed.
+SHORTCUTS = (
+    ("PgUp / PgDn", "Show the previous / next image. Works anywhere in the window."),
+    ("A", "Approve this image and open the next one to check (step 5). Not while typing in a box."),
+    ("Ctrl+Z", "Undo the last edit (step 3). Not while typing in a box."),
+    ("Esc", "Leave Delete objects, Select objects or the circle tools (step 3), or Mark + / Mark − (step 5)."),
+    ("Ctrl+V", "Paste cells copied from a spreadsheet into the image list (step 1)."),
+)
+
+
+class ShortcutsWindow(QDialog):
+    """The keyboard shortcuts. Not modal: it can stay open while you work."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Keyboard shortcuts")
+        self.setModal(False)
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget(len(SHORTCUTS), 2)
+        self.table.setHorizontalHeaderLabels(["Key", "What it does"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.table.setWordWrap(True)
+        self.table.setTextElideMode(Qt.ElideNone)
+        for row, (key, what) in enumerate(SHORTCUTS):
+            self.table.setItem(row, 0, QTableWidgetItem(key))
+            self.table.setItem(row, 1, QTableWidgetItem(what))
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+        self.resize(620, 60 + 44 * (len(SHORTCUTS) + 1))
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.table.resizeRowsToContents()  # wrapped text needs the final column width
+
+
 class CellQuantWindow:
     def __init__(self, viewer, experiment_dir: str | Path | None = None):
         self.viewer = viewer
         self.controller: AnalysisController | None = None
         self._glossary_window = None
-        self._edit_cells = None  # step 5 Edit cells window, made when first opened
+        self._edit_cells = None  # step 5 Override calls window, made when first opened
         self._quantanalysis = None  # the QuantAnalysis statistics window, made on first use
         self._folder_lock = None  # this window's hold on the open experiment folder
         self._problem_text = ""  # what the Problem box shows now, for Copy details
@@ -792,6 +1024,8 @@ class CellQuantWindow:
         errorlog.set_problem_handler(self._problem_bridge.raised.emit)
         self._managed: set[str] = set()
         self._contrast_hooks: dict[str, object] = {}  # channel layer name -> its contrast callback
+        self._name_hooks: dict[str, object] = {}  # channel layer name -> the callback for the user renaming it
+        self._naming_layer = False  # True while CellQuant itself names a channel layer
         self._ids_image_id: str | None = None  # image whose object numbers the Object IDs layer shows
         self._channel_defaults: dict[str, object] = {}  # channel layer name -> colormap from the file
         self._mask_colors_set: dict[str, tuple] = {}  # object layer name -> (colors, layer, colormap) last set
@@ -835,9 +1069,15 @@ class CellQuantWindow:
         ]
         self._tabs.addTab(self._start_page, "Start")
         for page, step in zip(self._step_pages, guide.STEPS):
-            index = self._tabs.addTab(page, str(step.number))
+            index = self._tabs.addTab(page, guide.tab_text(step))
             self._tabs.setTabToolTip(index, step.name)
         self._tabs.setMinimumWidth(460)
+        # Short names fit the dock (460 px); if a narrower one cuts the strip, it scrolls instead of eliding the names.
+        self._tabs.setUsesScrollButtons(True)
+        self._tabs.setElideMode(Qt.ElideNone)
+        # Seven named tabs, each with its ✓, are wider than the panel with the theme's padding:
+        # with less they all fit (the scroll buttons stay for a narrower panel or a wider font).
+        self._tabs.tabBar().setStyleSheet("QTabBar::tab { padding-left: 3px; padding-right: 3px; }")
         self._analysis_bar = AnalysisBar(self)
         self._dock = QWidget()
         dock_layout = QVBoxLayout(self._dock)
@@ -936,7 +1176,10 @@ class CellQuantWindow:
     def _markers_page_shown(self) -> None:
         """Step 4 lists every channel but the one objects are found in, so read that from step 2 first."""
 
-        if self._tabs.currentWidget() is not self._step_pages[3] or self.controller is None or self.is_busy():
+        if self._tabs.currentWidget() is not self._step_pages[3]:
+            self._marker_setup.flush()  # a tick made a moment ago is applied, not lost, when the user moves on
+            return
+        if self.controller is None or self.is_busy():
             return
         self._panels_to_recipe()
         self._marker_setup.refresh()
@@ -971,14 +1214,18 @@ class CellQuantWindow:
             self._tabs.setTabEnabled(index, locked_by is None)
             if locked_by is not None:
                 blocker_step, blocker = locked_by
-                self._tabs.setTabText(index, str(step.number))
+                self._tabs.setTabText(index, guide.tab_text(step))
                 self._tabs.setTabToolTip(index, f"{step.name}: locked. Step {blocker_step.number} first: {blocker}")
             else:
                 mark = " ✓" if state.done else (" →" if i == next_index else "")
-                self._tabs.setTabText(index, f"{step.number}{mark}")
+                self._tabs.setTabText(index, guide.tab_text(step, mark))
                 self._tabs.setTabToolTip(index, step.name)
             if locked_by is None and state.blocker:
                 locked_by = (step, state.blocker)
+        # The reason, always in view under the tab strip while a later tab is locked.
+        lock_text = guide.lock_note_text(locked_by[0].number, locked_by[1]) if locked_by is not None else ""
+        for page in (self._start_page, *self._step_pages):
+            page.set_lock_note(lock_text)
         if not self._tabs.isTabEnabled(self._tabs.currentIndex()):
             open_pages = [page for page in self._step_pages if self._tabs.isTabEnabled(self._tabs.indexOf(page))]
             self._tabs.setCurrentWidget(open_pages[-1] if open_pages else self._start_page)
@@ -1067,6 +1314,15 @@ class CellQuantWindow:
         self._glossary_window.raise_()
         self._glossary_window.activateWindow()
 
+    def show_shortcuts(self) -> None:
+        """The keyboard shortcuts in a small window that stays open beside the work."""
+
+        if getattr(self, "_shortcuts_window", None) is None:
+            self._shortcuts_window = ShortcutsWindow(self._tabs)
+        self._shortcuts_window.show()
+        self._shortcuts_window.raise_()
+        self._shortcuts_window.activateWindow()
+
     def open_quantanalysis(self, experiment: bool = True):
         """QuantAnalysis, the statistics window (one, reused). From step 6 it imports the open experiment."""
 
@@ -1120,6 +1376,8 @@ class CellQuantWindow:
             return
         self._glossary_action = menu.addAction("Output glossary…")
         self._glossary_action.triggered.connect(lambda _checked=False: self.open_output_glossary())
+        self._shortcuts_action = menu.addAction("Keyboard shortcuts…")
+        self._shortcuts_action.triggered.connect(lambda _checked=False: self.show_shortcuts())
         self._report_action = menu.addAction("Report a problem…")
         self._report_action.triggered.connect(lambda _checked=False: self.report_problem())
         self._log_folder_action = menu.addAction("Open log folder")
@@ -1132,7 +1390,7 @@ class CellQuantWindow:
 
     def start_practice(self) -> None:
         folder = guide.choose_practice_folder(self._tabs)
-        if folder is None:
+        if folder is None or not self._settle_unrecorded_drawing():
             return
         from cellquant.practice import create_practice_experiment
 
@@ -1169,6 +1427,7 @@ class CellQuantWindow:
         controller = self.require_controller()
         if controller is None:
             return
+        self._record_drawing_first()
         self._panels_to_recipe()
         controller.set_recipe(
             guide.marker_recipe(controller.recipe.model_dump(mode="json"), chosen, rule=rule, min_percent=min_percent)
@@ -1177,16 +1436,75 @@ class CellQuantWindow:
         self._measurements_panel.refresh()
         self._results_panel.refresh()
         self._marker_setup.refresh()
-        if not self._nav_ids:
+        self._measure_new_markers(None, rerun=True, first=True)
+
+    def apply_marker_merge(self, plan, *, clear_approvals: bool = False, min_percent: float | None = None) -> None:
+        """Step 4 after markers exist: ticking or unticking a channel (or the rule) changed the markers.
+
+        Markers that stay keep their cutoffs, cutoffs of single images, calls by hand and approvals (see
+        ``quicksetup.merge_marker_recipe``); added ones are measured; ``min_percent`` is the new minimum
+        percent for the percent markers that stay. The user stays on step 4.
+        """
+
+        controller = self.require_controller()
+        if controller is None:
+            return
+        self._record_drawing_first()
+        if plan.changes:
+            controller.set_recipe(plan.data)
+        if clear_approvals:
+            controller.clear_all_approvals("Approval was cleared because the markers changed.")
+        image_id = self._nav_ids[self._nav_index] if self._nav_ids else controller.current_image_id
+        if min_percent is not None and image_id is not None:
+            # A shared minimum percent, like moving the slider: approved images keep the one they were approved with.
+            stay = {
+                item.id: float(min_percent)
+                for item in controller.recipe.classifications
+                if item.id not in plan.new_ids and guide.uses_pixel_level(controller.recipe, item)
+            }
+            if stay:
+                controller.update_thresholds(image_id, stay)
+        controller.save()
+        self._measurements_panel.refresh()
+        self._results_panel.refresh()
+        self._marker_setup.refresh()
+        self._experiment_panel.refresh_status()
+        if plan.added or plan.reset:
+            self._measure_new_markers(set(plan.new_ids), rerun=False, first=False)
+            return
+        # Nothing to measure: markers were taken away (or the minimum changed); show the image at the new settings.
+        self.markers_changed()
+        if image_id is not None and not self.is_busy():
+            self._measure_new_markers(set(), rerun=False, first=False, removed=plan.removed)
+        elif plan.removed:
+            self.message(f"Removed the marker{'s' if len(plan.removed) != 1 else ''} {', '.join(plan.removed)}.")
+
+    def _measure_new_markers(self, only: set[str] | None, *, rerun: bool, first: bool, removed: list[str] | None = None) -> None:
+        """Measure the markers in the image shown and give the markers in ``only`` (None: all) a starting cutoff.
+
+        ``rerun`` runs the image again (the first setup); otherwise its objects are measured as they are, which
+        keeps its approval. The user is not moved to another step.
+        """
+
+        controller = self.controller
+        if controller is None or not self._nav_ids:
             return
         image_id = self._nav_ids[self._nav_index]
         self.message("Measuring the markers in this image...")
+
+        def work():
+            if rerun:
+                return controller.run_image(image_id)
+            try:
+                return controller.measure_markers(image_id)
+            except CellQuantError:
+                return controller.run_image(image_id)  # never run: the objects are found first
 
         def measured(result) -> None:
             recipe = controller.recipe
             levels = {}
             for item in recipe.classifications:
-                if not guide.uses_pixel_level(recipe, item):
+                if (only is not None and item.id not in only) or not guide.uses_pixel_level(recipe, item):
                     continue
                 spec = next(m for m in recipe.measurements if m.id == item.measurement)
                 reference = next(
@@ -1200,27 +1518,32 @@ class CellQuantWindow:
             starting = {
                 item.id: guide.starting_threshold(result.objects[item.measurement].to_numpy(dtype=float))
                 for item in controller.recipe.classifications
-                if item.measurement in result.objects.columns and not guide.uses_pixel_level(controller.recipe, item)
+                if (only is None or item.id in only)
+                and item.measurement in result.objects.columns
+                and not guide.uses_pixel_level(controller.recipe, item)
             }
-            updated = controller.update_thresholds(image_id, starting) or result
+            if first:
+                updated = controller.update_thresholds(image_id, starting) or result
+            else:  # markers added to an experiment being checked: no approval is cleared by their first cutoff
+                updated = (controller.set_starting_cutoffs(image_id, starting) if starting else None) or result
             controller.save()
             self._measurements_panel.refresh()
             self._marker_setup.refresh()
             self._experiment_panel.refresh_status()  # measuring new markers can clear an approval
             self.show_result(updated)
-            self.go_to_step(4)
-            first = controller.recipe.classifications[0].id if controller.recipe.classifications else None
-            panel = self._review_panel
-            if first is not None and panel.display.findData(first) >= 0:
-                panel.display.setCurrentIndex(panel.display.findData(first))
-            if levels:
-                self.message(
-                    "Markers measured. Check the starting pixel levels and the Cutoff slider."
-                )
+            if first:
+                # Step 5 starts on the first marker; the user opens it with Next.
+                panel = self._review_panel
+                first_id = controller.recipe.classifications[0].id if controller.recipe.classifications else None
+                if first_id is not None and panel.display.findData(first_id) >= 0:
+                    panel.display.setCurrentIndex(panel.display.findData(first_id))
+            if removed:
+                self.message(f"Removed the marker{'s' if len(removed) != 1 else ''} {', '.join(removed)}.")
             else:
-                self.message("Markers measured. Check the starting cutoffs with the Cutoff slider.")
+                self.message("Markers measured. Next: check the cutoffs in step 5.")
+            self.refresh_guidance()
 
-        self._start_job(lambda: controller.run_image(image_id), measured)
+        self._start_job(work, measured)
 
     def export_dialog(self) -> None:
         controller = self.require_controller()
@@ -1233,6 +1556,9 @@ class CellQuantWindow:
         )
         if not directory:
             return
+        self._record_drawing_first()
+        # A new dated folder inside the chosen one, so an earlier export is never overwritten.
+        folder = new_export_folder(directory, controller.active_analysis().name)
 
         def done(path) -> None:
             self._exported_to = Path(path)
@@ -1241,7 +1567,7 @@ class CellQuantWindow:
             self.refresh_guidance()
 
         options = self._results_panel.summary_options()
-        self._start_job(lambda: controller.export(directory, **options), done)
+        self._start_job(lambda: controller.export(folder, **options), done)
 
     @staticmethod
     def _note_gpu(status) -> None:
@@ -1291,6 +1617,8 @@ class CellQuantWindow:
             lock.release()
 
     def open_experiment(self, directory: str | Path, offer_unfinished: bool = True) -> None:
+        if not self._settle_unrecorded_drawing():
+            return
         lock = self._lock_folder(directory)
         if lock is None:
             return
@@ -1339,6 +1667,8 @@ class CellQuantWindow:
         dialog = NewExperimentDialog(self._tabs)
         if dialog.exec() != QDialog.Accepted:
             return
+        if not self._settle_unrecorded_drawing():
+            return
         output = Path(dialog.results_folder())
         images = dialog.images_folder()
         overwrite = dialog.overwrite_results() if hasattr(dialog, "overwrite_results") else False
@@ -1384,7 +1714,7 @@ class CellQuantWindow:
         if self.controller is not None and Path(self.controller.directory).resolve() == output.resolve():
             if self.is_busy():
                 self._drop_lock(lock)
-                self.show_error(f"{output} is still running here. Wait for it to finish, or press Stop, then try again.")
+                self.show_error(f"{output} is still running here. Wait for it to finish, or click Cancel, then try again.")
                 return False
             self.controller = None
         try:
@@ -1395,6 +1725,54 @@ class CellQuantWindow:
             return False
         self._footer.log.append(f"Overwrote earlier results in {output}: deleted {', '.join(path.name for path in deleted)}.")
         return True
+
+    def _record_drawing_first(self) -> bool:
+        """Record drawing in the Objects layer that is not recorded yet (before leaving, running or exporting)."""
+
+        try:
+            return self._edit_panel.record_unrecorded()
+        except RuntimeError:
+            return True  # the panel is already gone (the window is closing)
+
+    def _ask_unrecorded(self, images: int) -> str:
+        """Drawing not recorded yet, and CellQuant is about to forget it: "record", "discard" or "cancel"."""
+
+        box = QMessageBox(self.viewer.window._qt_window)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Unrecorded drawing")
+        box.setText(f"The drawing on {images} image{'s' if images != 1 else ''} is not recorded yet.")
+        box.setInformativeText("Record it to keep it, or discard it.")
+        record = box.addButton("Record", QMessageBox.AcceptRole)
+        discard = box.addButton("Discard", QMessageBox.DestructiveRole)
+        cancel = box.addButton("Cancel", QMessageBox.RejectRole)
+        box.setDefaultButton(record)
+        box.setEscapeButton(cancel)
+        box.exec()
+        clicked = box.clickedButton()
+        return "record" if clicked is record else "discard" if clicked is discard else "cancel"
+
+    def _settle_unrecorded_drawing(self, saving: bool = False) -> bool:
+        """Before the drawing would be forgotten (closing, another experiment): ask Record / Discard / Cancel.
+
+        False when the user cancelled, or recording failed (the drawing is kept and the reason shown).
+        """
+
+        count = self._edit_panel.unrecorded_count()
+        if not count:
+            return True
+        answer = "record" if saving else self._ask_unrecorded(count)
+        if answer == "record":
+            return self._edit_panel.record_unrecorded()
+        if answer == "discard":
+            self._edit_panel.discard_unrecorded()
+            return True
+        return False
+
+    def _tab_changed_from_drawing(self) -> None:
+        """Leaving step 3 for another tab records the drawing."""
+
+        if self._tabs.currentWidget() is not self._step_pages[2]:
+            self._record_drawing_first()
 
     def require_controller(self) -> AnalysisController | None:
         if self.controller is None:
@@ -1412,6 +1790,8 @@ class CellQuantWindow:
                 self._footer.set_position(0, 0, "")
             return
         image_id = self._nav_ids[self._nav_index]
+        if image_id != self._labels_image_id:
+            self._record_drawing_first()  # leaving an image: its unrecorded drawing is recorded, not lost
         controller.current_image_id = image_id
         record = controller.experiment.image(image_id)
         result = controller.recall(image_id, measure=False) if controller else None
@@ -1541,6 +1921,7 @@ class CellQuantWindow:
         if not self._nav_ids:
             self.message("No images to run: add images in step 1, or tick Include for at least one.")
             return
+        self._record_drawing_first()
         self._panels_to_recipe()
         image_id = self._nav_ids[self._nav_index]
         self._start_job(lambda: controller.run_image(image_id, new_run=True), self._run_finished)
@@ -1550,7 +1931,7 @@ class CellQuantWindow:
             return
         controller = self.controller
         start = (controller.experiment.input_directory or str(controller.directory)) if controller else str(Path.home())
-        folder = QFileDialog.getExistingDirectory(self._tabs, "Choose a folder of results (masks)", start)
+        folder = QFileDialog.getExistingDirectory(self._tabs, "Choose the folder of masks", start)
         if not folder or self.is_busy():
             return
         if controller is None:
@@ -1722,10 +2103,10 @@ class CellQuantWindow:
     # Buttons that start work, or change what is being analyzed, are unavailable while work runs.
     _BUSY_BUTTONS = frozenset(
         {
-            "Preview", "Run this image", "Load results…", "Run selected images", "Run all images", "Set up markers",
-            "Export results…", "Add images", "Add folder", "New experiment", "New experiment…", "Open",
-            "Open experiment…", "Try practice images", "Include shown", "Leave out shown",
-            "Include only selected", "Undo", "Undo all", "Record drawn edits", "Approve", "Use recommended",
+            "Preview", "Run this image", "Load masks…", "Run selected images", "Run all images", "Find objects in all images",
+            "Set up markers", "Export results…", "Add images…", "Add folder…", "Add column…", "New experiment…",
+            "Open experiment…", "Try practice images",
+            "Undo", "Undo all", "Record drawn edits", "Approve", "Use recommended",
             "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
             # Buttons that change the settings: never while images are being analyzed with them.
             "Load settings…", "Add measurement", "Remove measurement",
@@ -1735,14 +2116,21 @@ class CellQuantWindow:
         }
     )
 
+    @staticmethod
+    def _busy_key(text: str) -> str:
+        """A button's name without its trailing "…" (or "..."), so "Add images…" and "Add images" are one name."""
+
+        return text.rstrip(" .…")
+
     def set_busy(self, busy: bool) -> None:
         """Grey out run buttons while an analysis runs; Cancel (and Pause for batches) become available."""
 
         if busy:
+            names = {self._busy_key(name) for name in self._BUSY_BUTTONS}
             buttons = [
                 button
                 for button in [*self._dock.findChildren(QPushButton), *self._footer.findChildren(QPushButton)]
-                if button.text() in self._BUSY_BUTTONS
+                if self._busy_key(button.text()) in names
             ]
             buttons.append(self._analysis_bar.choice)
             self._busy_restore = {button: not button.testAttribute(Qt.WA_ForceDisabled) for button in buttons}
@@ -1864,6 +2252,7 @@ class CellQuantWindow:
         controller = self.require_controller()
         if controller is None or self._batch is not None or self._job is not None:
             return
+        self._record_drawing_first()
         self._panels_to_recipe()
         worker = BatchWorker(controller, image_ids, analyses, work=work, fresh=fresh, continuing=continuing)
         # Remembered until the run reaches its last image: the next start of CellQuant offers to continue it.
@@ -1989,11 +2378,18 @@ class CellQuantWindow:
         """Closing CellQuant during a run asks first: Exit (finished images are kept) or Stay."""
 
         window = self.viewer.window._qt_window
-        if not self.is_busy() or not window.isVisible():
-            return True
         from qtpy.QtWidgets import QApplication
 
         app = QApplication.instance()
+        if not self.is_busy():
+            # Drawing not recorded yet would be lost: ask first (recorded without asking when the computer shuts down).
+            try:
+                return self._settle_unrecorded_drawing(saving=app is not None and app.isSavingSession())
+            except Exception as exc:  # noqa: BLE001 - closing must never fail because of this question
+                _log_developer_error(exc)
+                return True
+        if not window.isVisible():
+            return True
         if app is not None and app.isSavingSession():
             return True  # the computer is shutting down or restarting: the run is offered again next time
         if not self._confirm_exit_during_run():
@@ -2190,6 +2586,8 @@ class CellQuantWindow:
         )
         if not directory or self.is_busy():
             return
+        self._record_drawing_first()
+        folder = new_export_folder(directory)  # a new dated folder inside the chosen one
         self._panels_to_recipe()
         self._exclusive = True
 
@@ -2200,7 +2598,7 @@ class CellQuantWindow:
             self.refresh_guidance()
 
         options = self._results_panel.summary_options()
-        self._start_job(lambda: controller.export_all(directory, **options), done)
+        self._start_job(lambda: controller.export_all(folder, **options), done)
 
     # -- analyses ----------------------------------------------------------------------------------
 
@@ -2212,6 +2610,7 @@ class CellQuantWindow:
             self.message("Wait for the current analysis to finish before switching.")
             self._analysis_bar.refresh()
             return
+        self._record_drawing_first()  # drawing belongs to the analysis being left
         self._panels_to_recipe()  # the settings on screen belong to the analysis being left
         try:
             controller.switch_analysis(recipe_id)
@@ -2295,6 +2694,7 @@ class CellQuantWindow:
             elif isinstance(widget, QCheckBox):
                 widget.clicked.connect(lambda *_args: save_soon())
         self._tabs.currentChanged.connect(lambda _index: save_soon())
+        self._tabs.currentChanged.connect(lambda _index: self._tab_changed_from_drawing())
         self._close_watcher = CloseWatcher(self._save_settings_quietly, self._dock, allow_close=self._allow_close)
         self.viewer.window._qt_window.installEventFilter(self._close_watcher)
 
@@ -2430,7 +2830,7 @@ class CellQuantWindow:
         self.viewer.camera.center = tuple(world[-2:])
 
     def open_edit_cells(self) -> None:
-        """Step 5 Edit cells: call single objects positive or negative by hand (one window, reused)."""
+        """Step 5 Override calls: call single objects positive or negative by hand (one window, reused)."""
 
         from cellquant.gui.cell_calls_window import EditCellsWindow
 
@@ -2517,7 +2917,16 @@ class CellQuantWindow:
         self._edit_panel.keep_drawing()
         self._labels_image_id = None
         file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
-        names = format_channel_labels(file_names, loaded.n_channels)
+        # Contrast is remembered per experiment channel, matched by the names stored in the file.
+        by_index = {channel.channel_index: channel for channel in self.controller.experiment.channels}
+        owners = self.controller.display_channels(record, loaded.n_channels)
+        # A channel is shown under the experiment's name for it: the file's name, or the one the user
+        # gave it by renaming its layer (see _channel_layer_renamed).
+        shown_names = [
+            by_index[owner].channel_name if owner in by_index else (file_names[position] if position < len(file_names) else "")
+            for position, owner in enumerate(owners)
+        ]
+        names = format_channel_labels(shown_names, loaded.n_channels)
         # Removing and adding napari layers is most of the time a switch takes: when the next image
         # has the same channels and size (the usual case), its layers are kept and given the new pixels.
         layers = self._reusable_channel_layers(names, loaded)
@@ -2526,9 +2935,6 @@ class CellQuantWindow:
         self._shown_image_id = record.image_id
         self._shown_z = display_z(result)
         self._edit_panel.clear_selection()
-        # Contrast is remembered per experiment channel, matched by the names stored in the file.
-        by_index = {channel.channel_index: channel for channel in self.controller.experiment.channels}
-        owners = self.controller.display_channels(record, loaded.n_channels)
         colormaps = channel_colormaps(loaded)
         self.set_pixel_scale(record)
         if layers is None:
@@ -2545,6 +2951,9 @@ class CellQuantWindow:
                 hook = self._contrast_hooks.pop(layer.name, None)
                 if hook is not None:
                     layer.events.contrast_limits.disconnect(hook)  # the new pixels' contrast is not a choice to remember
+                hook = self._name_hooks.pop(layer.name, None)
+                if hook is not None:
+                    layer.events.name.disconnect(hook)  # connected again below, for this image's channels
             self._refill_channel_layers(layers, loaded, colormaps, self._channels_shown(record.image_id, len(layers), result))
         self._channel_defaults = {layer.name: colormap for layer, colormap in zip(layers, colormaps, strict=False)}
         for layer, owner in zip(layers, owners, strict=False):
@@ -2559,6 +2968,12 @@ class CellQuantWindow:
                 lambda event, index=channel.channel_index, layer=layer: self._store_contrast(index, layer)
             )
             layer.events.contrast_limits.connect(hook)
+            shown = {"label": layer.name}  # the name CellQuant gave the layer, to tell the user's renaming from it
+            hook = self._name_hooks[layer.name] = (
+                lambda event, index=channel.channel_index, position=layers.index(layer), layer=layer, shown=shown:
+                self._channel_layer_renamed(index, position, layer, shown)
+            )
+            layer.events.name.connect(hook)
         self._view_box.reset()
         if result is not None:
             self._show_segmented_channel_only(record.image_id, layers)
@@ -2611,6 +3026,70 @@ class CellQuantWindow:
             return [True] * count
         segmented = self.controller.segmentation_channel_for(image_id)[0]
         return [position == segmented for position in range(count)] if 0 <= segmented < count else [True] * count
+
+    def _channel_layer_renamed(self, index: int, position: int, layer, shown: dict) -> None:
+        """The user renamed a channel layer in napari's layer list: the channel takes that name.
+
+        The name is saved with the experiment and used from then on by the layer in every image, the
+        channel lists, markers named after the channel and the exported column names. ``shown`` holds
+        the label CellQuant gave the layer; a name that cannot be used puts that label back.
+        """
+
+        label = shown["label"]
+        if self._naming_layer or layer.name == label:
+            return
+        typed = re.sub(r"^\s*Channel\s+\d+\s*=\s*", "", str(layer.name), flags=re.I).strip()
+        controller = self.controller
+        problem = ""
+        if controller is None:
+            problem = "Open an experiment before renaming a channel."
+        elif self.is_busy():
+            problem = "Wait for the current analysis to finish before renaming a channel."
+        elif not typed:
+            problem = "A channel needs a name."
+        else:
+            try:
+                controller.rename_channel(index, typed)
+            except (CellQuantError, OSError) as exc:
+                problem = str(exc)
+        self._naming_layer = True
+        try:
+            layer.name = label if problem else channel_label(position, typed)
+        finally:
+            self._naming_layer = False
+        named = layer.name  # napari adds a number when another layer has the name
+        if named != label:
+            # What CellQuant keeps about this layer is filed under its name.
+            self._managed.discard(label)
+            self._managed.add(named)
+            for filed in (self._contrast_hooks, self._name_hooks, self._channel_defaults, self._view_box._stacks):
+                if label in filed:
+                    filed[named] = filed.pop(label)
+            shown["label"] = named
+        if problem:
+            self.message(problem)
+            return
+        self.message(f"Channel {position + 1} is now called {typed}. Markers named after it and exported columns use this name.")
+        QTimer.singleShot(0, self._channel_names_changed)  # after napari has finished with the rename
+
+    def _channel_names_changed(self) -> None:
+        """Every list that names channels or markers shows the names as they are now."""
+
+        if self.controller is None:
+            return
+        if self.is_busy():
+            QTimer.singleShot(300, self._channel_names_changed)  # a run started meanwhile: once it is done
+            return
+        self._panels_to_recipe()  # settings typed but not yet stored are kept
+        self._analysis_bar.refresh()
+        self._refresh_plan()
+        self._experiment_panel.refresh()
+        self._objects_panel.refresh()
+        self._measurements_panel.refresh()
+        self._results_panel.refresh()
+        self._marker_setup.refresh()
+        self._experiment_panel.set_notices(self.controller.channel_notices())
+        self.markers_changed()  # steps 5 and 6 name the markers of the image on screen
 
     def _store_contrast(self, index: int, layer) -> None:
         if self.controller is None:
@@ -2834,6 +3313,7 @@ class CellQuantWindow:
             self.viewer.layers.remove(name)
         self._managed.discard(name)
         self._contrast_hooks.pop(name, None)
+        self._name_hooks.pop(name, None)
         if name == "Object IDs":
             self._ids_image_id = None
 
@@ -3005,39 +3485,34 @@ class ExperimentPanel(QWidget):
         super().__init__()
         self.shell = shell
         layout = QVBoxLayout(self)
+        # Starting, opening and analyzing experiments live on the Start tab; this page only adds to the open one.
+        self.no_experiment = QLabel("No experiment open. Go to the <b>Start</b> tab: <b>New experiment…</b>, <b>Open experiment…</b> or <b>Try practice images</b>.")
+        self.no_experiment.setWordWrap(True)
+        self.no_experiment.setTextFormat(Qt.RichText)
+        self.no_experiment.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.14); border-radius: 6px; padding: 6px; }")
+        layout.addWidget(self.no_experiment)
         buttons = QHBoxLayout()
         for text, slot in (
-            ("New experiment…", shell.new_experiment),
-            ("Open experiment…", self._open),
             ("Add images…", self._add_images),
             ("Add folder…", self._add_folder),
         ):
             button = QPushButton(text)
             button.clicked.connect(slot)
             buttons.addWidget(button)
-        layout.addLayout(buttons)
-        load = QPushButton("Load results…")
+        load = QPushButton("Load masks…")
         load.clicked.connect(shell.load_results_dialog)
         load.setToolTip(
             "Open objects found elsewhere (a cluster run, Cellpose, another CellQuant experiment) "
             "over their original images.\n"
-            "Pick the results folder: its original images are added (you are asked where they are "
+            "Pick the folder of masks: its original images are added (you are asked where they are "
             "if they moved), and each mask, a TIFF of object numbers named after its image, "
             "becomes that image's objects. Nothing is segmented.\n"
             "With no experiment open, you are asked where to save a new one.\n"
             "Markers are measured when an image is opened."
         )
-        analyze = QPushButton("Analyze a results folder…")
-        analyze.setToolTip(
-            "Statistics and graphs of a saved CellQuant results folder or export folder, in QuantAnalysis.\n"
-            "Nothing is added to this experiment."
-        )
-        analyze.clicked.connect(shell.analyze_results_folder)
-        loading = QHBoxLayout()
-        loading.addWidget(load)
-        loading.addWidget(analyze)
-        loading.addStretch(1)
-        layout.addLayout(loading)
+        buttons.addWidget(load)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
         self.notices = QLabel("")
         self.notices.setWordWrap(True)
         self.notices.setTextFormat(Qt.RichText)
@@ -3075,6 +3550,13 @@ class ExperimentPanel(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         layout.addWidget(self.table)
         run_row = QHBoxLayout()
+        add_column = QPushButton("Add column…")
+        add_column.setToolTip(
+            "Add a column of your own to the list (for example Genotype or Age), empty and ready to type or paste into. "
+            "Results can be grouped by it. Pasting past the last column adds one too."
+        )
+        add_column.clicked.connect(self._add_column)
+        run_row.addWidget(add_column)
         run_row.addStretch(1)
         run_selected = QPushButton("Run selected images")
         run_selected.setToolTip("Run the images selected in the table (click rows; Ctrl or Shift for more), for example to rerun failed ones.")
@@ -3147,6 +3629,7 @@ class ExperimentPanel(QWidget):
     def refresh(self) -> None:
         self.refresh_table()
         controller = self.shell.controller
+        self.no_experiment.setVisible(controller is None)
         if controller is None:
             self.channel_order.setText("No image open.")
             return
@@ -3337,6 +3820,74 @@ class ExperimentPanel(QWidget):
         if header in ("Include", "Sample name"):
             self.shell._review_panel._show_strip()  # step 5 lists the included images by sample name
 
+    # Names the image list or the exported files already use for something else.
+    RESERVED_COLUMNS = (
+        "Include", "Image", "Sample name", "Slices", "Channels", "µm/pixel", "Objective", "Status",
+        "sample_name", "filename", "image_id", "total_objects", "count_area", "count_area_unit",
+        "n_unmeasured", "n_called_by_hand", "qc_status",
+    )
+
+    def column_name_problem(self, name: str) -> str:
+        """Why ``name`` cannot be a new column ("" when it can)."""
+
+        controller = self.shell.controller
+        cleaned = name.strip()
+        if not cleaned:
+            return "Type a name for the column."
+        taken = {*(column.lower() for column in self.RESERVED_COLUMNS), *(column.lower() for column in (controller.experiment.metadata_columns if controller else ()))}
+        if cleaned.lower() in taken:
+            return f"“{cleaned}” is already used. Choose another name."
+        return ""
+
+    def add_metadata_column(self, name: str) -> None:
+        """Add an empty column to the image list: the one path for pasting past the last column and the button."""
+
+        controller = self.shell.controller
+        if controller is None:
+            return
+        controller.add_metadata_column(name)
+        self.refresh_table()
+        self.shell._results_panel._fill_summary_options(controller)
+
+    def _add_column(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or self.shell.is_busy():
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add column")
+        column = QVBoxLayout(dialog)
+        column.addWidget(QLabel("Name of the new column (for example Genotype or Age):"))
+        field = QLineEdit()
+        column.addWidget(field)
+        problem = QLabel("")
+        problem.setWordWrap(True)
+        problem.setStyleSheet("QLabel { color: #c0392b; }")
+        column.addWidget(problem)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        column.addWidget(buttons)
+        ok = buttons.button(QDialogButtonBox.Ok)
+
+        def check(text: str) -> None:
+            # Silent while nothing has been typed; then the reason, in red, with OK off.
+            why = self.column_name_problem(text) if text else ""
+            problem.setText(why)
+            ok.setEnabled(bool(text.strip()) and not why)
+
+        field.textChanged.connect(check)
+        check("")
+        self._column_dialog = dialog  # for tests
+        self._column_field = field
+        if dialog.exec() != QDialog.Accepted:
+            return
+        name = field.text().strip()
+        if self.column_name_problem(name):
+            return
+        self.add_metadata_column(name)
+        self.shell._autosave()
+        self.shell.message(f"Added the column “{name}”. Type or paste values into it.")
+
     def paste_into(self, row: int, column: int, text: str) -> None:
         controller = self.shell.controller
         if controller is None:
@@ -3360,20 +3911,12 @@ class ExperimentPanel(QWidget):
             for col_offset, value in enumerate(values):
                 target_column = column + col_offset
                 if target_column >= len(headers):
-                    name = f"Metadata {target_column - 2}"
-                    controller.add_metadata_column(name)
-                    self.refresh_table()
-                    self.shell._results_panel._fill_summary_options(controller)
+                    self.add_metadata_column(f"Metadata {target_column - 2}")
                     headers = [self.table.horizontalHeaderItem(index).text() for index in range(self.table.columnCount())]
                 item = self.table.item(target_row, target_column)
                 if item is not None and headers[target_column] not in {"Image", "Slices", "Channels", "µm/pixel", "Objective", "Status"}:
                     item.setText(value)
                     self.apply_cell_edit(target_row, target_column)
-
-    def _open(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Open experiment")
-        if directory:
-            self.shell.open_experiment(directory)
 
     def _add_images(self) -> None:
         controller = self.shell.require_controller()
@@ -3578,6 +4121,52 @@ class ManifestTable(QTableWidget):
         super().keyPressEvent(event)
 
 
+class CollapsibleSection(QWidget):
+    """A heading that opens and closes the box under it (closed until it is opened, or something in it is in use).
+
+    Give it the box (``body``), or leave it out and fill an empty one with ``add_widget``.
+    """
+
+    def __init__(self, title: str, body: QWidget | None = None, tip: str = ""):
+        super().__init__()
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        self.title = title
+        self.header = QToolButton()
+        self.header.setText(title)
+        self.header.setCheckable(True)
+        self.header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.header.setArrowType(Qt.RightArrow)
+        self.header.setStyleSheet("QToolButton { border: none; font-weight: bold; text-align: left; }")
+        self.header.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        if tip:
+            self.header.setToolTip(tip)
+        self.header.toggled.connect(self.set_open)
+        self.toggle = self.header
+        if body is None:
+            body = QWidget()
+            inner = QVBoxLayout(body)
+            inner.setContentsMargins(12, 0, 0, 0)
+        self.body = body
+        self.body.setVisible(False)
+        outer.addWidget(self.header)
+        outer.addWidget(self.body)
+
+    def add_widget(self, widget: QWidget) -> None:
+        self.body.layout().addWidget(widget)
+
+    def is_open(self) -> bool:
+        return self.header.isChecked()
+
+    def set_open(self, on: bool) -> None:
+        self.header.blockSignals(True)
+        self.header.setChecked(on)
+        self.header.blockSignals(False)
+        self.header.setArrowType(Qt.DownArrow if on else Qt.RightArrow)
+        self.body.setVisible(on)
+
+
 class ObjectsPanel(QWidget):
     def __init__(self, shell: CellQuantWindow):
         super().__init__()
@@ -3614,7 +4203,7 @@ class ObjectsPanel(QWidget):
         self.nucleus_diameter_um.setSingleStep(0.5)
         self.nucleus_diameter_um.setValue(DEFAULT_NUCLEUS_DIAMETER_UM)
         self.nucleus_diameter_um.setToolTip(
-            "Typical nucleus diameter in micrometres. Most nuclei are about 5–7 µm across. "
+            "Typical nucleus diameter in micrometers. Most nuclei are about 5–7 µm across. "
             "Sizes the 3D smallest-object cutoff, Cellpose's resizing when Resize to nucleus size is on, "
             "and the suggested debris floor in µm²."
         )
@@ -3742,12 +4331,11 @@ class ObjectsPanel(QWidget):
         default_label = QLabel("Default channel")
         default_label.setToolTip("Used for every image left on Default below.")
         form.addRow(default_label, self.channel)
-        self.image_tree = None
         self._build_image_channels()
         form.addRow(self.image_channels_box)
         form.addRow("Method", self.method)
         form.addRow(self.engine_choice_label, self.engine_choice)
-        form.addRow("Z-stack mode", self.z_box)
+        form.addRow("Z-stack mode", self.z_box)  # shown only when an included image is a Z-stack (_update_z_visibility)
         form.addRow(self.z_recommend_box)  # full width, so the explanation is readable
         form.addRow("Nucleus diameter (µm)", self.nucleus_diameter_um)
         form.addRow(self.size_hint)
@@ -3764,7 +4352,7 @@ class ObjectsPanel(QWidget):
             "and find objects only inside rectangles around them. Brightness scaling and thresholds still come "
             "from the whole image, and results stay in full-image coordinates. Off by default."
         )
-        self.crop_box = QGroupBox("Region of interest")
+        self.crop_box = QGroupBox("Crop settings")
         crop_form = QFormLayout(self.crop_box)
         self.crop_channels = QListWidget()
         self.crop_channels.setMaximumHeight(90)
@@ -3787,8 +4375,11 @@ class ObjectsPanel(QWidget):
         self.crop.toggled.connect(self.crop_box.setVisible)
         self.crop.toggled.connect(lambda _checked: self._crop_changed())
         self.crop_channels.itemChanged.connect(lambda _item: self._crop_changed())
-        layout.addWidget(self.crop)
-        layout.addWidget(self.crop_box)
+        # Rarely used: collapsed until needed, and open from the start when a saved recipe already crops.
+        self.crop_section = CollapsibleSection("Region of interest (optional)")
+        self.crop_section.add_widget(self.crop)
+        self.crop_section.add_widget(self.crop_box)
+        layout.addWidget(self.crop_section)
         self.advanced_toggle = QCheckBox("Advanced")
         self.advanced_box = QGroupBox("Advanced")
         self.advanced_box.setVisible(False)
@@ -3887,19 +4478,20 @@ class ObjectsPanel(QWidget):
         run = QPushButton("Run this image")
         run.clicked.connect(shell.run_current)
         run.setToolTip("Find objects and measure markers in the whole image on screen. Use it to try the settings on one image.")
-        run_all = QPushButton("Run all images")
+        run_all = QPushButton("Find objects in all images")
         run_all.clicked.connect(lambda: shell._results_panel._run_all())
         run_all.setToolTip(
-            "Run every included image with these settings, one after another. "
+            "Run every included image with the current settings, one after another (the same as Run all images in step 6). "
             "Use it when you already know the settings: no need to run or review one image first."
         )
         actions.addWidget(preview)
         actions.addWidget(run)
-        actions.addWidget(run_all)
         layout.addLayout(actions)
+        layout.addWidget(run_all)
         layout.addStretch(1)
         self._update_size_hint()
         self._method_changed()
+        self._update_z_visibility()
 
     def _note_model_swap(self, saved: str, used: str) -> None:
         """Say in the run log, once per saved name, that a saved model is not available in this engine."""
@@ -4004,58 +4596,27 @@ class ObjectsPanel(QWidget):
         self.update_recommendation()
         self.refresh_image_channels()
 
-    # -- a channel per image: pick images (or folders), give them a channel (step 2) ---------------
+    # -- a channel per image: set in the Plan (one home for it); step 2 keeps the default and a count --------------
 
     def _build_image_channels(self) -> None:
         box = QWidget()
         column = QVBoxLayout(box)
         column.setContentsMargins(0, 0, 0, 0)
-        header = QLabel("Channel per image ⓘ")
-        header.setToolTip(
-            "Select images (click, Ctrl-click, Shift-click; a folder selects every image in it), "
-            "then pick their channel below. Images left on Default use the Default channel. One run does them all."
+        row = QHBoxLayout()
+        self.plan_channels_button = QPushButton("Different channel for some images…")
+        self.plan_channels_button.setToolTip(
+            "Open the Plan (also Analyses ▾ → Plan…): choose, for single images, a folder or a channel layout, "
+            "the channel objects are found in. Images left on Default use the Default channel above. One run does them all."
         )
-        tree = QTreeWidget()
-        tree.setColumnCount(2)
-        tree.setHeaderLabels(["Image", "Channel"])
-        tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        tree.setMinimumHeight(240)
-        tree.header().setStretchLastSection(False)
-        tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        tree.itemSelectionChanged.connect(self._image_selection_changed)
-        self.image_tree = tree
-        pick_row = QHBoxLayout()
-        self.image_channel_label = QLabel("Selected: none")
-        self.image_channel_pick = QComboBox()
-        self.image_channel_pick.setToolTip("The channel to find objects in for the selected images.")
-        self.image_channel_pick.activated.connect(lambda _i: self._image_channel_chosen())
-        pick_row.addWidget(self.image_channel_label, 1)
-        pick_row.addWidget(self.image_channel_pick)
+        self.plan_channels_button.clicked.connect(lambda: self.shell.show_plan())
+        row.addWidget(self.plan_channels_button)
+        row.addStretch(1)
         self.image_channel_counts = QLabel("")
         self.image_channel_counts.setStyleSheet("QLabel { color: gray; }")
         self.image_channel_counts.setWordWrap(True)
-        column.addWidget(header)
-        column.addWidget(tree)
-        column.addLayout(pick_row)
+        column.addLayout(row)
         column.addWidget(self.image_channel_counts)
         self.image_channels_box = box
-
-    def _selected_image_ids(self) -> list[str]:
-        ids: list[str] = []
-
-        def add(item) -> None:
-            image_id = item.data(0, Qt.ItemDataRole.UserRole)
-            if image_id:
-                if image_id not in ids:
-                    ids.append(str(image_id))
-                return
-            for index in range(item.childCount()):
-                add(item.child(index))
-
-        for item in self.image_tree.selectedItems():
-            add(item)
-        return ids
 
     def _image_channel_text(self, controller, ids: list[str]) -> str:
         chosen = controller.group_plan_channel(ids)
@@ -4064,70 +4625,10 @@ class ObjectsPanel(QWidget):
         return "Mixed" if chosen == "mixed" else str(chosen)
 
     def refresh_image_channels(self) -> None:
-        tree = self.image_tree
-        controller = self.shell.controller
-        selected = set(self._selected_image_ids()) if tree.topLevelItemCount() else set()
-        expanded = set()
+        """After images were included, left out or given another channel: the counts, and whether the Z options apply."""
 
-        def walk(item) -> None:
-            parts = item.data(0, Qt.ItemDataRole.UserRole + 1)
-            if parts and item.isExpanded():
-                expanded.add(tuple(parts))
-            for index in range(item.childCount()):
-                walk(item.child(index))
-
-        for index in range(tree.topLevelItemCount()):
-            walk(tree.topLevelItem(index))
-        first_fill = tree.topLevelItemCount() == 0
-        tree.blockSignals(True)
-        tree.clear()
-        if controller is None:
-            tree.blockSignals(False)
-            self._image_selection_changed()
-            return
-        from cellquant.plan import folder_of
-
-        records = [record for record in controller.experiment.images if record.include]
-        folders: dict[tuple[str, ...], QTreeWidgetItem] = {}
-        folder_ids: dict[tuple[str, ...], list[str]] = {}
-
-        def folder_item(parts: tuple[str, ...]):
-            if not parts:
-                return None
-            if parts not in folders:
-                parent = folder_item(parts[:-1])
-                item = QTreeWidgetItem([parts[-1], ""])
-                item.setData(0, Qt.ItemDataRole.UserRole + 1, list(parts))
-                if parent is None:
-                    tree.addTopLevelItem(item)
-                else:
-                    parent.addChild(item)
-                folders[parts] = item
-                folder_ids[parts] = []
-            return folders[parts]
-
-        for record in records:
-            parts = tuple(part for part in folder_of(record).split("/") if part)
-            parent = folder_item(parts)
-            for depth in range(1, len(parts) + 1):
-                folder_ids[parts[:depth]].append(record.image_id)
-            leaf = QTreeWidgetItem([record.filename, self._image_channel_text(controller, [record.image_id])])
-            leaf.setData(0, Qt.ItemDataRole.UserRole, record.image_id)
-            leaf.setToolTip(0, record.relative_path or record.filename)
-            if parent is None:
-                tree.addTopLevelItem(leaf)
-            else:
-                parent.addChild(leaf)
-            if record.image_id in selected:
-                leaf.setSelected(True)
-        for parts, item in folders.items():
-            ids = folder_ids[parts]
-            item.setText(0, f"{parts[-1]} ({len(ids)})")
-            item.setText(1, self._image_channel_text(controller, ids))
-            item.setExpanded(first_fill or parts in expanded)
-        tree.blockSignals(False)
-        self._image_selection_changed()
         self._update_channel_counts()
+        self._update_z_visibility()
 
     def _update_channel_counts(self) -> None:
         """How many images use each channel; Default names the channel chosen above, saved or not."""
@@ -4148,50 +4649,6 @@ class ObjectsPanel(QWidget):
         self.image_channel_counts.setText(
             " · ".join(f"{name}: {count}" for name, count in counts.items()).replace("Default:", f"Default ({default.split(' = ')[-1]}):")
         )
-
-    def _image_selection_changed(self) -> None:
-        controller = self.shell.controller
-        ids = self._selected_image_ids() if self.image_tree is not None else []
-        combo = self.image_channel_pick
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem("Set channel…", "__none__")
-        combo.model().item(0).setEnabled(False)
-        if controller is not None and ids:
-            combo.addItem("Default", "__default__")
-            names: list[str] = []
-            for image_id in ids:
-                for name in controller.image_channel_names(image_id):
-                    if name not in names:
-                        names.append(name)
-            for name in names:
-                combo.addItem(name, name)
-        combo.setCurrentIndex(0)
-        combo.setEnabled(bool(ids))
-        combo.blockSignals(False)
-        self.image_channel_label.setText(f"Selected: {len(ids)} image{'' if len(ids) == 1 else 's'}" if ids else "Selected: none")
-
-    def _image_channel_chosen(self) -> None:
-        controller = self.shell.controller
-        name = self.image_channel_pick.currentData()
-        ids = self._selected_image_ids()
-        if controller is None or not ids or name == "__none__":
-            return
-        if self.shell.is_busy():
-            self.shell.message("Wait for the run to finish before changing channels.")
-            self._image_selection_changed()
-            return
-        try:
-            missing = controller.set_plan_channel_by_name(ids, None if name == "__default__" else name)
-        except CellQuantError as exc:
-            self.shell.message(str(exc))
-            return
-        if missing:
-            self.shell.message(f"{len(missing)} selected image(s) have no {name} channel; left as they were.")
-        else:
-            label = "Default" if name == "__default__" else name
-            self.shell.message(f"{len(ids)} image{'' if len(ids) == 1 else 's'} set to {label}.")
-        self.shell.plan_changed()
 
     def _pixel_size_um(self) -> float | None:
         controller = self.shell.controller
@@ -4301,6 +4758,8 @@ class ObjectsPanel(QWidget):
         self.crop.setChecked(bool(spec is not None and spec.enabled))
         self.crop.blockSignals(False)
         self.crop_box.setVisible(self.crop.isChecked())
+        if self.crop.isChecked():
+            self.crop_section.set_open(True)
         self.crop_margin.setValue(float(spec.margin_um) if spec is not None else 50.0)
         self._show_crop_warning()
 
@@ -4366,7 +4825,19 @@ class ObjectsPanel(QWidget):
                 "True 3D — segment the whole volume at once (slow; needs closely spaced slices).\n"
                 "Times are estimates for this computer."
             )
+        self._update_z_visibility()
         self._z_mode_changed()
+
+    def _has_included_stacks(self) -> bool:
+        controller = self.shell.controller
+        return bool(controller and any(record.include and record.z_planes > 1 for record in controller.experiment.images))
+
+    def _update_z_visibility(self) -> None:
+        """The Z-stack mode controls (and the recommendation) only when an included image has more than one slice."""
+
+        stacks = self._has_included_stacks()
+        _show_row(self._form, self.z_box, stacks)
+        self.z_recommend_box.setVisible(stacks and self._recommended is not None)
 
     def _z_mode_changed(self) -> None:
         mode = self.z_stack.currentData()
@@ -4437,7 +4908,7 @@ class ObjectsPanel(QWidget):
             self.z_stack.setItemText(index, text)
         self.z_recommend.setText(f"<b>Recommended here:</b> {Z_OPTION_LABELS[suggestion.mode]}")
         self.z_recommend.setToolTip(suggestion.reason)
-        self.z_recommend_box.setVisible(True)
+        self.z_recommend_box.setVisible(self._has_included_stacks())
         self._show_recommendation_state()
 
     def _show_recommendation_state(self) -> None:
@@ -4891,7 +5362,7 @@ class MeasurementsPanel(QWidget):
         users = [item["name"] for item in data["classifications"] if item["measurement"] == removed]
         if users:
             self.shell.message(
-                f"{removed} is used by {', '.join(users)}. Remove or change that classification first."
+                f"{removed} is used by {', '.join(users)}. Remove or change that marker first."
             )
             return
         del data["measurements"][row]
@@ -4967,11 +5438,11 @@ class MaskColorDialog(QDialog):
 
     def __init__(self, on_change, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Mask colours")
+        self.setWindowTitle("Mask colors")
         self._on_change = on_change
         layout = QVBoxLayout(self)
         self.all_different = QCheckBox("All different")
-        self.all_different.setToolTip("Every object gets its own colour, with no limit on how many. Untick to pick colours.")
+        self.all_different.setToolTip("Every object gets its own color, with no limit on how many. Untick to pick colors.")
         self.all_different.toggled.connect(self._changed)
         layout.addWidget(self.all_different)
         self._grid_holder = QWidget()
@@ -4991,7 +5462,7 @@ class MaskColorDialog(QDialog):
             grid.addWidget(button, index // 8, index % 8)
             self.swatches[color] = button
         layout.addWidget(self._grid_holder)
-        self.note = QLabel("Tick one or more colours; they are used in turn.")
+        self.note = QLabel("Tick one or more colors; they are used in turn.")
         layout.addWidget(self.note)
         self._loading = False
 
@@ -5061,6 +5532,13 @@ class EditPanel(QWidget):
             layout.addWidget(holder)
             self._rows.append((holder, names))
         self.undo_button = self._buttons["Undo"]
+        # Shown next to the record buttons while the image on screen has drawing that is not recorded yet.
+        self.unrecorded_note = QLabel("● Unrecorded drawing on this image")
+        self.unrecorded_note.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.25); border-radius: 4px; padding: 3px; font-weight: bold; }")
+        self.unrecorded_note.setToolTip("It is recorded when you move to another image or tab, run or export, or click Record drawn edits.")
+        self.unrecorded_note.setWordWrap(True)
+        self.unrecorded_note.hide()
+        layout.insertWidget(layout.indexOf(self._buttons["Record drawn edits"].parentWidget()), self.unrecorded_note)
         # Circle: diameter in pixels; the default is the median object size until the user sets it.
         self.circle_size_label = QLabel("Size")
         self.circle_size = QSpinBox()
@@ -5090,9 +5568,9 @@ class EditPanel(QWidget):
         self.mask_colors_row = QWidget()
         colors_line = QHBoxLayout(self.mask_colors_row)
         colors_line.setContentsMargins(0, 0, 0, 0)
-        colors_line.addWidget(QLabel("Mask colours"))
+        colors_line.addWidget(QLabel("Mask colors"))
         self.mask_colors_button = QPushButton()
-        self.mask_colors_button.setToolTip("Colours of the object masks: every object its own colour, or the colours you tick, used in turn. Remembered on this computer.")
+        self.mask_colors_button.setToolTip("Colors of the object masks: every object its own color, or the colors you tick, used in turn. Remembered on this computer.")
         self.mask_colors_button.clicked.connect(self._pick_mask_colors)
         colors_line.addWidget(self.mask_colors_button)
         colors_line.addStretch(1)
@@ -5112,7 +5590,7 @@ class EditPanel(QWidget):
         self._closed: tuple[str | None, set[int]] = (None, set())
         self._filling = False
         self.pending_note = QLabel("")
-        self.pending_note.setToolTip("Drawing on these images is kept until you record it or close CellQuant.")
+        self.pending_note.setToolTip("Drawing on these images is recorded when you move to another image or tab, run or export, or click Record all images.")
         self.pending_note.hide()
         layout.addWidget(self.pending_note)
         # Why Record drawn edits did nothing, or that it worked; blank otherwise.
@@ -5137,7 +5615,7 @@ class EditPanel(QWidget):
         "home": "Pick a task: delete objects or add new ones.",
         "delete": "Click an object to delete it, or <b>Delete circle</b> and click or drag a circle. <b>Back</b> or Esc to stop.",
         "select": "Click an object to select it (Shift+click adds more), then <b>Delete selected</b> or <b>Restore selected</b>. <b>Back</b> or Esc stops.",
-        "add": "<b>Draw new object</b> and outline each cell, or <b>Circle</b> and click a cell: each is recorded as a new object.",
+        "add": "<b>Draw new object</b> and outline each object, or <b>Circle</b> and click one: each is recorded as a new object.",
     }
 
     def _apply_mode(self) -> None:
@@ -5149,7 +5627,7 @@ class EditPanel(QWidget):
             holder.setVisible(any(name in wanted for name in names))
         self.circle_size_row.setVisible("Circle" in wanted or "Delete circle" in wanted)
         self.mask_colors_row.setVisible(everything or self._mode == "home")
-        hint = "Delete: click <b>Delete objects</b>, then click objects. Add: outline cells after <b>Draw new object</b>." if everything else self._MODE_HINT[self._mode]
+        hint = "Delete: click <b>Delete objects</b>, then click objects. Add: outline objects after <b>Draw new object</b>." if everything else self._MODE_HINT[self._mode]
         card = getattr(self.shell, "_step_pages", None)
         card = getattr(card[2], "todo_card", None) if card else None
         if card is not None:
@@ -5157,7 +5635,7 @@ class EditPanel(QWidget):
 
     def _show_mask_colors(self) -> None:
         chosen = mask_colors()
-        self.mask_colors_button.setText(f"{len(chosen)} colours" if chosen else "All different")
+        self.mask_colors_button.setText(f"{len(chosen)} colors" if chosen else "All different")
 
     def _pick_mask_colors(self) -> None:
         if self._mask_dialog is None:
@@ -5439,6 +5917,7 @@ class EditPanel(QWidget):
         """After a brush stroke or polygon with the new object's number: check whether it closed an outline."""
 
         layer = self._labels
+        QTimer.singleShot(0, self._show_unrecorded)  # after napari has finished the stroke
         if self._filling or layer is None or self._drawing_label is None:
             return
         label = int(layer.selected_label)
@@ -5540,6 +6019,97 @@ class EditPanel(QWidget):
         count = sum(1 for analysis, _image in self._pending if analysis == self._key("")[0])
         self.pending_note.setText(f"Not recorded yet: {count} image{'s' if count != 1 else ''}." if count else "")
         self.pending_note.setVisible(bool(count))
+        self._show_unrecorded()
+
+    def _drawing_on_shown_image(self) -> bool:
+        """Drawing on the Objects layer (or kept for the image shown) that is not recorded yet."""
+
+        image_id, layer = self.shell._labels_image_id, self._labels
+        if image_id is None or layer is None or layer not in self.shell.viewer.layers:
+            return False
+        shown_id, base = self._shown if self._shown is not None else (None, None)
+        if shown_id == image_id and base is not None:
+            drawn = np.asarray(layer.data)
+            return drawn.shape == base.shape and not np.array_equal(drawn, base)
+        return self._key(image_id) in self._pending
+
+    def _show_unrecorded(self) -> None:
+        self.unrecorded_note.setVisible(self._drawing_on_shown_image())
+
+    def _live_pending(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        """Drawing of this analysis not recorded yet that can still be recorded: made on the objects the image has now."""
+
+        controller = self.shell.controller
+        analysis = self._key("")[0]
+        live = {}
+        for (owner, image_id), (base, drawn) in list(self._pending.items()):
+            if owner != analysis or controller is None:
+                continue
+            current = controller.recall(image_id, measure=False)
+            if current is None or current.labels.shape != base.shape or not np.array_equal(current.labels, base):
+                self._pending.pop((owner, image_id), None)  # the objects changed since: the drawing no longer applies
+                continue
+            live[image_id] = (base, drawn)
+        return live
+
+    def unrecorded_count(self) -> int:
+        """How many images have drawing not recorded yet (the one on screen included)."""
+
+        if self.shell.controller is None:
+            return 0
+        self.keep_drawing()
+        return len(self._live_pending())
+
+    def discard_unrecorded(self) -> None:
+        """Forget all drawing not recorded yet, on screen too."""
+
+        for image_id in list(self._live_pending()):
+            self._discard_drawing(image_id)
+        self._pending.clear()
+        self._show_pending()
+
+    def record_unrecorded(self) -> bool:
+        """Record all drawing not recorded yet, now (only the drawn objects are measured, so it is quick).
+
+        Used when the user moves to another image or tab, or starts a run or an export, so that drawing
+        is never lost by accident. True when nothing is left unrecorded; when recording fails the drawing
+        is kept and the reason is shown under the record buttons.
+        """
+
+        controller = self.shell.controller
+        if controller is None:
+            return True
+        self.keep_drawing()
+        todo = self._live_pending()
+        if not todo:
+            self._show_pending()
+            return True
+        if self.shell.is_busy():
+            self._say("Not recorded: wait for the current analysis to finish.")
+            return False
+        shown = self.shell._labels_image_id
+        recorded, failed, on_screen = [], [], None
+        for image_id, (_base, drawn) in todo.items():
+            try:
+                result = controller.commit_drawn_labels(image_id, drawn)
+            except Exception as exc:  # noqa: BLE001 - the drawing stays; the reason is shown
+                failed.append(str(exc) or exc.__class__.__name__)
+                continue
+            recorded.append(image_id)
+            self._pending.pop(self._key(image_id), None)
+            if self._closed[0] == image_id:
+                self._closed = (None, set())
+            if image_id == shown:
+                on_screen = result
+        if recorded:
+            self._edited(on_screen)
+        self._show_pending()
+        if failed:
+            self._say(f"Not recorded: {failed[0]}")
+            self.shell.message(f"Drawing was not recorded: {failed[0]}")
+            return False
+        self._say(f"Recorded the drawing on {len(recorded)} image{'s' if len(recorded) != 1 else ''}.")
+        return True
 
     def keep_drawing(self) -> None:
         """Before the Objects layer changes: keep what was drawn on the image it shows."""
@@ -5571,6 +6141,7 @@ class EditPanel(QWidget):
         kept = self._pending.get(key)
         current = controller.last_results.get(image_id)
         if kept is None or current is None:
+            self._show_unrecorded()
             return
         base, drawn = kept
         if base.shape == current.labels.shape and np.array_equal(base, current.labels):
@@ -6081,14 +6652,57 @@ class CutoffHistogram(QWidget):
 
 
 class ReviewPanel(QWidget):
+    """Step 5: the cutoff of one marker (or of every marker), and Approve.
+
+    Top to bottom: a banner when a change cleared approvals, then a scrolling area (Display objects by,
+    the cutoff and where it applies, the counts, the Images table, the optional boxes, Advanced), and under
+    it, always visible, the approval status with Approve.
+    """
+
     def __init__(self, shell: CellQuantWindow):
         super().__init__()
         self.shell = shell
         self._labels = None
         self._fills = None
-        layout = QVBoxLayout(self)
+        self._undo_state: dict | None = None  # cutoffs and approvals before the change the banner reports
+        self._undo_cleared: set[str] = set()
+        self._context: tuple | None = None  # (experiment, analysis) this panel last showed
+        self._scope_approved: bool | None = None  # "All images": were approved images included when it was chosen
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        # Said when a cutoff, example or minimum-percent change cleared approvals; Undo puts both back.
+        self.cleared_banner = QWidget()
+        banner = QHBoxLayout(self.cleared_banner)
+        banner.setContentsMargins(0, 0, 0, 0)
+        self.cleared_text = QLabel("")
+        self.cleared_text.setWordWrap(True)
+        self.cleared_text.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.25); border-radius: 4px; padding: 4px; }")
+        self.undo_cleared = QPushButton("Undo")
+        self.undo_cleared.setToolTip("Put back the cutoffs and the approvals as they were before this change.")
+        self.undo_cleared.clicked.connect(self._undo_cleared_approvals)
+        dismiss = QToolButton()
+        dismiss.setText("✕")
+        dismiss.setToolTip("Hide this message.")
+        dismiss.clicked.connect(self._hide_banner)
+        banner.addWidget(self.cleared_text, 1)
+        banner.addWidget(self.undo_cleared)
+        banner.addWidget(dismiss)
+        self.cleared_banner.setVisible(False)
+        outer.addWidget(self.cleared_banner)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Takes whatever height is left, so the step page never needs a second scroll bar around this panel.
+        self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+        self.scroll.setMinimumHeight(90)
+        content = QWidget()
+        content.setMinimumWidth(0)
+        self.scroll.setWidget(content)
+        outer.addWidget(self.scroll, 1)
+        layout = QVBoxLayout(content)
         self.display = QComboBox()
-        self.display.currentIndexChanged.connect(lambda _index: self._recolor())
+        self.display.currentIndexChanged.connect(lambda _index: self._display_changed())
         layout.addWidget(QLabel("Display objects by"))
         layout.addWidget(self.display)
         # "All markers": every marker's cutoff at once, objects colored by their mix of markers.
@@ -6114,6 +6728,19 @@ class ReviewPanel(QWidget):
         self.threshold_slider.setRange(0.0, 1.0)
         self.threshold_slider.valueChanged.connect(self._slider_moved)
         layout.addWidget(self.threshold_slider)
+        # Where a cutoff change goes: the image shown (the default), or every image.
+        self.scope_row = QWidget()
+        scope_line = QHBoxLayout(self.scope_row)
+        scope_line.setContentsMargins(0, 0, 0, 0)
+        self.scope = QComboBox()
+        self.scope.addItem("This image", "this")
+        self.scope.addItem("All images", "all")
+        self.scope.setItemData(0, "A cutoff change applies to the image shown only (it gets its own cutoff).", Qt.ToolTipRole)
+        self.scope.setItemData(1, "This image's cutoff goes to the other images now, and every later change here follows to them.", Qt.ToolTipRole)
+        self.scope.activated.connect(lambda _index: self._scope_chosen())
+        scope_line.addWidget(QLabel("Applies to:"))
+        scope_line.addWidget(self.scope, 1)
+        layout.addWidget(self.scope_row)
         self.cutoff_tools = QWidget()
         tools = QFormLayout(self.cutoff_tools)
         tools.setContentsMargins(0, 0, 0, 0)
@@ -6148,19 +6775,13 @@ class ReviewPanel(QWidget):
         self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
         layout.addWidget(self.counts)
         layout.addWidget(self._strip_box())
-        layout.addWidget(self._count_area_box())
-        self.status_line = QLabel("")
-        layout.addWidget(self.status_line)
-        self.edit_cells = QPushButton("Edit cells…")
-        self.edit_cells.setToolTip("Select single cells and call them positive or negative by hand, whatever the cutoff.")
-        self.edit_cells.clicked.connect(lambda _checked=False: self.shell.open_edit_cells())
-        layout.addWidget(self.edit_cells)
-        self.approve_button = QPushButton("Approve")
-        self.approve_button.clicked.connect(lambda _checked=False: self._set_status("approved"))
-        layout.addWidget(self.approve_button)
-        # Previous / Next image go through only these images until "Check all included images".
-        queue_buttons = QHBoxLayout()
-        queue_buttons.addWidget(QLabel("Check"))
+        # Optional boxes, closed until opened (or until something in them is in use).
+        self.count_area_section = CollapsibleSection("Count area (optional)", self._count_area_box(), self._count_area_tip)
+        layout.addWidget(self.count_area_section)
+        # Previous / Next image go through only these images until "All included".
+        queue = QWidget()
+        queue_buttons = QHBoxLayout(queue)
+        queue_buttons.setContentsMargins(0, 0, 0, 0)
         for text, mode, tip in (
             ("Needs a look", "flagged", "Previous / Next image go through only images with warnings."),
             ("Failed", "failed", "Previous / Next image go through only images that failed."),
@@ -6170,7 +6791,8 @@ class ReviewPanel(QWidget):
             button.setToolTip(tip)
             button.clicked.connect(lambda _checked=False, value=mode: self.shell._results_panel._filter_nav(value))
             queue_buttons.addWidget(button)
-        layout.addLayout(queue_buttons)
+        self.queue_section = CollapsibleSection("Review queue", queue, "Make Previous / Next go through only the images that need a look, or only the failed ones.")
+        layout.addWidget(self.queue_section)
         self.advanced_toggle = QCheckBox("Advanced")
         self.advanced_box = QGroupBox("Advanced")
         self.advanced_box.setVisible(False)
@@ -6207,10 +6829,24 @@ class ReviewPanel(QWidget):
         self.qc.setWordWrap(True)
         layout.addWidget(self.qc)
         layout.addStretch(1)
-        # The cutoff tools change this image only; this copies its cutoff to the other images.
-        self.apply_all = QPushButton("Apply to all images")
-        self.apply_all.clicked.connect(self._apply_to_all)
-        layout.addWidget(self.apply_all)
+        # Pinned under the scrolling area, so Approve is always in view.
+        pinned = QWidget()
+        bottom = QVBoxLayout(pinned)
+        bottom.setContentsMargins(0, 4, 0, 0)
+        self.status_line = QLabel("")
+        self.status_line.setWordWrap(True)
+        bottom.addWidget(self.status_line)
+        buttons = QHBoxLayout()
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.setMinimumHeight(30)
+        self.approve_button.clicked.connect(lambda _checked=False: self._set_status("approved"))
+        self.edit_cells = QPushButton("Override calls…")
+        self.edit_cells.setToolTip("Select single objects and call them positive or negative by hand, whatever the cutoff.")
+        self.edit_cells.clicked.connect(lambda _checked=False: self.shell.open_edit_cells())
+        buttons.addWidget(self.approve_button, 1)
+        buttons.addWidget(self.edit_cells, 1)
+        bottom.addLayout(buttons)
+        outer.addWidget(pinned)
 
     def _examples_box(self) -> QWidget:
         """Examples mode (chosen per marker in step 4): click objects positive or negative."""
@@ -6324,14 +6960,21 @@ class ReviewPanel(QWidget):
             self.shell.message("Wait for the image to finish loading, then click the object again.")
             return
         old = classification.threshold_for(image_id)
+        before = self._snapshot()
         try:
             result = controller.mark_example(classification.id, image_id, object_id, positive)
         except CellQuantError as exc:
             self.shell.message(str(exc))
             return
         new = self._current_classification().threshold_for(image_id)
+        if not self._this_image_only() and new != old:
+            # Applies to: All images: the cutoff the examples give goes to every image, like a slider move.
+            cleared = list(controller.cleared_approvals)
+            controller.apply_cutoff_to_all(classification.id, new, include_approved=self._all_include_approved())
+            controller.cleared_approvals = sorted({*cleared, *controller.cleared_approvals})
+            result = controller.classified_now(image_id)
         text = f"{classification.name} cutoff from the examples: {old:g} → {new:g}." if new != old else ""
-        self._after_cutoff_change(result, text)
+        self._after_cutoff_change(result, text, before)
 
     def _clear_examples(self, _checked: bool = False) -> None:
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
@@ -6520,16 +7163,18 @@ class ReviewPanel(QWidget):
         scope = "Ticked images" if selected else "All images"
         self.strip_total.setText(f"{scope}: {total_positive} / {total_counted} positive ({overall})")
 
-    def _count_area_box(self) -> QGroupBox:
+    def _count_area_box(self) -> QWidget:
         """Optional area to count in, drawn on the image after objects are found."""
 
-        box = QGroupBox("Count area (optional) ⓘ")
-        box.setToolTip(
+        box = QWidget()
+        self._count_area_tip = (
             "Count only objects whose center is inside the drawn area, for example to skip damaged tissue. "
             "Objects outside stay in objects.csv with in_count_area = False. No area: the whole image counts. "
             "Not the same as cropping in step 2, which limits where objects are found."
         )
+        box.setToolTip(self._count_area_tip)
         row = QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
         for text, slot, tip in (
             ("Draw", self._draw_count_area, "Draw polygons in the Count area layer: click the corners, double-click to finish."),
             ("Use for this image", lambda: self._use_count_area(every_image=False), "Count only inside the drawn area in this image."),
@@ -6588,7 +7233,7 @@ class ReviewPanel(QWidget):
     def _pixel_level_box(self) -> QGroupBox:
         """Shown for a marker called by the percent of its pixels: the two numbers that decide it."""
 
-        box = QGroupBox("Percent-of-cell rule")
+        box = QGroupBox("Percent-of-object rule")
         form = QFormLayout(box)
         self.min_percent = QDoubleSpinBox()
         self.min_percent.setRange(0.0, 100.0)
@@ -6596,7 +7241,7 @@ class ReviewPanel(QWidget):
         self.min_percent.setSingleStep(1.0)
         self.min_percent.setSuffix(" %")
         self.min_percent.setKeyboardTracking(False)
-        self.min_percent.setToolTip("A cell is positive when at least this percent of its pixels pass the pixel level.")
+        self.min_percent.setToolTip("An object is positive when at least this percent of its pixels pass the pixel level.")
         guide.add_range_tip(self.min_percent)
         self.min_percent.valueChanged.connect(self._min_percent_changed)
         self.pixel_level = QDoubleSpinBox()
@@ -6616,7 +7261,7 @@ class ReviewPanel(QWidget):
         self.apply_level = QPushButton("Apply pixel level")
         self.apply_level.setToolTip("Measure this image again with the new pixel level. Objects and edits are kept.")
         self.apply_level.clicked.connect(self._apply_pixel_level)
-        form.addRow("Min % of cell", self.min_percent)
+        form.addRow("Min % of object", self.min_percent)
         form.addRow("Pixel level", self.pixel_level)
         form.addRow("Upper pixel level", high)
         form.addRow(self.apply_level)
@@ -6704,8 +7349,9 @@ class ReviewPanel(QWidget):
         current = self.display.currentData()
         self.display.clear()
         self.display.addItem("Objects", "")
+        shown = self.shell.controller.marker_names()  # a marker follows its channel when the user renames it
         for classification in self.shell.controller.recipe.classifications:
-            self.display.addItem(classification.name, classification.id)
+            self.display.addItem(shown.get(classification.id, classification.name), classification.id)
         if len(self.shell.controller.recipe.classifications) > 1:
             from cellquant.gui.combined_markers import ALL_MARKERS
 
@@ -6768,7 +7414,7 @@ class ReviewPanel(QWidget):
             self.combined.show_result(result, self.shell.controller)
         classification_id = self.classification_id()
         examples = self._examples_mode()
-        for widget in (self.cutoff_label, self.histogram, self.strip, self.apply_all):
+        for widget in (self.cutoff_label, self.histogram, self.strip, self.scope_row):
             widget.setVisible(bool(classification_id))
         for widget in (self.threshold_slider, self.cutoff_tools):
             widget.setVisible(bool(classification_id) and not examples)
@@ -6816,7 +7462,7 @@ class ReviewPanel(QWidget):
 
         if percent_rule:
             low, high, decimals = 0.0, 100.0, 1
-            self.cutoff_label.setText("Cutoff (min % of cell)")
+            self.cutoff_label.setText("Cutoff (min % of object)")
         else:
             finite = np.asarray(values, dtype=float)
             finite = finite[np.isfinite(finite)]
@@ -6849,16 +7495,52 @@ class ReviewPanel(QWidget):
             widget.setEnabled(not percent_rule)
 
     def _this_image_only(self) -> bool:
-        return True  # every cutoff tool changes the image shown; Apply to all images copies it
+        """Cutoff changes go to the image shown, unless "Applies to: All images" is chosen (one marker shown)."""
+
+        return self.scope.currentData() != "all" or self.showing_all_markers()
+
+    def _all_include_approved(self) -> bool:
+        """Under "All images": whether approved images were included when it was chosen (asked once, then kept)."""
+
+        return self._scope_approved is not False
+
+    def _set_scope(self, value: str) -> None:
+        self.scope.blockSignals(True)
+        self.scope.setCurrentIndex(max(0, self.scope.findData(value)))
+        self.scope.blockSignals(False)
+        if value != "all":
+            self._scope_approved = None
+
+    def _scope_chosen(self) -> None:
+        """"All images": give the other images this image's cutoff now (asking about approved images); "This image": stop."""
+
+        if self.scope.currentData() == "all":
+            if not self._apply_to_all():
+                self._set_scope("this")  # cancelled, or nothing to apply
+        else:
+            self._scope_approved = None
+
+    def _display_changed(self) -> None:
+        self._set_scope("this")  # the scope belongs to the marker whose cutoff was shown
+        self._recolor()
 
     def _shown_image_id(self) -> str | None:
         if self.shell.controller is None or not self.shell._nav_ids:
             return None
         return self.shell._nav_ids[self.shell._nav_index]
 
+    def _set_cutoff_value(self, classification_id: str, image_id: str, value: float):
+        """Move the marker's cutoff to ``value`` for the image shown, or (Applies to: All images) for every image."""
+
+        controller = self.shell.controller
+        if self._this_image_only():
+            return controller.update_thresholds(image_id, {classification_id: value}, this_image_only=True)
+        controller.apply_cutoff_to_all(classification_id, value, include_approved=self._all_include_approved())
+        return controller.classified_now(image_id)
+
     def _auto_method_chosen(self) -> None:
-        """Remember the method and move the cutoff to its value, like a slider move: for all images
-        (from every measured image) or for this image only. Own cutoffs of other images stay."""
+        """Remember the method and move the cutoff to its value, like a slider move: for this image only,
+        or (Applies to: All images) for every image, from every measured image."""
 
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
         if classification is None or image_id is None:
@@ -6876,11 +7558,66 @@ class ReviewPanel(QWidget):
             self.shell.message(f"{exc} The method is kept for later.")
             return
         old = classification.threshold_for(image_id)
-        result = controller.update_thresholds(image_id, {classification.id: value}, this_image_only=self._this_image_only())
+        before = self._snapshot()
+        result = self._set_cutoff_value(classification.id, image_id, value)
         source = "this image" if self._this_image_only() else f"{used} image{'s' if used != 1 else ''}"
-        self._after_cutoff_change(result, f"{classification.name} cutoff ({self.auto_method.currentText()}, from {source}): {old:g} → {value:g}.")
+        self._after_cutoff_change(result, f"{classification.name} cutoff ({self.auto_method.currentText()}, from {source}): {old:g} → {value:g}.", before)
 
-    def _after_cutoff_change(self, result, text: str = "") -> None:
+    # -- the banner: approvals a cutoff change cleared, with Undo -------------------------------------
+
+    def _snapshot(self) -> dict | None:
+        """Cutoffs and approvals as they are now, for Undo. Only when an image is approved (only then can a change
+        clear an approval), and not while a banner already holds the older state it would go back to."""
+
+        controller = self.shell.controller
+        if controller is None or self._undo_state is not None:
+            return None
+        if not any(record.processing_status == "approved" for record in controller.experiment.images):
+            return None
+        return controller.cutoff_state()
+
+    def _show_cleared(self, before: dict | None, cleared: list[str]) -> None:
+        if self._undo_state is None and before is not None:
+            self._undo_state, self._undo_cleared = before, set()
+        if self._undo_state is None:
+            return
+        self._undo_cleared |= set(cleared)
+        count = len(self._undo_cleared)
+        self.cleared_text.setText(f"Approval cleared for {count} image{'s' if count != 1 else ''} whose percent positive changed.")
+        self.cleared_banner.setVisible(True)
+
+    def _hide_banner(self, _checked: bool = False) -> None:
+        self._undo_state, self._undo_cleared = None, set()
+        self.cleared_banner.setVisible(False)
+
+    def _undo_cleared_approvals(self, _checked: bool = False) -> None:
+        """Put back the cutoffs and the approvals as they were before the change the banner reports."""
+
+        controller, state = self.shell.controller, self._undo_state
+        if controller is None or state is None:
+            self._hide_banner()
+            return
+        if self.shell.is_busy():
+            self.shell.message("Wait for the current analysis to finish, then click Undo again.")
+            return
+        try:
+            result = controller.restore_cutoff_state(state, self._shown_image_id())
+        except (CellQuantError, KeyError) as exc:
+            self.shell.message(str(exc))
+            self._hide_banner()
+            return
+        self._hide_banner()
+        self._set_scope("this")
+        controller.save()
+        if result is not None:
+            self.shell.show_classification(result)
+        self.shell._experiment_panel.refresh_table()
+        self.shell._refresh_plan()
+        self.update_status_line()
+        self.shell.refresh_guidance()
+        self.shell.message("Cutoffs and approvals put back as they were.")
+
+    def _after_cutoff_change(self, result, text: str = "", before: dict | None = None) -> None:
         """Save, show the new calls, and say (and show) which approvals the change cleared."""
 
         controller = self.shell.controller
@@ -6893,6 +7630,7 @@ class ReviewPanel(QWidget):
         cleared = len(controller.cleared_approvals)
         if cleared:
             text = f"{text} Approval cleared for {cleared} image{'s' if cleared != 1 else ''} whose percent positive changed.".strip()
+            self._show_cleared(before, list(controller.cleared_approvals))
             self.shell._experiment_panel.refresh_table()
             self.shell._refresh_plan()
             self.update_status_line()
@@ -6900,13 +7638,16 @@ class ReviewPanel(QWidget):
         if text:
             self.shell.message(text)
 
-    def _apply_to_all(self, _checked: bool = False) -> None:
-        """This image's cutoff for the marker shown, for every image. Approved images are asked about."""
+    def _apply_to_all(self, _checked: bool = False) -> bool:
+        """This image's cutoff for the marker shown, for every image. Approved images are asked about.
+
+        True when it was applied. The choice about approved images is kept for "Applies to: All images".
+        """
 
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
         if classification is None or image_id is None:
             self.shell.message("Choose a marker under Display objects by first.")
-            return
+            return False
         value = classification.threshold_for(image_id)
         approved = [
             record.image_id
@@ -6915,10 +7656,13 @@ class ReviewPanel(QWidget):
         ]
         include_approved = self._ask_include_approved(classification.name, value, len(approved)) if approved else True
         if include_approved is None:
-            return
+            return False
+        before = self._snapshot()
         controller.apply_cutoff_to_all(classification.id, value, include_approved=include_approved)
+        self._scope_approved = include_approved
         which = "every image" if include_approved else "every unapproved image"
-        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff {value:g} applied to {which}.")
+        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff {value:g} applied to {which}.", before)
+        return True
 
     def _ask_include_approved(self, name: str, value: float | None, approved: int) -> bool | None:
         """Change the approved images too (True), only the unapproved ones (False), or nothing (None)."""
@@ -6939,36 +7683,34 @@ class ReviewPanel(QWidget):
         return box.clickedButton() is every
 
     def _reset_cutoff(self, _checked: bool = False) -> None:
-        """Back to the automatic cutoff: for this image's own objects (This image only), or found
-        again from every measured included image (All images; then no image keeps its own)."""
+        """Back to the automatic cutoff: for this image's own objects, or (Applies to: All images) found
+        again from every measured included image for every image."""
 
         controller, classification, image_id = self.shell.controller, self._current_classification(), self._shown_image_id()
         if classification is None or image_id is None:
             return
         this_image = self._this_image_only()
-        own = [] if this_image else list(classification.image_thresholds)
-        approved = [
-            record.image_id
-            for record in controller.experiment.images
-            if record.processing_status == "approved" and (not this_image or record.image_id == image_id)
-        ]
-        if own or approved:
-            lines = [f"Set the {classification.name} cutoff to its automatic value ({self.auto_method.currentText()})"
-                     + (" for this image?" if this_image else " for all images?")]
-            if own:
-                lines.append(f"{len(own)} image{'s' if len(own) != 1 else ''} with {'their' if len(own) != 1 else 'its'} own cutoff will use the shared one.")
-            if approved:
-                lines.append("Approved images whose percent positive changes will need approving again.")
+        if this_image and controller.experiment.image(image_id).processing_status == "approved":
+            lines = [
+                f"Set the {classification.name} cutoff to its automatic value ({self.auto_method.currentText()}) for this image?",
+                "Approved images whose percent positive changes will need approving again.",
+            ]
             answer = QMessageBox.question(self, "Reset cutoff", "\n".join(lines), QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
+        before = self._snapshot()
         try:
-            old, new, used = controller.reset_cutoff(classification.id, image_id, this_image_only=this_image, pool=self.strip_pool())
+            if this_image:
+                old, new, used = controller.reset_cutoff(classification.id, image_id, this_image_only=True, pool=self.strip_pool())
+            else:
+                old = classification.threshold_for(image_id)
+                new, used = controller.auto_cutoff(classification.id, image_id, this_image_only=False, pool=self.strip_pool())
+                controller.apply_cutoff_to_all(classification.id, new, include_approved=self._all_include_approved())
         except CellQuantError as exc:
             self.shell.message(str(exc))
             return
         source = "this image" if this_image else f"{used} image{'s' if used != 1 else ''}"
-        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff (from {source}): {old:g} → {new:g}.")
+        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff (from {source}): {old:g} → {new:g}.", before)
 
     def _slider_moved(self, value: float) -> None:
         self._pending_cutoff = float(value)
@@ -7032,9 +7774,15 @@ class ReviewPanel(QWidget):
         if not cutoffs:
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
-        result = controller.update_thresholds(image_id, cutoffs, this_image_only=self._this_image_only())
+        before = self._snapshot()
+        if self._this_image_only():
+            result = controller.update_thresholds(image_id, cutoffs, this_image_only=True)
+        else:
+            for classification_id, value in cutoffs.items():
+                controller.apply_cutoff_to_all(classification_id, value, include_approved=self._all_include_approved())
+            result = controller.classified_now(image_id)
         if controller.cleared_approvals or controller.kept_approvals:
-            self._after_cutoff_change(result)
+            self._after_cutoff_change(result, "", before)
         elif result is not None:
             self.shell.show_classification(result)
 
@@ -7056,6 +7804,7 @@ class ReviewPanel(QWidget):
         include_approved = self._ask_include_approved("this image's cutoff for every marker", None, len(approved)) if approved else True
         if include_approved is None:
             return
+        before = self._snapshot()
         kept, cleared = set(), set()
         for classification in classifications:
             controller.apply_cutoff_to_all(classification.id, classification.threshold_for(image_id), include_approved=include_approved)
@@ -7063,7 +7812,7 @@ class ReviewPanel(QWidget):
             cleared.update(controller.cleared_approvals)
         controller.kept_approvals, controller.cleared_approvals = sorted(kept), sorted(cleared)
         which = "every image" if include_approved else "every unapproved image"
-        self._after_cutoff_change(controller.classified_now(image_id), f"This image's cutoffs for all {len(classifications)} markers applied to {which}.")
+        self._after_cutoff_change(controller.classified_now(image_id), f"This image's cutoffs for all {len(classifications)} markers applied to {which}.", before)
 
     def _recolor(self) -> None:
         controller = self.shell.controller
@@ -7074,8 +7823,38 @@ class ReviewPanel(QWidget):
         if result is not None:
             self.shell.show_classification(result)
 
+    def _check_context(self) -> None:
+        """Another experiment or analysis: "Applies to" goes back to This image and the banner goes."""
+
+        controller = self.shell.controller
+        context = (controller.experiment.experiment_id, controller.recipe.recipe_id) if controller is not None else None
+        if context != self._context:
+            self._context = context
+            self._set_scope("this")
+            self._hide_banner()
+            self._sections_in_use = {"count_area": False, "queue": False}
+
+    _sections_in_use: dict = {"count_area": False, "queue": False}
+
+    def _open_sections_in_use(self) -> None:
+        """A section whose contents are in use (a count area is set, a queue is active) opens itself, once."""
+
+        controller = self.shell.controller
+        if controller is None:
+            return
+        now = {
+            "count_area": any(record.count_area for record in controller.experiment.images if record.include),
+            "queue": bool(self.shell._nav_filter),
+        }
+        for key, section in (("count_area", self.count_area_section), ("queue", self.queue_section)):
+            if now[key] and not self._sections_in_use.get(key):
+                section.set_open(True)
+        self._sections_in_use = now
+
     def update_status_line(self) -> None:
         controller = self.shell.controller
+        self._check_context()
+        self._open_sections_in_use()
         if controller is None or not self.shell._nav_ids:
             self.status_line.setText("")
             return
@@ -7094,6 +7873,7 @@ class ReviewPanel(QWidget):
             self.shell.message("Run this image first.")
             return
         controller.set_status(image_id, status)
+        self._hide_banner()
         self.shell._autosave()
         self.shell._experiment_panel.refresh_table()
         self.shell._refresh_plan()
@@ -7167,31 +7947,22 @@ class ResultsPanel(QWidget):
         settings.addWidget(load)
         settings.addStretch(1)
         layout.addLayout(settings)
-        # Summaries in the export: by group, and per biological unit (for example per retina).
-        summaries = QHBoxLayout()
-        group_label = QLabel("Group by")
-        group_label.setToolTip("A column of step 1, for example Folder 1 (the condition). Export adds grouped_by_<column>.csv.")
-        summaries.addWidget(group_label)
+        # Summaries in the export: by group, and per biological unit (for example per retina). They are shown
+        # in step 6's Export box (see ResultsSummary), since they decide which files an export writes.
         self.group_by = QComboBox()
-        self.group_by.setToolTip(group_label.toolTip())
-        summaries.addWidget(self.group_by, 1)
-        unit_label = QLabel("Unit")
-        unit_label.setToolTip(
+        self.group_by.setToolTip("A column of step 1, for example Folder 1 (the condition). Export adds grouped_by_<column>.csv.")
+        self.unit = QComboBox()
+        self.unit.setToolTip(
             "The biological unit, for example the retina (by default the folder that holds the images). Export adds "
             "units_by_<column>.csv (each unit's images pooled) and, when grouped, grouped_by_<group>_equal_units.csv: "
             "the mean of the units' percents, so every retina counts once, with n units and SD."
         )
-        summaries.addWidget(unit_label)
-        self.unit = QComboBox()
-        self.unit.setToolTip(unit_label.toolTip())
-        summaries.addWidget(self.unit, 1)
-        layout.addLayout(summaries)
 
     def refresh(self) -> None:
         controller = self.shell.controller
         if controller is None:
             return
-        names = {item.id: item.name for item in controller.recipe.classifications}
+        names = controller.marker_names()
         self.reports.setRowCount(len(controller.recipe.reports))
         for row, report in enumerate(controller.recipe.reports):
             for column, expression in ((0, report.numerator), (1, report.denominator)):
@@ -7245,6 +8016,9 @@ class ResultsPanel(QWidget):
             index = box.findData(keep)
             box.setCurrentIndex(index if index >= 0 else 0)
             box.blockSignals(False)
+        summary = getattr(self.shell, "_results_summary", None)
+        if summary is not None:
+            summary.show_files()  # the files an export writes follow the choices
 
     def summary_options(self) -> dict:
         """``group_by`` and ``unit`` for exports, as chosen here (None: no grouping / the default unit)."""
@@ -7368,6 +8142,14 @@ class AnalysisBar(QWidget):
         )
         self.choice.currentIndexChanged.connect(self._chosen)
         top.addWidget(self.choice, 1)
+        # Also in the Analyses menu below; a button of its own so it can be found.
+        self.plan_button = QPushButton("Plan…")
+        self.plan_button.setToolTip(
+            "Open the Plan: choose which images each analysis runs and which channel it finds objects in, "
+            "for all images, a channel layout, a folder, or single images."
+        )
+        self.plan_button.clicked.connect(lambda: shell.show_plan())
+        top.addWidget(self.plan_button)
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         for text, slot, tip in (

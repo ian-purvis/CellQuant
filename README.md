@@ -8,7 +8,7 @@ CellQuant finds nuclei (or cells) in fluorescence microscope images and counts h
 
 1. Double-click **`Install CellQuant.bat`**. Press Enter to accept each suggested answer. If this computer has no conda, it downloads and installs [Miniforge](https://conda-forge.org/download/) first.
 2. Double-click **`Open CellQuant.bat`**.
-3. In the CellQuant panel, click **Start → Try practice images**, then follow the numbered tabs (hover one for its name): **1 Images → 2 Find objects → 3 Edit objects → 4 Markers → 5 Check → 6 Results**.
+3. In the CellQuant panel, click **Start → Try practice images**, then follow the numbered tabs, left to right: **1 Images → 2 Find → 3 Fix → 4 Markers → 5 Check → 6 Results** (each tab shows its number and name; hover one for the full name, and the line under the tabs says why a tab is locked). To use your own images, click **Start → New experiment…** instead.
 
 ## Quick start (Mac and Linux)
 

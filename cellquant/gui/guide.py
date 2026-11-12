@@ -23,6 +23,7 @@ from qtpy.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -40,6 +41,7 @@ from cellquant.quicksetup import (  # noqa: F401 - used by app.py
     RULE_PERCENT,
     describe_rule,
     marker_recipe,
+    merge_marker_recipe,
     starting_threshold,
     uses_pixel_level,
 )
@@ -68,17 +70,17 @@ STEPS = (
         1,
         "1 Images",
         "Add your images",
-        "Click <b>New experiment</b> and choose two folders: the <b>image folder</b> (only read, never changed) "
+        "On the <b>Start</b> tab, click <b>New experiment…</b> and choose two folders: the <b>image folder</b> (only read, never changed) "
         "and the <b>results folder</b> (where CellQuant saves its work; by default a new folder beside your images). "
-        "That results folder is reloadable with <b>Open</b> — changes are saved automatically (no separate Save).<br>"
+        "That results folder is reloadable with <b>Open experiment…</b> on the Start tab — changes are saved automatically (no separate Save).<br>"
         "Every ND2 and TIFF in the image folder and its subfolders is listed. "
-        "<b>Add folder</b> and <b>Add images</b> add more to the same experiment later.<br>"
+        "<b>Add folder…</b> and <b>Add images…</b> add more to the same experiment later.<br>"
         "Check the list: each image is shown with its folder path, slices, channels, pixel size and "
         "objective. Sample name and Folder columns identify the experimental condition.<br>"
         "When an image is open, the blue box shows its channel order, for example "
         "<i>Channel 1 = Green · Channel 2 = Red</i>. Channel names come from the file; "
         "do not rename them to label conditions.<br>"
-        "Untick <i>Include</i> for any you do not want.",
+        "Untick <i>Include</i> for any you do not want. <b>Add column…</b> adds a column of your own (for example Genotype) to the list.",
         "Every image you expect is listed once, with the right folder, and channel order is clear. "
         "Read the yellow notes above the list.",
         "Add images, then check the list.",
@@ -86,31 +88,34 @@ STEPS = (
     Step(
         2,
         "2 Find objects",
-        "Find the nuclei (or cells)",
+        "Find the objects (nuclei or cells)",
         "Set <b>Default channel</b> to the nuclear channel (for example Channel 1 = Far Red). "
-        "Images that need another channel: select them under <b>Channel per image</b> and pick it in <b>Set channel…</b>.<br>"
+        "Images that need another channel: click <b>Different channel for some images…</b>, which opens the Plan.<br>"
         "<b>Method</b>: <i>Cellpose (AI model)</i>, which handles crowded or uneven nuclei well, "
         "or <i>Classical (fast, no GPU)</i>. Only the settings of the chosen method are shown.<br>"
-        "If the images are Z-stacks, choose <b>Z-stack mode</b>: "
+        "If an included image is a Z-stack, <b>Z-stack mode</b> appears: "
         "<i>2D: one slice</i>, <i>2D: max projection</i>, <i>2D + stitching</i>, or <i>True 3D</i>. "
         "The blue box recommends one for this computer; every option stays available.<br>"
-        "<b>Nucleus diameter</b> defaults to 6 µm (most nuclei are about 5–7 µm). Adjust it; "
-        "<b>Min size</b> in µm² drops debris.<br>"
+        "<b>Min size</b> in µm² drops debris. <b>Nucleus diameter</b> (default 6 µm; most nuclei are about 5–7 µm) "
+        "appears only where it is used: with classic Cellpose, with Cellpose-SAM once <b>Resize to nucleus size</b> "
+        "is ticked under <b>Advanced</b>, and in true 3D.<br>"
+        "<b>Region of interest (optional)</b> can limit the search to part of each image.<br>"
         "The box at the top says whether an NVIDIA GPU was found and whether Cellpose will use it.<br>"
         "Click <b>Preview</b> to try the settings on the area you are looking at, then "
-        "<b>Run this image</b>.",
+        "<b>Run this image</b>, or <b>Find objects in all images</b> once you are happy with the settings.",
         "Outlines sit on the nuclei, with few missed, merged, or split. If not, change the settings "
         "and run again. Zoom in to check. In 3D, move the slice slider under the image to check every slice.",
         "Pick the nuclear channel, <b>Preview</b>, then <b>Run this image</b>.",
     ),
     Step(
         3,
-        "3 Edit objects",
-        "Fix the objects",
+        "3 Fix outlines",
+        "Fix the outlines",
         "Click <b>Delete objects</b>, then click each object to remove (debris, a bad outline); <b>Back</b> or Esc stops. "
         "<b>Select objects</b> picks several (Shift+click adds) to delete or restore together. "
-        "To redraw outlines, select the <i>Objects</i> layer, paint or erase with napari's tools, then click "
-        "<b>Record drawn edits</b>. <b>Delete circle</b> deletes the objects inside a circle you click or drag. <b>Add new objects</b> then <b>Circle</b>: click a cell to add a round object (drag to set its size). <b>Undo</b> takes back the last edit, <b>Undo all</b> every edit on this image. "
+        "To redraw outlines, select the <i>Objects</i> layer and paint or erase with napari's tools. Your drawing is recorded "
+        "by itself when you move to another image or tab, run or export (<b>Record drawn edits</b> does it at once, and "
+        "<i>Unrecorded drawing on this image</i> shows while some is waiting). <b>Delete circle</b> deletes the objects inside a circle you click or drag. <b>Add new objects</b> then <b>Circle</b>: click where an object is missing to add a round one (drag to set its size). <b>Undo</b> takes back the last edit, <b>Undo all</b> every edit on this image. "
         "The objects found in step 2 are kept; edits are saved as a list applied on top. "
         "Running step 2 again with new settings gives new objects, and these edits no longer apply to them.",
         "Each object is one nucleus: no debris, merges, or splits left. Skip this step if step 2 looked right.",
@@ -122,10 +127,14 @@ STEPS = (
         "Choose the markers to count",
         "Tick the channels you want to count, then click <b>Set up markers</b>. CellQuant measures "
         "each marker's brightness inside every object and calls the object positive or negative. "
-        "Choose how: by the object's <b>mean brightness</b>, or by the <b>percent of the cell</b> whose "
+        "Choose how: by the object's <b>mean brightness</b>, or by the <b>percent of the object</b> whose "
         "pixels are at or above a pixel level (set the minimum percent here). "
-        "It picks a starting cutoff (or pixel level); you check it in the next step.",
-        "Every marker you want is listed, and step 5 opens with objects colored.",
+        "It picks a starting cutoff (or pixel level); you check it in the next step.<br>"
+        "Once markers exist there is no button: ticking or unticking a channel, or changing <b>Positive when</b> or "
+        "<b>Min % of object</b>, applies by itself a moment later. Markers that stay keep their cutoffs, calls by hand and "
+        "approvals; you are asked first only when something you made would be lost, and told exactly what. "
+        "CellQuant never moves you to another step: click <b>Next</b> when you are ready.",
+        "Every marker you want is listed. When it says <i>Markers measured</i>, Next opens step 5.",
         "Tick marker channels, then <b>Set up markers</b>.",
     ),
     Step(
@@ -134,10 +143,13 @@ STEPS = (
         "Check the positive calls",
         "Objects glow <span style='color:#26bf59'><b>green</b></span> when positive and "
         "<span style='color:#d43fd4'><b>magenta</b></span> when negative (change the colors under the slider). "
-        "Drag the <b>Cutoff</b> slider, or type a number beside it, to move the cutoff (one cutoff for "
-        "every image). If you chose <b>Examples</b> in step 4, click <b>Mark +</b> or <b>Mark −</b> and click "
-        "objects instead: the cutoff goes halfway between them. For the percent-of-cell rule the slider is the minimum percent; change the "
-        "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> when it looks right; it then opens the next image to check (key <b>A</b>). "
+        "Drag the <b>Cutoff</b> slider, or type a number beside it, to move the cutoff. <b>Applies to</b> says where it goes: "
+        "<i>This image</i> (the default: the image gets its own cutoff, marked * in the Images table) or <i>All images</i> "
+        "(this image's cutoff goes to the other images at once, asking first about approved ones, and every later change "
+        "follows them until you choose <i>This image</i>). If you chose <b>Examples</b> in step 4, click <b>Mark +</b> or <b>Mark −</b> and click "
+        "objects instead: the cutoff goes halfway between them. For the percent-of-object rule the slider is the minimum percent; change the "
+        "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> (always at the bottom) when it looks right; it then opens the next image to check (key <b>A</b>). "
+        "A cutoff change that clears approvals says so in a banner at the top, with <b>Undo</b>. "
         "Hover over a button to see what it does.",
         "The green objects are the ones you would call positive by eye.",
         "Drag <b>Cutoff</b> until green = positive, then <b>Approve</b>.",
@@ -147,7 +159,10 @@ STEPS = (
         "6 Results",
         "Run everything and save the results",
         "Click <b>Run all images</b> to apply the same settings to every image. "
-        "Then click <b>Export results</b> and choose a folder. With several analyses in the list at the top, "
+        "Then, under <b>Export</b>, choose <b>Group by</b> and <b>Unit</b> if you want grouped tables (the list shows exactly "
+        "which files will be written), click <b>Export results</b> and choose a folder: the results go into a new dated "
+        "folder inside it (for example <i>2026-03-09_1405_Analysis_1</i>), so an earlier export is never overwritten. "
+        "With several analyses in the list at the top, "
         "<b>Run all analyses</b> and <b>Export all analyses</b> do the same for each of them.",
         "The export folder has <i>objects.csv</i> (one row per object) and <i>image_summary.csv</i> "
         "(one row per image, with the percentages). Both open in a spreadsheet or R.",
@@ -166,11 +181,11 @@ HELP = {
     ("_objects_panel", "min_area"): "Remove found objects smaller than this (debris filter). Applied after segmentation. Defaults to 5 µm² when pixel size is known. 'none' keeps all sizes.",
     ("_objects_panel", "max_area"): "Remove found objects larger than this (clump filter). Applied after segmentation. 'none' keeps all sizes.",
     ("_objects_panel", "area_unit"): "pixels, or µm² (square micrometers; needs the pixel size).",
-    ("_objects_panel", "nucleus_diameter_um"): "Typical nucleus diameter in micrometers. Most nuclei are about 5–7 µm. Sizes the 3D smallest-object cutoff, and Cellpose's resizing when Resize to nucleus size is on.",
+    ("_objects_panel", "nucleus_diameter_um"): "Typical nucleus diameter in micrometers. Most nuclei are about 5–7 µm. Sizes the 3D smallest-object cutoff, and Cellpose's resizing (always with classic Cellpose; with Cellpose-SAM when Resize to nucleus size is on). This box is shown only when one of those applies.",
     ("_objects_panel", "watershed"): "Split touching objects. Try this if two nuclei come out as one.",
     ("_objects_panel", "cellpose_model"): "Which trained Cellpose model finds the objects. The first one listed is the usual choice. You can also type the path to a model you trained yourself.",
     ("_objects_panel", "diameter"): "Typical object width in pixels, the same in every image. Used to resize the image for classic models, for Cellpose-SAM when Resize is ticked, and to size the 3D smallest-object cutoff. 0 = use Nucleus diameter (µm) with each image's own pixel size.",
-    ("_objects_panel", "resize_to_diameter"): "Off: Cellpose-SAM sees each image at its own size (fast, good for most nuclei). On: images are scaled so nuclei are about 30 px, from Nucleus diameter; slower for small nuclei. Classic Cellpose always resizes.",
+    ("_objects_panel", "resize_to_diameter"): "Off: Cellpose-SAM sees each image at its own size (fast, good for most nuclei). On: images are scaled so nuclei are about 30 px, from Nucleus diameter; slower for small nuclei. Ticking it shows Nucleus diameter (µm) in the main settings. Classic Cellpose always resizes.",
     ("_objects_panel", "flow"): "Checks that each object's outline matches the direction Cellpose predicted. Lower = stricter: drops oddly shaped or doubtful objects. Higher = keeps more. Try lowering it if odd, ragged objects appear. Not used in true 3D (Cellpose skips this check there).",
     ("_objects_panel", "cellprob"): "How sure Cellpose must be that a pixel is part of a cell. Higher = fewer, more confident objects: raise it (try 1 to 3) if dim empty areas or phantom patches get segmented. Lower = finds fainter objects: lower it (try -1 to -3) if real dim nuclei are missed. 0 is the default.",
     ("_objects_panel", "niter_3d"): "True 3D only. How many steps Cellpose takes to trace each object. More is slower but joins large or long objects better. 200 is Cellpose's default and was quick; 1000 is the Cellpose-SAM paper's setting and can take several times longer.",
@@ -181,15 +196,15 @@ HELP = {
     ("_objects_panel", "augment"): "Cellpose reads the image several times (shifted and flipped) and averages the answers. Often gives cleaner, steadier outlines on noisy images, but takes several times longer. Off by default. Not used in true 3D.",
     ("_objects_panel", "engine_choice"): "The Cellpose installed here. Cellpose-SAM (4) is most accurate, best with a GPU; Classic Cellpose (3) is faster on the CPU. Only one is installed per environment; start CellQuant with the other to use it.",
     ("_review_panel", "display"): "Which marker to color by: green positive, magenta negative (colors can be changed).",
-    ("_review_panel", "threshold_slider"): "The cutoff for this marker: objects at or past it are positive. Drag, or type a number. For the percent-of-cell rule it is the minimum percent of each object's pixels that must pass the pixel level.",
+    ("_review_panel", "threshold_slider"): "The cutoff for this marker: objects at or past it are positive. Drag, or type a number. For the percent-of-object rule it is the minimum percent of each object's pixels that must pass the pixel level.",
     ("_review_panel", "histogram"): "Every object's value in this image (log scale): green past the cutoff, magenta below. Drag the line, or click, to move the cutoff.",
     ("_review_panel", "auto_method"): "How the automatic cutoff is found, from this image's objects. Choosing one sets this image's cutoff now; Reset cutoff uses it again later. Hover each choice for what it does.",
     ("_review_panel", "auto_percent"): "Top N %: this percent of the brightest objects are called positive.",
-    ("_review_panel", "apply_all"): "Give every image this image's cutoff for this marker. When images are already approved, asks whether to change them too or only the unapproved ones.",
+    ("_review_panel", "scope"): "This image: a cutoff change applies to the image shown only. All images: this image's cutoff goes to the other images now (asking first when images are approved), and every later change follows to them until you choose This image.",
     ("_review_panel", "reset_cutoff"): "Back to the automatic cutoff (Auto method), found from this image's objects. Clears this image's approval if its percent positive changes.",
     ("_review_panel", "strip"): "Percent positive in each image at the cutoff it uses (* = its own cutoff), updated as you move the cutoff. Double-click an image to show it. Selected images: tick the images to count. Each marker is counted on its own; the export leaves out an object unmeasured for any marker, so with several markers its counts can be a little lower.",
     ("_review_panel", "strip_mode"): "All images: every included image. Selected images: only the ticked ones.",
-    ("_review_panel", "min_percent"): "A cell is positive when at least this percent of its pixels are at or above the pixel level.",
+    ("_review_panel", "min_percent"): "An object is positive when at least this percent of its pixels are at or above the pixel level.",
     ("_review_panel", "pixel_level"): "A pixel passes when its value is at or above this level (same units as the image). Click Apply pixel level to measure again.",
     ("_review_panel", "counts"): "Counts for this image at the current cutoff. Unmeasured objects are left out of all counts.",
     ("_experiment_panel", "filter_box"): "Show only images whose file or sample name contains this text.",
@@ -218,14 +233,14 @@ BUTTON_HELP = {
     "Restore selected": "Bring back the selected objects that were deleted. Undo takes them away again.",
     "Clear selection": "Unselect every object.",
     "Add new objects": "Show the buttons for drawing new objects.",
-    "Draw new object": "Select the Objects layer with an unused number and napari's brush. Outline a cell: when the outline closes, its inside is filled, it is recorded as a new object, and the next cell gets a new number.",
-    "Circle": "Click a cell to add a round object there; drag to set its size. Each circle is recorded as a new object.",
+    "Draw new object": "Select the Objects layer with an unused number and napari's brush. Outline an object: when the outline closes, its inside is filled, it is recorded as a new object, and the next one gets a new number.",
+    "Circle": "Click where an object is missing to add a round one there; drag to set its size. Each circle is recorded as a new object.",
     "Delete circle": "Click or drag a circle; every object entirely inside it is deleted. Undo brings them back.",
     "Back": "Return to the task choice.",
     "Draw area": "Outline objects to delete in the Delete area layer: click the corners, double-click to finish. Several areas are fine.",
     "Keep only": "Delete every object that does not touch the drawn area (use Draw area first); objects crossing its edge stay. Undo brings them all back.",
     "Delete in area": "Delete every object lying entirely inside the drawn area; objects crossing its edge stay. Undo brings them all back.",
-    "Record drawn edits": "Save outlines you painted by hand in the Objects layer.",
+    "Record drawn edits": "Save outlines you painted by hand in the Objects layer now. This also happens by itself when you move to another image or tab, run or export.",
     "Record all images": "Save what you painted on every image, including images you moved away from.",
     "Reset all images": "Remove every edit on every image and go back to the objects found in step 2. Clears their approvals. Cannot be undone.",
     "Approve": "Mark this image as checked and correct. Editing it later clears the approval. Opens the next unchecked image. (A)",
@@ -329,6 +344,35 @@ def _card(text: str, color: str) -> QLabel:
 _BLOCKER_STYLE = "QLabel { background: rgba(224, 138, 0, 0.18); border-radius: 4px; padding: 4px; font-weight: bold; }"
 
 
+# Short names for the tab strip, so seven tabs fit the dock; hovering a tab gives the full name.
+TAB_NAMES = {1: "Images", 2: "Find", 3: "Fix", 4: "Markers", 5: "Check", 6: "Results"}
+
+
+def tab_text(step: Step, mark: str = "") -> str:
+    """A tab's label: its number and short name, then ✓ (done) or → (next), e.g. "1 Images ✓"."""
+
+    return f"{step.number} {TAB_NAMES.get(step.number, step.name)}{mark}"
+
+
+def lock_note_text(blocked_after: int, blocker: str) -> str:
+    """Why the later tabs are locked, e.g. "Steps 3-6 unlock after step 2: Run this image first."."""
+
+    first, last = blocked_after + 1, len(STEPS)
+    steps = f"Step {first}" if first == last else f"Steps {first}-{last}"
+    verb = "unlocks" if first == last else "unlock"
+    return f"{steps} {verb} after step {blocked_after}: {blocker}"
+
+
+def _lock_note_label() -> QLabel:
+    """The line under the tab strip that says why later tabs are locked (empty and hidden when none is)."""
+
+    label = QLabel("")
+    label.setWordWrap(True)
+    label.setStyleSheet(_BLOCKER_STYLE)
+    label.setVisible(False)
+    return label
+
+
 class StepPage(QWidget):
     """One numbered step: instructions, optional quick actions, the panel, and Back / Next."""
 
@@ -338,6 +382,8 @@ class StepPage(QWidget):
         self.index = index
         step = STEPS[index]
         layout = QVBoxLayout(self)
+        self.lock_note = _lock_note_label()
+        layout.addWidget(self.lock_note)
         heading = QLabel(f"<b>{step.number}. {step.title}</b>")
         heading.setStyleSheet("font-size: 14px;")
         layout.addWidget(heading)
@@ -386,6 +432,10 @@ class StepPage(QWidget):
         bar.addWidget(self.next)
         layout.addLayout(bar)
 
+    def set_lock_note(self, text: str) -> None:
+        self.lock_note.setText(text)
+        self.lock_note.setVisible(bool(text))
+
     def update_state(self, state: StepState) -> None:
         self.next.setEnabled(not state.blocker)
         self.blocker.setText(state.blocker)
@@ -400,6 +450,8 @@ class StartPage(QWidget):
         super().__init__()
         self.window = window
         layout = QVBoxLayout(self)
+        self.lock_note = _lock_note_label()
+        layout.addWidget(self.lock_note)
         title = QLabel("<h2>CellQuant</h2>")
         layout.addWidget(title)
         intro = _card("Work through the tabs left to right. ⓘ", "rgba(80, 120, 200, 0.18)")
@@ -417,7 +469,7 @@ class StartPage(QWidget):
             ("Try practice images", "Makes a small practice experiment with a known answer. The best first step.", window.start_practice),
             ("New experiment…", "Choose the folder with your images and a separate folder for the results.", window.new_experiment),
             ("Open experiment…", "Open a folder you used before. Your settings and results are kept.", window.open_experiment_dialog),
-            ("Analyze a results folder…", "Statistics and graphs of saved results (a results or export folder) in QuantAnalysis, "
+            ("Open a results folder in QuantAnalysis…", "Statistics and graphs of saved results (a results or export folder) in QuantAnalysis, "
              "without going through the steps.", window.analyze_results_folder),
         ):
             button = QPushButton(text)
@@ -446,8 +498,30 @@ class StartPage(QWidget):
         guide.setToolTip("The full guide, with what to check at each step and fixes for common problems.")
         guide.clicked.connect(window.open_guide)
         layout.addWidget(guide)
+        # Tools that have no step of their own, each with one home here (they are also in menus and docks).
+        self.more_tools = QGroupBox("More tools")
+        tools = QGridLayout(self.more_tools)
+        self.tool_buttons: dict[str, QPushButton] = {}
+        for position, (text, tip, action) in enumerate(
+            (
+                ("Plan…", "Choose which images each analysis runs and which channel it finds objects in. Needs an open experiment.", "show_plan"),
+                ("Measure…", "Draw lines or shapes on the image to get length, area and volume, and export them to a CSV. Needs an open experiment.", "show_measure"),
+                ("Output glossary…", "What every column of the exported files means.", "open_output_glossary"),
+                ("Keyboard shortcuts…", "The keys that work in CellQuant.", "show_shortcuts"),
+            )
+        ):
+            button = QPushButton(text)
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _checked=False, action=action: getattr(window, action)())
+            tools.addWidget(button, position // 2, position % 2)
+            self.tool_buttons[text] = button
+        layout.addWidget(self.more_tools)
         layout.addStretch(1)
         self._next_index = 0
+
+    def set_lock_note(self, text: str) -> None:
+        self.lock_note.setText(text)
+        self.lock_note.setVisible(bool(text))
 
     def update_state(self, states: list[StepState]) -> None:
         controller = self.window.controller
@@ -466,6 +540,8 @@ class StartPage(QWidget):
         target = STEPS[self._next_index]
         self.continue_button.setText(f"Continue: {target.number}. {target.title} →")
         self.continue_button.setEnabled(controller is not None)
+        for name in ("Plan…", "Measure…"):
+            self.tool_buttons[name].setEnabled(controller is not None)
 
     def _continue(self) -> None:
         self.window.go_to_step(self._next_index)
@@ -489,8 +565,8 @@ class MarkerSetup(QGroupBox):
         self.rule.addItem("mean brightness > cutoff", RULE_MEAN)
         self.rule.addItem("enough pixels bright", RULE_PERCENT)
         self.rule.setToolTip(
-            "Mean brightness: one number per cell, compared with a cutoff.\n"
-            "Percent of the cell: each pixel is compared with a pixel level; the cell is positive when at least\n"
+            "Mean brightness: one number per object, compared with a cutoff.\n"
+            "Percent of the object: each pixel is compared with a pixel level; the object is positive when at least\n"
             "the minimum percent of its pixels are at or above that level. Useful when staining is patchy or\n"
             "only part of a nucleus is labeled. Both numbers can be changed later in step 5."
         )
@@ -500,10 +576,10 @@ class MarkerSetup(QGroupBox):
         self.min_percent.setSingleStep(5.0)
         self.min_percent.setSuffix(" %")
         self.min_percent.setValue(DEFAULT_MIN_PERCENT)
-        self.min_percent.setToolTip("Minimum percent of a cell's pixels that must be at or above the pixel level.")
+        self.min_percent.setToolTip("Minimum percent of an object's pixels that must be at or above the pixel level.")
         add_range_tip(self.min_percent)
         rule_form.addRow("Positive when", self.rule)
-        rule_form.addRow("Min % of cell", self.min_percent)
+        rule_form.addRow("Min % of object", self.min_percent)
         self.rule.currentIndexChanged.connect(lambda _index: self._rule_changed())
         self.layout_.addLayout(rule_form)
         self._rule_changed()
@@ -512,6 +588,19 @@ class MarkerSetup(QGroupBox):
         self.button.setToolTip("Measure each ticked channel inside every object, and count positives.")
         self.button.clicked.connect(self._apply)
         self.layout_.addWidget(self.button)
+        # Once markers exist, ticking a channel or changing the rule applies by itself, a moment after the last change.
+        self.auto_note = QLabel("Changes apply by themselves a moment after you make them.")
+        self.auto_note.setWordWrap(True)
+        self.auto_note.setVisible(False)
+        self.layout_.addWidget(self.auto_note)
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setSingleShot(True)
+        self._auto_timer.setInterval(700)
+        self._auto_timer.timeout.connect(self._auto_apply)
+        self._rule_dirty = False  # the user picked another rule: kept markers that use a different one are rebuilt
+        self._min_dirty = False  # the user typed another minimum percent: percent markers get it
+        self.rule.activated.connect(lambda _index: self._changed(rule=True))
+        self.min_percent.valueChanged.connect(lambda _value: self._changed(minimum=True))
         self.current = QLabel("")
         self.current.setWordWrap(True)
         self.layout_.addWidget(self.current)
@@ -531,12 +620,17 @@ class MarkerSetup(QGroupBox):
         self.layout_.addWidget(self.modes)
 
     def refresh(self) -> None:
+        self._auto_timer.stop()
+        self._rule_dirty = self._min_dirty = False
         for box in self.boxes:
             box.setParent(None)
         self.boxes = []
         self._show_modes()
         controller = self.window.controller
         self.button.setEnabled(controller is not None)
+        has_markers = controller is not None and bool(controller.recipe.classifications)
+        self.button.setVisible(not has_markers)
+        self.auto_note.setVisible(has_markers)
         if controller is None:
             return
         segmentation = controller.recipe.object_set.segmentation_channel
@@ -547,6 +641,7 @@ class MarkerSetup(QGroupBox):
             box = QCheckBox(channel.channel_name)
             box.setProperty("channel_index", channel.channel_index)
             box.setChecked(channel.channel_index in existing or not existing)
+            box.toggled.connect(lambda _on: self._changed())
             self.boxes.append(box)
             self.boxes_holder.addWidget(box)
         segment_name = next((c.channel_name for c in controller.experiment.channels if c.channel_index == segmentation), "")
@@ -564,10 +659,12 @@ class MarkerSetup(QGroupBox):
         if markers:
             percent = [item for item in markers if uses_pixel_level(controller.recipe, item)]
             self.rule.blockSignals(True)
+            self.min_percent.blockSignals(True)
             self.rule.setCurrentIndex(self.rule.findData(RULE_PERCENT if percent else RULE_MEAN))
             if percent:
                 self.min_percent.setValue(float(percent[0].threshold))
             self.rule.blockSignals(False)
+            self.min_percent.blockSignals(False)
             self._rule_changed()
 
     def _show_modes(self) -> None:
@@ -614,14 +711,97 @@ class MarkerSetup(QGroupBox):
             self.window.message("Tick at least one marker channel.")
             return
         if controller.recipe.classifications:
+            self._auto_apply()  # markers exist: the same merge that runs by itself (a button press is not needed)
+            return
+        self.window.apply_marker_setup(chosen, rule=str(self.rule.currentData()), min_percent=self.min_percent.value())
+
+    def _changed(self, rule: bool = False, minimum: bool = False) -> None:
+        """A tick, the rule or the minimum percent changed: with markers already set up, apply it after a short pause."""
+
+        controller = self.window.controller
+        if controller is None or not controller.recipe.classifications:
+            return
+        self._rule_dirty = self._rule_dirty or rule
+        self._min_dirty = self._min_dirty or minimum
+        self._auto_timer.start()
+
+    def flush(self) -> None:
+        """Apply a change waiting for its pause now (the user is leaving this step)."""
+
+        if self._auto_timer.isActive():
+            self._auto_timer.stop()
+            self._auto_apply()
+
+    def _auto_apply(self) -> None:
+        """Make the markers match the ticked channels, keeping what the user made for markers that stay."""
+
+        window, controller = self.window, self.window.controller
+        if controller is None or not controller.recipe.classifications:
+            return
+        if window.is_busy():
+            self._auto_timer.start()  # after the current analysis
+            return
+        chosen = [(int(box.property("channel_index")), box.text()) for box in self.boxes if box.isChecked()]
+        if not chosen:
+            window.message("Tick at least one marker channel: unticking every channel would remove all the markers.")
+            return
+        rule_changed, min_changed = self._rule_dirty, self._min_dirty
+        self._rule_dirty = self._min_dirty = False
+        window._panels_to_recipe()
+        rule, minimum = str(self.rule.currentData()), self.min_percent.value()
+        shown = {int(box.property("channel_index")) for box in self.boxes}
+        try:
+            plan = merge_marker_recipe(
+                controller.recipe.model_dump(mode="json"), chosen, shown, rule, minimum, reset_rule=rule_changed
+            )
+        except ValueError as exc:
+            window.show_error(str(exc))
+            return
+        percent_names = [item.name for item in controller.recipe.classifications if uses_pixel_level(controller.recipe, item)]
+        min_changed = min_changed and rule == RULE_PERCENT and bool(percent_names)
+        if not plan.changes and not min_changed:
+            return
+        approved = [record.image_id for record in controller.experiment.images if record.processing_status in ("approved", "reviewed")]
+        clear = bool(approved) and bool(plan.removed or plan.reset)
+        lines = self.loss_lines(plan, len(approved) if clear else 0)
+        if lines:
             answer = QMessageBox.question(
                 self,
-                "Replace markers?",
-                "This replaces the current markers and results rows with one per ticked channel. Continue?",
+                "Change the markers?",
+                "\n".join([*lines, "", "Continue?"]),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
             )
             if answer != QMessageBox.Yes:
+                self.refresh()  # the boxes go back to the markers that exist
                 return
-        self.window.apply_marker_setup(chosen, rule=str(self.rule.currentData()), min_percent=self.min_percent.value())
+        window.apply_marker_merge(plan, clear_approvals=clear, min_percent=minimum if min_changed else None)
+
+    @staticmethod
+    def loss_lines(plan, approved: int) -> list[str]:
+        """What the user made that changing the markers would lose, in words; empty when nothing is lost."""
+
+        lines = []
+        for name, count in plan.calls_lost.items():
+            lines.append(f"{count} object{'s' if count != 1 else ''} you called by hand for {name} will lose those calls.")
+        if plan.reports_lost:
+            lines.append("These result rows you added use a marker that is removed, and will be removed too: " + "; ".join(plan.reports_lost) + ".")
+        if plan.reset:
+            lines.append(
+                f"Changing the rule starts the cutoffs of {', '.join(plan.reset)} again"
+                + (
+                    "; cutoffs set for single images are dropped ("
+                    + ", ".join(f"{name}: {count} image{'s' if count != 1 else ''}" for name, count in plan.own_cutoffs_lost.items())
+                    + "). Calls by hand are kept."
+                    if plan.own_cutoffs_lost
+                    else ". Calls by hand are kept."
+                )
+            )
+        if approved and lines:
+            lines.append(f"{approved} approved image{'s' if approved != 1 else ''} will need approving again.")
+        elif approved and plan.removed:
+            lines.append(f"Removing {', '.join(plan.removed)}: {approved} approved image{'s' if approved != 1 else ''} will need approving again.")
+        return lines
 
 
 def _overlap_lines(result, recipe=None) -> list[str]:
@@ -651,13 +831,21 @@ def _overlap_lines(result, recipe=None) -> list[str]:
     return lines
 
 
-class ResultsSummary(QGroupBox):
-    """Step 6: the numbers for the image on screen, in words, and the two main actions."""
+class ResultsSummary(QScrollArea):
+    """Step 6: the numbers for the image on screen, in words, and the main actions (run, export).
+
+    It scrolls when the window is too short for all of it, rather than squeezing its parts over each other.
+    """
 
     def __init__(self, window):
-        super().__init__("Results")
+        super().__init__()
         self.window = window
-        layout = QVBoxLayout(self)
+        box = QGroupBox("Results")
+        self.setWidget(box)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        layout = QVBoxLayout(box)
         self.summary = QLabel("No results yet.")
         self.summary.setWordWrap(True)
         self.summary.setTextFormat(Qt.RichText)
@@ -677,11 +865,36 @@ class ResultsSummary(QGroupBox):
         self.run_analyses.clicked.connect(window.run_all_analyses)
         self.run_analyses.setVisible(False)
         layout.addWidget(self.run_analyses)
+        # Export: what goes into the files (Group by, Unit), the files that will be written, and the buttons.
+        self.export_box = QGroupBox("Export")
+        export_layout = QVBoxLayout(self.export_box)
+        choices = QFormLayout()
+        panel = window._results_panel
+        group_label = QLabel("Group by")
+        group_label.setToolTip(panel.group_by.toolTip())
+        unit_label = QLabel("Unit")
+        unit_label.setToolTip(panel.unit.toolTip())
+        choices.addRow(group_label, panel.group_by)
+        choices.addRow(unit_label, panel.unit)
+        export_layout.addLayout(choices)
+        self.files_note = QLabel("")  # no word wrap: one file to a line, so its height is always right
+        self.files_note.setTextFormat(Qt.RichText)
+        # A list of up to ~6 lines is shown whole; a longer one (Export all analyses) scrolls instead of squeezing the page.
+        self.files_scroll = QScrollArea()
+        self.files_scroll.setWidget(self.files_note)
+        self.files_scroll.setWidgetResizable(True)
+        self.files_scroll.setFrameShape(QFrame.NoFrame)
+        self.files_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        export_layout.addWidget(self.files_scroll)
+        self._several = False
+        panel.group_by.currentIndexChanged.connect(lambda _index: self.show_files())
+        panel.unit.currentIndexChanged.connect(lambda _index: self.show_files())
         export = QPushButton("Export results…")
         export.setMinimumHeight(32)
-        export.setToolTip("Save objects.csv, image_summary.csv and the settings to a folder you choose.")
+        export.setToolTip("Choose a folder: the results are saved in a new dated folder inside it, so an earlier export is never overwritten.")
         export.clicked.connect(window.export_dialog)
-        analyze = QPushButton("Analyze…")
+        self.export_button = export
+        analyze = QPushButton("Open in QuantAnalysis…")
         analyze.setMinimumHeight(32)
         analyze.setToolTip("Statistics and graphs of these results in QuantAnalysis: t tests, rank tests, SuperPlots.\n"
                            "It follows this experiment: change a cutoff or an approval and its tables update.")
@@ -690,17 +903,19 @@ class ResultsSummary(QGroupBox):
         row = QHBoxLayout()
         row.addWidget(export, 1)
         row.addWidget(analyze)
-        layout.addLayout(row)
+        export_layout.addLayout(row)
         # Shown when the experiment has more than one analysis (the list at the top of the panel).
         self.export_analyses = QPushButton("Export all analyses…")
         self.export_analyses.setToolTip(
             "Save each analysis's results in its own folder, plus all_analyses_image_summary.csv with every "
-            "analysis's per-image numbers side by side."
+            "analysis's per-image numbers side by side, in a new dated folder inside the one you choose."
         )
         self.export_analyses.clicked.connect(window.export_all_dialog)
         self.export_analyses.setMinimumHeight(32)
         self.export_analyses.setVisible(False)
-        layout.addWidget(self.export_analyses)
+        export_layout.addWidget(self.export_analyses)
+        layout.addWidget(self.export_box)
+        self.show_files()
         self.batch = QLabel("")
         self.batch.setWordWrap(True)
         layout.addWidget(self.batch)
@@ -714,7 +929,8 @@ class ResultsSummary(QGroupBox):
             self.summary.setText("No results yet for this image.")
             self.summary.setToolTip("Set up markers (step 4) and run it.")
             return
-        names = {item.id: item.name for item in recipe.classifications}
+        controller = getattr(self.window, "controller", None)
+        names = controller.marker_names(recipe) if controller is not None else {item.id: item.name for item in recipe.classifications}
         lines = [f"<b>{result.provenance.get('filename', '')}</b>: {result.qc.n_objects} objects"]
         for row in result.reports.to_dict(orient="records"):
             percent = row["percent"]
@@ -741,7 +957,29 @@ class ResultsSummary(QGroupBox):
             tips.append("Why each one failed is in the red box at the top and in step 1's Status column.")
         self.batch.setToolTip(" ".join(tips))
 
+    def show_files(self) -> None:
+        """"Files that will be written": follows Group by and Unit (and the analyses, for Export all analyses)."""
+
+        from cellquant.export_folder import export_files
+
+        controller = self.window.controller
+        panel = self.window._results_panel
+        columns = list(controller.experiment.metadata_columns) if controller is not None else []
+
+        def lines(files) -> str:
+            return "<br>".join(f"• {html.escape(name)}" + (f" <i>({html.escape(when)})</i>" if when else "") for name, when in files)
+
+        group_by, unit = panel.group_by.currentData(), panel.unit.currentData()
+        text = f"<b>Files that will be written</b> (in a new dated folder)<br>{lines(export_files(group_by, unit, columns))}"
+        if self._several:
+            side = [item for item in export_files(group_by, unit, columns, all_analyses=True) if not item[0].startswith("<analysis name>/")]
+            text += f"<br><b>Export all analyses</b> writes a folder for each analysis with those files, and<br>{lines(side)}"
+        self.files_note.setText(text)
+        self.files_scroll.setFixedHeight(min(self.files_note.sizeHint().height() + 4, 112))
+
     def show_analysis_actions(self, several: bool) -> None:
+        self._several = several
+        self.show_files()
         self.export_analyses.setVisible(several)
         self.run_analyses.setVisible(several)
         self.run_all.setText("Run all images (this analysis)" if several else "Run all images")

@@ -27,7 +27,7 @@ Your original images are never changed or written to.
 Every number in the tables comes from the same short chain. Knowing the chain tells you which step to go back to when a number looks wrong.
 
 1. **Step 2, Find objects.** CellQuant finds objects (nuclei or cells) and gives each one a number, its `object_id`. The result is a label image.
-2. **Step 3, Edit objects.** Your deletions and paint strokes are applied on top of the found objects. The found objects are never overwritten.
+2. **Step 3, Fix outlines.** Your deletions and paint strokes are applied on top of the found objects. The found objects are never overwritten.
 3. **Step 4, Markers.** For each marker, CellQuant measures a brightness value inside every object. By default this is the mean brightness (`<marker>_mean`).
 4. **Step 5, Check.** Each marker has a cutoff. An object is positive for a marker when its value is above the cutoff (`<marker>_pos`).
 5. **Step 6, Results.** For every image, CellQuant counts objects and turns the counts into percentages (the reports). Export then averages or pools images into groups.
@@ -518,7 +518,7 @@ For `integrated` the background is multiplied by the number of pixels in the reg
 
 **In short:** Objects called positive or negative by hand, overriding the cutoff for those objects only.
 
-**What it means:** Set in step 5 with **Edit cells…**: you select objects and click Positive, Negative or Use cutoff. Listed per image as object number, the call, and the object's centre. Every other object is still called by the cutoff, and moving a cutoff never changes a call made by hand. A call is kept only while its object is still there: same number, not deleted, and its centre within half its radius of where it was. Running the image again with new objects drops calls whose object moved.
+**What it means:** Set in step 5 with **Override calls…**: you select objects and click Positive, Negative or Use cutoff. Listed per image as object number, the call, and the object's centre. Every other object is still called by the cutoff, and moving a cutoff never changes a call made by hand. A call is kept only while its object is still there: same number, not deleted, and its centre within half its radius of where it was. Running the image again with new objects drops calls whose object moved.
 
 **Good to know:** Calls by hand are a judgement, not a measurement. Each object called by hand is marked in `<marker>_pos_by_hand`, and each image's number is `n_called_by_hand`, so readers can see how much of a result was set by hand.
 
@@ -1110,7 +1110,7 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 
 **In short:** How many counted objects have at least one marker called by hand.
 
-**What it means:** Normally 0. A higher number means some calls in this image were set in step 5 **Edit cells…** rather than by the cutoff.
+**What it means:** Normally 0. A higher number means some calls in this image were set in step 5 **Override calls…** rather than by the cutoff.
 
 **For experts:** `quantify.count_by_hand`: counted objects with any `<marker>_pos_by_hand` True.
 
@@ -1215,7 +1215,7 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 
 **In short:** How many counted objects have at least one marker called by hand.
 
-**What it means:** Normally 0. It comes from step 5 **Edit cells…**, where single objects can be called positive or negative instead of by the cutoff.
+**What it means:** Normally 0. It comes from step 5 **Override calls…**, where single objects can be called positive or negative instead of by the cutoff.
 
 **Related:** `cell_calls`, `<marker>_pos_by_hand`
 
@@ -1741,8 +1741,8 @@ These keys are only present if a count area is drawn.
 | `grouped_by_<column>.csv` | Only if you chose a group column. One row per group |
 | `units_by_<unit>.csv` | One row per unit (for example per retina), every report pooled over its images |
 | `grouped_by_<column>_equal_units.csv` | Only with a group column and units: each group's mean over units, every unit counted once |
-| `recipe.yaml` | The current settings |
-| `settings_index.csv` | `image_id`, `filename`, `recipe_sha256`: which settings made each image |
+| `recipe.yaml` | The current settings, with markers named as in the tables beside it |
+| `settings_index.csv` | `image_id`, `filename`, `recipe_sha256`: which settings made each image (the hash of the settings as the results folder keeps them) |
 | `mixed_settings.txt` | Only if images were made with more than one settings version |
 | `run.json` | Copy of the latest run record |
 
@@ -1756,6 +1756,8 @@ There are two ways to average images, and they give different numbers. The **mea
 
 **What it means:** The object tables of every included image, joined one after another. The columns are the ones described for the object table, so a long exported table is the place to filter by image, group or marker. Deleted objects are still in it, marked `excluded`.
 
+**Good to know:** A marker's columns are named after its channel when you click **Set up markers** (`af594_mean`, `af594_pos`). If you rename that channel afterwards (rename its layer in the viewer's layer list), the export writes those columns, and the names in `phenotype`, under the new name (`otx2_mean`, `otx2_pos`, `OTX2+`), and `recipe.yaml` in the same folder uses the same names. The results folder keeps the names the markers were made with, so nothing is measured again and no approval is lost.
+
 **Related:** `measurements/<image>.csv`
 
 ### `image_summary.csv`
@@ -1764,13 +1766,15 @@ There are two ways to average images, and they give different numbers. The **mea
 
 **What it means:** The image summaries of every included image, joined. This is the file most people start from. Its columns are described under the summary file. Your group columns (such as `group` or `Folder 1`) are in it, which is what the grouped files are made from.
 
+**Good to know:** In an export each report's columns are named for what was counted, not numbered. A saved run's `report_1_count`, `report_1_percent` and `report_1_denominator` become, for a marker called OTX2, `OTX2_pos_count`, `OTX2_pos_percent` and `OTX2_pos_denominator`. Two markers together are joined with `_and_` (`OTX2_pos_and_PAX6_pos_percent`), a marker that must be negative ends in `_neg`, and a report among other objects than all of them adds `_of_` (`OTX2_pos_of_mCherry_pos_percent`). A marker has its channel's name: the one stored in the file, or the one you gave the channel by renaming its layer in the viewer's layer list (a marker you named yourself under **Advanced** keeps your name). The name keeps its capitals; a space or any other character that is not a letter, a digit or `_` becomes `_`, so the columns load unchanged in R, Python and spreadsheets. The grouped and unit files use the same names.
+
 **Related:** `summaries/<image>.csv`
 
 ### `grouped_by_<column>.csv`
 
 **In short:** The results per condition: one row per value of the group column you chose.
 
-**What it means:** Use it to compare control and treated. Each report gets two kinds of numbers: the average of the images' percents and the pooled percent. They answer slightly different questions, which is why they are in differently named columns. `<report>` below is `report_1`, `report_2`, and so on.
+**What it means:** Use it to compare control and treated. Each report gets two kinds of numbers: the average of the images' percents and the pooled percent. They answer slightly different questions, which is why they are in differently named columns. `<report>` below is the report's name in `image_summary.csv`, for example `OTX2_pos` (`report_1`, `report_2`, and so on in files written by older versions).
 
 **For experts:** `storage.grouped_summary`. Groups come from `groupby(column, dropna=False)`, so images with a blank group value form their own group.
 

@@ -50,7 +50,7 @@ def test_examples_mode(tmp_path: Path, open_window):  # noqa: F811
     _events(0.2)
     assert next(item for item in controller.recipe.classifications if item.id == "class_a").cutoff_by == "examples"
     assert panel.examples_box.isVisibleTo(panel) and not panel.threshold_slider.isVisibleTo(panel)
-    assert not panel.cutoff_tools.isVisibleTo(panel) and panel.apply_all.isVisibleTo(panel)
+    assert not panel.cutoff_tools.isVisibleTo(panel) and panel.scope_row.isVisibleTo(panel)
     assert not panel.histogram.draggable
     assert "Mark +" in shell._step_pages[4].todo_card.text()
 

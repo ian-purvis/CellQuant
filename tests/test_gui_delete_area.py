@@ -74,21 +74,24 @@ def test_deleted_object_leaves_the_outline_layer_and_drawing_is_kept(tmp_path: P
     assert int(np.asarray(shell.viewer.layers["Objects"].data)[15, 15]) == 0
     assert not panel._pending
 
-    # Drawing not recorded yet still comes back after showing another image.
+    # Drawing not recorded yet is recorded when another image is shown, and is there when coming back.
     layer = shell.viewer.layers["Objects"]
     painted = np.array(layer.data, copy=True)
     painted[60:65, 60:65] = 7
     layer.data = painted
+    first_id = shell.controller.experiment.images[0].image_id
+    edits_before = shell.controller.edit_count(first_id)
     shell._nav_index = 1
     shell.show_current()
     assert _wait(shell)
     _events(0.3)
-    assert len(panel._pending) == 1
+    assert not panel._pending  # recorded, not kept in memory
+    assert shell.controller.edit_count(first_id) > edits_before
     shell._nav_index = 0
     shell.show_current()
     assert _wait(shell)
     _events(0.3)
-    assert int(np.asarray(shell.viewer.layers["Objects"].data)[62, 62]) == 7
+    assert int(np.asarray(shell.viewer.layers["Objects"].data)[62, 62]) != 0
 
 
 def test_step3_modes_and_draw_new_object(tmp_path: Path, open_window):  # noqa: F811

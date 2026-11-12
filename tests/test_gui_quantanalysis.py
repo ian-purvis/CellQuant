@@ -35,7 +35,7 @@ def _replicates(window, tmp_path):
 def test_window_is_separate_and_dark(window):
     assert window.windowTitle() == "QuantAnalysis"
     assert window.isWindow()
-    assert [action.text().replace("&", "") for action in window.menuBar().actions()] == ["File", "Analyze", "Graph", "Export", "Help"]
+    assert [action.text().replace("&", "") for action in window.menuBar().actions()] == ["File", "Edit", "Analyze", "Graph", "Export", "Help"]
     assert "QWidget" in window.styleSheet()
     assert [window.folders[key].text(0) for key in ("data", "results", "graphs")] == ["Data tables", "Results", "Graphs"]
 
@@ -262,8 +262,9 @@ def test_entry_points_from_cellquant(tmp_path, monkeypatch):
     _wait(shell)
     try:
         texts = {button.text() for button in shell._tabs.findChildren(QPushButton)}
-        assert {"Analyze…", "Analyze a results folder…"} <= texts
-        assert sum(button.text() == "Analyze a results folder…" for button in shell._tabs.findChildren(QPushButton)) == 2
+        assert {"Open in QuantAnalysis…", "Open a results folder in QuantAnalysis…"} <= texts
+        # One home: the Start tab (step 1 no longer repeats it).
+        assert sum(button.text() == "Open a results folder in QuantAnalysis…" for button in shell._tabs.findChildren(QPushButton)) == 1
         window = shell.open_quantanalysis()
         _settle()
         assert window.isVisible() and window.windowTitle() == "QuantAnalysis"

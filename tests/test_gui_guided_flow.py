@@ -52,7 +52,9 @@ def test_practice_run_through_all_steps(tmp_path: Path, monkeypatch):
         assert pages[0].next.isEnabled()
         assert not pages[1].next.isEnabled() and "Run" in pages[1].blocker.text()
         assert tabs.isTabEnabled(tabs.indexOf(pages[1])) and not tabs.isTabEnabled(tabs.indexOf(pages[2]))
-        assert tabs.tabText(tabs.indexOf(pages[1])) == "2 →"
+        assert tabs.tabText(tabs.indexOf(pages[1])) == "2 Find →"
+        assert tabs.tabText(tabs.indexOf(pages[3])) == "4 Markers"  # a locked tab keeps its name
+        assert pages[0].lock_note.text() == "Steps 3-6 unlock after step 2: Run this image first."
         assert tabs.tabToolTip(tabs.indexOf(pages[3])) == "Markers: locked. Step 2 first: Run this image first."
 
         shell.run_current()
@@ -62,9 +64,16 @@ def test_practice_run_through_all_steps(tmp_path: Path, monkeypatch):
         assert not pages[3].next.isEnabled()
         assert tabs.isTabEnabled(tabs.indexOf(pages[3])) and not tabs.isTabEnabled(tabs.indexOf(pages[4]))
 
+        said: list[str] = []
+        monkeypatch.setattr(shell, "message", said.append)
+        shell.go_to_step(3)
         shell._marker_setup.button.click()
         _wait(shell)
-        assert shell._tabs.currentWidget() is pages[4]
+        # Setting up markers never moves the user: step 4 stays open, with Next ready.
+        assert shell._tabs.currentWidget() is pages[3]
+        assert pages[3].next.isEnabled()
+        assert said[-1] == "Markers measured. Next: check the cutoffs in step 5."
+        shell.go_to_step(4)
         assert "Positive: 10" in shell._review_panel.counts.text()
 
         # A dragged cutoff is kept when the image is run again.
@@ -78,8 +87,9 @@ def test_practice_run_through_all_steps(tmp_path: Path, monkeypatch):
         _wait(shell, 120)
         shell.export_dialog()
         _wait(shell)
-        summary = pd.read_csv(tmp_path / "export" / "image_summary.csv")
-        counts = [tuple(row) for row in summary[["report_1_count", "report_2_count", "report_3_count"]].to_numpy()]
+        assert shell._exported_to.parent == tmp_path / "export" and shell._exported_to != tmp_path / "export"  # a new dated folder
+        summary = pd.read_csv(shell._exported_to / "image_summary.csv")
+        counts = [tuple(row) for row in summary[["Marker_A_pos_count", "Marker_B_pos_count", "Marker_A_pos_and_Marker_B_pos_count"]].to_numpy()]
         assert counts == [(item.marker_a, item.marker_b, item.both) for item in expected_answers()]
         states = guide.step_states(shell)
         assert [state.done for state in states] == [True, True, True, True, False, True]  # step 5 needs an approval
@@ -146,7 +156,8 @@ def test_percent_of_cell_rule_in_the_window(tmp_path: Path, monkeypatch):
         assert "Positive: 0\n" in panel.counts.text()
 
         # Quick setup shows the rule in use for every image (after Apply to all images).
-        panel.apply_all.click()
+        panel.scope.setCurrentIndex(panel.scope.findData("all"))  # Applies to: All images
+        panel._scope_chosen()
         setup.refresh()
         assert setup.rule.currentData() == guide.RULE_PERCENT and setup.min_percent.value() == 75.0
 

@@ -366,7 +366,16 @@ def test_batch_progress_counts_images_and_slices(tmp_path: Path):
 
     viewer, shell = _stack_window(tmp_path, count=2)
     try:
-        seen = set()
+        # Every status text is recorded as it is set: looking at the label now and then misses the
+        # slice steps on a fast computer, and the image shown after the batch replaces its last line.
+        seen = []
+        show = shell._footer.status.setText
+
+        def record(text: str) -> None:
+            seen.append(text)
+            show(text)
+
+        shell._footer.status.setText = record
         shell.start_batch(None)
         assert shell._footer.pause.isEnabled() and shell._footer.cancel.isEnabled()
         assert not shell._footer.resume.isEnabled()
@@ -377,13 +386,12 @@ def test_batch_progress_counts_images_and_slices(tmp_path: Path):
         end = time.time() + 60
         while shell._batch is not None and time.time() < end:
             QApplication.processEvents()
-            seen.add(shell._footer.status.text())
             time.sleep(0.005)
         QApplication.processEvents()
-        assert any(text.startswith("Image 1 of 2") and "slice" in text for text in seen), sorted(seen)[:10]
+        assert any(text.startswith("Image 1 of 2") and "slice" in text for text in seen), seen
         # The second file has the same pixels, so its saved segmentation is reused: no slices to report.
         assert any(text.startswith("Image 2 of 2") for text in seen)
-        assert "2 finished" in shell._footer.status.text()
+        assert any("2 finished" in text for text in seen), seen
         assert shell._footer.progress.value() == 1000
     finally:
         viewer.close()
@@ -503,9 +511,24 @@ def test_plain_menus_hidden_fields_errors_and_run_bar(window):
     assert objects.threshold.isVisibleTo(objects)
     box = objects.advanced_box  # collapsed until Advanced is ticked
     assert not objects.diameter.isVisibleTo(box) and objects.fill_holes.isVisibleTo(box)
+    # Which Cellpose rows show depends on the engine, so the test names it (not whatever is installed here).
+    from cellquant.engines import CELLPOSE_CLASSIC, CELLPOSE_SAM, CLASSIC_MODELS, CellposeEngine
+
+    installed = objects.engine
+    objects.engine = CellposeEngine(True, "3.1.1.3", CELLPOSE_CLASSIC, CLASSIC_MODELS, "nuclei")
     objects.method.setCurrentIndex(objects.method.findData("cellpose"))
     assert not objects.threshold_method.isVisibleTo(objects) and not objects.sigma.isVisibleTo(objects)
+    # Classic Cellpose always resizes to its diameter: the diameter shows, the choice to resize does not.
     assert objects.diameter.isVisibleTo(box) and not objects.fill_holes.isVisibleTo(box)
+    assert not objects.resize_to_diameter.isVisibleTo(box)
+    # Cellpose-SAM uses the diameter only when it is asked to resize.
+    objects.engine = CellposeEngine(True, "4.2.1.1", CELLPOSE_SAM, ("cpsam_v2", "cpsam"), "cpsam_v2")
+    objects.resize_to_diameter.setChecked(False)
+    objects._show_3d_rows()
+    assert objects.resize_to_diameter.isVisibleTo(box) and not objects.diameter.isVisibleTo(box)
+    objects.resize_to_diameter.setChecked(True)
+    assert objects.diameter.isVisibleTo(box)
+    objects.engine = installed
     objects.method.setCurrentIndex(objects.method.findData("classical"))
     objects.write_recipe()
     assert shell.controller.recipe.object_set.algorithm == "classical"
@@ -710,7 +733,9 @@ def test_layers_are_named_by_the_channel_they_hold(tmp_path: Path):
         shell.show_current()
         _wait(shell)
         names = [layer.name for layer in viewer.layers if layer.name.startswith("Channel ")]
-        assert names[:2] == ["Channel 1 = Red", "Channel 2 = DAPI"]
+        # Each layer has the experiment's name for the channel it holds (the file's name unless the
+        # user renamed the channel): the file's first channel, Red, is the experiment's "Marker".
+        assert names[:2] == ["Channel 1 = Marker", "Channel 2 = Nuclei"]
     finally:
         viewer.close()
 
@@ -757,8 +782,8 @@ def test_run_buttons_live_in_the_steps_not_the_bottom_bar(window):
 
     names = [button.text() for button in window._objects_panel.findChildren(QPushButton)]
     assert "Preview" in names and names.count("Run this image") == 1
-    assert names.count("Run all images") == 1
-    batch = [b for b in window._objects_panel.findChildren(QPushButton) if b.text() == "Run all images"][0]
+    assert names.count("Find objects in all images") == 1 and "Run all images" not in names  # step 6 has the "Run all images" button
+    batch = [b for b in window._objects_panel.findChildren(QPushButton) if b.text() == "Find objects in all images"][0]
     assert batch.isEnabled(), "batch run must not wait for a single-image run"
     summary = [button.text() for button in window._results_summary.findChildren(QPushButton)]
     assert "Run all images" in summary and "Run all analyses" in summary

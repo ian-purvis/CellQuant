@@ -116,17 +116,21 @@ class DataSheetView(QWidget):
         bar.addWidget(self.replicate_button)
         bar.addWidget(self.summary)
         bar.addStretch(1)
-        for text, tip, slot in (
-            ("Column statistics", "n, mean, SD, SEM, CI, median and percentiles of every column, on a new results sheet.", lambda: window.analyze("colstats")),
-            ("Normality", "Normality and lognormality tests of every column. Look at the graph and the n too: small samples pass easily, large ones fail for tiny departures.", lambda: window.analyze("normality")),
-            ("Compare two columns…", "t test or rank test of two columns (the t test dialog).", lambda: window.analyze("compare")),
-            ("Compare 3+ columns…", "One-way ANOVA, Kruskal-Wallis or Friedman with multiple comparisons, for three or more columns.", lambda: window.analyze("anova")),
-            ("Outliers…", "Find outliers in each column with ROUT or Grubbs' test. They are shaded here and hollow on graphs; this table is not changed.", lambda: window.analyze("outliers")),
+        analysis = QHBoxLayout()  # the analyses on a second row: with their full names (and the export button) one row is wider than the window
+        self.analysis_buttons: dict = {}  # analysis kind -> (button, tooltip): greyed, with the reason as tooltip, when it cannot run on this table
+        for text, tip, kind in (
+            ("Column statistics", "n, mean, SD, SEM, CI, median and percentiles of every column, on a new results sheet.", "colstats"),
+            ("Normality", "Normality and lognormality tests of every column. Look at the graph and the n too: small samples pass easily, large ones fail for tiny departures.", "normality"),
+            ("Compare two columns…", "t test or rank test of two columns (the t test dialog).", "compare"),
+            ("Compare three or more columns…", "One-way ANOVA, Kruskal-Wallis or Friedman with multiple comparisons, for three or more columns.", "anova"),
+            ("Outliers…", "Find outliers in each column with ROUT or Grubbs' test. They are shaded here and hollow on graphs; this table is not changed.", "outliers"),
         ):
             button = QPushButton(text)
             button.setToolTip(tip)
-            button.clicked.connect(slot)
-            bar.addWidget(button)
+            button.clicked.connect(lambda _checked=False, kind=kind: window.analyze(kind))
+            self.analysis_buttons[kind] = (button, tip)
+            analysis.addWidget(button)
+        analysis.addStretch(1)
         processing = QToolButton()
         processing.setText("Process ▾")
         processing.setToolTip("Make a new table from this one: transformed, normalized, as a fraction of a total, against a baseline "
@@ -156,7 +160,12 @@ class DataSheetView(QWidget):
         menu.setToolTipsVisible(True)
         graph.setMenu(menu)
         bar.addWidget(graph)
+        export = QPushButton("Export data table CSV…")
+        export.setToolTip(tips.EXPORT_TABLE)
+        export.clicked.connect(lambda _checked=False: window.export_data_table(sheet=self.sheet))
+        bar.addWidget(export)
         layout.addLayout(bar)
+        layout.addLayout(analysis)
         self.replicate_note = QLabel()
         self.replicate_note.setWordWrap(True)
         layout.addWidget(self.replicate_note)
@@ -246,6 +255,10 @@ class DataSheetView(QWidget):
         self.description.setToolTip("\n".join(sheet.notes))
         self.notes.setText(" ".join(sheet.notes))
         self.stale.setVisible(sheet.stale)
+        for kind, (button, tip) in self.analysis_buttons.items():  # the menu's check: greyed with the reason, not an error after the click
+            reason = self.window.blocker(kind, sheet)
+            button.setEnabled(reason is None)
+            button.setToolTip(tip if reason is None else reason)
         self.change.setVisible(sheet.processed_from is not None)
         danger = sheet.pseudoreplicated
         text = "<br>".join(f"⚠ {html.escape(item)}" for item in sheet.warnings)

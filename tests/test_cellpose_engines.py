@@ -99,11 +99,16 @@ def _install_fake(tmp_path: Path, monkeypatch, version: str, source: str):
     return importlib.import_module("cellpose.models")
 
 
+# The real function: a test may put a stand-in in its place, and this fixture is torn down while that
+# stand-in is still there (conftest's fixtures set monkeypatch up first, so it is undone last).
+_cellpose_engine = engines.cellpose_engine
+
+
 @pytest.fixture(autouse=True)
 def _clear_engine_cache():
-    engines.cellpose_engine.cache_clear()
+    _cellpose_engine.cache_clear()
     yield
-    engines.cellpose_engine.cache_clear()
+    _cellpose_engine.cache_clear()
 
 
 def _image() -> np.ndarray:
@@ -148,9 +153,7 @@ def test_engine_is_found_without_importing_cellpose_or_torch(tmp_path, monkeypat
     ("version", "source", "parameters", "message"),
     [
         ("4.2.1.1", _V4, {"engine": "cellpose3"}, "made for Classic Cellpose"),
-        ("4.2.1.1", _V4, {"model": "nuclei"}, "that is a classic Cellpose model"),
         ("3.1.1.3", _V3, {"engine": "cellpose4"}, "made for Cellpose-SAM"),
-        ("3.1.1.3", _V3, {"model": "cpsam"}, "Classic Cellpose has no model named 'cpsam'"),
     ],
 )
 def test_settings_for_the_other_engine_are_refused(tmp_path, monkeypatch, version, source, parameters, message):
@@ -158,6 +161,25 @@ def test_settings_for_the_other_engine_are_refused(tmp_path, monkeypatch, versio
     with pytest.raises(SegmentationError, match=message):
         segment_objects(_image(), "cellpose", parameters)
     assert models.CALLS == []  # refused before any model was loaded
+
+
+@pytest.mark.parametrize(
+    ("version", "source", "saved_model", "loaded"),
+    [
+        ("4.2.1.1", _V4, "nuclei", ("CellposeModel.__init__", {"gpu": False, "pretrained_model": "cpsam_v2", "model_type": None})),
+        ("3.1.1.3", _V3, "cpsam", ("Cellpose.__init__", {"gpu": False, "model_type": "nuclei"})),
+    ],
+)
+def test_a_model_of_the_other_engine_falls_back_to_this_engines_default(tmp_path, monkeypatch, version, source, saved_model, loaded):
+    """Only the model's name was saved for the other engine: the run goes on with this engine's default
+    model and the run details say which model was used (see test_model_fallback.py)."""
+
+    models = _install_fake(tmp_path, monkeypatch, version, source)
+    details: dict = {}
+    labels = segment_objects(_image(), "cellpose", {"model": saved_model}, details=details)
+    assert labels.max() == 2
+    assert models.CALLS[0] == loaded
+    assert details["engine"]["model"] == (loaded[1].get("pretrained_model") or loaded[1].get("model_type"))
 
 
 def test_gpu_request_that_falls_back_to_cpu_is_reported(tmp_path, monkeypatch):

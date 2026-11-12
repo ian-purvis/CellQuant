@@ -463,7 +463,7 @@ def test_pick_selects_highlights_and_opens_the_section(window):
     assert view.selection is None and view._highlights == []
 
 
-def test_priority_and_double_click_opens_the_dialog(window):
+def test_priority_and_double_click_scrolls_the_panel_to_the_section(window, qtbot):
     graph, view = _graph(window)
     graph.format.annotations.append(gf.Annotation(kind="text", text="note", x=0.5, y=0.5))
     view.draw()
@@ -474,22 +474,30 @@ def test_priority_and_double_click_opens_the_dialog(window):
     PickEvent("pick_event", view.canvas, mouse, note)._process()
     PickEvent("pick_event", view.canvas, mouse, dots)._process()  # behind the text box: the text box stays selected
     assert view.selection[0] == "annotation"
+    # There are no Format graph / Format axes dialogs any more: a double click opens the section in the side panel and scrolls to it.
+    assert not hasattr(view, "format_dialog") and not hasattr(view, "dialogs")
+    view.collapsibles["datasets"].expand(False)
     double = MouseEvent("button_press_event", view.canvas, 10, 10, button=1, dblclick=True)
     PickEvent("pick_event", view.canvas, double, dots)._process()
     double._process()
-    dialog = view.dialogs["graph"]
-    assert dialog.isVisible() and dialog.current() is dialog.pages["datasets"]
-    assert dialog.pages["datasets"].current() == NAMES[0]
-    # The dialog edits live; Cancel puts the format back.
-    dialog.pages["datasets"].symbol_size.setValue(77)
+    box = view.collapsibles["datasets"]
+    assert box.expanded() and view.panel["datasets"].current() == NAMES[0]
+    from qtpy.QtCore import QPoint
+
+    bar = view.panel_scroll.verticalScrollBar()
+    top = box.mapTo(view.panel_scroll.widget(), QPoint(0, 0)).y()
+    qtbot.waitUntil(lambda: abs(bar.value() - min(top, bar.maximum())) <= 2, timeout=2000)  # scrolled so the section starts at the top
+    # The panel edits live, like the dialog did.
+    view.panel["datasets"].symbol_size.setValue(77)
     view.flush()
-    assert _collections(view, NAMES[0])[0].get_sizes()[0] == 77 and view.panel["datasets"].symbol_size.value() == 77
-    dialog.reject()
-    view.flush()
-    assert NAMES[0] not in graph.format.datasets and "graph" not in view.dialogs
-    axes = view.format_dialog("axes", "right")
-    assert axes.current() is axes.pages["right"] and axes.windowTitle() == "Format axes"
-    axes.accept()
+    assert _collections(view, NAMES[0])[0].get_sizes()[0] == 77
+    # Double-clicking an axis opens the Axes section on that axis.
+    view.collapsibles["axes"].expand(False)
+    plot = view.figure._cq_plot
+    x0, y0 = plot.transform((0, 0))
+    view.canvas.draw()
+    _press(view, x0 - 12, y0 + 30, dblclick=True)
+    assert view.collapsibles["axes"].expanded() and view.panel["axes"].axis.axis_key() == "y"
 
 
 def test_dragging_an_annotation_and_the_legend_saves_the_position(window):
@@ -666,7 +674,8 @@ def test_panel_sections_have_tooltips_and_fit(window):
         assert box.minimumSizeHint().width() <= view.panel_scroll.width() - 14, key  # no section wider than the panel
     buttons = view.panel["significance"].ref_buttons
     assert buttons[1].text() == "2nd" and buttons[1].width() >= buttons[1].fontMetrics().horizontalAdvance("2nd") + 20
-    assert tips.FORMAT_GRAPH and tips.FORMAT_AXES and all(tips.FORMAT.values())
+    assert tips.FORMAT_SEARCH and tips.FORMAT_RESET and all(tips.FORMAT.values())
+    assert "dialog" not in tips.SELECT  # the hint says what a click and a double click do now
 
 
 # --- Export ------------------------------------------------------------------------------------------------------------
@@ -709,3 +718,122 @@ def test_export_matches_the_format_size_and_screen(window, tmp_path):
     paper = [ax.get_position().bounds for ax in exported._cq_axes["segments"]]
     assert np.allclose(screen, paper, atol=0.01)
     assert exported.get_size_inches() == pytest.approx(view.figure.get_size_inches())
+
+
+# --- Search and Reset graph ----------------------------------------------------------------------------------------------
+
+
+def _shown_rows(box) -> list[str]:
+    """The labels of the rows a section shows (hidden rows and sections left out)."""
+
+    from qtpy.QtWidgets import QLabel
+
+    return [label.text() for label in box.body.findChildren(QLabel) if label.isVisibleTo(box.body) and label.text()]
+
+
+def test_the_search_box_filters_controls_by_label_and_clearing_restores_the_sections(window):
+    view = _graph(window)[1]
+    assert view.search.placeholderText() and view.reset_button.text() == "Reset graph"
+    view.collapsibles["styles"].expand(True)
+    before = {key: box.expanded() for key, box in view.collapsibles.items()}
+    assert before["graph"] and before["styles"] and not before["axes"]
+    view.search.setText("tick")
+    visible = {key for key, box in view.collapsibles.items() if not box.isHidden()}
+    assert visible == {"axes"} and view.collapsibles["axes"].expanded()  # sections with a match open, the others hide
+    rows = _shown_rows(view.collapsibles["axes"])
+    assert "Tick every" in rows and "Ticks" in rows and "Title" not in rows and "Range" not in rows and "Scale" not in rows
+    # Several words must all match; a section's own name shows all of it.
+    view.search.setText("font")
+    assert not view.collapsibles["graph"].isHidden()
+    assert "Font" in _shown_rows(view.collapsibles["graph"]) and "Error bars" not in _shown_rows(view.collapsibles["graph"])
+    view.search.setText("font size")
+    assert view.collapsibles["graph"].isHidden()  # no row says both
+    view.search.setText("significance")
+    assert {key for key, box in view.collapsibles.items() if not box.isHidden()} == {"significance"}
+    assert len(_shown_rows(view.collapsibles["significance"])) >= 4  # every control of it
+    # Rows under a heading match the heading; a heading with no matching row goes.
+    view.search.setText("cap width")
+    assert "Cap width" in _shown_rows(view.collapsibles["datasets"]) and "Error bars" in _shown_rows(view.collapsibles["datasets"])
+    assert "Symbols" not in _shown_rows(view.collapsibles["datasets"])
+    # No match: a note, and every section hides.
+    view.search.setText("zzzz")
+    assert all(box.isHidden() for box in view.collapsibles.values()) and "zzzz" in view.no_match.text() and not view.no_match.isHidden()
+    # Clearing puts every section and row back, open and closed as before.
+    view.search.setText("")
+    assert not any(box.isHidden() for box in view.collapsibles.values()) and view.no_match.isHidden()
+    assert {key: box.expanded() for key, box in view.collapsibles.items()} == before
+    assert "Error bars" in _shown_rows(view.collapsibles["graph"]) and "Comparison" in _shown_rows(view.collapsibles["graph"])
+
+
+def test_the_search_leaves_rows_the_graph_hides_hidden_and_edits_still_work(window):
+    graph, view = _graph(window, "scatter")
+    view.search.setText("arrangement")
+    assert all(box.isHidden() for box in view.collapsibles.values())  # a scatter graph of columns has no arrangement row to show
+    view.search.setText("dot size")
+    assert not view.collapsibles["graph"].isHidden()
+    view.panel["graph"].dot_size.setValue(12)
+    view.flush()
+    assert graph.format.dot_size == 12 and view.search.text() == "dot size"  # editing a found control works, and the search stays
+    view.search.setText("")
+    # Clicking a part of the graph that the search hides clears the search so its section can open.
+    view.search.setText("dot size")
+    view.select(("title",))
+    assert view.search.text() == "" and view.collapsibles["text"].expanded()
+
+
+def test_reset_graph_puts_the_whole_format_back_and_undo_reset_reverses_it(window):
+    graph, view = _graph(window, "scatter")
+    fmt = graph.format
+    standard = gf.GraphFormat().to_dict()
+    fmt.title, fmt.font_size, fmt.width, fmt.frame = "Mine", 11.0, 120.0, "box"
+    fmt.y.min = 5
+    fmt.datasets[NAMES[0]] = gf.DataSetFormat(symbol_size=33)
+    fmt.annotations.append(gf.Annotation(kind="text", text="note", x=0.5, y=0.5))
+    view.format_changed(None)
+    changed = fmt.to_dict()
+    assert changed != standard and view.reset_button.text() == "Reset graph"
+    view.reset_button.click()
+    assert graph.format.to_dict() == standard and view.reset_button.text() == "Undo reset"
+    assert graph.kind == "scatter" and graph.data_id and view.panel["graph"].font_size.value() == 8.0  # the data and the kind stay; the panel shows it
+    assert view.panel["graph"].width_box.value() == 85.0
+    # Undo reset: one step back, and the button is Reset graph again.
+    view.reset_button.click()
+    assert graph.format.to_dict() == changed and view.reset_button.text() == "Reset graph"
+    assert view.panel["graph"].font_size.value() == 11.0
+    # Any format change after a reset turns the button back into Reset graph (the reset can no longer be undone as a step).
+    view.reset_button.click()
+    assert view.reset_button.text() == "Undo reset"
+    view.panel["graph"].font_size.setValue(9)
+    assert view.reset_button.text() == "Reset graph" and view._reset_undo is None
+    # It is a format change like any other: the project is unsaved afterwards.
+    assert window.has_unsaved_changes()
+
+
+def test_reset_graph_goes_back_to_the_defaults_of_its_kind(window):
+    from cellquant.gui.quantanalysis.project import set_grouped
+    from cellquant.stats.grouped import GroupedTable
+
+    data = window.project.add_data(DataSheet("G", ColumnTable()))
+    set_grouped(data, GroupedTable("", ["Row 1", "Row 2"], ["Set A", "Set B"], np.arange(12, dtype=float).reshape(2, 2, 3)))
+    window.select(data.id)
+    graph = window.new_graph("bar")
+    assert graph.format.legend.show  # a grouped graph starts with its legend on
+    view = window.views[graph.id]
+    graph.format.legend.show = False
+    graph.format.font_size = 14.0
+    view.format_changed(None)
+    view.reset_button.click()
+    assert graph.format.legend.show and graph.format.font_size == 8.0
+
+
+def test_format_graph_and_format_axes_dialogs_are_gone(window):
+    from qtpy.QtWidgets import QMenu, QPushButton
+
+    graph, view = _graph(window)
+    texts = {button.text() for button in view.findChildren(QPushButton)}
+    assert "Format graph…" not in texts and "Format axes…" not in texts and "Export graph…" in texts
+    menu_texts = {action.text() for menu in window.menuBar().findChildren(QMenu) for action in menu.actions()}
+    assert not {"Format graph…", "Format axes…"} & menu_texts
+    assert {"Make this graph look like…", "Copy format", "Paste format"} <= menu_texts
+    assert not hasattr(format_panel, "FormatDialog")
+    assert "Apply" in {b.text() for b in view.panel["styles"].findChildren(QPushButton)}  # Styles stay

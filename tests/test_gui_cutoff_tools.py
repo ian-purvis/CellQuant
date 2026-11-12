@@ -60,7 +60,8 @@ def test_cutoff_tools(tmp_path: Path, monkeypatch):
         marker = controller.recipe.classifications[0]
         image_id = shell._nav_ids[shell._nav_index]
         assert panel.histogram._values.size > 0 and panel.cutoff_tools.isVisibleTo(panel)
-        assert panel.auto_method.currentData() == "otsu" and panel.apply_all.isVisibleTo(panel)
+        assert panel.auto_method.currentData() == "otsu" and panel.scope_row.isVisibleTo(panel)
+        assert panel.scope.currentData() == "this"  # a cutoff change is for the image shown unless "All images" is chosen
         shared = controller.recipe.classifications[0].threshold
 
         # Dragging the histogram line moves this image's cutoff; the shared one stays.
@@ -103,11 +104,29 @@ def test_cutoff_tools(tmp_path: Path, monkeypatch):
         panel.auto_percent.editingFinished.emit()
         assert controller.own_cutoff(image_id, marker.id) == before
 
-        # Apply to all images: this cutoff becomes everyone's; no approved image, so nothing is asked.
+        def choose(scope: str) -> None:
+            panel.scope.setCurrentIndex(panel.scope.findData(scope))
+            panel._scope_chosen()
+
+        # Applies to: All images: this cutoff becomes everyone's; no approved image, so nothing is asked.
         monkeypatch.setattr(panel, "_ask_include_approved", lambda *args: pytest.fail("nothing is approved"))
-        panel.apply_all.click()
+        choose("all")
+        assert panel.scope.currentData() == "all"
         assert controller.recipe.classifications[0].threshold == pytest.approx(own)
         assert controller.own_cutoff(image_id, marker.id) is None
+        # While it stays on All images, a later change goes to every image too, without asking again.
+        panel.threshold_slider.setValue(own + 3)
+        _settle()
+        assert controller.recipe.classifications[0].threshold == pytest.approx(own + 3, rel=0.01)
+        assert controller.own_cutoff(image_id, marker.id) is None
+        # Back to This image: the next change is the image's own again.
+        choose("this")
+        panel.threshold_slider.setValue(own + 9)
+        _settle()
+        assert controller.own_cutoff(image_id, marker.id) == pytest.approx(own + 9, rel=0.01)
+        assert controller.recipe.classifications[0].threshold == pytest.approx(own + 3, rel=0.01)
+        controller.use_shared_cutoff(marker.id, image_id)
+        own = controller.recipe.classifications[0].threshold
 
         # Reset asks first when the image is approved; No changes nothing.
         top = float(values.max()) + 1  # nothing positive: any automatic cutoff changes the calls
@@ -135,14 +154,16 @@ def test_cutoff_tools(tmp_path: Path, monkeypatch):
         monkeypatch.setattr(panel, "_ask_include_approved", lambda *args: choices.pop(0))
         panel.threshold_slider.setValue(top)
         _settle()
-        panel.apply_all.click()  # Cancel: nothing changes
+        choose("all")  # Cancel: nothing changes, and the control goes back to This image
         assert controller.recipe.classifications[0].threshold == pytest.approx(approved_at)
-        panel.apply_all.click()
+        assert panel.scope.currentData() == "this"
+        choose("all")
         assert controller.recipe.classifications[0].threshold == pytest.approx(top, rel=0.01)
         assert controller.recipe.classifications[0].threshold_for(other) == pytest.approx(approved_at)
         assert controller.experiment.image(other).processing_status == "approved"
         assert "1 approved image keeps its cutoff" in said[-1]
-        panel.apply_all.click()  # All images: the approved one changes too
+        choose("this")
+        choose("all")  # All images: the approved one changes too
         assert controller.own_cutoff(other, marker.id) is None
         assert controller.recipe.classifications[0].threshold_for(other) == pytest.approx(top, rel=0.01)
 
@@ -150,7 +171,7 @@ def test_cutoff_tools(tmp_path: Path, monkeypatch):
         shell.set_busy(True)
         try:
             panel.show_result(controller.recall(image_id))
-            for widget in (panel.histogram, panel.threshold_slider, panel.auto_method, panel.apply_all, panel.reset_cutoff):
+            for widget in (panel.histogram, panel.threshold_slider, panel.auto_method, panel.scope, panel.reset_cutoff):
                 assert not widget.isEnabled()
         finally:
             shell.set_busy(False)

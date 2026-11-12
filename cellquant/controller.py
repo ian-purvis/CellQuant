@@ -53,7 +53,16 @@ from cellquant.pipeline import (
     segmentation_details_of,
 )
 from cellquant.count_area import outside
-from cellquant.quantify import classification_counts, hand_call, hand_calls
+from cellquant.quantify import (
+    classification_counts,
+    hand_call,
+    hand_calls,
+    name_reports,
+    rename_in_expression,
+    rename_object_columns,
+    rename_recipe_markers,
+    report_prefixes,
+)
 from cellquant.recipe import Recipe, load_recipe, save_recipe
 from cellquant.result_cache import ResultCache
 from cellquant.segmentation import engine_signature
@@ -518,6 +527,78 @@ class AnalysisController:
     def set_channel_name(self, channel_index: int, name: str) -> None:
         set_channel_name(self.experiment, channel_index, name)
 
+    def rename_channel(self, channel_index: int, name: str) -> None:
+        """Give a channel the user's name (they renamed its layer in the viewer) and save it.
+
+        Only the name shown and exported changes: files are still matched by the names stored in them,
+        and the analysis settings are untouched, so nothing is measured again and no approval is lost.
+        Markers named after the channel follow it (see ``marker_names``).
+        """
+
+        cleaned = str(name).strip()
+        if not cleaned:
+            raise CellQuantError("A channel needs a name.")
+        channel = next((item for item in self.experiment.channels if item.channel_index == channel_index), None)
+        if channel is None:
+            raise CellQuantError(f"This experiment has no channel {channel_index + 1}.")
+        if cleaned == channel.channel_name:
+            return
+        if any(item is not channel and str(item.channel_name).casefold() == cleaned.casefold() for item in self.experiment.channels):
+            raise CellQuantError(f"Another channel is already called {cleaned}.")
+        if channel.channel_name not in channel.earlier_names:
+            channel.earlier_names.append(channel.channel_name)
+        set_channel_name(self.experiment, channel_index, cleaned)
+        self.save()
+
+    def marker_names(self, recipe: Recipe | None = None) -> dict[str, str]:
+        """Each marker's name by its id, as shown and exported.
+
+        Quick setup names a marker after its channel. When the channel is renamed afterwards the marker
+        follows it; a marker the user gave another name keeps that name. The settings keep the name the
+        marker was made with (changing it there would change the settings hash and unapprove images).
+        """
+
+        recipe = recipe or self.recipe
+        channels = {item.channel_index: item for item in self.experiment.channels}
+        reads = {item.id: int(item.channel) for item in recipe.measurements}
+        names = {}
+        for item in recipe.classifications:
+            channel = channels.get(reads.get(item.measurement))
+            renamed = channel is not None and item.name in channel.earlier_names
+            names[item.id] = channel.channel_name if renamed else item.name
+        return names
+
+    def export_ids(self, recipe: Recipe | None = None) -> dict[str, str]:
+        """Measurement and marker ids as an export writes them, where that differs: {id: exported id}.
+
+        Quick setup makes ids from the channel's name (``af594_mean``, ``af594_pos``). After the channel
+        is renamed, exports write them as quick setup would make them now (``otx2_mean``, ``otx2_pos``);
+        the experiment keeps its ids, so saved results, approvals and settings hashes are untouched.
+        Ids the user typed, and a new id that is already in use, are left alone.
+        """
+
+        from cellquant.quicksetup import channel_slug
+
+        recipe = recipe or self.recipe
+        channels = {item.channel_index: item for item in self.experiment.channels}
+        reads = {item.id: int(item.channel) for item in recipe.measurements}
+        reads.update({item.id: reads.get(item.measurement) for item in recipe.classifications})
+        taken = set(reads)
+        ids: dict[str, str] = {}
+        for item_id, index in reads.items():
+            channel = channels.get(index)
+            if channel is None or not channel.earlier_names:
+                continue
+            now = channel_slug(channel.channel_name, channel.channel_index)
+            for earlier in sorted({channel_slug(name, channel.channel_index) for name in channel.earlier_names}, key=len, reverse=True):
+                if earlier != now and (item_id == earlier or item_id.startswith(f"{earlier}_")):
+                    new = now + item_id[len(earlier):]
+                    if new not in taken:
+                        ids[item_id] = new
+                        taken.add(new)
+                    break
+        return ids
+
     def set_pixel_size(
         self,
         image_id: str,
@@ -589,8 +670,16 @@ class AnalysisController:
         self.save()
         return self.recipe
 
-    def export_recipe(self, path: str | Path) -> None:
+    def export_recipe(self, path: str | Path, *, named: bool = False) -> None:
+        """Write the settings. ``named``: as an export names them, so the file agrees with the tables
+        beside it (a marker whose channel was renamed has the channel's name and the ids made from it;
+        see ``marker_names`` and ``export_ids``). The settings themselves are the same."""
+
         self._touch_recipe()
+        ids, names = (self.export_ids(), self.marker_names()) if named else ({}, {})
+        if ids or any(names.get(item.id, item.name) != item.name for item in self.recipe.classifications):
+            save_recipe(load_recipe(rename_recipe_markers(self.recipe.model_dump(mode="json"), ids, names)), path)
+            return
         save_recipe(self.recipe, path)
 
     def set_included_many(self, image_ids: list[str], include: bool) -> None:
@@ -945,6 +1034,23 @@ class AnalysisController:
         self.set_recipe(data)
         self.kept_approvals = sorted(kept)
         self.cleared_approvals = self._clear_changed_approvals(before, [image_id] if this_image_only else None)
+        return self.classified_now(image_id)
+
+    def set_starting_cutoffs(self, image_id: str, thresholds: dict[str, float]) -> ImageResult | None:
+        """The first cutoff of markers just added to an experiment that was already being checked.
+
+        A marker nobody has checked yet changes no call an approval vouches for, so no approval is cleared
+        (and no image keeps a cutoff of its own). Every image shares these cutoffs until one is changed.
+        """
+
+        data = self.recipe.model_dump(mode="json")
+        known = {item["id"]: item for item in data["classifications"]}
+        for classification_id, threshold in thresholds.items():
+            if classification_id not in known:
+                raise KeyError(classification_id)
+            known[classification_id]["threshold"] = float(threshold)
+        self.set_recipe(data)
+        self.kept_approvals, self.cleared_approvals = [], []
         return self.classified_now(image_id)
 
     def lacks_markers(self, image_id: str) -> bool:
@@ -1440,6 +1546,51 @@ class AnalysisController:
         self.kept_approvals = []
         self.cleared_approvals = self._clear_changed_approvals(before, [image_id])
 
+    def clear_all_approvals(self, reason: str) -> list[str]:
+        """Clear every approval (the markers changed under them). Returns the images that were approved."""
+
+        approved = [record.image_id for record in self.experiment.images if record.processing_status == "approved"]
+        self._clear_approvals(approved, reason)
+        return approved
+
+    def cutoff_state(self) -> dict:
+        """The cutoffs of every marker and the approval of every image, to put back with ``restore_cutoff_state``
+        (Undo of a cutoff change that cleared approvals)."""
+
+        return {
+            "recipe_id": self.recipe.recipe_id,
+            "classifications": [item.model_dump(mode="json") for item in self.recipe.classifications],
+            "approvals": {
+                record.image_id: (record.processing_status, record.approved_settings_sha256, record.last_message)
+                for record in self.experiment.images
+            },
+        }
+
+    def restore_cutoff_state(self, state: dict, image_id: str | None = None) -> ImageResult | None:
+        """Put back the cutoffs and approvals of ``cutoff_state``: the markers' cutoffs, then each image's approval
+        as it was. Markers added since keep their cutoffs. Returns the result of ``image_id`` at the restored cutoffs."""
+
+        if state.get("recipe_id") != self.recipe.recipe_id:
+            raise CellQuantError("The cutoffs belong to another analysis: open it to undo.")
+        data = self.recipe.model_dump(mode="json")
+        before = {item["id"]: item for item in state["classifications"]}
+        for entry in data["classifications"]:
+            old = before.get(entry["id"])
+            if old is None:
+                continue
+            for key in ("threshold", "image_thresholds"):
+                if key in old:
+                    entry[key] = old[key]
+                else:
+                    entry.pop(key, None)
+        self.set_recipe(data)
+        for record in self.experiment.images:
+            kept = state["approvals"].get(record.image_id)
+            if kept is not None:
+                record.processing_status, record.approved_settings_sha256, record.last_message = kept
+        self.cleared_approvals, self.kept_approvals = [], []
+        return self.classified_now(image_id) if image_id else None
+
     def _clear_approvals(self, image_ids: list[str], reason: str) -> None:
         for image_id in image_ids:
             record = self.experiment.image(image_id)
@@ -1743,8 +1894,8 @@ class AnalysisController:
         if not results:
             raise CellQuantError("There are no results to export yet.")
         destination.mkdir(parents=True, exist_ok=True)
-        objects = pd.concat([item.objects for item in results], ignore_index=True)
-        summaries = pd.concat([item.summary for item in results], ignore_index=True)
+        objects = self.named_objects(results)
+        summaries = self.named_summaries(results)
         objects.to_csv(destination / "objects.csv", index=False)
         summaries.to_csv(destination / "image_summary.csv", index=False)
         index_rows = [
@@ -1757,7 +1908,7 @@ class AnalysisController:
         ]
         pd.DataFrame(index_rows).to_csv(destination / "settings_index.csv", index=False)
         hashes = self._settings_versions(results)
-        self.export_recipe(destination / "recipe.yaml")
+        self.export_recipe(destination / "recipe.yaml", named=True)
         mixed_note = destination / "mixed_settings.txt"
         if len(hashes) <= 1 and mixed_note.is_file():
             mixed_note.unlink()
@@ -1787,6 +1938,50 @@ class AnalysisController:
                     destination / f"grouped_by_{group_by}_equal_units.csv", index=False
                 )
         return destination
+
+    def named_summaries(self, results: list[ImageResult]) -> pd.DataFrame:
+        """One row per image, as exports write it: each result row's columns are named for what was
+        counted (``OTX2_pos_percent``), not by its position (``report_1_percent``, as saved runs keep it).
+
+        A marker takes the name it has now (its channel's name unless the user named it), so a channel
+        renamed after the run is exported under its new name. A marker these settings no longer have
+        keeps the name it was saved with.
+        """
+
+        current = self.marker_names()
+        ids = self.export_ids()
+        frames = []
+        for item in results:
+            saved = {
+                str(entry.get("id")): str(entry.get("name") or entry.get("id"))
+                for entry in item.provenance.get("classification_definitions") or []
+                if isinstance(entry, dict)
+            }
+            frame = name_reports(item.summary, {**saved, **current})
+            if ids:  # the expressions name markers by the ids objects.csv has
+                frame = frame.copy()
+                for prefix in report_prefixes(frame.columns):
+                    for column in (f"{prefix}_numerator", f"{prefix}_denominator_expression"):
+                        frame[column] = frame[column].map(lambda text: rename_in_expression(text, ids))
+            frames.append(frame)
+        return pd.concat(frames, ignore_index=True)
+
+    def named_objects(self, results: list[ImageResult]) -> pd.DataFrame:
+        """One row per object, as exports write it: where a channel was renamed after its marker was
+        set up, the marker's columns and the phenotype use the channel's name now (see ``export_ids``)."""
+
+        ids = self.export_ids()
+        current = self.marker_names()
+        frames = []
+        for item in results:
+            saved = [
+                (str(entry.get("id")), str(entry.get("name") or entry.get("id")))
+                for entry in item.provenance.get("classification_definitions") or []
+                if isinstance(entry, dict)
+            ]
+            names = [(name, current.get(marker, name)) for marker, name in saved]
+            frames.append(rename_object_columns(item.objects, ids, names))
+        return pd.concat(frames, ignore_index=True)
 
     def _settings_versions(self, results: list[ImageResult]) -> set:
         """Distinct settings among these results. Channels that differ only because an image uses its own
