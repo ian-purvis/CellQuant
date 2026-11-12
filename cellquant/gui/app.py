@@ -534,13 +534,102 @@ def release_window_size(viewer) -> None:
     window.setSizePolicy(expanding, expanding)
 
 
+_IMAGE_KINDS = {".nd2": "nd2", ".tif": "tiff", ".tiff": "tiff"}
+_KIND_LABELS = {"nd2": "ND2", "tiff": "TIFF"}
+
+
+def scan_images(folder: str | Path, cancelled=None) -> list[tuple[str, dict[str, int]]] | None:
+    """Images under ``folder`` by top-level subfolder and file type ("." for files directly inside).
+
+    Returns None when ``cancelled()`` turned true part-way: a big or network folder can take a long time to walk.
+    """
+
+    import os
+
+    from cellquant.experiment import _EXPERIMENT_FOLDERS
+
+    root = Path(folder)
+    counts: dict[str, dict[str, int]] = {}
+    for current, subfolders, names in os.walk(root):
+        if cancelled is not None and cancelled():
+            return None
+        subfolders[:] = sorted(name for name in subfolders if name not in _EXPERIMENT_FOLDERS)
+        relative = Path(current).relative_to(root).parts
+        key = relative[0] if relative else "."
+        for name in names:
+            kind = _IMAGE_KINDS.get(Path(name).suffix.lower())
+            if kind:
+                counts.setdefault(key, {"nd2": 0, "tiff": 0})[kind] += 1
+    return sorted(counts.items())
+
+
+def suggested_results_folder(images: str | Path) -> str:
+    """Beside the image folder, never inside it: "<parent>/<image folder name> CellQuant results"."""
+
+    path = Path(images).expanduser()
+    if not path.name or path.parent == path:
+        return ""  # a drive root has no name to build one from
+    return str(path.parent / f"{path.name} CellQuant results")
+
+
+class _FolderScan(QObject):
+    """Checks and counts an image folder off the interface thread, and says so by signal."""
+
+    checked = Signal(int, bool)  # (request, the folder exists)
+    counted = Signal(int, object)  # (request, scan_images result)
+
+    def __init__(self, current) -> None:
+        super().__init__()
+        self._current = current  # the number of the latest request; older ones stop
+
+    def start(self, request: int, folder: str) -> None:
+        import threading
+
+        threading.Thread(target=self._work, args=(request, folder), daemon=True).start()
+
+    def _work(self, request: int, folder: str) -> None:
+        stale = lambda: self._current() != request  # noqa: E731
+        try:
+            try:
+                exists = Path(folder).expanduser().is_dir()
+            except OSError:
+                exists = False
+            if stale():
+                return
+            self.checked.emit(request, exists)
+            if not exists:
+                return
+            try:
+                found = scan_images(Path(folder).expanduser(), stale)
+            except OSError:
+                found = []
+            if found is not None and not stale():
+                self.counted.emit(request, found)
+        except RuntimeError:
+            pass  # the dialog closed meanwhile
+
+
+_NOTE_STYLES = {
+    "info": "QLabel { background: rgba(60, 130, 220, 0.10); border-radius: 6px; padding: 6px; }",
+    "warn": "QLabel { background: rgba(217, 164, 0, 0.18); border-radius: 6px; padding: 6px; }",
+    "error": "QLabel { background: rgba(200, 50, 50, 0.22); border-radius: 6px; padding: 6px; }",
+}
+
+
 class NewExperimentDialog(QDialog):
     """Ask for the image folder and the results folder separately."""
+
+    _DEBOUNCE_MS = 250  # typing a path scans only once the typing pauses
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("New experiment")
         self.setMinimumWidth(560)
+        self._generation = 0  # the number of the latest scan request; see _FolderScan
+        self._scan_state: str | None = None  # None (no folder typed), "pending", "ok" or "missing"
+        self._found: list[tuple[str, dict[str, int]]] | None = None
+        self._results_touched = False  # once the user edits the results folder, it is no longer suggested
+        self._suggested = ""
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.name = QLineEdit()
@@ -549,24 +638,25 @@ class NewExperimentDialog(QDialog):
         self.images.setToolTip(
             "Only read, never changed. This folder and its subfolders are scanned, not folders beside it.\n"
             "After Browse, check the blue box shows the folder you meant (for example …\\E14.5_E17.5, "
-            "not the parent that also holds P0_P21).\n"
+            "not the parent that also holds P0_P21). Hover it for the count in each subfolder.\n"
             "You can leave out individual images in step 1 after they are listed."
         )
         self.results = QLineEdit()
         self.results.setToolTip(
-            "Runs, measurements and exports are written here. Pick the image folder only if you want "
-            "results next to the images."
+            "Runs, measurements and exports are written here. Suggested beside the image folder until you type "
+            "your own. Pick the image folder only if you want results next to the images."
         )
         form.addRow("Experiment name", self.name)
         form.addRow("Image folder", self._browse_row(self.images, self._pick_images))
         self.images_check = QLabel("")
         self.images_check.setWordWrap(True)
         self.images_check.setTextFormat(Qt.RichText)
-        self.images_check.setStyleSheet(
-            "QLabel { background: rgba(60, 130, 220, 0.10); border-radius: 6px; padding: 6px; }"
-        )
         form.addRow("", self.images_check)
         form.addRow("Results folder", self._browse_row(self.results, self._pick_results))
+        self.results_check = QLabel("")
+        self.results_check.setWordWrap(True)
+        self.results_check.setTextFormat(Qt.RichText)
+        form.addRow("", self.results_check)
         types = QHBoxLayout()
         self.use_nd2 = QCheckBox("ND2 files")
         self.use_tiff = QCheckBox("TIFF files")
@@ -578,13 +668,30 @@ class NewExperimentDialog(QDialog):
         types_box.setLayout(types)
         types.setContentsMargins(0, 0, 0, 0)
         form.addRow("Look for", types_box)
+        self.types_check = QLabel("")
+        self.types_check.setWordWrap(True)
+        form.addRow("", self.types_check)
         layout.addLayout(form)
-        self.images.textChanged.connect(self._update_images_check)
-        self._update_images_check()
+        self._scan = _FolderScan(lambda: self._generation)
+        self._scan.setParent(self)
+        self._scan.checked.connect(self._on_checked)
+        self._scan.counted.connect(self._on_counted)
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(self._DEBOUNCE_MS)
+        self._debounce.timeout.connect(self._start_scan)
+        self.images.textChanged.connect(self._images_changed)
+        self.results.textEdited.connect(self._results_edited)
+        self.results.textChanged.connect(lambda _text: self._update_ok())
+        for box in (self.use_nd2, self.use_tiff):
+            box.toggled.connect(lambda _checked: self._types_changed())
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
+        self.ok_button = buttons.button(QDialogButtonBox.Ok)
         layout.addWidget(buttons)
+        self._show_images_note()
+        self._update_ok()
 
     def experiment_name(self) -> str:
         return self.name.text().strip() or "Experiment"
@@ -603,6 +710,16 @@ class NewExperimentDialog(QDialog):
     def file_types(self) -> list[str]:
         return [kind for box, kind in ((self.use_nd2, "nd2"), (self.use_tiff, "tiff")) if box.isChecked()]
 
+    def scanning(self) -> bool:
+        """True while the image folder is still being checked or counted."""
+
+        return self._scan_state == "pending" or (self._scan_state == "ok" and self._found is None)
+
+    def done(self, result: int) -> None:
+        self._generation += 1  # a scan still running stops
+        self._debounce.stop()
+        super().done(result)
+
     def _browse_row(self, field: QLineEdit, slot) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
@@ -613,17 +730,107 @@ class NewExperimentDialog(QDialog):
         layout.addWidget(button)
         return row
 
-    def _update_images_check(self, _text: str = "") -> None:
+    # -- the image folder: checked and counted in the background, shown as soon as it is typed or picked --------
+
+    def _images_changed(self, _text: str = "") -> None:
+        self._generation += 1
+        self._found = None
+        self._scan_state = "pending" if self.images.text().strip() else None
+        if self._scan_state is None:
+            self._debounce.stop()
+            self._forget_suggestion()
+        else:
+            self._debounce.start()
+        self._show_images_note()
+        self._update_ok()
+
+    def _start_scan(self) -> None:
+        folder = self.images.text().strip()
+        if folder:
+            self._scan.start(self._generation, folder)
+
+    def _on_checked(self, request: int, exists: bool) -> None:
+        if request != self._generation:
+            return
+        self._scan_state = "ok" if exists else "missing"
+        if exists:
+            self._suggest_results()
+        else:
+            self._forget_suggestion()
+        self._show_images_note()
+        self._update_ok()
+
+    def _on_counted(self, request: int, found) -> None:
+        if request != self._generation:
+            return
+        self._found = list(found)
+        self._show_images_note()
+
+    def _types_changed(self) -> None:
+        self._show_images_note()
+        self._update_ok()
+
+    def _show_images_note(self) -> None:
         images = self.images.text().strip()
+        label = self.images_check
+        label.setToolTip("")
         if not images:
-            self.images_check.setText("No image folder yet.")
+            return self._say(label, "No image folder yet. You can also add images in step 1 afterwards.", "info")
+        path = Path(images).expanduser()
+        name = html.escape(path.name or str(path))
+        if self._scan_state == "missing":
+            return self._say(label, f"Not a folder: {html.escape(images)}. Check the spelling, or click Browse…", "error")
+        if self._scan_state == "pending" or self._found is None:
+            return self._say(label, f"Counting images in <b>{name}</b> and its subfolders…", "info")
+        types = self.file_types()
+        totals = {kind: sum(counts[kind] for _, counts in self._found) for kind in ("nd2", "tiff")}
+        total = sum(totals[kind] for kind in types)
+        left_out = [f"{totals[kind]} {_KIND_LABELS[kind]}" for kind in ("nd2", "tiff") if kind not in types and totals[kind]]
+        extra = f" ({' and '.join(left_out)} not ticked, left out)" if left_out else ""
+        lines = [
+            f"{'(directly in this folder)' if key == '.' else key}: {sum(counts[kind] for kind in types)}"
+            for key, counts in self._found
+            if sum(counts[kind] for kind in types)
+        ]
+        label.setToolTip("\n".join([str(path), *lines]) if lines else str(path))
+        if not total:
+            kinds = " or ".join(_KIND_LABELS[kind] for kind in types) or "ND2 or TIFF"
+            return self._say(label, f"No {kinds} images found in <b>{name}</b> or its subfolders{extra}. Check this is the right folder.", "warn")
+        parts = ", ".join(f"{totals[kind]} {_KIND_LABELS[kind]}" for kind in types if totals[kind])
+        self._say(label, f"Found <b>{total} image{'' if total == 1 else 's'}</b> ({parts}) in <b>{name}</b> and its subfolders{extra}", "info")
+
+    @staticmethod
+    def _say(label: QLabel, text: str, kind: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(_NOTE_STYLES[kind] if text else "")
+        label.setVisible(bool(text))
+
+    # -- the results folder: suggested beside the images until the user types one ------------------------------
+
+    def _suggest_results(self) -> None:
+        if self._results_touched:
             return
-        path = Path(images)
-        if not path.is_dir():
-            self.images_check.setText(f"Not a folder: {images}")
-            return
-        self.images_check.setText(f"Imports <b>{path.name}</b> + subfolders")
-        self.images_check.setToolTip(f"{path}\nSubfolders inside it are included. Folders next to it are not.")
+        self._suggested = suggested_results_folder(self.images.text().strip())
+        self.results.setText(self._suggested)  # setText does not count as the user editing it
+
+    def _forget_suggestion(self) -> None:
+        if not self._results_touched and self._suggested and self.results.text() == self._suggested:
+            self.results.setText("")
+        self._suggested = ""
+
+    def _results_edited(self, text: str) -> None:
+        self._results_touched = bool(text.strip())  # emptied again: suggest once more
+
+    def _update_ok(self) -> None:
+        results = self.results.text().strip()
+        not_a_folder = bool(results) and Path(results).expanduser().is_file()
+        self._say(self.results_check, f"Not a folder: {html.escape(results)}" if not_a_folder else "", "error")
+        no_types = not self.file_types()
+        self._say(self.types_check, "Tick ND2 files, TIFF files, or both." if no_types else "", "error")
+        blocked = not results or no_types or self._scan_state == "missing" or not_a_folder
+        self.ok_button.setEnabled(not blocked)
+        why = "Choose a results folder." if not results else "Fix the red note first." if blocked else ""
+        self.ok_button.setToolTip(why)
 
     def _pick_images(self) -> None:
         folder = choose_existing_directory(
@@ -634,9 +841,8 @@ class NewExperimentDialog(QDialog):
         if not folder:
             return
         self.images.setText(folder)
-        if not self.results.text().strip():
-            sibling = Path(folder).parent / f"{Path(folder).name} - CellQuant results"
-            self.results.setText(str(sibling))
+        self._debounce.stop()
+        self._start_scan()  # picked, not typed: no need to wait for the typing to pause
 
     def _pick_results(self) -> None:
         folder = choose_existing_directory(
@@ -645,6 +851,7 @@ class NewExperimentDialog(QDialog):
             self.results.text().strip(),
         )
         if folder:
+            self._results_touched = True
             self.results.setText(folder)
 
     def _accept(self) -> None:
@@ -668,22 +875,6 @@ class NewExperimentDialog(QDialog):
         if images and not Path(images).is_dir():
             QMessageBox.warning(self, "Image folder", f"This image folder could not be found:\n{images}")
             return
-        if images:
-            path = Path(images)
-            counts = folder_image_counts(path)
-            found = "\n".join(
-                f"  {'(directly in this folder)' if name == '.' else name}: {count}" for name, count in counts
-            )
-            found = f"{sum(count for _, count in counts)} images:\n{found}" if counts else "No images found."
-            answer = QMessageBox.question(
-                self,
-                "Confirm image folder",
-                f"Import {path.name} and its subfolders?\n\n{path}\n\n{found}",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if answer != QMessageBox.Yes:
-                return
         if images and results_inside_images(images, results):
             answer = QMessageBox.question(
                 self,
@@ -776,6 +967,45 @@ def existing_experiment_images(results: str | Path) -> str | None:
         return ""
 
 
+# The keys CellQuant binds (see Footer, where they are set up). Only keys that really do something are listed.
+SHORTCUTS = (
+    ("PgUp / PgDn", "Show the previous / next image. Works anywhere in the window."),
+    ("A", "Approve this image and open the next one to check (step 5). Not while typing in a box."),
+    ("Ctrl+Z", "Undo the last edit (step 3). Not while typing in a box."),
+    ("Esc", "Leave Delete objects, Select objects or the circle tools (step 3), or Mark + / Mark − (step 5)."),
+    ("Ctrl+V", "Paste cells copied from a spreadsheet into the image list (step 1)."),
+)
+
+
+class ShortcutsWindow(QDialog):
+    """The keyboard shortcuts. Not modal: it can stay open while you work."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Keyboard shortcuts")
+        self.setModal(False)
+        layout = QVBoxLayout(self)
+        self.table = QTableWidget(len(SHORTCUTS), 2)
+        self.table.setHorizontalHeaderLabels(["Key", "What it does"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.table.setWordWrap(True)
+        self.table.setTextElideMode(Qt.ElideNone)
+        for row, (key, what) in enumerate(SHORTCUTS):
+            self.table.setItem(row, 0, QTableWidgetItem(key))
+            self.table.setItem(row, 1, QTableWidgetItem(what))
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.table)
+        self.resize(620, 60 + 44 * (len(SHORTCUTS) + 1))
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.table.resizeRowsToContents()  # wrapped text needs the final column width
+
+
 class CellQuantWindow:
     def __init__(self, viewer, experiment_dir: str | Path | None = None):
         self.viewer = viewer
@@ -837,9 +1067,12 @@ class CellQuantWindow:
         ]
         self._tabs.addTab(self._start_page, "Start")
         for page, step in zip(self._step_pages, guide.STEPS):
-            index = self._tabs.addTab(page, str(step.number))
+            index = self._tabs.addTab(page, guide.tab_text(step))
             self._tabs.setTabToolTip(index, step.name)
         self._tabs.setMinimumWidth(460)
+        # Short names fit the dock (460 px); if a narrower one cuts the strip, it scrolls instead of eliding the names.
+        self._tabs.setUsesScrollButtons(True)
+        self._tabs.setElideMode(Qt.ElideNone)
         self._analysis_bar = AnalysisBar(self)
         self._dock = QWidget()
         dock_layout = QVBoxLayout(self._dock)
@@ -973,14 +1206,18 @@ class CellQuantWindow:
             self._tabs.setTabEnabled(index, locked_by is None)
             if locked_by is not None:
                 blocker_step, blocker = locked_by
-                self._tabs.setTabText(index, str(step.number))
+                self._tabs.setTabText(index, guide.tab_text(step))
                 self._tabs.setTabToolTip(index, f"{step.name}: locked. Step {blocker_step.number} first: {blocker}")
             else:
                 mark = " ✓" if state.done else (" →" if i == next_index else "")
-                self._tabs.setTabText(index, f"{step.number}{mark}")
+                self._tabs.setTabText(index, guide.tab_text(step, mark))
                 self._tabs.setTabToolTip(index, step.name)
             if locked_by is None and state.blocker:
                 locked_by = (step, state.blocker)
+        # The reason, always in view under the tab strip while a later tab is locked.
+        lock_text = guide.lock_note_text(locked_by[0].number, locked_by[1]) if locked_by is not None else ""
+        for page in (self._start_page, *self._step_pages):
+            page.set_lock_note(lock_text)
         if not self._tabs.isTabEnabled(self._tabs.currentIndex()):
             open_pages = [page for page in self._step_pages if self._tabs.isTabEnabled(self._tabs.indexOf(page))]
             self._tabs.setCurrentWidget(open_pages[-1] if open_pages else self._start_page)
@@ -1069,6 +1306,15 @@ class CellQuantWindow:
         self._glossary_window.raise_()
         self._glossary_window.activateWindow()
 
+    def show_shortcuts(self) -> None:
+        """The keyboard shortcuts in a small window that stays open beside the work."""
+
+        if getattr(self, "_shortcuts_window", None) is None:
+            self._shortcuts_window = ShortcutsWindow(self._tabs)
+        self._shortcuts_window.show()
+        self._shortcuts_window.raise_()
+        self._shortcuts_window.activateWindow()
+
     def open_quantanalysis(self, experiment: bool = True):
         """QuantAnalysis, the statistics window (one, reused). From step 6 it imports the open experiment."""
 
@@ -1122,6 +1368,8 @@ class CellQuantWindow:
             return
         self._glossary_action = menu.addAction("Output glossary…")
         self._glossary_action.triggered.connect(lambda _checked=False: self.open_output_glossary())
+        self._shortcuts_action = menu.addAction("Keyboard shortcuts…")
+        self._shortcuts_action.triggered.connect(lambda _checked=False: self.show_shortcuts())
         self._report_action = menu.addAction("Report a problem…")
         self._report_action.triggered.connect(lambda _checked=False: self.report_problem())
         self._log_folder_action = menu.addAction("Open log folder")
@@ -1386,7 +1634,7 @@ class CellQuantWindow:
         if self.controller is not None and Path(self.controller.directory).resolve() == output.resolve():
             if self.is_busy():
                 self._drop_lock(lock)
-                self.show_error(f"{output} is still running here. Wait for it to finish, or press Stop, then try again.")
+                self.show_error(f"{output} is still running here. Wait for it to finish, or click Cancel, then try again.")
                 return False
             self.controller = None
         try:
@@ -1552,7 +1800,7 @@ class CellQuantWindow:
             return
         controller = self.controller
         start = (controller.experiment.input_directory or str(controller.directory)) if controller else str(Path.home())
-        folder = QFileDialog.getExistingDirectory(self._tabs, "Choose a folder of results (masks)", start)
+        folder = QFileDialog.getExistingDirectory(self._tabs, "Choose the folder of masks", start)
         if not folder or self.is_busy():
             return
         if controller is None:
@@ -1724,10 +1972,10 @@ class CellQuantWindow:
     # Buttons that start work, or change what is being analyzed, are unavailable while work runs.
     _BUSY_BUTTONS = frozenset(
         {
-            "Preview", "Run this image", "Load results…", "Run selected images", "Run all images", "Set up markers",
-            "Export results…", "Add images", "Add folder", "New experiment", "New experiment…", "Open",
-            "Open experiment…", "Try practice images", "Include shown", "Leave out shown",
-            "Include only selected", "Undo", "Undo all", "Record drawn edits", "Approve", "Use recommended",
+            "Preview", "Run this image", "Load masks…", "Run selected images", "Run all images", "Find objects in all images",
+            "Set up markers", "Export results…", "Add images…", "Add folder…", "Add column…", "New experiment…",
+            "Open experiment…", "Try practice images",
+            "Undo", "Undo all", "Record drawn edits", "Approve", "Use recommended",
             "Run all analyses", "Export all analyses…", "New analysis…", "One per channel…", "Rename…", "Remove",
             # Buttons that change the settings: never while images are being analyzed with them.
             "Load settings…", "Add measurement", "Remove measurement",
@@ -1737,14 +1985,21 @@ class CellQuantWindow:
         }
     )
 
+    @staticmethod
+    def _busy_key(text: str) -> str:
+        """A button's name without its trailing "…" (or "..."), so "Add images…" and "Add images" are one name."""
+
+        return text.rstrip(" .…")
+
     def set_busy(self, busy: bool) -> None:
         """Grey out run buttons while an analysis runs; Cancel (and Pause for batches) become available."""
 
         if busy:
+            names = {self._busy_key(name) for name in self._BUSY_BUTTONS}
             buttons = [
                 button
                 for button in [*self._dock.findChildren(QPushButton), *self._footer.findChildren(QPushButton)]
-                if button.text() in self._BUSY_BUTTONS
+                if self._busy_key(button.text()) in names
             ]
             buttons.append(self._analysis_bar.choice)
             self._busy_restore = {button: not button.testAttribute(Qt.WA_ForceDisabled) for button in buttons}
@@ -3083,39 +3338,34 @@ class ExperimentPanel(QWidget):
         super().__init__()
         self.shell = shell
         layout = QVBoxLayout(self)
+        # Starting, opening and analyzing experiments live on the Start tab; this page only adds to the open one.
+        self.no_experiment = QLabel("No experiment open. Go to the <b>Start</b> tab: <b>New experiment…</b>, <b>Open experiment…</b> or <b>Try practice images</b>.")
+        self.no_experiment.setWordWrap(True)
+        self.no_experiment.setTextFormat(Qt.RichText)
+        self.no_experiment.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.14); border-radius: 6px; padding: 6px; }")
+        layout.addWidget(self.no_experiment)
         buttons = QHBoxLayout()
         for text, slot in (
-            ("New experiment…", shell.new_experiment),
-            ("Open experiment…", self._open),
             ("Add images…", self._add_images),
             ("Add folder…", self._add_folder),
         ):
             button = QPushButton(text)
             button.clicked.connect(slot)
             buttons.addWidget(button)
-        layout.addLayout(buttons)
-        load = QPushButton("Load results…")
+        load = QPushButton("Load masks…")
         load.clicked.connect(shell.load_results_dialog)
         load.setToolTip(
             "Open objects found elsewhere (a cluster run, Cellpose, another CellQuant experiment) "
             "over their original images.\n"
-            "Pick the results folder: its original images are added (you are asked where they are "
+            "Pick the folder of masks: its original images are added (you are asked where they are "
             "if they moved), and each mask, a TIFF of object numbers named after its image, "
             "becomes that image's objects. Nothing is segmented.\n"
             "With no experiment open, you are asked where to save a new one.\n"
             "Markers are measured when an image is opened."
         )
-        analyze = QPushButton("Analyze a results folder…")
-        analyze.setToolTip(
-            "Statistics and graphs of a saved CellQuant results folder or export folder, in QuantAnalysis.\n"
-            "Nothing is added to this experiment."
-        )
-        analyze.clicked.connect(shell.analyze_results_folder)
-        loading = QHBoxLayout()
-        loading.addWidget(load)
-        loading.addWidget(analyze)
-        loading.addStretch(1)
-        layout.addLayout(loading)
+        buttons.addWidget(load)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
         self.notices = QLabel("")
         self.notices.setWordWrap(True)
         self.notices.setTextFormat(Qt.RichText)
@@ -3153,6 +3403,13 @@ class ExperimentPanel(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         layout.addWidget(self.table)
         run_row = QHBoxLayout()
+        add_column = QPushButton("Add column…")
+        add_column.setToolTip(
+            "Add a column of your own to the list (for example Genotype or Age), empty and ready to type or paste into. "
+            "Results can be grouped by it. Pasting past the last column adds one too."
+        )
+        add_column.clicked.connect(self._add_column)
+        run_row.addWidget(add_column)
         run_row.addStretch(1)
         run_selected = QPushButton("Run selected images")
         run_selected.setToolTip("Run the images selected in the table (click rows; Ctrl or Shift for more), for example to rerun failed ones.")
@@ -3225,6 +3482,7 @@ class ExperimentPanel(QWidget):
     def refresh(self) -> None:
         self.refresh_table()
         controller = self.shell.controller
+        self.no_experiment.setVisible(controller is None)
         if controller is None:
             self.channel_order.setText("No image open.")
             return
@@ -3415,6 +3673,74 @@ class ExperimentPanel(QWidget):
         if header in ("Include", "Sample name"):
             self.shell._review_panel._show_strip()  # step 5 lists the included images by sample name
 
+    # Names the image list or the exported files already use for something else.
+    RESERVED_COLUMNS = (
+        "Include", "Image", "Sample name", "Slices", "Channels", "µm/pixel", "Objective", "Status",
+        "sample_name", "filename", "image_id", "total_objects", "count_area", "count_area_unit",
+        "n_unmeasured", "n_called_by_hand", "qc_status",
+    )
+
+    def column_name_problem(self, name: str) -> str:
+        """Why ``name`` cannot be a new column ("" when it can)."""
+
+        controller = self.shell.controller
+        cleaned = name.strip()
+        if not cleaned:
+            return "Type a name for the column."
+        taken = {*(column.lower() for column in self.RESERVED_COLUMNS), *(column.lower() for column in (controller.experiment.metadata_columns if controller else ()))}
+        if cleaned.lower() in taken:
+            return f"“{cleaned}” is already used. Choose another name."
+        return ""
+
+    def add_metadata_column(self, name: str) -> None:
+        """Add an empty column to the image list: the one path for pasting past the last column and the button."""
+
+        controller = self.shell.controller
+        if controller is None:
+            return
+        controller.add_metadata_column(name)
+        self.refresh_table()
+        self.shell._results_panel._fill_summary_options(controller)
+
+    def _add_column(self) -> None:
+        controller = self.shell.require_controller()
+        if controller is None or self.shell.is_busy():
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add column")
+        column = QVBoxLayout(dialog)
+        column.addWidget(QLabel("Name of the new column (for example Genotype or Age):"))
+        field = QLineEdit()
+        column.addWidget(field)
+        problem = QLabel("")
+        problem.setWordWrap(True)
+        problem.setStyleSheet("QLabel { color: #c0392b; }")
+        column.addWidget(problem)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        column.addWidget(buttons)
+        ok = buttons.button(QDialogButtonBox.Ok)
+
+        def check(text: str) -> None:
+            # Silent while nothing has been typed; then the reason, in red, with OK off.
+            why = self.column_name_problem(text) if text else ""
+            problem.setText(why)
+            ok.setEnabled(bool(text.strip()) and not why)
+
+        field.textChanged.connect(check)
+        check("")
+        self._column_dialog = dialog  # for tests
+        self._column_field = field
+        if dialog.exec() != QDialog.Accepted:
+            return
+        name = field.text().strip()
+        if self.column_name_problem(name):
+            return
+        self.add_metadata_column(name)
+        self.shell._autosave()
+        self.shell.message(f"Added the column “{name}”. Type or paste values into it.")
+
     def paste_into(self, row: int, column: int, text: str) -> None:
         controller = self.shell.controller
         if controller is None:
@@ -3438,20 +3764,12 @@ class ExperimentPanel(QWidget):
             for col_offset, value in enumerate(values):
                 target_column = column + col_offset
                 if target_column >= len(headers):
-                    name = f"Metadata {target_column - 2}"
-                    controller.add_metadata_column(name)
-                    self.refresh_table()
-                    self.shell._results_panel._fill_summary_options(controller)
+                    self.add_metadata_column(f"Metadata {target_column - 2}")
                     headers = [self.table.horizontalHeaderItem(index).text() for index in range(self.table.columnCount())]
                 item = self.table.item(target_row, target_column)
                 if item is not None and headers[target_column] not in {"Image", "Slices", "Channels", "µm/pixel", "Objective", "Status"}:
                     item.setText(value)
                     self.apply_cell_edit(target_row, target_column)
-
-    def _open(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "Open experiment")
-        if directory:
-            self.shell.open_experiment(directory)
 
     def _add_images(self) -> None:
         controller = self.shell.require_controller()
@@ -3656,6 +3974,44 @@ class ManifestTable(QTableWidget):
         super().keyPressEvent(event)
 
 
+class CollapsibleSection(QWidget):
+    """A titled section with an arrow that opens and closes it; closed until opened."""
+
+    def __init__(self, title: str) -> None:
+        super().__init__()
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        self.toggle = QToolButton()
+        self.toggle.setText(title)
+        self.toggle.setCheckable(True)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(Qt.RightArrow)
+        self.toggle.setStyleSheet("QToolButton { border: none; font-weight: bold; }")
+        self.toggle.toggled.connect(self._toggled)
+        self.body = QWidget()
+        self._body_layout = QVBoxLayout(self.body)
+        self._body_layout.setContentsMargins(12, 0, 0, 0)
+        self.body.setVisible(False)
+        row = QHBoxLayout()
+        row.addWidget(self.toggle)
+        row.addStretch(1)
+        column.addLayout(row)
+        column.addWidget(self.body)
+
+    def add_widget(self, widget: QWidget) -> None:
+        self._body_layout.addWidget(widget)
+
+    def is_open(self) -> bool:
+        return self.toggle.isChecked()
+
+    def set_open(self, opened: bool) -> None:
+        self.toggle.setChecked(opened)
+
+    def _toggled(self, opened: bool) -> None:
+        self.toggle.setArrowType(Qt.DownArrow if opened else Qt.RightArrow)
+        self.body.setVisible(opened)
+
+
 class ObjectsPanel(QWidget):
     def __init__(self, shell: CellQuantWindow):
         super().__init__()
@@ -3692,7 +4048,7 @@ class ObjectsPanel(QWidget):
         self.nucleus_diameter_um.setSingleStep(0.5)
         self.nucleus_diameter_um.setValue(DEFAULT_NUCLEUS_DIAMETER_UM)
         self.nucleus_diameter_um.setToolTip(
-            "Typical nucleus diameter in micrometres. Most nuclei are about 5–7 µm across. "
+            "Typical nucleus diameter in micrometers. Most nuclei are about 5–7 µm across. "
             "Sizes the 3D smallest-object cutoff, Cellpose's resizing when Resize to nucleus size is on, "
             "and the suggested debris floor in µm²."
         )
@@ -3820,12 +4176,11 @@ class ObjectsPanel(QWidget):
         default_label = QLabel("Default channel")
         default_label.setToolTip("Used for every image left on Default below.")
         form.addRow(default_label, self.channel)
-        self.image_tree = None
         self._build_image_channels()
         form.addRow(self.image_channels_box)
         form.addRow("Method", self.method)
         form.addRow(self.engine_choice_label, self.engine_choice)
-        form.addRow("Z-stack mode", self.z_box)
+        form.addRow("Z-stack mode", self.z_box)  # shown only when an included image is a Z-stack (_update_z_visibility)
         form.addRow(self.z_recommend_box)  # full width, so the explanation is readable
         form.addRow("Nucleus diameter (µm)", self.nucleus_diameter_um)
         form.addRow(self.size_hint)
@@ -3842,7 +4197,7 @@ class ObjectsPanel(QWidget):
             "and find objects only inside rectangles around them. Brightness scaling and thresholds still come "
             "from the whole image, and results stay in full-image coordinates. Off by default."
         )
-        self.crop_box = QGroupBox("Region of interest")
+        self.crop_box = QGroupBox("Crop settings")
         crop_form = QFormLayout(self.crop_box)
         self.crop_channels = QListWidget()
         self.crop_channels.setMaximumHeight(90)
@@ -3865,8 +4220,11 @@ class ObjectsPanel(QWidget):
         self.crop.toggled.connect(self.crop_box.setVisible)
         self.crop.toggled.connect(lambda _checked: self._crop_changed())
         self.crop_channels.itemChanged.connect(lambda _item: self._crop_changed())
-        layout.addWidget(self.crop)
-        layout.addWidget(self.crop_box)
+        # Rarely used: collapsed until needed, and open from the start when a saved recipe already crops.
+        self.crop_section = CollapsibleSection("Region of interest (optional)")
+        self.crop_section.add_widget(self.crop)
+        self.crop_section.add_widget(self.crop_box)
+        layout.addWidget(self.crop_section)
         self.advanced_toggle = QCheckBox("Advanced")
         self.advanced_box = QGroupBox("Advanced")
         self.advanced_box.setVisible(False)
@@ -3965,19 +4323,20 @@ class ObjectsPanel(QWidget):
         run = QPushButton("Run this image")
         run.clicked.connect(shell.run_current)
         run.setToolTip("Find objects and measure markers in the whole image on screen. Use it to try the settings on one image.")
-        run_all = QPushButton("Run all images")
+        run_all = QPushButton("Find objects in all images")
         run_all.clicked.connect(lambda: shell._results_panel._run_all())
         run_all.setToolTip(
-            "Run every included image with these settings, one after another. "
+            "Run every included image with the current settings, one after another (the same as Run all images in step 6). "
             "Use it when you already know the settings: no need to run or review one image first."
         )
         actions.addWidget(preview)
         actions.addWidget(run)
-        actions.addWidget(run_all)
         layout.addLayout(actions)
+        layout.addWidget(run_all)
         layout.addStretch(1)
         self._update_size_hint()
         self._method_changed()
+        self._update_z_visibility()
 
     def _note_model_swap(self, saved: str, used: str) -> None:
         """Say in the run log, once per saved name, that a saved model is not available in this engine."""
@@ -4082,58 +4441,27 @@ class ObjectsPanel(QWidget):
         self.update_recommendation()
         self.refresh_image_channels()
 
-    # -- a channel per image: pick images (or folders), give them a channel (step 2) ---------------
+    # -- a channel per image: set in the Plan (one home for it); step 2 keeps the default and a count --------------
 
     def _build_image_channels(self) -> None:
         box = QWidget()
         column = QVBoxLayout(box)
         column.setContentsMargins(0, 0, 0, 0)
-        header = QLabel("Channel per image ⓘ")
-        header.setToolTip(
-            "Select images (click, Ctrl-click, Shift-click; a folder selects every image in it), "
-            "then pick their channel below. Images left on Default use the Default channel. One run does them all."
+        row = QHBoxLayout()
+        self.plan_channels_button = QPushButton("Different channel for some images…")
+        self.plan_channels_button.setToolTip(
+            "Open the Plan (also Analyses ▾ → Plan…): choose, for single images, a folder or a channel layout, "
+            "the channel objects are found in. Images left on Default use the Default channel above. One run does them all."
         )
-        tree = QTreeWidget()
-        tree.setColumnCount(2)
-        tree.setHeaderLabels(["Image", "Channel"])
-        tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        tree.setMinimumHeight(240)
-        tree.header().setStretchLastSection(False)
-        tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        tree.itemSelectionChanged.connect(self._image_selection_changed)
-        self.image_tree = tree
-        pick_row = QHBoxLayout()
-        self.image_channel_label = QLabel("Selected: none")
-        self.image_channel_pick = QComboBox()
-        self.image_channel_pick.setToolTip("The channel to find objects in for the selected images.")
-        self.image_channel_pick.activated.connect(lambda _i: self._image_channel_chosen())
-        pick_row.addWidget(self.image_channel_label, 1)
-        pick_row.addWidget(self.image_channel_pick)
+        self.plan_channels_button.clicked.connect(lambda: self.shell.show_plan())
+        row.addWidget(self.plan_channels_button)
+        row.addStretch(1)
         self.image_channel_counts = QLabel("")
         self.image_channel_counts.setStyleSheet("QLabel { color: gray; }")
         self.image_channel_counts.setWordWrap(True)
-        column.addWidget(header)
-        column.addWidget(tree)
-        column.addLayout(pick_row)
+        column.addLayout(row)
         column.addWidget(self.image_channel_counts)
         self.image_channels_box = box
-
-    def _selected_image_ids(self) -> list[str]:
-        ids: list[str] = []
-
-        def add(item) -> None:
-            image_id = item.data(0, Qt.ItemDataRole.UserRole)
-            if image_id:
-                if image_id not in ids:
-                    ids.append(str(image_id))
-                return
-            for index in range(item.childCount()):
-                add(item.child(index))
-
-        for item in self.image_tree.selectedItems():
-            add(item)
-        return ids
 
     def _image_channel_text(self, controller, ids: list[str]) -> str:
         chosen = controller.group_plan_channel(ids)
@@ -4142,70 +4470,10 @@ class ObjectsPanel(QWidget):
         return "Mixed" if chosen == "mixed" else str(chosen)
 
     def refresh_image_channels(self) -> None:
-        tree = self.image_tree
-        controller = self.shell.controller
-        selected = set(self._selected_image_ids()) if tree.topLevelItemCount() else set()
-        expanded = set()
+        """After images were included, left out or given another channel: the counts, and whether the Z options apply."""
 
-        def walk(item) -> None:
-            parts = item.data(0, Qt.ItemDataRole.UserRole + 1)
-            if parts and item.isExpanded():
-                expanded.add(tuple(parts))
-            for index in range(item.childCount()):
-                walk(item.child(index))
-
-        for index in range(tree.topLevelItemCount()):
-            walk(tree.topLevelItem(index))
-        first_fill = tree.topLevelItemCount() == 0
-        tree.blockSignals(True)
-        tree.clear()
-        if controller is None:
-            tree.blockSignals(False)
-            self._image_selection_changed()
-            return
-        from cellquant.plan import folder_of
-
-        records = [record for record in controller.experiment.images if record.include]
-        folders: dict[tuple[str, ...], QTreeWidgetItem] = {}
-        folder_ids: dict[tuple[str, ...], list[str]] = {}
-
-        def folder_item(parts: tuple[str, ...]):
-            if not parts:
-                return None
-            if parts not in folders:
-                parent = folder_item(parts[:-1])
-                item = QTreeWidgetItem([parts[-1], ""])
-                item.setData(0, Qt.ItemDataRole.UserRole + 1, list(parts))
-                if parent is None:
-                    tree.addTopLevelItem(item)
-                else:
-                    parent.addChild(item)
-                folders[parts] = item
-                folder_ids[parts] = []
-            return folders[parts]
-
-        for record in records:
-            parts = tuple(part for part in folder_of(record).split("/") if part)
-            parent = folder_item(parts)
-            for depth in range(1, len(parts) + 1):
-                folder_ids[parts[:depth]].append(record.image_id)
-            leaf = QTreeWidgetItem([record.filename, self._image_channel_text(controller, [record.image_id])])
-            leaf.setData(0, Qt.ItemDataRole.UserRole, record.image_id)
-            leaf.setToolTip(0, record.relative_path or record.filename)
-            if parent is None:
-                tree.addTopLevelItem(leaf)
-            else:
-                parent.addChild(leaf)
-            if record.image_id in selected:
-                leaf.setSelected(True)
-        for parts, item in folders.items():
-            ids = folder_ids[parts]
-            item.setText(0, f"{parts[-1]} ({len(ids)})")
-            item.setText(1, self._image_channel_text(controller, ids))
-            item.setExpanded(first_fill or parts in expanded)
-        tree.blockSignals(False)
-        self._image_selection_changed()
         self._update_channel_counts()
+        self._update_z_visibility()
 
     def _update_channel_counts(self) -> None:
         """How many images use each channel; Default names the channel chosen above, saved or not."""
@@ -4226,50 +4494,6 @@ class ObjectsPanel(QWidget):
         self.image_channel_counts.setText(
             " · ".join(f"{name}: {count}" for name, count in counts.items()).replace("Default:", f"Default ({default.split(' = ')[-1]}):")
         )
-
-    def _image_selection_changed(self) -> None:
-        controller = self.shell.controller
-        ids = self._selected_image_ids() if self.image_tree is not None else []
-        combo = self.image_channel_pick
-        combo.blockSignals(True)
-        combo.clear()
-        combo.addItem("Set channel…", "__none__")
-        combo.model().item(0).setEnabled(False)
-        if controller is not None and ids:
-            combo.addItem("Default", "__default__")
-            names: list[str] = []
-            for image_id in ids:
-                for name in controller.image_channel_names(image_id):
-                    if name not in names:
-                        names.append(name)
-            for name in names:
-                combo.addItem(name, name)
-        combo.setCurrentIndex(0)
-        combo.setEnabled(bool(ids))
-        combo.blockSignals(False)
-        self.image_channel_label.setText(f"Selected: {len(ids)} image{'' if len(ids) == 1 else 's'}" if ids else "Selected: none")
-
-    def _image_channel_chosen(self) -> None:
-        controller = self.shell.controller
-        name = self.image_channel_pick.currentData()
-        ids = self._selected_image_ids()
-        if controller is None or not ids or name == "__none__":
-            return
-        if self.shell.is_busy():
-            self.shell.message("Wait for the run to finish before changing channels.")
-            self._image_selection_changed()
-            return
-        try:
-            missing = controller.set_plan_channel_by_name(ids, None if name == "__default__" else name)
-        except CellQuantError as exc:
-            self.shell.message(str(exc))
-            return
-        if missing:
-            self.shell.message(f"{len(missing)} selected image(s) have no {name} channel; left as they were.")
-        else:
-            label = "Default" if name == "__default__" else name
-            self.shell.message(f"{len(ids)} image{'' if len(ids) == 1 else 's'} set to {label}.")
-        self.shell.plan_changed()
 
     def _pixel_size_um(self) -> float | None:
         controller = self.shell.controller
@@ -4379,6 +4603,8 @@ class ObjectsPanel(QWidget):
         self.crop.setChecked(bool(spec is not None and spec.enabled))
         self.crop.blockSignals(False)
         self.crop_box.setVisible(self.crop.isChecked())
+        if self.crop.isChecked():
+            self.crop_section.set_open(True)
         self.crop_margin.setValue(float(spec.margin_um) if spec is not None else 50.0)
         self._show_crop_warning()
 
@@ -4444,7 +4670,19 @@ class ObjectsPanel(QWidget):
                 "True 3D — segment the whole volume at once (slow; needs closely spaced slices).\n"
                 "Times are estimates for this computer."
             )
+        self._update_z_visibility()
         self._z_mode_changed()
+
+    def _has_included_stacks(self) -> bool:
+        controller = self.shell.controller
+        return bool(controller and any(record.include and record.z_planes > 1 for record in controller.experiment.images))
+
+    def _update_z_visibility(self) -> None:
+        """The Z-stack mode controls (and the recommendation) only when an included image has more than one slice."""
+
+        stacks = self._has_included_stacks()
+        _show_row(self._form, self.z_box, stacks)
+        self.z_recommend_box.setVisible(stacks and self._recommended is not None)
 
     def _z_mode_changed(self) -> None:
         mode = self.z_stack.currentData()
@@ -4515,7 +4753,7 @@ class ObjectsPanel(QWidget):
             self.z_stack.setItemText(index, text)
         self.z_recommend.setText(f"<b>Recommended here:</b> {Z_OPTION_LABELS[suggestion.mode]}")
         self.z_recommend.setToolTip(suggestion.reason)
-        self.z_recommend_box.setVisible(True)
+        self.z_recommend_box.setVisible(self._has_included_stacks())
         self._show_recommendation_state()
 
     def _show_recommendation_state(self) -> None:
@@ -7446,6 +7684,14 @@ class AnalysisBar(QWidget):
         )
         self.choice.currentIndexChanged.connect(self._chosen)
         top.addWidget(self.choice, 1)
+        # Also in the Analyses menu below; a button of its own so it can be found.
+        self.plan_button = QPushButton("Plan…")
+        self.plan_button.setToolTip(
+            "Open the Plan: choose which images each analysis runs and which channel it finds objects in, "
+            "for all images, a channel layout, a folder, or single images."
+        )
+        self.plan_button.clicked.connect(lambda: shell.show_plan())
+        top.addWidget(self.plan_button)
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
         for text, slot, tip in (

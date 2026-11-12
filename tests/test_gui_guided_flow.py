@@ -52,7 +52,9 @@ def test_practice_run_through_all_steps(tmp_path: Path, monkeypatch):
         assert pages[0].next.isEnabled()
         assert not pages[1].next.isEnabled() and "Run" in pages[1].blocker.text()
         assert tabs.isTabEnabled(tabs.indexOf(pages[1])) and not tabs.isTabEnabled(tabs.indexOf(pages[2]))
-        assert tabs.tabText(tabs.indexOf(pages[1])) == "2 →"
+        assert tabs.tabText(tabs.indexOf(pages[1])) == "2 Find →"
+        assert tabs.tabText(tabs.indexOf(pages[3])) == "4 Markers"  # a locked tab keeps its name
+        assert pages[0].lock_note.text() == "Steps 3-6 unlock after step 2: Run this image first."
         assert tabs.tabToolTip(tabs.indexOf(pages[3])) == "Markers: locked. Step 2 first: Run this image first."
 
         shell.run_current()

@@ -1,4 +1,4 @@
-"""A channel per image (controller helpers and the step 2 "Channel per image" list)."""
+"""A channel per image (controller helpers, and the Plan as the one place to set it in the window)."""
 
 from __future__ import annotations
 
@@ -83,11 +83,14 @@ def test_different_channel_counts_run_and_export(tmp_path: Path):
     assert labels[two] == "Red" and labels[one] == "AF647"
 
 
-def test_channel_per_image_sets_channel(tmp_path: Path, monkeypatch):
+def test_channel_per_image_is_set_in_the_plan_and_counted_in_step_2(tmp_path: Path, monkeypatch):
+    """One home for the per-image channel: the Plan. Step 2 keeps the default channel and a count of who uses what."""
+
     napari = pytest.importorskip("napari")
     from qtpy.QtWidgets import QApplication
 
     from cellquant.gui.app import CellQuantWindow
+    from tests.test_gui_plan import _image_item
 
     controller = _controller(tmp_path)
     ids = _ids(controller)
@@ -103,31 +106,22 @@ def test_channel_per_image_sets_channel(tmp_path: Path, monkeypatch):
             time.sleep(0.02)
         panel = shell._objects_panel
         panel.refresh()
-        tree = panel.image_tree
-        folders = {tree.topLevelItem(i).text(0): tree.topLevelItem(i) for i in range(tree.topLevelItemCount())}
-        assert set(folders) == {"a (2)", "b (2)"}
-        assert not panel.image_channel_pick.isEnabled()  # nothing selected yet
-        folders["a (2)"].setSelected(True)  # a folder selects every image in it
-        assert sorted(panel._selected_image_ids()) == sorted([ids["a/m1.tif"], ids["a/m2.tif"]])
-        combo = panel.image_channel_pick
-        combo.setCurrentIndex(combo.findData("mCherry"))
-        combo.activated.emit(combo.currentIndex())
+        assert not hasattr(panel, "image_tree") and not hasattr(panel, "image_channel_pick")  # no second place to set it
+        assert "Default (" in panel.image_channel_counts.text() and "mCherry" not in panel.image_channel_counts.text()
+        shell.show_plan()
+        dock = shell._plan_dock
+        dock.tree.clearSelection()
+        for name in ("a/m1.tif", "a/m2.tif"):
+            _image_item(dock, name).setSelected(True)
+        dock.target.setCurrentIndex(dock.target.findData(shell.controller.recipe.recipe_id))
+        dock.channel.setCurrentIndex(dock.channel.findData(1))
+        dock.set_channel.click()
         for _ in range(10):
             QApplication.processEvents()
         assert shell.controller.segmentation_channel_for(ids["a/m1.tif"]) == (1, "chosen for this image")
         assert shell.controller.segmentation_channel_for(ids["a/m2.tif"]) == (1, "chosen for this image")
         assert shell.controller.segmentation_channel_for(ids["b/g1.tif"])[1] != "chosen for this image"
-        folders = {tree.topLevelItem(i).text(0): tree.topLevelItem(i) for i in range(tree.topLevelItemCount())}
-        assert folders["a (2)"].text(1) == "mCherry" and folders["b (2)"].text(1) == "Default"
-        # One image on its own, by name in its own channel order.
-        tree.clearSelection()
-        g2 = next(folders["b (2)"].child(i) for i in range(2) if folders["b (2)"].child(i).text(0) == "g2.tif")
-        g2.setSelected(True)
-        combo.setCurrentIndex(combo.findData("GFP"))
-        combo.activated.emit(combo.currentIndex())
-        for _ in range(10):
-            QApplication.processEvents()
-        assert shell.controller.segmentation_channel_for(ids["b/g2.tif"]) == (0, "chosen for this image")
-        assert shell.controller.segmentation_channel_for(ids["b/g1.tif"])[1] != "chosen for this image"
+        text = panel.image_channel_counts.text()  # the count line follows the plan
+        assert "mCherry: 2" in text and "Default (" in text
     finally:
         viewer.close()
