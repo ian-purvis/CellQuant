@@ -744,6 +744,7 @@ class MarkerSetup(QGroupBox):
         chosen = [(int(box.property("channel_index")), box.text()) for box in self.boxes if box.isChecked()]
         if not chosen:
             window.message("Tick at least one marker channel: unticking every channel would remove all the markers.")
+            self.refresh()  # the boxes go back to the markers that exist
             return
         rule_changed, min_changed = self._rule_dirty, self._min_dirty
         self._rule_dirty = self._min_dirty = False
