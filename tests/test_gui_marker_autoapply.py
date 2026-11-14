@@ -144,3 +144,20 @@ def test_changing_the_rule_asks_before_restarting_cutoffs(tmp_path: Path, open_w
     _events(0.3)
     assert all(item.comparison == "at_least" for item in controller.recipe.classifications)
     assert shell._tabs.currentWidget() is not shell._step_pages[4]
+
+
+def test_unticking_every_channel_puts_the_ticks_back(tmp_path: Path, open_window):  # noqa: F811
+    shell = _shell(tmp_path, open_window)
+    setup, controller = shell._marker_setup, shell.controller
+    setup.button.click()
+    assert _wait(shell)
+    _events(0.3)
+    names = [item.name for item in controller.recipe.classifications]
+    assert names
+    for box in setup.boxes:
+        box.blockSignals(True)
+        box.setChecked(False)
+        box.blockSignals(False)
+    setup._auto_apply()
+    assert [item.name for item in controller.recipe.classifications] == names  # nothing removed
+    assert any(box.isChecked() for box in setup.boxes)  # the boxes match the markers again
