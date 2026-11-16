@@ -103,7 +103,7 @@ Channels are shown in the colors saved in the file by the microscope software (f
 6. Click **Run this image** (next to **Preview**). **Find objects in all images** runs every included image with the current settings. The bar at the bottom shows each step, for example *Finding objects: slice 4 of 7*; **Log** shows every message. Run buttons are greyed out until it finishes. **Cancel** stops after the current step; nothing from the unfinished image is saved. (Cellpose's whole-volume 3D step cannot be stopped part-way; Cancel takes effect when it ends.)
    To try other settings, change them and click **Run this image** again. There is no need to restart CellQuant or go back.
    Objects found elsewhere (a cluster, Cellpose, another CellQuant experiment): click **Load masks…** in step 1 instead and pick their folder of masks (with no experiment open, it asks where to save a new one). The original images are added (you are asked where they are if they moved), each mask, a TIFF of object numbers named after its image (for example *image001_masks.tif*), becomes that image's objects, and step 2's Z-stack mode is set to fit the masks. Nothing is segmented; markers are measured when an image is opened.
-7. Zoom in and check several areas. In 3D, drag the slice slider under the image to check every slice.
+7. Zoom in and check several areas. Hold the right mouse button and drag to move the image, whatever tool is on. In 3D, drag the slice slider under the image to check every slice.
 
 **Success check:** outlines sit on the nuclei. Few are missed, merged (two nuclei in one outline), or split (one nucleus in two outlines).
 

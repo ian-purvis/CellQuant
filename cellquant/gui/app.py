@@ -976,7 +976,34 @@ SHORTCUTS = (
     ("Ctrl+Z", "Undo the last edit (step 3). Not while typing in a box."),
     ("Esc", "Leave Delete objects, Select objects or the circle tools (step 3), or Mark + / Mark − (step 5)."),
     ("Ctrl+V", "Paste cells copied from a spreadsheet into the image list (step 1)."),
+    ("Right mouse button + drag", "Move the image in the viewer, whatever tool is on. A plain right click does nothing new."),
 )
+
+
+def pan_with_right_button(viewer, event):
+    """Hold the right mouse button and drag to move the view, whichever tool is active. View only: no data is touched.
+
+    The point under the cursor when the button went down stays under it, so it also holds for a rotated or 3D view."""
+
+    if getattr(event, "button", None) != 2:
+        return
+    start = np.asarray(event.position, dtype=float)
+    shown = list(event.dims_displayed)
+    yield
+    while event.type == "mouse_move":
+        shift = start - np.asarray(event.position, dtype=float)
+        center = list(viewer.camera.center)
+        offset = len(center) - len(shown)
+        for k, axis in enumerate(shown):
+            if offset + k >= 0 and axis < len(shift):
+                center[offset + k] += float(shift[axis])
+        viewer.camera.center = tuple(center)
+        yield
+
+
+def bind_right_button_pan(viewer) -> None:
+    if pan_with_right_button not in viewer.mouse_drag_callbacks:
+        viewer.mouse_drag_callbacks.append(pan_with_right_button)
 
 
 class ShortcutsWindow(QDialog):
@@ -1011,6 +1038,7 @@ class ShortcutsWindow(QDialog):
 class CellQuantWindow:
     def __init__(self, viewer, experiment_dir: str | Path | None = None):
         self.viewer = viewer
+        bind_right_button_pan(viewer)
         self.controller: AnalysisController | None = None
         self._glossary_window = None
         self._edit_cells = None  # step 5 Override calls window, made when first opened
