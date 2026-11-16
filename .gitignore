@@ -46,3 +46,6 @@ _scratch/
 
 # Git bundles used to move the repository
 *.bundle
+
+# Downloaded dependency wheels
+*.whl

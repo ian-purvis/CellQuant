@@ -235,4 +235,4 @@ Open CellQuant, click **Open experiment…**, and choose the results folder. You
 | 3D option is very slow | The estimate beside each option shows why. Check the GPU box (step 2, top): a usable NVIDIA GPU is used automatically. Or use Classic Cellpose, or a max projection. |
 | Percentages changed after rerunning | The cutoff or settings changed. `settings_index.csv` shows which settings each image used. |
 
-For how CellQuant works inside, see `CellQuant_v2_manifest_rev2.md` and `docs/STATUS.md`.
+For how CellQuant works inside, see `docs/design/CellQuant_v2_manifest_rev2.md` and `docs/STATUS.md`.
