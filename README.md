@@ -26,8 +26,8 @@ CellQuant finds nuclei (or cells) in fluorescence microscope images and counts h
 
 ### For developers
 - [docs/DEVELOPERS.md](docs/DEVELOPERS.md) — repository map, entry points, testing commands
-- [CellQuant_v2_architecture_and_manifest.md](CellQuant_v2_architecture_and_manifest.md) — architecture and manifest overview
-- [CellQuant_v2_manifest_rev2.md](CellQuant_v2_manifest_rev2.md) — detailed implementation manifest
+- [CellQuant_v2_architecture_and_manifest.md](docs/design/CellQuant_v2_architecture_and_manifest.md) — architecture and manifest overview
+- [CellQuant_v2_manifest_rev2.md](docs/design/CellQuant_v2_manifest_rev2.md) — detailed implementation manifest
 - [tests/README.md](tests/README.md) — test organization and how to run targeted checks
 
 ## What is in this folder
@@ -40,7 +40,7 @@ CellQuant finds nuclei (or cells) in fluorescence microscope images and counts h
 | `docs/STATUS.md` | What has been built and tested, and what has not. |
 | `docs/DEVELOPERS.md` | Repository map and developer workflow for contributors. |
 | `docs/SWEEP.md` | Comparing segmentation methods and thresholds on a set of images. |
-| `CellQuant_v2_manifest_rev2.md`, `CellQuant_v2_architecture_and_manifest.md` | The design and build plan, for developers. |
+| `docs/design/` (the two manifest files) | The design and build plan, for developers. |
 | `cellquant/` | The program. |
 | `tests/` | Automated tests (`python -m pytest tests -q`). |
 | `tests/README.md` | Summary of the test layout and common test commands. |
