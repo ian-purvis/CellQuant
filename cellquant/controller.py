@@ -1710,6 +1710,11 @@ class AnalysisController:
                 record.approved_settings_sha256 = self._approval_fingerprint(image_id)
         return self.last_results.get(image_id)
 
+    def can_undo(self, image_id: str) -> bool:
+        """Whether Undo has an edit of this image to take back."""
+
+        return bool(self._active_edits(image_id))
+
     def edit_count(self, image_id: str) -> int:
         """Edits this analysis made on the image, on any segmentation."""
 

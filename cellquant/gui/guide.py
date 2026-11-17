@@ -259,6 +259,24 @@ class StepState:
     hint: str = ""
 
 
+def gate(button, ok: bool, reason: str) -> None:
+    """Enable a button that can act now, or switch it off with the reason as its tooltip.
+
+    The tooltip it had comes back when it can act again. Used for buttons whose state is known at
+    once (an experiment is open, something is selected), so none is enabled only to do nothing.
+    """
+
+    normal = button.property("tooltip_when_enabled")
+    if normal is None:
+        normal = button.toolTip()
+        button.setProperty("tooltip_when_enabled", normal)
+    if button.isEnabled() != ok:
+        button.setEnabled(ok)
+    wanted = normal if ok else reason
+    if button.toolTip() != wanted:
+        button.setToolTip(wanted)
+
+
 def step_states(window) -> list[StepState]:
     """Progress through the six steps, from state already in memory. No file access."""
 
