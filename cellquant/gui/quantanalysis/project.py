@@ -551,6 +551,8 @@ def run_compare(data: DataSheet, options: dict) -> AnalysisResult:
         raise CellQuantError("Comparing two columns needs a table with at least two columns.")
     test = options.get("test", "unpaired_t")
     kwargs = {key: options[key] for key in ("alternative", "ci", "alpha", "style") if key in options}
+    if test == "kolmogorov_smirnov":
+        kwargs.pop("ci", None)  # the dialog always sends a confidence level; this test reports no interval, so it takes none
     # Advanced settings set by hand: the t tests take df, and the difference tested against.
     if test in ("welch_t", "unpaired_t", "lognormal_t", "paired_t", "ratio_paired_t") and options.get("df") is not None:
         kwargs["df"] = options["df"]
