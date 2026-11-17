@@ -3956,10 +3956,10 @@ class ExperimentPanel(QWidget):
         else:
             return
         record.sample_name = controller.experiment.image(image_id).sample_name
-        self.shell._autosave()
         if self._pasting:
             self._pasted_headers.add(header)  # the other panels follow once, when the paste is done
             return
+        self.shell._autosave()
         self._cell_edited_elsewhere(header)
 
     def _cell_edited_elsewhere(self, header: str) -> None:
@@ -4048,6 +4048,8 @@ class ExperimentPanel(QWidget):
             self._paste_cells(controller, row, column, lines, headers)
         finally:
             self._pasting = False
+            if self._pasted_headers:
+                self.shell._autosave()  # one save for the whole paste
             for header in ("Include", "Sample name"):
                 if header in self._pasted_headers:
                     self._cell_edited_elsewhere(header)
@@ -4064,7 +4066,12 @@ class ExperimentPanel(QWidget):
                     headers = [self.table.horizontalHeaderItem(index).text() for index in range(self.table.columnCount())]
                 item = self.table.item(target_row, target_column)
                 if item is not None and headers[target_column] not in {"Image", "Slices", "Channels", "µm/pixel", "Objective", "Status"}:
-                    item.setText(value)
+                    # Setting the text would also apply the cell through itemChanged: apply it once, here.
+                    self.table.blockSignals(True)
+                    try:
+                        item.setText(value)
+                    finally:
+                        self.table.blockSignals(False)
                     self.apply_cell_edit(target_row, target_column)
 
     def _add_images(self) -> None:
