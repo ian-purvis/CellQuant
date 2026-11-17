@@ -325,7 +325,7 @@ class AnalysisController:
             return result
         for folder in self._result_folders():
             result = read_persisted_result(folder, image_id)
-            if result is not None:
+            if result is not None and not self._measured_at_other_size(image_id, result):
                 result = self._at_current_cutoffs(image_id, self._with_count_area(image_id, result))
                 self.last_results[image_id] = result
                 return result
@@ -606,13 +606,47 @@ class AnalysisController:
         pixel_size_y: float | None,
         pixel_size_z: float | None = None,
     ) -> None:
-        """Set µm per pixel in X and Y, and optionally the Z step in µm."""
+        """Set µm per pixel in X and Y, and optionally the Z step in µm.
+
+        An image with results whose sizes really change is out of date: its areas, volumes and lengths
+        were computed with the old sizes. Its result is no longer offered, its approval is cleared and it
+        shows as not run until it is run again (see ``pixel_size_makes_stale``, which the interface asks first).
+        Setting the sizes it already has changes nothing."""
 
         record = self.experiment.image(image_id)
+        stale = self.pixel_size_makes_stale(image_id, pixel_size_x, pixel_size_y, pixel_size_z)
         record.pixel_size_x = pixel_size_x
         record.pixel_size_y = pixel_size_y
         if pixel_size_z is not None:
             record.pixel_size_z = pixel_size_z or None
+        if stale:
+            self.last_results.pop(image_id, None)
+            record.processing_status = "not_analyzed"
+            record.approved_settings_sha256 = ""
+            record.last_result = ""
+            record.last_message = "Pixel size changed after this image was run: run it again to measure it at the new size."
+
+    def pixel_size_makes_stale(self, image_id: str, pixel_size_x: float | None, pixel_size_y: float | None, pixel_size_z: float | None = None) -> bool:
+        """True when setting these sizes (as ``set_pixel_size`` would) changes the image's sizes and the image has a result."""
+
+        record = self.experiment.image(image_id)
+        z = record.pixel_size_z if pixel_size_z is None else (pixel_size_z or None)
+        if _same_numbers([record.pixel_size_x, record.pixel_size_y, record.pixel_size_z], [pixel_size_x, pixel_size_y, z]):
+            return False
+        return self.recall(image_id, measure=False) is not None
+
+    def _measured_at_other_size(self, image_id: str, result: ImageResult) -> bool:
+        """True when this result was measured at pixel sizes the image no longer has (results saved before
+        the sizes were recorded in them cannot be told, so they count as current)."""
+
+        keys = ("pixel_size_x_um", "pixel_size_y_um", "pixel_size_z_um")
+        if any(key not in result.provenance for key in keys):
+            return False
+        try:
+            record = self.experiment.image(image_id)
+        except KeyError:
+            return False
+        return not _same_numbers([result.provenance[key] for key in keys], [record.pixel_size_x, record.pixel_size_y, record.pixel_size_z])
 
     def set_status(self, image_id: str, status: str) -> None:
         record = self.experiment.image(image_id)
@@ -628,7 +662,9 @@ class AnalysisController:
         else:
             with self._image_settings(self.experiment.image(image_id)):
                 settings = self.recipe.content_hash()
-        fingerprint = f"{settings}:{len(self._active_edits(image_id))}"
+        record = self.experiment.image(image_id)
+        # The pixel sizes too: an approval made at other sizes never matches (areas and volumes differ).
+        fingerprint = f"{settings}:{len(self._active_edits(image_id))}:px-{record.pixel_size_x}-{record.pixel_size_y}-{record.pixel_size_z}"
         # Only the calls still applied (their object is there), so a stale entry changes nothing.
         objects = result.objects if result is not None else None
         calls = {
@@ -2044,6 +2080,8 @@ class AnalysisController:
                 if result is not None:
                     break
                 result = read_persisted_result(folder, record.image_id)
+                if result is not None and self._measured_at_other_size(record.image_id, result):
+                    result = None  # out of date (the pixel size changed since): it must be run again
             if result is not None:
                 result = apply_count_area(self._at_current_cutoffs(record.image_id, result), record.count_area)
                 results.append(dataclasses.replace(result, labels=_NO_MASK, automated_labels=_NO_MASK))
