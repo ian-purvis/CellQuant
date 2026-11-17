@@ -76,6 +76,7 @@ class XYSheetView(QWidget):
         bar.addWidget(export)
         layout.addLayout(bar)
         self.grid = QTableWidget()
+        tips.tip_corner_button(self.grid)
         self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.grid.horizontalHeader().sectionDoubleClicked.connect(self._rename_column)
         self.grid.horizontalHeader().setToolTip("Double-click a title to rename X or a data set.")

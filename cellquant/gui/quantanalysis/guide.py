@@ -135,6 +135,7 @@ class AnalysisGuideDialog(QDialog):
         self.use = buttons.addButton("Run this analysis…", QDialogButtonBox.AcceptRole)
         self.use.setToolTip(tips.GUIDE_RUN)
         buttons.addButton(QDialogButtonBox.Close)
+        tips.tip_buttons(buttons, tips.GUIDE_RUN, "Close the guide without running anything.")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)
