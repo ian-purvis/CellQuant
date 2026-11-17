@@ -664,7 +664,7 @@ class QuantAnalysisWindow(QMainWindow):
 
         box = QMessageBox(QMessageBox.Question, "QuantAnalysis", f"Restore the unsaved changes to {name}?", QMessageBox.Yes | QMessageBox.No, self)
         box.setInformativeText(f"QuantAnalysis found a recovery copy from {when}, newer than the saved project. It was left behind when QuantAnalysis "
-                               "closed without saving. No restores it away.")
+                               "closed without saving. No throws it away.")
         box.setDefaultButton(QMessageBox.Yes)
         return box.exec() == QMessageBox.Yes
 
