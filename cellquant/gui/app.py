@@ -3037,10 +3037,12 @@ class CellQuantWindow:
         return tuple(tuple(np.round(np.asarray(layer.extent.world, dtype=float)[:, -min(shown, layer.ndim):], 6).ravel()) for layer in layers)
 
     def _fit_view(self, area, camera, layers) -> None:
-        """Fit the view to the image once its layers have their µm scale. The next image covering the same area keeps the
-        zoom and position the user chose (napari may have fitted a first new layer at its pixel size meanwhile)."""
+        """Fit the view to the image once its layers have their µm scale. With layers of the user's own open, the next image
+        covering the same area keeps the zoom and position (napari may have fitted a first new layer at its pixel size meanwhile)."""
 
-        if not area or self._view_area(layers) != area:
+        # Only CellQuant's layers are open: every image is fitted to the window, as napari does for a first new layer.
+        fresh = len(self.viewer.layers) == len([name for name in self._managed if name in self.viewer.layers])
+        if fresh or not area or self._view_area(layers) != area:
             self.viewer.reset_view()
             return
         center, zoom, angles = camera
