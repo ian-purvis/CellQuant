@@ -62,6 +62,7 @@ def export_files(
         ("objects.csv", ""),
         ("image_summary.csv", ""),
         ("settings_index.csv", ""),
+        ("segmented_channels.csv", ""),
         ("recipe.yaml", ""),
         ("run.json", "if the analysis was run"),
         ("mixed_settings.txt", "only if settings differ"),

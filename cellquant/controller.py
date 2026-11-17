@@ -82,6 +82,7 @@ from cellquant.storage import (
     save_run,
     start_run,
     unit_summary,
+    write_segmented_channels,
 )
 
 
@@ -455,7 +456,7 @@ class AnalysisController:
         for image_id, result in list(self.last_results.items()):
             edits = self._active_edits(image_id)
             if not self._saved_already(image_id, result, edits, destination):
-                persist_image_result(destination, result, edits)
+                persist_image_result(destination, result, edits, self.segmented_channel_name(image_id, result))
                 self._mark_saved(image_id, result, edits, destination)
                 if isinstance(self.last_results, ResultCache):
                     self.last_results.trim()  # saving read back masks that were out of memory
@@ -778,7 +779,7 @@ class AnalysisController:
             progress.update("Saving results")
             self._ensure_run([record], fresh=new_run)
             assert self.run_dir is not None and self.run_record is not None and self.run_log is not None
-            persist_image_result(self.run_dir, result, self._active_edits(image_id))
+            persist_image_result(self.run_dir, result, self._active_edits(image_id), self.segmented_channel_name(image_id, result))
             self._record_recipe_use(image_id, result)
             self.run_record.manual_edits[image_id] = [item.model_dump(mode="json") for item in self._active_edits(image_id)]
             self.run_record.input_hashes[image_id] = record.content_hash
@@ -1881,7 +1882,7 @@ class AnalysisController:
         for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits"):
             (destination / relative).mkdir(parents=True, exist_ok=True)
         edits = self._active_edits(image_id)
-        persist_image_result(destination, result, edits)
+        persist_image_result(destination, result, edits, self.segmented_channel_name(image_id, result))
         self._mark_saved(image_id, result, edits, destination)
 
     def _record_recipe_use(self, image_id: str, result: ImageResult) -> None:
@@ -1976,6 +1977,17 @@ class AnalysisController:
             for item in results
         ]
         pd.DataFrame(index_rows).to_csv(destination / "settings_index.csv", index=False)
+        write_segmented_channels(
+            destination,
+            [
+                {
+                    "image_id": str(item.provenance.get("image_id") or ""),
+                    "image": str(item.provenance.get("filename") or ""),
+                    "segmented_channel": self.segmented_channel_name(str(item.provenance.get("image_id") or ""), item),
+                }
+                for item in results
+            ],
+        )
         hashes = self._settings_versions(results)
         self.export_recipe(destination / "recipe.yaml", named=True)
         mixed_note = destination / "mixed_settings.txt"
@@ -2698,7 +2710,8 @@ class AnalysisController:
         if self.run_dir is not None and not fresh:
             return
         self._touch_recipe()
-        record, run_dir = start_run(self.experiment, self.recipe, records)
+        channels = [self.segmented_channel_name(item.image_id) for item in records]
+        record, run_dir = start_run(self.experiment, self.recipe, records, channels)
         self.run_record = record
         self.run_dir = run_dir
         self.run_log = RunLog(run_dir)
@@ -3219,6 +3232,28 @@ class AnalysisController:
             self.recipe = saved
             self._unswapped_recipe = None
 
+    def segmented_channel_name(self, image_id: str, result: ImageResult | None = None) -> str:
+        """The name, as the viewer shows it, of the channel this image's objects are found in.
+
+        With a ``result``: the channel that result's objects were found in. Folder and file names,
+        and ``segmented_channels.csv``, carry this name.
+        """
+
+        index = None
+        if result is not None:
+            try:
+                index = int(result.provenance.get("segmentation_channel"))
+            except (TypeError, ValueError):
+                index = None
+        try:
+            record = self.experiment.image(image_id)
+            if index is None:
+                index, _reason = self.segmentation_channel_for(image_id)
+            names = self.shown_channel_names(record) or self.image_channel_names(image_id)
+        except Exception:  # noqa: BLE001 - an image the experiment no longer lists: the analysis's channel
+            return self._channel_name(int(self.recipe.object_set.segmentation_channel) if index is None else index)
+        return str(names[index]) if 0 <= index < len(names) and names[index] else f"Channel {index + 1}"
+
     def _segmentation_channel_labels(self, table, recipe_id: str) -> list[str]:
         """The name of the channel objects were found in, per row: this image's own channel name."""
 
@@ -3345,10 +3380,10 @@ _NO_MASK = np.zeros((0, 0), dtype=np.int32)  # in place of the masks of a result
 def _file_stamp(folder: Path, image_id: str) -> tuple | None:
     """When the image's saved table and mask in ``folder`` last changed (None: not there)."""
 
-    from cellquant.storage import _safe
+    from cellquant.storage import _safe, label_paths
 
     stamps = []
-    for path in (folder / "measurements" / f"{_safe(image_id)}.csv", folder / "labels" / f"{_safe(image_id)}_final.tif"):
+    for path in (folder / "measurements" / f"{_safe(image_id)}.csv", label_paths(folder, image_id)[0]):
         try:
             stat = path.stat()
         except OSError:

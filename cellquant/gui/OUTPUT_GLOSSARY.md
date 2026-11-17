@@ -11,7 +11,8 @@ What every file CellQuant writes contains, and what each column and key means. B
 | My final numbers (percent positive per image) | `image_summary.csv` in the folder you exported to |
 | Numbers per condition (control vs. treated) | `grouped_by_<column>.csv` (export with a group column chosen) |
 | One row per cell/nucleus | `objects.csv` |
-| To see which objects were found | `labels/<image>_final.tif` (open in napari or Fiji) |
+| To see which objects were found | `labels/<image>_<channel>_final.tif` (open in napari or Fiji) |
+| To know which channel objects were found in | The run folder's name, the mask file names, or `segmented_channels.csv` |
 | To know exactly what settings made a result | `recipe.yaml` (settings) and `provenance/<image>.json` (everything about one image) |
 | To know why an image shows a warning | `logs/run.log` in the run folder, or `qc/<image>.json` |
 
@@ -66,7 +67,7 @@ The results folder is the one you picked in step 1. CellQuant saves its work the
 ```
 experiment.json            what is in the experiment
 recipes/                   the settings of each analysis
-runs/run_xxxxxxxx/         one folder per Run (see below)
+runs/run_xxxxxxxx_<channel>/ one folder per Run (see below)
 working/                   the latest open results of the first analysis
 analyses/<analysis>/working/ the same, for each further analysis
 edits/                     your manual edits, one file per image
@@ -621,14 +622,15 @@ For `integrated` the background is multiplied by the number of pixels in the reg
 
 ### `runs/run_…/` and `working/`
 
-Each press of **Run** that starts a new batch creates a run folder, `runs/run_xxxxxxxx/`. It is a record of that batch and does not change afterwards (apart from the run record being finished). The `working/` folder holds the open results you see in the app, updated as you edit and review. It has the same layout as a run folder, without `run.json`, `recipe_snapshot.yaml` and the logs. The first analysis keeps its open results in `working/`. Each further analysis keeps them in `analyses/<analysis>/working/`. Per-image files are named with the `image_id` (`img_6f553c7b` below), shown as `<image>` in this glossary.
+Each press of **Run** that starts a new batch creates a run folder, `runs/run_xxxxxxxx_<channel>/`, named after the channel the objects were found in. It is a record of that batch and does not change afterwards (apart from the run record being finished). The `working/` folder holds the open results you see in the app, updated as you edit and review. It has the same layout as a run folder, without `run.json`, `recipe_snapshot.yaml` and the logs. The first analysis keeps its open results in `working/`. Each further analysis keeps them in `analyses/<analysis>/working/`. Per-image files are named with the `image_id` (`img_6f553c7b` below), shown as `<image>` in this glossary.
 
 | File | What it is |
 |---|---|
 | `run.json` | The run record (below) |
 | `recipe_snapshot.yaml` | Settings used |
-| `labels/<image>_automated.tif` | Objects as found by the program, before your edits |
-| `labels/<image>_final.tif` | Objects after your edits. **Use this one.** |
+| `labels/<image>_<channel>_automated.tif` | Objects as found by the program, before your edits |
+| `labels/<image>_<channel>_final.tif` | Objects after your edits. **Use this one.** Results saved by older versions use `labels/<image>_final.tif`, and are read the same way. |
+| `segmented_channels.csv` | Which channel the objects of each image were found in |
 | `measurements/<image>.csv` | One row per object (the object table) |
 | `summaries/<image>.csv` | One row for the image (percent positive) |
 | `reports/<image>.csv` | The calculated percentages, one row each |
@@ -636,7 +638,7 @@ Each press of **Run** that starts a new batch creates a run folder, `runs/run_xx
 | `classifications/<image>_combinations.csv` | How many objects are positive for each marker and each combination of markers |
 | `provenance/<image>.json` | Full record of how this image was analyzed |
 | `qc/<image>.json` | Quality summary |
-| `tables/<image>.json` | Column types of the CSVs above (so they reload correctly; not for people) |
+| `tables/<image>.json` | Column types of the CSVs above and the mask file names (so they reload correctly; not for people) |
 | `edits/<image>.json` | Your edits as they were when this was saved |
 | `cutoff_examples/<image>.json` | Objects you marked positive or negative in step 5 (`working/` only) |
 | `logs/run.log` | Warnings and notes. Only exists if something was logged |
@@ -657,9 +659,9 @@ Each press of **Run** that starts a new batch creates a run folder, `runs/run_xx
 
 **In short:** The ids of the run, the experiment and the analysis's settings.
 
-**What it means:** `run_id` looks like `run_e402fc66` and is also the folder name. The other two say which experiment and which analysis made the run.
+**What it means:** `run_id` looks like `run_e402fc66_AF647` and is also the folder name. After `run_` and 8 hex characters comes the channel the run's objects were found in (two channels are written `A+B`, more than two `mixed`). Older runs have no channel part. The channel name is written with letters, digits and `-`; any other character becomes `_`, and at most 20 characters are used. The other two ids say which experiment and which analysis made the run.
 
-**For experts:** `run_` plus 8 hex characters of a random UUID.
+**For experts:** `run_` plus 8 hex characters of a random UUID, then `_` and `storage.run_channel_tag` of the channels (`storage.channel_tag` for each name).
 
 ##### `software_version`
 
@@ -730,29 +732,58 @@ Each press of **Run** that starts a new batch creates a run folder, `runs/run_xx
 
 **Related:** `recipes/<analysis>.yaml`, `recipe`
 
-#### `labels/<image>_automated.tif`
-<!-- data: tif run/labels/<image>_automated.tif -->
+#### `labels/<image>_<channel>_automated.tif`
+<!-- data: tif run/labels/<image>_<channel>_automated.tif -->
 
 **In short:** The objects as the program found them, before your edits.
 
-**What it means:** It is a picture the same size as the analyzed image (a stack of pictures for 3D). Background is `0` and every object is filled with its `object_id` number. It is the starting point that your edits are replayed on.
+**What it means:** It is a picture the same size as the analyzed image (a stack of pictures for 3D). Background is `0` and every object is filled with its `object_id` number. It is the starting point that your edits are replayed on. `<channel>` is the name of the channel the objects were found in, as shown in the app, written with letters, digits and `-` (other characters become `_`).
 
-**Good to know:** Use `_final` for analysis. This file is for going back and for deleted objects: a deleted object is still here.
+**Good to know:** Use `_final` for analysis. This file is for going back and for deleted objects: a deleted object is still here. Results saved by older versions have no channel in the name (`labels/<image>_automated.tif`) and are read the same way.
 
-**For experts:** `int32`, written by `storage.persist_image_result`. Cropped runs are pasted back to the full frame.
+**For experts:** `int32`, written by `storage.persist_image_result`. Cropped runs are pasted back to the full frame. The names are recorded in `tables/<image>.json` and found by `storage.label_paths`.
 
-**Related:** `labels/<image>_final.tif`
+**Related:** `labels/<image>_<channel>_final.tif`, `segmented_channels.csv`
 
-#### `labels/<image>_final.tif`
-<!-- data: tif run/labels/<image>_final.tif -->
+#### `labels/<image>_<channel>_final.tif`
+<!-- data: tif run/labels/<image>_<channel>_final.tif -->
 
 **In short:** The objects after your edits. Use this one.
 
-**What it means:** A picture the same size as the analyzed image (a stack for 3D). Background is `0`; every object is filled with its `object_id` number. The same `object_id` appears in `measurements/<image>.csv`. Open it in napari or Fiji to see which objects were counted. Deleted objects are `0` here.
+**What it means:** A picture the same size as the analyzed image (a stack for 3D). Background is `0`; every object is filled with its `object_id` number. The same `object_id` appears in `measurements/<image>.csv`. Open it in napari or Fiji to see which objects were counted. Deleted objects are `0` here. `<channel>` is the name of the channel the objects were found in, so the file name tells you what was segmented.
+
+**Good to know:** When the channel changes or is renamed and the image is saved again, the masks with the new name replace the old ones in `working/`. Runs you made earlier keep their own names. Results saved by older versions have no channel in the name (`labels/<image>_final.tif`) and are read the same way.
 
 **For experts:** `int32`. Equal to `edits.apply_edits(automated, edits)`. Cropped runs are pasted back to the full frame, so centroids and labels match the original image.
 
-**Related:** `object_id`, `labels/<image>_automated.tif`
+**Related:** `object_id`, `labels/<image>_<channel>_automated.tif`, `segmented_channels.csv`
+
+#### `segmented_channels.csv`
+<!-- data: csv run/segmented_channels.csv -->
+
+**In short:** Which channel the objects of each image were found in.
+
+**What it means:** One row per image saved in this folder. It is a list for people: CellQuant never reads it back, and it is not rewritten while it is open in another program. Results are not affected.
+
+**For experts:** Written by `storage.persist_image_result` (`storage.list_segmented_channel`).
+
+**Related:** `labels/<image>_<channel>_final.tif`, `run_id`
+
+##### `image_id`, `image`
+
+**In short:** The image's id and its name.
+
+##### `segmented_channel`
+
+**In short:** The channel the objects were found in, named as the app shows it.
+
+**What it means:** A channel you renamed appears under its new name. This is the `<channel>` in the mask file names, before the characters that file names cannot hold are replaced.
+
+##### `mask_file`
+
+**In short:** The edited mask of this image, relative to this folder.
+
+**What it means:** For example `labels/img_6f553c7b_AF647_final.tif`. Only in run and working folders.
 
 #### `measurements/<image>.csv`
 <!-- data: csv run/measurements/<image>.csv -->
@@ -797,7 +828,7 @@ Each press of **Run** that starts a new batch creates a run folder, `runs/run_xx
 
 **In short:** The object's number. It matches the number in the label image.
 
-**What it means:** Object 17 in this table is the pixels with value 17 in `labels/<image>_final.tif`. Numbers are not renumbered after deletions, so there can be gaps.
+**What it means:** Object 17 in this table is the pixels with value 17 in `labels/<image>_<channel>_final.tif`. Numbers are not renumbered after deletions, so there can be gaps.
 
 ##### `centroid_x`, `centroid_y`
 
@@ -846,7 +877,7 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 
 **Good to know:** Area counts every pixel of the object, not only bright ones. Objects cut by the image edge look smaller (see `fraction_touching_border`).
 
-**For experts:** `skimage.measure.regionprops(labels).area × pixel_size²` on `labels/<image>_final.tif` (after edits), `quantify._base_table`. 3D: the largest per-slice pixel count × the XY pixel area (`quantify._base_table_3d`, `volume.largest_cross_section`), so size limits mean the same as in 2D. Only equal X and Y pixel sizes are supported.
+**For experts:** `skimage.measure.regionprops(labels).area × pixel_size²` on `labels/<image>_<channel>_final.tif` (after edits), `quantify._base_table`. 3D: the largest per-slice pixel count × the XY pixel area (`quantify._base_table_3d`, `volume.largest_cross_section`), so size limits mean the same as in 2D. Only equal X and Y pixel sizes are supported.
 
 **Related:** `volume`, `median_area`, `pixel_size_x`
 
@@ -1676,13 +1707,19 @@ These keys are only present if a count area is drawn.
 
 **In short:** The column types of the CSV files, so they reload correctly. Not for people.
 
-**What it means:** CSV files lose the difference between blank text and a missing value, and between `True` and the text "True". This file records it. Ignore it unless you write your own reader.
+**What it means:** CSV files lose the difference between blank text and a missing value, and between `True` and the text "True". This file records it. It also records the names of the image's two mask files. Ignore it unless you write your own reader.
 
 **For experts:** `storage.describe_table` and `storage.read_table`.
 
 ##### `format`
 
 **In short:** The version of this file's layout (currently 1).
+
+##### `labels`
+
+**In short:** The names of this image's mask files.
+
+**What it means:** `final` and `automated` give the file names in `labels/`, such as `img_6f553c7b_AF647_final.tif`. Without this record (results saved by older versions) the names are `<image>_final.tif` and `<image>_automated.tif`.
 
 ##### `tables`
 
@@ -1743,6 +1780,7 @@ These keys are only present if a count area is drawn.
 | `grouped_by_<column>_equal_units.csv` | Only with a group column and units: each group's mean over units, every unit counted once |
 | `recipe.yaml` | The current settings, with markers named as in the tables beside it |
 | `settings_index.csv` | `image_id`, `filename`, `recipe_sha256`: which settings made each image (the hash of the settings as the results folder keeps them) |
+| `segmented_channels.csv` | `image_id`, `image`, `segmented_channel`: the channel the objects of each image were found in |
 | `mixed_settings.txt` | Only if images were made with more than one settings version |
 | `run.json` | Copy of the latest run record |
 
@@ -1945,6 +1983,14 @@ The sums run over the images of the unit.
 **What it means:** A fingerprint of the settings that made this image. If two rows show the same value, the images were analyzed with the same settings. Different values mean the settings changed in between, so compare the images with care.
 
 **Related:** `recipe_sha256`
+
+### `segmented_channels.csv`
+
+**In short:** Which channel the objects of each image were found in.
+
+**What it means:** One row per image: `image_id`, `image` and `segmented_channel`, the channel named as the app shows it. It is the same list as in the results folder, without the `mask_file` column. Nothing reads it back.
+
+**Related:** `settings_index.csv`
 
 ### `mixed_settings.txt`
 

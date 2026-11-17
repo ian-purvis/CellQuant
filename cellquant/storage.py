@@ -7,8 +7,10 @@ records the recipe that produced that table.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
+import re
 import traceback
 import uuid
 from dataclasses import dataclass, field
@@ -83,8 +85,40 @@ class RunLog:
                     handle.write("\n")
 
 
-def start_run(experiment: Experiment, recipe: Recipe, images: list[ImageRecord]) -> tuple[RunRecord, Path]:
-    run_id = f"run_{uuid.uuid4().hex[:8]}"
+# In each run, working and export folder: one row per image, naming the channel its objects were found in.
+CHANNEL_LIST_FILE = "segmented_channels.csv"
+_CHANNEL_TAG_LENGTH = 20
+_RUN_TAG_LENGTH = 24
+
+
+def channel_tag(name: str | None) -> str:
+    """A channel name as folder and file names carry it: letters, digits and ``-`` (anything else is
+    ``_``), at most 20 characters. Empty when nothing of the name is left."""
+
+    text = re.sub(r"[^A-Za-z0-9-]+", "_", str(name or "")).strip("_-")
+    return text[:_CHANNEL_TAG_LENGTH].rstrip("_-")
+
+
+def run_channel_tag(names) -> str:
+    """What a run folder's name says about the channels its images' objects are found in: the channel,
+    two channels as ``A+B``, or ``mixed`` for more (or for names too long to fit)."""
+
+    found = {tag.casefold(): tag for tag in reversed([channel_tag(name) for name in names or ()]) if tag}
+    tags = list(found.values())  # one per channel, whatever its upper and lower case (folder names do not tell them apart)
+    if len(tags) <= 1:
+        return tags[0] if tags else ""
+    joined = "+".join(sorted(tags, key=str.casefold))
+    return joined if len(tags) == 2 and len(joined) <= _RUN_TAG_LENGTH else "mixed"
+
+
+def start_run(
+    experiment: Experiment, recipe: Recipe, images: list[ImageRecord], channels: list[str] | None = None
+) -> tuple[RunRecord, Path]:
+    """Start a run folder. ``channels``: the channel each image's objects are found in; the run is
+    named after them (``run_1a2b3c4d_AF594``), so the folder says what was segmented."""
+
+    tag = run_channel_tag(channels)
+    run_id = f"run_{uuid.uuid4().hex[:8]}" + (f"_{tag}" if tag else "")
     run_dir = Path(experiment.directory) / "runs" / run_id
     for relative in ("logs", "labels", "measurements", "classifications", "summaries", "provenance", "edits"):
         (run_dir / relative).mkdir(parents=True, exist_ok=True)
@@ -108,20 +142,29 @@ def finish_run(run_dir: Path, record: RunRecord, status: str) -> None:
     _write_run(run_dir, record)
 
 
-def persist_image_result(run_dir: Path, result: ImageResult, edits: list[EditOperation]) -> None:
+def persist_image_result(run_dir: Path, result: ImageResult, edits: list[EditOperation], channel: str | None = None) -> None:
     """Save every part of a result so ``read_persisted_result`` gives the same result back.
 
     Tables are CSV, with a small ``tables/<image>.json`` that records each
     column's type and which text cells were missing, so booleans, missing
     classifications and blank text survive a reload. QC, requested reports and
     marker combinations are saved as well.
+
+    ``channel`` is the name of the channel the objects were found in. The masks are named after it
+    (``labels/<image>_<channel>_final.tif``) and ``segmented_channels.csv`` in the folder lists it,
+    so nobody has to open a mask to know what was segmented. ``tables/<image>.json`` records the
+    mask names; masks saved by older versions (``labels/<image>_final.tif``) are read as before.
     """
 
     image_id = _safe(str(result.provenance.get("image_id") or "image"))
     for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits", "reports", "qc", "tables"):
         (run_dir / relative).mkdir(parents=True, exist_ok=True)
-    tifffile.imwrite(run_dir / "labels" / f"{image_id}_automated.tif", result.automated_labels.astype(np.int32))
-    tifffile.imwrite(run_dir / "labels" / f"{image_id}_final.tif", result.labels.astype(np.int32))
+    tag = channel_tag(channel)
+    stem = f"{image_id}_{tag}" if tag else image_id
+    names = (f"{stem}_final.tif", f"{stem}_automated.tif")
+    earlier = {*_recorded_label_names(run_dir, image_id), f"{image_id}_final.tif", f"{image_id}_automated.tif"} - set(names)
+    tifffile.imwrite(run_dir / "labels" / names[1], result.automated_labels.astype(np.int32))
+    tifffile.imwrite(run_dir / "labels" / names[0], result.labels.astype(np.int32))
     tables = {
         "objects": (result.objects, run_dir / "measurements" / f"{image_id}.csv"),
         "summary": (result.summary, run_dir / "summaries" / f"{image_id}.csv"),
@@ -134,7 +177,11 @@ def persist_image_result(run_dir: Path, result: ImageResult, edits: list[EditOpe
         frame.to_csv(path, index=False)
         described[name] = describe_table(frame)
     (run_dir / "tables" / f"{image_id}.json").write_text(
-        json.dumps({"format": 1, "tables": described}, indent=1, default=_json_default),
+        json.dumps(
+            {"format": 1, "tables": described, "labels": {"final": names[0], "automated": names[1]}},
+            indent=1,
+            default=_json_default,
+        ),
         encoding="utf-8",
     )
     (run_dir / "qc" / f"{image_id}.json").write_text(
@@ -149,6 +196,107 @@ def persist_image_result(run_dir: Path, result: ImageResult, edits: list[EditOpe
         json.dumps([item.model_dump(mode="json") for item in edits], indent=2),
         encoding="utf-8",
     )
+    _label_names[(str(run_dir), image_id)] = names
+    for name in earlier:
+        # This image's masks under another name (an older version's, or another channel's): the new ones replace them.
+        try:
+            (run_dir / "labels" / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    list_segmented_channel(
+        run_dir,
+        str(result.provenance.get("image_id") or "image"),
+        str(result.provenance.get("filename") or ""),
+        channel,
+        f"labels/{names[0]}",
+    )
+
+
+# (folder, image) -> (edited mask, unedited mask) file names, so a mask is found without reading tables/<image>.json again.
+_label_names: dict[tuple[str, str], tuple[str, str]] = {}
+
+
+def _recorded_label_names(run_dir: Path, safe_id: str) -> tuple[str, ...]:
+    """The mask names ``tables/<image>.json`` records (only plain file names), or () when it records none."""
+
+    try:
+        recorded = json.loads((run_dir / "tables" / f"{safe_id}.json").read_text(encoding="utf-8")).get("labels") or {}
+    except (OSError, ValueError, AttributeError):
+        return ()
+    names = tuple(str(recorded.get(key) or "") for key in ("final", "automated"))
+    if not all(name and Path(name).name == name and name.endswith(".tif") for name in names):
+        return ()
+    return names
+
+
+def label_paths(run_dir: Path, image_id: str) -> tuple[Path, Path]:
+    """Where this image's masks are in a run or working folder: (edited, unedited).
+
+    The names this version saved (``<image>_<channel>_final.tif``) when they are recorded and the
+    edited mask is there, otherwise the names older versions saved (``<image>_final.tif``).
+    """
+
+    safe_id = _safe(image_id)
+    labels = Path(run_dir) / "labels"
+    key = (str(run_dir), safe_id)
+    names = _label_names.get(key)
+    if names is None or not (labels / names[0]).is_file():
+        names = _recorded_label_names(Path(run_dir), safe_id)
+        if not names or not (labels / names[0]).is_file():
+            names = (f"{safe_id}_final.tif", f"{safe_id}_automated.tif")
+        _label_names[key] = names
+    return labels / names[0], labels / names[1]
+
+
+_CHANNEL_LIST_COLUMNS = ("image_id", "image", "segmented_channel", "mask_file")
+
+
+def read_segmented_channels(folder: Path) -> list[dict[str, str]]:
+    """The rows of ``segmented_channels.csv`` in a folder ([] when it is absent or unreadable)."""
+
+    try:
+        with (Path(folder) / CHANNEL_LIST_FILE).open(newline="", encoding="utf-8-sig") as handle:
+            return [{key: str(row.get(key) or "") for key in _CHANNEL_LIST_COLUMNS} for row in csv.DictReader(handle)]
+    except (OSError, csv.Error, UnicodeDecodeError):
+        return []
+
+
+def write_segmented_channels(folder: Path, rows: list[dict[str, str]]) -> bool:
+    """Write ``segmented_channels.csv``. It is a list for people to read, never read back for results,
+    so a failure (the file is open in another program) is not an error: False is returned."""
+
+    path = Path(folder) / CHANNEL_LIST_FILE
+    columns = [name for name in _CHANNEL_LIST_COLUMNS if name != "mask_file" or any(row.get("mask_file") for row in rows)]
+    temporary = path.with_suffix(".csv.tmp")
+    try:
+        with temporary.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        temporary.replace(path)
+    except OSError:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def list_segmented_channel(folder: Path, image_id: str, image: str, channel: str | None, mask_file: str = "") -> None:
+    """Add this image to the folder's ``segmented_channels.csv``, or update its row."""
+
+    row = {"image_id": image_id, "image": image, "segmented_channel": str(channel or ""), "mask_file": mask_file}
+    rows = read_segmented_channels(folder)
+    for index, existing in enumerate(rows):
+        if existing["image_id"] == image_id:
+            if existing == row:
+                return
+            rows[index] = row
+            break
+    else:
+        rows.append(row)
+    write_segmented_channels(folder, rows)
 
 
 def describe_table(frame: pd.DataFrame) -> dict:
@@ -429,8 +577,7 @@ def read_persisted_result(run_dir: Path, image_id: str):
 
     safe_id = _safe(image_id)
     objects_path = run_dir / "measurements" / f"{safe_id}.csv"
-    labels_path = run_dir / "labels" / f"{safe_id}_final.tif"
-    automated_path = run_dir / "labels" / f"{safe_id}_automated.tif"
+    labels_path, automated_path = label_paths(run_dir, image_id)
     provenance_path = run_dir / "provenance" / f"{safe_id}.json"
     if not objects_path.is_file() or not labels_path.is_file() or not provenance_path.is_file():
         return None
