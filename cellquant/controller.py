@@ -325,7 +325,7 @@ class AnalysisController:
             return result
         for folder in self._result_folders():
             result = read_persisted_result(folder, image_id)
-            if result is not None:
+            if result is not None and not self._measured_at_other_size(image_id, result):
                 result = self._at_current_cutoffs(image_id, self._with_count_area(image_id, result))
                 self.last_results[image_id] = result
                 return result
@@ -606,13 +606,46 @@ class AnalysisController:
         pixel_size_y: float | None,
         pixel_size_z: float | None = None,
     ) -> None:
-        """Set µm per pixel in X and Y, and optionally the Z step in µm."""
+        """Set µm per pixel in X and Y, and optionally the Z step in µm.
+
+        An image with results whose sizes really change is out of date: its areas, volumes and lengths
+        were computed with the old sizes. Its result is no longer offered, its approval is cleared and it
+        shows as not run until it is run again (see ``pixel_size_makes_stale``, which the interface asks first).
+        Setting the sizes it already has changes nothing."""
 
         record = self.experiment.image(image_id)
+        stale = self.pixel_size_makes_stale(image_id, pixel_size_x, pixel_size_y, pixel_size_z)
         record.pixel_size_x = pixel_size_x
         record.pixel_size_y = pixel_size_y
         if pixel_size_z is not None:
             record.pixel_size_z = pixel_size_z or None
+        if stale:
+            self.last_results.pop(image_id, None)
+            record.processing_status = "not_analyzed"
+            record.approved_settings_sha256 = ""
+            record.last_result = ""
+            record.last_message = "Pixel size changed after this image was run: run it again to measure it at the new size."
+        elif record.processing_status == "not_analyzed" and self.recall(image_id, measure=False) is not None:
+            # The old size was typed back: the saved result fits again (it is not approved again).
+            record.processing_status = "analyzed"
+            record.last_message = "The pixel size is the one this image was run with again, so its saved result is back. Approve it again if it looks right."
+
+    def pixel_size_makes_stale(self, image_id: str, pixel_size_x: float | None, pixel_size_y: float | None, pixel_size_z: float | None = None) -> bool:
+        """True when setting these sizes (as ``set_pixel_size`` would) leaves the image's current result measured at other sizes."""
+
+        record = self.experiment.image(image_id)
+        z = record.pixel_size_z if pixel_size_z is None else (pixel_size_z or None)
+        result = self.recall(image_id, measure=False)
+        return result is not None and _measured_at_other_size(result.provenance, pixel_size_x, pixel_size_y, z)
+
+    def _measured_at_other_size(self, image_id: str, result: ImageResult) -> bool:
+        """True when this result was measured at pixel sizes the image no longer has (see the module function)."""
+
+        try:
+            record = self.experiment.image(image_id)
+        except KeyError:
+            return False
+        return _measured_at_other_size(result.provenance, record.pixel_size_x, record.pixel_size_y, record.pixel_size_z)
 
     def set_status(self, image_id: str, status: str) -> None:
         record = self.experiment.image(image_id)
@@ -2044,6 +2077,8 @@ class AnalysisController:
                 if result is not None:
                     break
                 result = read_persisted_result(folder, record.image_id)
+                if result is not None and self._measured_at_other_size(record.image_id, result):
+                    result = None  # out of date (the pixel size changed since): it must be run again
             if result is not None:
                 result = apply_count_area(self._at_current_cutoffs(record.image_id, result), record.count_area)
                 results.append(dataclasses.replace(result, labels=_NO_MASK, automated_labels=_NO_MASK))
@@ -3333,6 +3368,24 @@ def _canonical(value) -> str:
     import json
 
     return json.dumps(value, sort_keys=True, default=str)
+
+
+def _measured_at_other_size(provenance: dict, pixel_size_x: float | None, pixel_size_y: float | None, pixel_size_z: float | None) -> bool:
+    """True when a result's recorded pixel sizes disagree with the sizes the image states.
+
+    A size the image does not state (None) means "whatever the file says" and never makes a result out of date.
+    X and Y count when stated; Z only for results analysed in 3D (a 2D result does not depend on the Z step).
+    Results saved before sizes were recorded in them cannot be told, so they count as current."""
+
+    if "pixel_size_x_um" not in provenance or "pixel_size_y_um" not in provenance:
+        return False
+    wanted = [("pixel_size_x_um", pixel_size_x), ("pixel_size_y_um", pixel_size_y)]
+    if provenance.get("analysis_dimensions") == 3:
+        wanted.append(("pixel_size_z_um", pixel_size_z))
+    for key, stated in wanted:
+        if stated is not None and not _same_numbers([provenance.get(key)], [stated]):
+            return True
+    return False
 
 
 def _same_numbers(stored, current) -> bool:
