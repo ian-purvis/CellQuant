@@ -175,7 +175,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._signature: str | None = None
         self._folder_sources: dict[str, sources.Source] = {}
         self.project = Project()
-        self.project.working.connect(lambda text: self.status(text) if text else self.statusBar().clearMessage())
+        self.project.working.connect(self._working)
         self.project.changed.connect(self._project_changed)
         self.path: Path | None = None   # the project file, once saved or opened
         self._saved = project_file.fingerprint(self.project)
@@ -434,6 +434,17 @@ class QuantAnalysisWindow(QMainWindow):
     def status(self, text: str) -> None:
         self.statusBar().showMessage(text, 8000)
         LOG.info("%s", text)
+
+    def _working(self, text: str) -> None:
+        """What a recomputation after typing is doing. It never replaces a message that is already showing (a rejected entry, say), and
+        it removes only its own when it is done."""
+
+        bar = self.statusBar()
+        if text:
+            if not bar.currentMessage():
+                self.status(text)
+        elif bar.currentMessage().startswith("Updating the results"):
+            bar.clearMessage()
 
     def log(self, text: str) -> None:
         LOG.info("%s", text)
