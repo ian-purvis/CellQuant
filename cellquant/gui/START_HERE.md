@@ -194,7 +194,7 @@ The **Analysis** list at the top of the CellQuant panel, with its **Analyses ▾
 
 ### The Plan: which images each analysis runs, and in which channel
 
-Choose **Analyses ▾ → Plan…** (next to the Analysis list) to open the Plan beside the image. It lists every image, grouped by **Channel layout** (images whose files list the same channels in the same order), by **Folder**, or by **Channel layout, then folder**. Choose a view:
+Choose **Analyses ▾ → Plan…** (next to the Analysis list) to open the Plan in a window of its own (double-click its header, or click **⟲**, to dock it beside the image). It lists every image, grouped by **Channel layout** (images whose files list the same channels in the same order), by **Folder**, or by **Channel layout, then folder**. Choose a view:
 
 - **Grid: images × analyses**: one column per analysis. A tick means that analysis runs that image; the cell shows its status (green when analyzed, amber when it needs a look, red when it failed) and the channel objects are found in. Ticking a group's box ticks every image in it.
 - **Tree: image ▸ analyses**: under each image, one row per analysis, each with a tick and a **Find objects in** menu.
