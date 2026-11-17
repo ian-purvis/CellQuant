@@ -67,7 +67,6 @@ def test_import_compare_and_live_links(window, tmp_path):
     window.select(data.id)
     grid = window.stack.currentWidget()
     grid.grid.item(0, 1).setText("95")
-    window.project.flush_fits()  # typing pauses: what follows the table is recomputed
     assert result.result.values["p"] != before
     assert data.spec is None and data.units is None
 

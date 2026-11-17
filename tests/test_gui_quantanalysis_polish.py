@@ -30,10 +30,15 @@ def window(qtbot):
     return window
 
 
-def _table(window, columns=("Control", "Treated"), paired=False, title="Cells per field"):
+def _table(window, columns=("Control", "Treated"), paired=False, title="Cells per field", large=False):
+    from cellquant.gui.quantanalysis.datagrid import DEFER_CELLS
     from cellquant.gui.quantanalysis.project import DataSheet
 
-    data = window.project.add_data(DataSheet("Data", ColumnTable.from_columns(dict(zip(columns, (A, B, C))), title=title, paired=paired)))
+    data = dict(zip(columns, (A, B, C)))
+    if large:  # more numbers than DEFER_CELLS; the first rows are the small table's
+        rng = np.random.default_rng(3)
+        data = {name: np.concatenate([values, rng.normal(40, 5, DEFER_CELLS // len(data) + 1)]) for name, values in data.items()}
+    data = window.project.add_data(DataSheet("Data", ColumnTable.from_columns(data, title=title, paired=paired)))
     window.select(data.id)
     return data
 
@@ -186,7 +191,7 @@ def _counted(window, monkeypatch) -> list:
 
 
 def test_a_burst_of_edits_recomputes_once_after_typing_pauses(window, monkeypatch, qtbot):
-    data = _table(window)
+    data = _table(window, large=True)
     sheet = window.analyze("compare", OPTIONS)
     graph = window.new_graph("scatter")
     window.select(data.id)
@@ -205,7 +210,7 @@ def test_a_burst_of_edits_recomputes_once_after_typing_pauses(window, monkeypatc
 def test_saving_copying_and_exporting_first_finish_the_waiting_recomputation(window, tmp_path):
     from cellquant.gui.quantanalysis.results_view import result_text
 
-    data = _table(window)
+    data = _table(window, large=True)
     sheet = window.analyze("compare", OPTIONS)
     window.select(data.id)
     before = sheet.result.values["p"]
@@ -223,7 +228,7 @@ def test_saving_copying_and_exporting_first_finish_the_waiting_recomputation(win
 
 
 def test_show_working_waits_for_a_waiting_edit(window):
-    data = _table(window)
+    data = _table(window, large=True)
     sheet = window.analyze("compare", OPTIONS)
     window.select(data.id)
     window.stack.currentWidget().grid.item(0, 0).setText("95")
@@ -231,7 +236,7 @@ def test_show_working_waits_for_a_waiting_edit(window):
 
 
 def test_a_typed_cell_does_not_fill_the_whole_grid_again(window, monkeypatch):
-    data = _table(window)
+    data = _table(window, large=True)
     view = window.stack.currentWidget()
     filled = []
     original = type(view).fill
@@ -242,7 +247,7 @@ def test_a_typed_cell_does_not_fill_the_whole_grid_again(window, monkeypatch):
 
 
 def test_the_wait_is_shown_while_the_recomputation_runs(window, qtbot):
-    data = _table(window)
+    data = _table(window, large=True)
     window.analyze("compare", OPTIONS)
     window.select(data.id)
     messages = []
@@ -273,3 +278,25 @@ def test_the_engine_check_shows_its_window_before_the_checks_and_cannot_be_start
     assert "Checking… 1 of 3" in seen[0][1] and "Checking… 3 of 3" in seen[2][1]
     assert seen[0][2] == []  # asking again while it runs does nothing
     assert dialog.rows and "values agree" in dialog.summary.text() and dialog.run_button.isEnabled()
+
+
+def test_an_edit_in_a_small_table_updates_results_and_graphs_at_once(window):
+    data = _table(window)
+    sheet = window.analyze("compare", OPTIONS)
+    graph = window.new_graph("scatter")
+    window.select(data.id)
+    before = sheet.result.values["p"]
+    changed = []
+    window.project.changed.connect(changed.append)
+    window.stack.currentWidget().grid.item(0, 0).setText("95")  # no flush, no waiting
+    assert sheet.result.values["p"] != before and not window.project.fit_pending(sheet.id)
+    assert sheet.id in changed and graph.id in changed
+
+
+def test_the_threshold_keeps_an_ordinary_table_immediate(window):
+    from cellquant.gui.quantanalysis.datagrid import DEFER_CELLS
+
+    small = _table(window)
+    assert not window.stack.currentWidget()._is_large() and DEFER_CELLS >= 5000
+    large = _table(window, large=True)
+    assert window.stack.currentWidget()._is_large() and large.id != small.id

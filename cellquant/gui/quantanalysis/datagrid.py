@@ -41,6 +41,7 @@ from cellquant.stats.tables import parse_number
 from cellquant.stats.replicates import SUMMARIES, ReplicateTable
 
 SPARE_ROWS = 12
+DEFER_CELLS = 5000  # numbers in a table above which an edit recomputes what follows once typing pauses (a recompute below it takes well under 0.2 s)
 WARNING_STYLE = "QLabel { background: rgba(217, 164, 0, 0.20); border-radius: 6px; padding: 6px; }"
 DANGER_STYLE = "QLabel { background: rgba(200, 50, 50, 0.28); border-radius: 6px; padding: 6px; }"
 NOTE_STYLE = "QLabel { color: #a8b0ba; }"
@@ -407,7 +408,12 @@ class DataSheetView(QWidget):
                 values[index] = column
             else:
                 values = None
-        self.commit(values=values, defer=True)
+        self.commit(values=values, defer=self._is_large())
+
+    def _is_large(self) -> bool:
+        """True when the table has so many numbers that recomputing what follows it takes noticeable time."""
+
+        return sum(column.values.size for column in self.sheet.table.columns) > DEFER_CELLS
 
     def _stored(self, row: int, column: int) -> float | None:
         """The value the sheet holds for a grid cell (None when the cell is blank or beyond the data)."""
