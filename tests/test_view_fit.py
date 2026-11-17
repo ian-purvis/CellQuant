@@ -1,5 +1,5 @@
 """The view fits the image once its layers have their µm scale: the first image of an experiment fills the window and is
-centred; the next image of the same size keeps the zoom the user chose; a new pixel size fits it again.
+centred; so does the next image; a new pixel size fits it again.
 
 Needs napari and Qt; skipped without napari.
 """
@@ -22,7 +22,7 @@ def _extent_centre(viewer):
     return (extent[0] + extent[1])[-2:] / 2
 
 
-def test_first_image_with_a_pixel_size_is_fitted_and_next_keeps_the_zoom(tmp_path: Path, open_window):  # noqa: F811
+def test_first_image_with_a_pixel_size_is_fitted_and_so_is_the_next(tmp_path: Path, open_window):  # noqa: F811
     from cellquant.controller import AnalysisController
 
     images = [tmp_path / "a.tif", tmp_path / "b.tif"]
@@ -44,15 +44,15 @@ def test_first_image_with_a_pixel_size_is_fitted_and_next_keeps_the_zoom(tmp_pat
     viewer.reset_view()
     assert viewer.camera.zoom == pytest.approx(fitted)  # Home changes nothing: it was already fitted
 
-    # The user zooms in and moves; the next image is the same size, so the view stays where they put it.
+    # The user zooms in and moves; the next image is fitted to the window again (only CellQuant's layers are open).
     viewer.camera.zoom = fitted * 3
     viewer.camera.center = (0.0, 10.0, 12.0)
     shell._footer._step(1)
     assert _wait(shell)
     _events(0.2)
     assert shell._nav_index == 1
-    assert viewer.camera.zoom == pytest.approx(fitted * 3)
-    assert np.allclose(viewer.camera.center[-2:], (10.0, 12.0))
+    assert viewer.camera.zoom == pytest.approx(fitted)
+    assert np.allclose(viewer.camera.center[-2:], _extent_centre(viewer))
 
     # A new pixel size makes the image another size in the window: it is fitted again.
     record = controller.experiment.image(shell._shown_image_id)
