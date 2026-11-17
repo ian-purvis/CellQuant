@@ -550,6 +550,37 @@ class AnalysisController:
         set_channel_name(self.experiment, channel_index, cleaned)
         self.save()
 
+    def shown_channel_names(self, record) -> list[str]:
+        """The channel names in this image's file as shown: a channel the user renamed under its new name.
+
+        Matched to the experiment's channels by the names stored in the file (see ``display_channels``);
+        the file's own names are kept for channels that were never renamed.
+        """
+
+        names = [str(name) for name in record.channel_names or ()]
+        known = {channel.channel_index: channel for channel in self.experiment.channels}
+        owners = self.display_channels(record, len(names))
+        return [
+            known[owner].channel_name if owner in known and known[owner].earlier_names else name
+            for owner, name in zip(owners, names, strict=True)
+        ]
+
+    def named_phenotype_counts(self, result) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+        """The result's counts by kind of object, and by overlap, with each marker under its name now."""
+
+        current = self.marker_names()
+        saved = [
+            (str(entry.get("id")), str(entry.get("name") or entry.get("id")))
+            for entry in result.provenance.get("classification_definitions") or []
+            if isinstance(entry, dict)
+        ]
+        names = [(name, current.get(marker, name)) for marker, name in saved]
+        overlaps = getattr(result, "combination_counts", None)
+        return (
+            rename_object_columns(result.phenotype_counts, {}, names),
+            rename_object_columns(overlaps, {}, names) if overlaps is not None else None,
+        )
+
     def marker_names(self, recipe: Recipe | None = None) -> dict[str, str]:
         """Each marker's name by its id, as shown and exported.
 

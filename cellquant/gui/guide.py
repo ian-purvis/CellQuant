@@ -299,7 +299,8 @@ def step_states(window) -> list[StepState]:
             "" if found else "Finish step 2 first.",
         )
     )
-    names = ", ".join(item.name for item in markers)
+    shown = controller.marker_names()  # a marker follows its channel when the user renames it
+    names = ", ".join(shown.get(item.id, item.name) for item in markers)
     states.append(StepState(bool(markers), names, "" if markers else "Set up at least one marker."))
     classified = any(all(item.id in result.objects.columns for item in markers) for result in results) if markers else False
     reviewed = [record for record in images if record.processing_status in {"reviewed", "approved"}]
@@ -651,8 +652,9 @@ class MarkerSetup(QGroupBox):
             else "Only one channel: no marker to count."
         )
         markers = controller.recipe.classifications
+        shown = controller.marker_names()  # a marker follows its channel when the user renames it
         self.current.setText(
-            "Markers: " + "; ".join(f"{item.name} ({describe_rule(controller.recipe, item)})" for item in markers)
+            "Markers: " + "; ".join(f"{shown.get(item.id, item.name)} ({describe_rule(controller.recipe, item)})" for item in markers)
             if markers
             else ""
         )
@@ -684,7 +686,7 @@ class MarkerSetup(QGroupBox):
             box.setCurrentIndex(max(0, box.findData(item.cutoff_by)))
             box.setProperty("classification_id", item.id)
             box.activated.connect(lambda _index, box=box: self._mode_chosen(box))
-            self.modes_form.addRow(item.name, box)
+            self.modes_form.addRow(controller.marker_names().get(item.id, item.name), box)
             self.mode_boxes.append(box)
         self.modes.setVisible(bool(markers))
 
@@ -805,16 +807,17 @@ class MarkerSetup(QGroupBox):
         return lines
 
 
-def _overlap_lines(result, recipe=None) -> list[str]:
+def _overlap_lines(result, recipe=None, names=None, table=None) -> list[str]:
     """Objects positive for two or more markers (each set of markers, whatever the others are),
     except sets a report above already counts among all objects."""
 
-    table = getattr(result, "combination_counts", None)
+    if table is None:
+        table = getattr(result, "combination_counts", None)
     if table is None or table.empty or "phenotype" not in table.columns:
         return []
     reported = set()
     if recipe is not None:
-        names = {item.id: item.name for item in recipe.classifications}
+        names = names or {item.id: item.name for item in recipe.classifications}
         for report in recipe.reports:
             if report.denominator.strip().casefold() not in {"all_objects", "all_measured_objects"}:
                 continue
@@ -940,7 +943,8 @@ class ResultsSummary(QScrollArea):
                 f"{_readable(row['numerator'], names)} among {_readable(row['denominator'], names)}: "
                 f"<b>{row['count']}</b> of {row['denominator_count']} ({percent_text})"
             )
-        lines.extend(_overlap_lines(result, recipe))
+        overlaps = controller.named_phenotype_counts(result)[1] if controller is not None else None
+        lines.extend(_overlap_lines(result, recipe, names, overlaps))
         unmeasured = int(result.summary.iloc[0].get("n_unmeasured", 0)) if not result.summary.empty and "n_unmeasured" in result.summary.columns else 0
         if unmeasured:
             lines.append(f"<span style='background-color:rgba(217,164,0,0.2)'>{unmeasured} unmeasured, left out.</span>")

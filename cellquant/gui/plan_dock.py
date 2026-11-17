@@ -177,7 +177,7 @@ class PlanDock(QWidget):
         record = controller.experiment.image(image_id)
         item = QTreeWidgetItem(parent, [record.relative_path or record.filename])
         self._mark(item, "image", [image_id])
-        item.setToolTip(0, f"{record.relative_path or record.filename}\nChannels: {', '.join(record.channel_names) or 'unnamed'}")
+        item.setToolTip(0, f"{record.relative_path or record.filename}\nChannels: {', '.join(controller.shown_channel_names(record)) or 'unnamed'}")
         for column, analysis in enumerate(analyses, start=1):
             status = controller.plan_status(image_id, analysis.recipe_id)
             channel, reason = controller.segmentation_channel_for(image_id, analysis.recipe_id)
@@ -263,7 +263,7 @@ class PlanDock(QWidget):
     def _channel_names(self, record) -> list[str]:
         controller = self.shell.controller
         if record.channel_names:
-            return list(record.channel_names)
+            return controller.shown_channel_names(record)  # a renamed channel under its new name
         count = record.number_of_channels or len(controller.experiment.channels)
         return [controller._channel_name(index) for index in range(count)]
 
