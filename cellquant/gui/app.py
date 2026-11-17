@@ -3100,6 +3100,53 @@ class CellQuantWindow:
         self.message(f"Channel {position + 1} is now called {typed}. Markers named after it and exported columns use this name.")
         QTimer.singleShot(0, self._channel_names_changed)  # after napari has finished with the rename
 
+    def rename_channels(self, names: dict[int, str]) -> None:
+        """Rename channels from step 1 (``names``: channel index -> new name; unchanged ones are skipped).
+
+        This goes the way renaming a channel's layer does: the layer is renamed and its handler names the
+        channel, so both give the same refusals and refresh the same lists. With no layer on screen for
+        the channel (no image shown yet) the channel is named directly.
+        """
+
+        controller = self.controller
+        if controller is None:
+            self.message("Open an experiment before renaming a channel.")
+            return
+        pending = {index: name for index, name in names.items() if name.strip() != controller._channel_name(index)}
+        for index, typed in sorted(pending.items()):
+            layer = self._layer_of_channel(index)
+            if layer is not None:
+                layer.name = typed  # its handler (_channel_layer_renamed) names the channel and refreshes the lists
+                continue
+            if self.is_busy():
+                self.message("Wait for the current analysis to finish before renaming a channel.")
+                return
+            try:
+                controller.rename_channel(index, typed)
+            except (CellQuantError, OSError) as exc:
+                self.message(str(exc))
+                return
+            self.message(f"Channel {index + 1} is now called {typed.strip()}. Markers named after it and exported columns use this name.")
+            self._channel_names_changed()
+
+    def _layer_of_channel(self, index: int):
+        """The channel layer on screen for this experiment channel, or None."""
+
+        controller = self.controller
+        if controller is None or self._shown_image_id is None:
+            return None
+        try:
+            record = controller.experiment.image(self._shown_image_id)
+        except KeyError:
+            return None
+        layers = [layer for layer in self.viewer.layers if layer.name in self._name_hooks]
+        owners = controller.display_channels(record, len(layers))
+        for position, owner in enumerate(owners):
+            label = channel_label(position, controller._channel_name(index))
+            if owner == index and label in self._name_hooks and label in self.viewer.layers:
+                return self.viewer.layers[label]
+        return None
+
     def _channel_names_changed(self) -> None:
         """Every list that names channels or markers shows the names as they are now."""
 
@@ -3604,7 +3651,13 @@ class ExperimentPanel(QWidget):
         self.channel_order.setWordWrap(True)
         self.channel_order.setTextFormat(Qt.RichText)
         self.channel_order.setStyleSheet("QLabel { background: rgba(60, 130, 220, 0.10); border-radius: 6px; padding: 6px; }")
-        layout.addWidget(self.channel_order)
+        self.rename_button = QPushButton("Rename…")
+        self.rename_button.clicked.connect(self._rename_channels)
+        order_row = QHBoxLayout()
+        order_row.addWidget(self.channel_order, 1)
+        order_row.addWidget(self.rename_button, 0, Qt.AlignTop)
+        layout.addLayout(order_row)
+        self._update_rename_button()
         self.pixel_summary = QLabel("")
         self.pixel_summary.setToolTip("Pixel size of the included images. Nothing to set.")
         self.pixel_summary.setWordWrap(True)
@@ -3659,10 +3712,72 @@ class ExperimentPanel(QWidget):
         self._pasting = False  # while a paste fills cells, other panels follow once at the end
         self._pasted_headers: set[str] = set()
 
+    def _update_rename_button(self) -> None:
+        controller = self.shell.controller
+        can = controller is not None and bool(controller.experiment.channels)
+        self.rename_button.setEnabled(can)
+        self.rename_button.setToolTip(
+            "Give the channels names of your own, for example OTX2 instead of AF594. The names are used in every image, "
+            "the channel lists, markers named after a channel and the exported columns. (You can also rename a channel's layer in the layer list.)"
+            if can
+            else "Open an experiment first: the channels are named for the whole experiment."
+        )
+
+    def _rename_channels(self) -> None:
+        controller = self.shell.controller
+        if controller is None or not controller.experiment.channels:
+            self.shell.message("Open an experiment before renaming a channel.")
+            return
+        channels = sorted(controller.experiment.channels, key=lambda item: item.channel_index)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Rename channels")
+        column = QVBoxLayout(dialog)
+        column.addWidget(QLabel("Name each channel. The names are used in every image of the experiment."))
+        form = QFormLayout()
+        fields = {}
+        for channel in channels:
+            field = QLineEdit(str(channel.channel_name))
+            field.setToolTip(f"The name of channel {channel.channel_index + 1}. Two channels cannot share a name.")
+            fields[channel.channel_index] = field
+            form.addRow(f"Channel {channel.channel_index + 1}", field)
+        column.addLayout(form)
+        problem = QLabel("")
+        problem.setWordWrap(True)
+        problem.setStyleSheet("QLabel { color: #c0392b; }")
+        column.addWidget(problem)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok = buttons.button(QDialogButtonBox.Ok)
+        ok.setToolTip("Save these names.")
+        buttons.button(QDialogButtonBox.Cancel).setToolTip("Close without renaming anything.")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        column.addWidget(buttons)
+
+        def check() -> None:
+            # Silent until something is wrong; then the reason, in red, with OK off.
+            typed = {index: field.text().strip() for index, field in fields.items()}
+            why = ""
+            if any(not name for name in typed.values()):
+                why = "A channel needs a name."
+            elif len({name.casefold() for name in typed.values()}) < len(typed):
+                why = "Two channels have the same name."
+            problem.setText(why)
+            ok.setEnabled(not why)
+
+        for field in fields.values():
+            field.textChanged.connect(check)
+        check()
+        self._rename_dialog = dialog  # for tests
+        self._rename_fields = fields
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.shell.rename_channels({index: field.text().strip() for index, field in fields.items()})
+
     def refresh(self) -> None:
         self.refresh_table()
         controller = self.shell.controller
         self.no_experiment.setVisible(controller is None)
+        self._update_rename_button()
         if controller is None:
             self.channel_order.setText("No image open.")
             return
