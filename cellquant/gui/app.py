@@ -1219,7 +1219,7 @@ class CellQuantWindow:
         run_dock = self.viewer.window.add_dock_widget(FooterScroll(self._footer), name="Run", area="bottom")
         # Under napari's layer controls: a view control that stays put whichever layer is selected.
         self._view_box = ViewBox(self)
-        view_dock = self.viewer.window.add_dock_widget(PanelScroll(self._view_box, grows=False), name="View", area="left")
+        view_dock = self.viewer.window.add_dock_widget(PanelScroll(self._view_box), name="View", area="left")
         self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, self._measure_dock_widget, run_dock, view_dock)]
         # napari's own layer controls and layer list: popped out they get the same header, minus Close, and they
         # cannot be hidden by accident. Any panel can be docked side by side with another, not just tabbed.
@@ -1231,8 +1231,12 @@ class CellQuantWindow:
 
         main_window = self.viewer.window._qt_window
         main_window.setDockOptions(main_window.dockOptions() | QMainWindow.DockOption.AllowNestedDocks)
-        # In a window too short for a column of panels, these scroll instead of being drawn over each other.
-        self._panel_fitter = PanelFitter(main_window, [self._plan_dock_widget, self._measure_dock_widget, view_dock])
+        # In a window too short for a column of panels, they scroll instead of being drawn over each other:
+        # first the Plan, then Measure and View, and napari's layer list and layer controls last.
+        layer_docks = [qt_viewer.dockLayerList, qt_viewer.dockLayerControls]
+        for dock in layer_docks:
+            dock.setWidget(PanelScroll(dock.widget()))
+        self._panel_fitter = PanelFitter(main_window, [self._plan_dock_widget, self._measure_dock_widget, view_dock, *layer_docks])
         guide.apply_help(self)
         self._add_help_entries()
         self._guide_timer = guide.start_refresh_timer(self)

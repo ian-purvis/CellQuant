@@ -3,7 +3,7 @@
 A panel's full height is a floor for the column it is docked in. CellQuant lets its window be smaller than its
 panels ask for (so it can always be resized), and in a window shorter than a column's panels together Qt draws
 them over each other and over the bar at the bottom. Here each panel sits in a ``PanelScroll``; a ``PanelFitter``
-keeps every panel at its full height while they all fit and, when they do not, lets the tallest ones scroll.
+keeps every panel at its full height while they all fit and, when they do not, lets them scroll, one after another.
 """
 
 from __future__ import annotations
@@ -20,11 +20,14 @@ class PanelScroll(QScrollArea):
 
     FLOOR = 48  # the height a squeezed panel keeps: enough to see it and its scroll bar
 
-    def __init__(self, panel: QWidget, grows: bool = True):
-        """``grows``: whether the panel takes a share of spare height in its column (a list does, a few rows of controls do not)."""
-
+    def __init__(self, panel: QWidget):
         super().__init__()
         self._squeezed = False
+        # Spare height in the column is shared as it was with the panel docked directly.
+        policy = panel.sizePolicy()
+        grows = bool(policy.expandingDirections() & Qt.Orientation.Vertical)
+        if panel.layout() is not None:
+            grows = grows or bool(panel.layout().expandingDirections() & Qt.Orientation.Vertical)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding if grows else QSizePolicy.Policy.Preferred)
         self.setWidget(panel)
         # The panel is sized here (see _place), not by the scroll area: for a panel with wrapping text Qt would
@@ -93,7 +96,7 @@ class PanelScroll(QScrollArea):
 
 
 class PanelFitter(QObject):
-    """Squeezes the docked panels it is given, tallest first, only while the window is too short for them all."""
+    """Squeezes the docked panels it is given, in the order given, only while the window is too short for them all."""
 
     def __init__(self, window, docks: list[QDockWidget]):
         super().__init__(window)
@@ -144,9 +147,8 @@ class PanelFitter(QObject):
         layout = self._window.layout()
         for dock in self._docks:
             dock.widget().set_squeezed(False)
-        docked = sorted((dock for dock in self._docks if self._docked(dock)), key=lambda dock: dock.widget().full_height(), reverse=True)
         squeezed = []
-        for dock in docked:
+        for dock in (dock for dock in self._docks if self._docked(dock)):
             layout.invalidate()  # the height the window needs is worked out again, with the panels as they are now
             if layout.totalMinimumSize().height() <= self._window.height():
                 break

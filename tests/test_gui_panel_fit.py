@@ -1,5 +1,5 @@
-"""Docked panels are never drawn over each other: the Plan opens in a window of its own, and the Plan, View and
-Measure panels scroll when the window is too short for them.
+"""Docked panels are never drawn over each other: the Plan opens in a window of its own, and the panels beside the
+image (Plan, Measure, View, then napari's layer list and layer controls) scroll when the window is too short for them.
 
 Needs napari and Qt; skipped without napari.
 """
@@ -82,7 +82,7 @@ def test_plan_opens_in_its_own_window(tmp_path: Path, open_window):  # noqa: F81
         shell._footer.end_busy()
 
 
-@pytest.mark.parametrize("size", [(1700, 900), (1366, 768)])
+@pytest.mark.parametrize("size", [(1700, 900), (1366, 768), (1280, 720)])
 def test_docked_panels_scroll_instead_of_overlapping(tmp_path: Path, open_window, size):  # noqa: F811
     shell, window = _open(tmp_path, open_window, size)
     assert _overlaps(window) == []
@@ -94,7 +94,7 @@ def test_docked_panels_scroll_instead_of_overlapping(tmp_path: Path, open_window
         _long_run_status(shell)
         _events(0.8)
         assert _overlaps(window) == []
-        # The Plan is shorter than its controls need, so it scrolls; the tallest panel gives way first.
+        # The Plan is shorter than its controls need, so it scrolls; it gives way before the other panels.
         assert plan.widget().squeezed() and plan.widget().verticalScrollBar().isVisible()
         assert plan.widget().height() < plan.widget().full_height()
         if size[1] >= 900:
