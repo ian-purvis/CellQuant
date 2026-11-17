@@ -3118,6 +3118,11 @@ class CellQuantWindow:
         self._marker_setup.refresh()
         self._experiment_panel.set_notices(self.controller.channel_notices())
         self.markers_changed()  # steps 5 and 6 name the markers of the image on screen
+        result = self.controller.recall(self._shown_image_id, measure=False) if self._shown_image_id else None
+        if result is not None:
+            self._results_panel.show_result(result)  # the counts by kind of object and the summary name the markers too
+            self._results_summary.show_result(result, self.controller.recipe)
+        self.refresh_guidance()  # the Start page and step headers list the markers by name
 
     def _store_contrast(self, index: int, layer) -> None:
         if self.controller is None:
@@ -3674,7 +3679,8 @@ class ExperimentPanel(QWidget):
             self.channel_order.setText("No image open.")
 
     def show_channel_order(self, record) -> None:
-        names = list(record.channel_names or ())
+        controller = self.shell.controller
+        names = controller.shown_channel_names(record) if controller is not None else list(record.channel_names or ())  # a renamed channel under its new name
         count = record.number_of_channels or len(names)
         if not count:
             self.channel_order.setText("No channel information in the file.")
@@ -3712,7 +3718,7 @@ class ExperimentPanel(QWidget):
             image_item.setToolTip(record.source_path)
             self.table.setItem(row, 1, image_item)
             self.table.setItem(row, 2, QTableWidgetItem(record.sample_name))
-            channels = ", ".join(record.channel_names) if record.channel_names else str(record.number_of_channels or "")
+            channels = ", ".join(controller.shown_channel_names(record)) if record.channel_names else str(record.number_of_channels or "")
             values = [
                 (
                     f"{record.z_planes} × {record.pixel_size_z:g} µm"
@@ -5265,8 +5271,12 @@ class MeasurementsPanel(QWidget):
             self.class_measurement.addItem(_measurement_text(controller, measurement), measurement.id)
         self.class_measurement.blockSignals(False)
         self.classes.setRowCount(len(controller.recipe.classifications))
+        shown = controller.marker_names()  # a marker follows its channel when the user renames it; the settings keep the name it was made with
         for row, classification in enumerate(controller.recipe.classifications):
-            self.classes.setItem(row, 0, QTableWidgetItem(classification.name))
+            name_item = QTableWidgetItem(shown.get(classification.id, classification.name))
+            name_item.setData(Qt.UserRole, classification.name)
+            name_item.setData(Qt.UserRole + 1, name_item.text())
+            self.classes.setItem(row, 0, name_item)
             spec = next((m for m in controller.recipe.measurements if m.id == classification.measurement), None)
             measured = QTableWidgetItem(_measurement_text(controller, spec) if spec is not None else classification.measurement)
             measured.setData(Qt.UserRole, classification.measurement)
@@ -5299,7 +5309,10 @@ class MeasurementsPanel(QWidget):
         data["measurements"] = measurements
         classifications = []
         for row in range(self.classes.rowCount()):
-            name = self.classes.item(row, 0).text()
+            name_item = self.classes.item(row, 0)
+            name = name_item.text()
+            if name_item.data(Qt.UserRole) is not None and name == name_item.data(Qt.UserRole + 1):
+                name = str(name_item.data(Qt.UserRole))  # shown under its channel's new name and not edited: the settings keep their name
             measurement_item = self.classes.item(row, 1)
             measurement = str(measurement_item.data(Qt.UserRole) or measurement_item.text())
             try:
@@ -8004,10 +8017,11 @@ class ResultsPanel(QWidget):
         """Each marker positive or negative, and pairs of two markers; 'all objects' for Among."""
 
         markers = controller.recipe.classifications
+        shown = controller.marker_names()  # a marker follows its channel when the user renames it
         choices = []
         for item in markers:
-            choices.append((f"{item.name}+", item.id))
-            choices.append((f"{item.name}-", f"NOT {item.id}"))
+            choices.append((f"{shown.get(item.id, item.name)}+", item.id))
+            choices.append((f"{shown.get(item.id, item.name)}-", f"NOT {item.id}"))
         for first_index, first in enumerate(markers):
             for second in markers[first_index + 1 :]:
                 for first_sign in ("+", "-"):
@@ -8015,7 +8029,7 @@ class ResultsPanel(QWidget):
                         expression = " AND ".join(
                             (item.id if sign == "+" else f"NOT {item.id}") for item, sign in ((first, first_sign), (second, second_sign))
                         )
-                        choices.append((f"{first.name}{first_sign} and {second.name}{second_sign}", expression))
+                        choices.append((f"{shown.get(first.id, first.name)}{first_sign} and {shown.get(second.id, second.name)}{second_sign}", expression))
         for box, extra in ((self.report_count, []), (self.report_among, [("all objects", "all_objects")])):
             keep = box.currentData()
             box.blockSignals(True)
@@ -8068,7 +8082,7 @@ class ResultsPanel(QWidget):
         controller.set_recipe(data)
 
     def show_result(self, result) -> None:
-        frame = result.phenotype_counts
+        frame = self.shell.controller.named_phenotype_counts(result)[0]  # markers under their names now
         self.phenotypes.setRowCount(len(frame))
         for row_index, row in enumerate(frame.itertuples(index=False)):
             self.phenotypes.setItem(row_index, 0, QTableWidgetItem(str(row.phenotype)))
