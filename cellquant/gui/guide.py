@@ -16,6 +16,8 @@ import numpy as np
 from qtpy.QtCore import Qt, QTimer, QUrl
 from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import (
+    QAbstractSlider,
+    QAbstractSpinBox,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -27,6 +29,7 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -207,6 +210,25 @@ HELP = {
     ("_review_panel", "min_percent"): "An object is positive when at least this percent of its pixels are at or above the pixel level.",
     ("_review_panel", "pixel_level"): "A pixel passes when its value is at or above this level (same units as the image). Click Apply pixel level to measure again.",
     ("_review_panel", "counts"): "Counts for this image at the current cutoff. Unmeasured objects are left out of all counts.",
+    ("_objects_panel", "advanced_toggle"): "Show more settings: fill holes, smooth outlines, split touching objects and the Cellpose options.",
+    ("_objects_panel", "fill_holes"): "Fill any hole inside an object, so every object is solid.",
+    ("_objects_panel", "opening"): "Remove specks and thin bridges from each object: it is shrunk, then grown back, by this many pixels. 0 does nothing.",
+    ("_objects_panel", "closing"): "Close small gaps in each object: it is grown, then shrunk back, by this many pixels. 0 does nothing.",
+    ("_objects_panel", "watershed_distance"): "Smallest distance between two object centers, in pixels, for them to be split apart. Used when Watershed is on.",
+    ("_objects_panel", "compactness"): "How round the pieces of a split object are kept: higher gives rounder pieces. 0 splits along the brightness alone.",
+    ("_objects_panel", "crop_margin"): "How far around the positive area to also look for objects, in micrometers.",
+    ("_review_panel", "advanced_toggle"): "Show the colors of positive and negative objects and whether they are filled or outlined.",
+    ("_review_panel", "use_high"): "Also set an upper pixel level: pixels brighter than it do not count, for example saturated spots.",
+    ("_measurements_panel", "meas_channel"): "The channel this measurement reads.",
+    ("_measurements_panel", "region"): "Where to measure in each object: the whole object, a shrunk or grown copy of it, or a ring around it.",
+    ("_measurements_panel", "distance"): "How far to shrink or grow the object, in pixels.",
+    ("_measurements_panel", "inner"): "Where the ring starts, in pixels from the object's edge.",
+    ("_measurements_panel", "outer"): "Where the ring ends, in pixels from the object's edge.",
+    ("_measurements_panel", "background"): "Subtract a background level before measuring: one found for the whole image, or one found in a ring around each object.",
+    ("_measurements_panel", "use_high"): "Also set an upper pixel level: pixels brighter than it do not count, for example saturated spots.",
+    ("_measurements_panel", "class_name"): "The name of the new marker, for example OTX2.",
+    ("_measurements_panel", "class_measurement"): "The measurement this marker is called from.",
+    ("_measurements_panel", "class_threshold"): "The cutoff for the new marker, in the units of its measurement. Step 5 sets it with a slider.",
     ("_experiment_panel", "filter_box"): "Show only images whose file or sample name contains this text.",
     ("_experiment_panel", "table"): "Image: where the file is inside the folder you added (hover for the full path). Untick Include to leave an image out without deleting it. Sample names and Folder columns can be edited or pasted from a spreadsheet; results can be grouped by them.",
     ("_objects_panel", "z_stack"): (
@@ -223,6 +245,13 @@ HELP = {
 }
 
 BUTTON_HELP = {
+    "Add images…": "Add image files (ND2 or TIFF) to the experiment. The files themselves are never changed.",
+    "Add folder…": "Add the images in a folder you choose, including its subfolders. The files themselves are never changed.",
+    "Add measurement": "Add the measurement chosen above, made in every object, to the Measurements table.",
+    "Remove measurement": "Remove the measurement selected in the Measurements table, and the markers that use it.",
+    "Add marker": "Add a marker with the name, measurement, cutoff and rule chosen above: every object is called positive or negative for it.",
+    "Add result row": "Add the Count and Among choices above as a row of results.",
+    "Remove result row": "Remove the row selected in the Result rows table.",
     "Preview": "Try the settings on the area you are looking at. Nothing is saved.",
     "Run": "Find objects in this image and measure them.",
     "Undo": "Undo the last edit. (Ctrl+Z)",
@@ -257,6 +286,24 @@ class StepState:
     detail: str = ""
     blocker: str = ""  # why Next is disabled; empty when the user may continue
     hint: str = ""
+
+
+def gate(button, ok: bool, reason: str) -> None:
+    """Enable a button that can act now, or switch it off with the reason as its tooltip.
+
+    The tooltip it had comes back when it can act again. Used for buttons whose state is known at
+    once (an experiment is open, something is selected), so none is enabled only to do nothing.
+    """
+
+    normal = button.property("tooltip_when_enabled")
+    if normal is None:
+        normal = button.toolTip()
+        button.setProperty("tooltip_when_enabled", normal)
+    if button.isEnabled() != ok:
+        button.setEnabled(ok)
+    wanted = normal if ok else reason
+    if button.toolTip() != wanted:
+        button.setToolTip(wanted)
 
 
 def step_states(window) -> list[StepState]:
@@ -299,7 +346,8 @@ def step_states(window) -> list[StepState]:
             "" if found else "Finish step 2 first.",
         )
     )
-    names = ", ".join(item.name for item in markers)
+    shown = controller.marker_names()  # a marker follows its channel when the user renames it
+    names = ", ".join(shown.get(item.id, item.name) for item in markers)
     states.append(StepState(bool(markers), names, "" if markers else "Set up at least one marker."))
     classified = any(all(item.id in result.objects.columns for item in markers) for result in results) if markers else False
     reviewed = [record for record in images if record.processing_status in {"reviewed", "approved"}]
@@ -408,6 +456,7 @@ class StepPage(QWidget):
         panel.setSizePolicy(ignored, expanding)
         if advanced:
             self.advanced_toggle = QCheckBox("Advanced")
+            self.advanced_toggle.setToolTip("Show the settings of this step that most experiments do not need to change.")
             self.advanced_toggle.toggled.connect(self.panel_scroll.setVisible)
             self.panel_scroll.setVisible(False)
             layout.addWidget(self.advanced_toggle)
@@ -422,11 +471,13 @@ class StepPage(QWidget):
         layout.addWidget(self.hint)
         bar = QHBoxLayout()
         self.back = QPushButton("← Back")
+        self.back.setToolTip(f"Go back to step {index}: {STEPS[index - 1].name}." if index else "Go back to the Start tab.")
         self.back.clicked.connect(lambda: window.go_to_step(index - 1))
         self.blocker = QLabel("")
         self.blocker.setWordWrap(True)
         self.blocker.setStyleSheet(_BLOCKER_STYLE)
         self.next = QPushButton(f"Next: {STEPS[index + 1].name} →" if index + 1 < len(STEPS) else "Back to Start")
+        self.next.setToolTip(f"Go to step {index + 2}: {STEPS[index + 1].name}." if index + 1 < len(STEPS) else "Go back to the Start tab.")
         self.next.clicked.connect(lambda: window.go_to_step(index + 1) if index + 1 < len(STEPS) else window.go_to_start())
         bar.addWidget(self.back)
         bar.addWidget(self.blocker, 1)
@@ -446,11 +497,18 @@ class StepPage(QWidget):
         self.hint.setVisible(bool(state.hint))
 
 
-class StartPage(QWidget):
+class StartPage(QScrollArea):
+    """The Start tab. It scrolls when the window is too short for all of it, so it never sets how tall the CellQuant panel must be."""
+
     def __init__(self, window):
         super().__init__()
         self.window = window
-        layout = QVBoxLayout(self)
+        body = QWidget()
+        self.setWidget(body)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        layout = QVBoxLayout(body)
         self.lock_note = _lock_note_label()
         layout.addWidget(self.lock_note)
         title = QLabel("<h2>CellQuant</h2>")
@@ -492,6 +550,7 @@ class StartPage(QWidget):
             self.rows.append(label)
         layout.addWidget(steps)
         self.continue_button = QPushButton("Continue →")
+        self.continue_button.setToolTip("Go to the next step you have not finished.")
         self.continue_button.setMinimumHeight(34)
         self.continue_button.clicked.connect(self._continue)
         layout.addWidget(self.continue_button)
@@ -640,6 +699,7 @@ class MarkerSetup(QGroupBox):
             if channel.channel_index == segmentation:
                 continue
             box = QCheckBox(channel.channel_name)
+            box.setToolTip("Count objects positive for this channel as a marker. Untick it to leave it out.")
             box.setProperty("channel_index", channel.channel_index)
             box.setChecked(channel.channel_index in existing or not existing)
             box.toggled.connect(lambda _on: self._changed())
@@ -652,8 +712,9 @@ class MarkerSetup(QGroupBox):
             else "Only one channel: no marker to count."
         )
         markers = controller.recipe.classifications
+        shown = controller.marker_names()  # a marker follows its channel when the user renames it
         self.current.setText(
-            "Markers: " + "; ".join(f"{item.name} ({describe_rule(controller.recipe, item)})" for item in markers)
+            "Markers: " + "; ".join(f"{shown.get(item.id, item.name)} ({describe_rule(controller.recipe, item)})" for item in markers)
             if markers
             else ""
         )
@@ -682,10 +743,11 @@ class MarkerSetup(QGroupBox):
             box.addItem("Examples", "examples")
             box.setItemData(0, "Drag the cutoff in step 5.", Qt.ToolTipRole)
             box.setItemData(1, "Click positive and negative objects in step 5; the cutoff goes between them.", Qt.ToolTipRole)
+            box.setToolTip("How this marker's cutoff is set in step 5: with a slider, or from examples you click.")
             box.setCurrentIndex(max(0, box.findData(item.cutoff_by)))
             box.setProperty("classification_id", item.id)
             box.activated.connect(lambda _index, box=box: self._mode_chosen(box))
-            self.modes_form.addRow(item.name, box)
+            self.modes_form.addRow(controller.marker_names().get(item.id, item.name), box)
             self.mode_boxes.append(box)
         self.modes.setVisible(bool(markers))
 
@@ -806,16 +868,17 @@ class MarkerSetup(QGroupBox):
         return lines
 
 
-def _overlap_lines(result, recipe=None) -> list[str]:
+def _overlap_lines(result, recipe=None, names=None, table=None) -> list[str]:
     """Objects positive for two or more markers (each set of markers, whatever the others are),
     except sets a report above already counts among all objects."""
 
-    table = getattr(result, "combination_counts", None)
+    if table is None:
+        table = getattr(result, "combination_counts", None)
     if table is None or table.empty or "phenotype" not in table.columns:
         return []
     reported = set()
     if recipe is not None:
-        names = {item.id: item.name for item in recipe.classifications}
+        names = names or {item.id: item.name for item in recipe.classifications}
         for report in recipe.reports:
             if report.denominator.strip().casefold() not in {"all_objects", "all_measured_objects"}:
                 continue
@@ -922,6 +985,7 @@ class ResultsSummary(QScrollArea):
         self.batch.setWordWrap(True)
         layout.addWidget(self.batch)
         self.open_folder = QPushButton("Open export folder")
+        self.open_folder.setToolTip("Open the folder the results were just saved to.")
         self.open_folder.setVisible(False)
         self.open_folder.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(window._exported_to))))
         layout.addWidget(self.open_folder)
@@ -941,7 +1005,8 @@ class ResultsSummary(QScrollArea):
                 f"{_readable(row['numerator'], names)} among {_readable(row['denominator'], names)}: "
                 f"<b>{row['count']}</b> of {row['denominator_count']} ({percent_text})"
             )
-        lines.extend(_overlap_lines(result, recipe))
+        overlaps = controller.named_phenotype_counts(result)[1] if controller is not None else None
+        lines.extend(_overlap_lines(result, recipe, names, overlaps))
         unmeasured = int(result.summary.iloc[0].get("n_unmeasured", 0)) if not result.summary.empty and "n_unmeasured" in result.summary.columns else 0
         if unmeasured:
             lines.append(f"<span style='background-color:rgba(217,164,0,0.2)'>{unmeasured} unmeasured, left out.</span>")
@@ -1036,6 +1101,7 @@ class GuideDialog(QDialog):
         browser.setMarkdown(text)
         layout.addWidget(browser)
         close = QPushButton("Close")
+        close.setToolTip("Close the guide.")
         close.clicked.connect(self.accept)
         layout.addWidget(close)
 
@@ -1064,7 +1130,12 @@ def apply_help(window) -> None:
             widget.setToolTip(text)
             if widget.property("range_unit") is not None:
                 add_range_tip(widget, widget.property("range_unit"))
-    for panel_name in ("_objects_panel", "_review_panel", "_experiment_panel", "_results_panel"):
+            if widget.layout() is not None:
+                # A slider with its value box: the slider and its number say the same as the whole.
+                for part in widget.findChildren((QAbstractSlider, QLabel, QAbstractSpinBox, QLineEdit)):
+                    if not part.toolTip():
+                        part.setToolTip(text)
+    for panel_name in ("_objects_panel", "_review_panel", "_experiment_panel", "_results_panel", "_measurements_panel"):
         panel = getattr(window, panel_name, None)
         if panel is None:
             continue

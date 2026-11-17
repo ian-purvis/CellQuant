@@ -636,6 +636,7 @@ class NewExperimentDialog(QDialog):
         form = QFormLayout()
         self.name = QLineEdit()
         self.name.setPlaceholderText("e.g. P7 OTX2 counts")
+        self.name.setToolTip("A name for this experiment. It is shown in the window and saved with the experiment.")
         self.images = QLineEdit()
         self.images.setToolTip(
             "Only read, never changed. This folder and its subfolders are scanned, not folders beside it.\n"
@@ -649,12 +650,12 @@ class NewExperimentDialog(QDialog):
             "your own. Pick the image folder only if you want results next to the images."
         )
         form.addRow("Experiment name", self.name)
-        form.addRow("Image folder", self._browse_row(self.images, self._pick_images))
+        form.addRow("Image folder", self._browse_row(self.images, self._pick_images, "Choose the folder of images in a file window."))
         self.images_check = QLabel("")
         self.images_check.setWordWrap(True)
         self.images_check.setTextFormat(Qt.RichText)
         form.addRow("", self.images_check)
-        form.addRow("Results folder", self._browse_row(self.results, self._pick_results))
+        form.addRow("Results folder", self._browse_row(self.results, self._pick_results, "Choose the folder for the results in a file window."))
         self.results_check = QLabel("")
         self.results_check.setWordWrap(True)
         self.results_check.setTextFormat(Qt.RichText)
@@ -662,6 +663,8 @@ class NewExperimentDialog(QDialog):
         types = QHBoxLayout()
         self.use_nd2 = QCheckBox("ND2 files")
         self.use_tiff = QCheckBox("TIFF files")
+        self.use_nd2.setToolTip("Include ND2 files when looking for images in the image folder.")
+        self.use_tiff.setToolTip("Include TIFF files (.tif, .tiff) when looking for images in the image folder.")
         for box in (self.use_nd2, self.use_tiff):
             box.setChecked(True)
             types.addWidget(box)
@@ -691,6 +694,8 @@ class NewExperimentDialog(QDialog):
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         self.ok_button = buttons.button(QDialogButtonBox.Ok)
+        self.ok_button.setToolTip("Create the experiment and open it.")
+        buttons.button(QDialogButtonBox.Cancel).setToolTip("Close without creating an experiment.")
         layout.addWidget(buttons)
         self._show_images_note()
         self._update_ok()
@@ -722,12 +727,13 @@ class NewExperimentDialog(QDialog):
         self._debounce.stop()
         super().done(result)
 
-    def _browse_row(self, field: QLineEdit, slot) -> QWidget:
+    def _browse_row(self, field: QLineEdit, slot, tip: str) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(field)
         button = QPushButton("Browse…")
+        button.setToolTip(tip)
         button.clicked.connect(slot)
         layout.addWidget(button)
         return row
@@ -1224,6 +1230,14 @@ class CellQuantWindow:
         self._tabs.setCurrentWidget(self._start_page)
         self.refresh_guidance()
 
+    def _update_action_states(self) -> None:
+        """Buttons that would do nothing are off, with the reason in their tooltip (see guide.gate)."""
+
+        self._experiment_panel.update_actions()
+        self._edit_panel.update_actions()
+        self._analysis_bar.refresh_plan_button()
+        self._plan_dock.update_actions()
+
     def refresh_guidance(self) -> None:
         if self._run_lock_note.isVisibleTo(self._dock):
             # Settings rebuilt during a run (for example a refreshed list) start enabled; lock them too.
@@ -1231,6 +1245,7 @@ class CellQuantWindow:
                 if not widget.testAttribute(Qt.WA_ForceDisabled):
                     self._settings_restore.setdefault(widget, True)
                     widget.setEnabled(False)
+        self._update_action_states()
         states = guide.step_states(self)
         self._start_page.update_state(states)
         # A step's tab opens once every earlier step's Next is allowed; going back is always allowed.
@@ -2184,6 +2199,7 @@ class CellQuantWindow:
             self._lock_settings(False)
             self._footer.end_busy()
             self._plan_dock.setEnabled(True)
+            self._update_action_states()  # the run changed what the buttons can do
             self._refresh_plan()
             if self._exclusive:
                 self._exclusive = False
@@ -3100,6 +3116,53 @@ class CellQuantWindow:
         self.message(f"Channel {position + 1} is now called {typed}. Markers named after it and exported columns use this name.")
         QTimer.singleShot(0, self._channel_names_changed)  # after napari has finished with the rename
 
+    def rename_channels(self, names: dict[int, str]) -> None:
+        """Rename channels from step 1 (``names``: channel index -> new name; unchanged ones are skipped).
+
+        This goes the way renaming a channel's layer does: the layer is renamed and its handler names the
+        channel, so both give the same refusals and refresh the same lists. With no layer on screen for
+        the channel (no image shown yet) the channel is named directly.
+        """
+
+        controller = self.controller
+        if controller is None:
+            self.message("Open an experiment before renaming a channel.")
+            return
+        pending = {index: name for index, name in names.items() if name.strip() != controller._channel_name(index)}
+        for index, typed in sorted(pending.items()):
+            layer = self._layer_of_channel(index)
+            if layer is not None:
+                layer.name = typed  # its handler (_channel_layer_renamed) names the channel and refreshes the lists
+                continue
+            if self.is_busy():
+                self.message("Wait for the current analysis to finish before renaming a channel.")
+                return
+            try:
+                controller.rename_channel(index, typed)
+            except (CellQuantError, OSError) as exc:
+                self.message(str(exc))
+                return
+            self.message(f"Channel {index + 1} is now called {typed.strip()}. Markers named after it and exported columns use this name.")
+            self._channel_names_changed()
+
+    def _layer_of_channel(self, index: int):
+        """The channel layer on screen for this experiment channel, or None."""
+
+        controller = self.controller
+        if controller is None or self._shown_image_id is None:
+            return None
+        try:
+            record = controller.experiment.image(self._shown_image_id)
+        except KeyError:
+            return None
+        layers = [layer for layer in self.viewer.layers if layer.name in self._name_hooks]
+        owners = controller.display_channels(record, len(layers))
+        for position, owner in enumerate(owners):
+            label = channel_label(position, controller._channel_name(index))
+            if owner == index and label in self._name_hooks and label in self.viewer.layers:
+                return self.viewer.layers[label]
+        return None
+
     def _channel_names_changed(self) -> None:
         """Every list that names channels or markers shows the names as they are now."""
 
@@ -3118,6 +3181,11 @@ class CellQuantWindow:
         self._marker_setup.refresh()
         self._experiment_panel.set_notices(self.controller.channel_notices())
         self.markers_changed()  # steps 5 and 6 name the markers of the image on screen
+        result = self.controller.recall(self._shown_image_id, measure=False) if self._shown_image_id else None
+        if result is not None:
+            self._results_panel.show_result(result)  # the counts by kind of object and the summary name the markers too
+            self._results_summary.show_result(result, self.controller.recipe)
+        self.refresh_guidance()  # the Start page and step headers list the markers by name
 
     def _store_contrast(self, index: int, layer) -> None:
         if self.controller is None:
@@ -3520,11 +3588,9 @@ class ExperimentPanel(QWidget):
         self.no_experiment.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.14); border-radius: 6px; padding: 6px; }")
         layout.addWidget(self.no_experiment)
         buttons = QHBoxLayout()
-        for text, slot in (
-            ("Add images…", self._add_images),
-            ("Add folder…", self._add_folder),
-        ):
-            button = QPushButton(text)
+        self.add_images_button = QPushButton("Add images…")
+        self.add_folder_button = QPushButton("Add folder…")
+        for button, slot in ((self.add_images_button, self._add_images), (self.add_folder_button, self._add_folder)):
             button.clicked.connect(slot)
             buttons.addWidget(button)
         load = QPushButton("Load masks…")
@@ -3576,9 +3642,10 @@ class ExperimentPanel(QWidget):
         header.setMinimumSectionSize(36)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.itemSelectionChanged.connect(self.update_actions)
         layout.addWidget(self.table)
         run_row = QHBoxLayout()
-        add_column = QPushButton("Add column…")
+        add_column = self.add_column_button = QPushButton("Add column…")
         add_column.setToolTip(
             "Add a column of your own to the list (for example Genotype or Age), empty and ready to type or paste into. "
             "Results can be grouped by it. Pasting past the last column adds one too."
@@ -3586,7 +3653,7 @@ class ExperimentPanel(QWidget):
         add_column.clicked.connect(self._add_column)
         run_row.addWidget(add_column)
         run_row.addStretch(1)
-        run_selected = QPushButton("Run selected images")
+        run_selected = self.run_selected_button = QPushButton("Run selected images")
         run_selected.setToolTip("Run the images selected in the table (click rows; Ctrl or Shift for more), for example to rerun failed ones.")
         run_selected.clicked.connect(lambda: shell._results_panel._run_selected())
         run_row.addWidget(run_selected)
@@ -3599,7 +3666,13 @@ class ExperimentPanel(QWidget):
         self.channel_order.setWordWrap(True)
         self.channel_order.setTextFormat(Qt.RichText)
         self.channel_order.setStyleSheet("QLabel { background: rgba(60, 130, 220, 0.10); border-radius: 6px; padding: 6px; }")
-        layout.addWidget(self.channel_order)
+        self.rename_button = QPushButton("Rename…")
+        self.rename_button.clicked.connect(self._rename_channels)
+        order_row = QHBoxLayout()
+        order_row.addWidget(self.channel_order, 1)
+        order_row.addWidget(self.rename_button, 0, Qt.AlignTop)
+        layout.addLayout(order_row)
+        self._update_rename_button()
         self.pixel_summary = QLabel("")
         self.pixel_summary.setToolTip("Pixel size of the included images. Nothing to set.")
         self.pixel_summary.setWordWrap(True)
@@ -3655,10 +3728,88 @@ class ExperimentPanel(QWidget):
         self._pasting = False  # while a paste fills cells, other panels follow once at the end
         self._pasted_headers: set[str] = set()
 
+    def update_actions(self) -> None:
+        """Buttons that would do nothing are off, with the reason in their tooltip."""
+
+        if self.shell.is_busy():
+            return  # the run buttons are locked while a run goes on; set_busy puts them back
+        controller = self.shell.controller
+        open_first = "Open an experiment first (Start tab)."
+        for button in (self.add_images_button, self.add_folder_button, self.add_column_button):
+            guide.gate(button, controller is not None, open_first)
+        guide.gate(
+            self.run_selected_button,
+            controller is not None and bool(self.selected_ids()),
+            open_first if controller is None else "Select images in the list first (click rows; Ctrl or Shift for more).",
+        )
+
+    def _update_rename_button(self) -> None:
+        controller = self.shell.controller
+        can = controller is not None and bool(controller.experiment.channels)
+        self.rename_button.setEnabled(can)
+        self.rename_button.setToolTip(
+            "Give the channels names of your own, for example OTX2 instead of AF594. The names are used in every image, "
+            "the channel lists, markers named after a channel and the exported columns. (You can also rename a channel's layer in the layer list.)"
+            if can
+            else "Open an experiment first: the channels are named for the whole experiment."
+        )
+
+    def _rename_channels(self) -> None:
+        controller = self.shell.controller
+        if controller is None or not controller.experiment.channels:
+            self.shell.message("Open an experiment before renaming a channel.")
+            return
+        channels = sorted(controller.experiment.channels, key=lambda item: item.channel_index)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Rename channels")
+        column = QVBoxLayout(dialog)
+        column.addWidget(QLabel("Name each channel. The names are used in every image of the experiment."))
+        form = QFormLayout()
+        fields = {}
+        for channel in channels:
+            field = QLineEdit(str(channel.channel_name))
+            field.setToolTip(f"The name of channel {channel.channel_index + 1}. Two channels cannot share a name.")
+            fields[channel.channel_index] = field
+            form.addRow(f"Channel {channel.channel_index + 1}", field)
+        column.addLayout(form)
+        problem = QLabel("")
+        problem.setWordWrap(True)
+        problem.setStyleSheet("QLabel { color: #c0392b; }")
+        column.addWidget(problem)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok = buttons.button(QDialogButtonBox.Ok)
+        ok.setToolTip("Save these names.")
+        buttons.button(QDialogButtonBox.Cancel).setToolTip("Close without renaming anything.")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        column.addWidget(buttons)
+
+        def check() -> None:
+            # Silent until something is wrong; then the reason, in red, with OK off.
+            typed = {index: field.text().strip() for index, field in fields.items()}
+            why = ""
+            if any(not name for name in typed.values()):
+                why = "A channel needs a name."
+            elif len({name.casefold() for name in typed.values()}) < len(typed):
+                why = "Two channels have the same name."
+            problem.setText(why)
+            ok.setEnabled(not why)
+
+        for field in fields.values():
+            field.textChanged.connect(check)
+        check()
+        self._rename_dialog = dialog  # for tests
+        self._rename_fields = fields
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.shell.rename_channels({index: field.text().strip() for index, field in fields.items()})
+
     def refresh(self) -> None:
         self.refresh_table()
         controller = self.shell.controller
         self.no_experiment.setVisible(controller is None)
+        self._update_rename_button()
+        self.update_actions()
         if controller is None:
             self.channel_order.setText("No image open.")
             return
@@ -3675,7 +3826,8 @@ class ExperimentPanel(QWidget):
             self.channel_order.setText("No image open.")
 
     def show_channel_order(self, record) -> None:
-        names = list(record.channel_names or ())
+        controller = self.shell.controller
+        names = controller.shown_channel_names(record) if controller is not None else list(record.channel_names or ())  # a renamed channel under its new name
         count = record.number_of_channels or len(names)
         if not count:
             self.channel_order.setText("No channel information in the file.")
@@ -3713,7 +3865,7 @@ class ExperimentPanel(QWidget):
             image_item.setToolTip(record.source_path)
             self.table.setItem(row, 1, image_item)
             self.table.setItem(row, 2, QTableWidgetItem(record.sample_name))
-            channels = ", ".join(record.channel_names) if record.channel_names else str(record.number_of_channels or "")
+            channels = ", ".join(controller.shown_channel_names(record)) if record.channel_names else str(record.number_of_channels or "")
             values = [
                 (
                     f"{record.z_planes} × {record.pixel_size_z:g} µm"
@@ -3739,6 +3891,7 @@ class ExperimentPanel(QWidget):
         self._filter(self.filter_box.text())
         self._update_included_label()
         self._update_calibration_visibility()
+        self.update_actions()
         self.shell._release_window_later()
 
     def refresh_status(self) -> None:
@@ -3836,10 +3989,10 @@ class ExperimentPanel(QWidget):
         else:
             return
         record.sample_name = controller.experiment.image(image_id).sample_name
-        self.shell._autosave()
         if self._pasting:
-            self._pasted_headers.add(header)  # the other panels follow once, when the paste is done
+            self._pasted_headers.add(header)  # the other panels follow, and the experiment is saved, once when the paste is done
             return
+        self.shell._autosave()
         self._cell_edited_elsewhere(header)
 
     def _cell_edited_elsewhere(self, header: str) -> None:
@@ -3928,6 +4081,8 @@ class ExperimentPanel(QWidget):
             self._paste_cells(controller, row, column, lines, headers)
         finally:
             self._pasting = False
+            if self._pasted_headers:
+                self.shell._autosave()  # one save for the whole paste
             for header in ("Include", "Sample name"):
                 if header in self._pasted_headers:
                     self._cell_edited_elsewhere(header)
@@ -3944,7 +4099,12 @@ class ExperimentPanel(QWidget):
                     headers = [self.table.horizontalHeaderItem(index).text() for index in range(self.table.columnCount())]
                 item = self.table.item(target_row, target_column)
                 if item is not None and headers[target_column] not in {"Image", "Slices", "Channels", "µm/pixel", "Objective", "Status"}:
-                    item.setText(value)
+                    # Setting the text would also apply the cell through itemChanged: apply it once, here.
+                    self.table.blockSignals(True)
+                    try:
+                        item.setText(value)
+                    finally:
+                        self.table.blockSignals(False)
                     self.apply_cell_edit(target_row, target_column)
 
     def _add_images(self) -> None:
@@ -4440,7 +4600,7 @@ class ObjectsPanel(QWidget):
         self.crop.toggled.connect(lambda _checked: self._crop_changed())
         self.crop_channels.itemChanged.connect(lambda _item: self._crop_changed())
         # Rarely used: collapsed until needed, and open from the start when a saved recipe already crops.
-        self.crop_section = CollapsibleSection("Region of interest (optional)")
+        self.crop_section = CollapsibleSection("Region of interest (optional)", tip="Optional: find objects only in the part of the image that holds the positive cells.")
         self.crop_section.add_widget(self.crop)
         self.crop_section.add_widget(self.crop_box)
         layout.addWidget(self.crop_section)
@@ -5340,8 +5500,12 @@ class MeasurementsPanel(QWidget):
             self.class_measurement.addItem(_measurement_text(controller, measurement), measurement.id)
         self.class_measurement.blockSignals(False)
         self.classes.setRowCount(len(controller.recipe.classifications))
+        shown = controller.marker_names()  # a marker follows its channel when the user renames it; the settings keep the name it was made with
         for row, classification in enumerate(controller.recipe.classifications):
-            self.classes.setItem(row, 0, QTableWidgetItem(classification.name))
+            name_item = QTableWidgetItem(shown.get(classification.id, classification.name))
+            name_item.setData(Qt.UserRole, classification.name)
+            name_item.setData(Qt.UserRole + 1, name_item.text())
+            self.classes.setItem(row, 0, name_item)
             spec = next((m for m in controller.recipe.measurements if m.id == classification.measurement), None)
             measured = QTableWidgetItem(_measurement_text(controller, spec) if spec is not None else classification.measurement)
             measured.setData(Qt.UserRole, classification.measurement)
@@ -5355,6 +5519,7 @@ class MeasurementsPanel(QWidget):
         for text, data in COMPARISONS:
             box.addItem(text, data)
         box.setCurrentIndex(max(box.findData(value), 0))
+        box.setToolTip(self.class_comparison.toolTip())
         return box
 
     def _row_comparison(self, row: int) -> str:
@@ -5374,7 +5539,10 @@ class MeasurementsPanel(QWidget):
         data["measurements"] = measurements
         classifications = []
         for row in range(self.classes.rowCount()):
-            name = self.classes.item(row, 0).text()
+            name_item = self.classes.item(row, 0)
+            name = name_item.text()
+            if name_item.data(Qt.UserRole) is not None and name == name_item.data(Qt.UserRole + 1):
+                name = str(name_item.data(Qt.UserRole))  # shown under its channel's new name and not edited: the settings keep their name
             measurement_item = self.classes.item(row, 1)
             measurement = str(measurement_item.data(Qt.UserRole) or measurement_item.text())
             try:
@@ -5707,6 +5875,19 @@ class EditPanel(QWidget):
 
     def refresh(self) -> None:
         return
+
+    def update_actions(self) -> None:
+        """Undo is off while the image shown has no recorded edit to take back, and says why.
+
+        Record drawn edits and Undo all stay on: what was painted in the Objects layer and not recorded
+        yet is only known when they are clicked, and they then say when there was nothing to do.
+        """
+
+        controller = self.shell.controller
+        if self.shell.is_busy():
+            return  # the edit buttons are locked while a run goes on; set_busy puts them back
+        image_id = self.shell._nav_ids[self.shell._nav_index] if controller is not None and self.shell._nav_ids else None
+        guide.gate(self.undo_button, image_id is not None and controller.can_undo(image_id), "No recorded edit on this image to undo.")
 
     _MODE_BUTTONS = {
         "home": ("Delete objects", "Select objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"),
@@ -6409,6 +6590,7 @@ class EditPanel(QWidget):
         self.shell._experiment_panel.refresh_status()
         if result is not None:
             self.shell.show_result(result)
+        self.update_actions()
 
     def delete_object(self, object_id: int) -> None:
         """Delete the clicked object at once; Undo brings it back."""
@@ -6470,6 +6652,9 @@ class EditPanel(QWidget):
         if controller is None or not self.shell._nav_ids:
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
+        if not controller.can_undo(image_id):
+            self.shell.message("Nothing to undo: this image has no recorded edits.")
+            return
         self.shell._start_job(lambda: controller.undo(image_id), self._edited)
 
     def _discard_drawing(self, image_id: str) -> None:
@@ -6498,6 +6683,7 @@ class EditPanel(QWidget):
         drawn = self._key(image_id) in self._pending
         if not count and not drawn:
             self._say("Nothing to reset: this image has no edits.")
+            self.shell.message("Nothing to undo: this image has no edits or drawing.")
             return
         parts = [f"{count} edit{'s' if count != 1 else ''}"] if count else []
         if drawn:
@@ -6537,6 +6723,7 @@ class EditPanel(QWidget):
         images = list(dict.fromkeys(edited + drawn))
         if not images:
             self._say("Nothing to reset: no image has edits.")
+            self.shell.message("Nothing to reset: no image has edits or drawing.")
             return
         answer = QMessageBox.question(
             self,
@@ -6592,6 +6779,7 @@ class EditPanel(QWidget):
             return
         if np.array_equal(drawn, current.labels):
             self._say("Nothing to record: paint or erase in the Objects layer first.")
+            self.shell.message("Nothing drawn to record.")
             return
 
         def finish(result) -> None:
@@ -6620,6 +6808,7 @@ class EditPanel(QWidget):
         todo = {image_id: kept for (owner, image_id), kept in self._pending.items() if owner == analysis}
         if not todo:
             self._say("Nothing to record: paint or erase in the Objects layer first.")
+            self.shell.message("Nothing drawn to record.")
             return
         shown = self.shell._labels_image_id
 
@@ -7813,7 +8002,12 @@ class ReviewPanel(QWidget):
             self.shell.message(str(exc))
             return
         source = "this image" if this_image else f"{used} image{'s' if used != 1 else ''}"
-        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff (from {source}): {old:g} → {new:g}.", before)
+        said = (
+            f"The {classification.name} cutoff is already its automatic value ({new:g}): nothing to reset."
+            if this_image and old == new
+            else f"{classification.name} cutoff (from {source}): {old:g} → {new:g}."
+        )
+        self._after_cutoff_change(controller.classified_now(image_id), said, before)
 
     def _slider_moved(self, value: float) -> None:
         self._pending_cutoff = float(value)
@@ -8079,10 +8273,11 @@ class ResultsPanel(QWidget):
         """Each marker positive or negative, and pairs of two markers; 'all objects' for Among."""
 
         markers = controller.recipe.classifications
+        shown = controller.marker_names()  # a marker follows its channel when the user renames it
         choices = []
         for item in markers:
-            choices.append((f"{item.name}+", item.id))
-            choices.append((f"{item.name}-", f"NOT {item.id}"))
+            choices.append((f"{shown.get(item.id, item.name)}+", item.id))
+            choices.append((f"{shown.get(item.id, item.name)}-", f"NOT {item.id}"))
         for first_index, first in enumerate(markers):
             for second in markers[first_index + 1 :]:
                 for first_sign in ("+", "-"):
@@ -8090,7 +8285,7 @@ class ResultsPanel(QWidget):
                         expression = " AND ".join(
                             (item.id if sign == "+" else f"NOT {item.id}") for item, sign in ((first, first_sign), (second, second_sign))
                         )
-                        choices.append((f"{first.name}{first_sign} and {second.name}{second_sign}", expression))
+                        choices.append((f"{shown.get(first.id, first.name)}{first_sign} and {shown.get(second.id, second.name)}{second_sign}", expression))
         for box, extra in ((self.report_count, []), (self.report_among, [("all objects", "all_objects")])):
             keep = box.currentData()
             box.blockSignals(True)
@@ -8143,7 +8338,7 @@ class ResultsPanel(QWidget):
         controller.set_recipe(data)
 
     def show_result(self, result) -> None:
-        frame = result.phenotype_counts
+        frame = self.shell.controller.named_phenotype_counts(result)[0]  # markers under their names now
         self.phenotypes.setRowCount(len(frame))
         for row_index, row in enumerate(frame.itertuples(index=False)):
             self.phenotypes.setItem(row_index, 0, QTableWidgetItem(str(row.phenotype)))
@@ -8271,6 +8466,8 @@ class AnalysisBar(QWidget):
             action.setToolTip(tip)
             action.triggered.connect(lambda _checked=False, slot=slot: slot())
             self.remove_button = action
+            if text == "Plan…":
+                self.plan_action = action
         menu_button = QToolButton()
         menu_button.setText("Analyses ▾")
         menu_button.setToolTip("Plan, add, rename or remove analyses.")
@@ -8291,9 +8488,15 @@ class AnalysisBar(QWidget):
         self.choice.blockSignals(False)
         several = controller is not None and len(controller.analyses()) > 1
         self.remove_button.setEnabled(several)
+        self.refresh_plan_button()
         summary = getattr(self.shell, "_results_summary", None)
         if summary is not None:
             summary.show_analysis_actions(several)
+
+    def refresh_plan_button(self) -> None:
+        controller = self.shell.controller
+        guide.gate(self.plan_button, controller is not None, "Open an experiment first (Start tab).")
+        self.plan_action.setEnabled(controller is not None)
 
     def _chosen(self, _index: int) -> None:
         recipe_id = self.choice.currentData()
@@ -8448,6 +8651,8 @@ class Footer(QWidget):
         previous.clicked.connect(lambda: self._step(-1))
         next_image.clicked.connect(lambda: self._step(1))
         self._navigation = (previous, next_image)
+        self._navigation_locked = False  # True while another analysis runs in the background (see set_navigation_enabled)
+        self._position = (0, 0)  # (index, number of images) the buttons were last set for
         self.pause = QPushButton("Pause")
         self.resume = QPushButton("Resume")
         self.cancel = QPushButton("Cancel")
@@ -8476,6 +8681,7 @@ class Footer(QWidget):
         self.cancel.setStyleSheet("QPushButton:enabled { color: #e05050; font-weight: bold; }")
         previous.setToolTip("Show the previous image in the experiment (Page Up).")
         next_image.setToolTip("Show the next image in the experiment (Page Down).")
+        self._update_navigation_buttons()  # no experiment yet: nothing to step through
         from qtpy.QtGui import QKeySequence
 
         try:
@@ -8548,10 +8754,21 @@ class Footer(QWidget):
         layout.addWidget(self.log)
 
     def set_navigation_enabled(self, enabled: bool) -> None:
-        for button in self._navigation:
-            button.setEnabled(enabled)
+        self._navigation_locked = not enabled
+        self._update_navigation_buttons()
+
+    def _update_navigation_buttons(self) -> None:
+        """Previous / Next image are off when there is no image before / after the one shown, and say why."""
+
+        index, total = self._position
+        previous, next_image = self._navigation
+        none = "No included images (step 1)."
+        guide.gate(previous, not self._navigation_locked and index > 0 and total > 0, none if total == 0 else "This is the first image.")
+        guide.gate(next_image, not self._navigation_locked and index < total - 1, none if total == 0 else "This is the last image.")
 
     def set_position(self, index: int, total: int, filename: str, only: str | None = None) -> None:
+        self._position = (index, total)
+        self._update_navigation_buttons()
         if total == 0:
             self.position.setText("No included images (step 1).")
             return
