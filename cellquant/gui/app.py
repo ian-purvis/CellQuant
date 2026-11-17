@@ -4000,13 +4000,22 @@ class ExperimentPanel(QWidget):
         elif scope == "missing":
             targets += [record.image_id for record in controller.experiment.images if self._lacks_size(record)]
         targets = list(dict.fromkeys(targets))
+        sizes = {}
         for target in targets:
             record = controller.experiment.image(target)
             if scope == "missing" and target != image_id:
                 # Only fill what is missing; sizes read from the file stay.
-                controller.set_pixel_size(target, record.pixel_size_x or x, record.pixel_size_y or y, record.pixel_size_z or z)
+                sizes[target] = (record.pixel_size_x or x, record.pixel_size_y or y, record.pixel_size_z or z)
             else:
-                controller.set_pixel_size(target, x, y, z)
+                sizes[target] = (x, y, z)
+        # Images with results measured at the old sizes must be run again; approved ones are asked about first.
+        stale = [target for target in targets if controller.pixel_size_makes_stale(target, *sizes[target])]
+        approved = [target for target in stale if controller.experiment.image(target).processing_status == "approved"]
+        if approved and not self._ask_change_approved(len(approved), len(stale)):
+            self.shell.message("Pixel size not changed.")
+            return
+        for target in targets:
+            controller.set_pixel_size(target, *sizes[target])
         self.refresh_table()
         self.shell._objects_panel.update_recommendation()
         self.shell._objects_panel._update_size_hint()
@@ -4014,8 +4023,26 @@ class ExperimentPanel(QWidget):
             self.shell.set_pixel_scale(controller.experiment.image(self.shell._shown_image_id))
             self.shell._measure_dock.refresh()
         self.shell._footer.set_units("µm" if x and y else "pixels — no pixel size in this image", keep_detail=True)
-        self.shell.message(f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.")
+        rerun = f" {len(stale)} image{'s need' if len(stale) != 1 else ' needs'} running again." if stale else ""
+        done = f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.{rerun}"
+        if stale:
+            self.shell._show_note = done  # kept in the footer when the image is shown again
+            self.shell._refresh_all(keep_image=True)  # every step shows the images that must be run again
+        self.shell.message(done)
         self.shell._autosave()
+
+    def _ask_change_approved(self, approved: int, stale: int) -> bool:
+        """Approved images lose their approval when their pixel size changes: ask before changing anything."""
+
+        answer = QMessageBox.question(
+            self,
+            "Change pixel size",
+            f"{approved} approved image{'s' if approved != 1 else ''} would need running and approving again, because areas, "
+            f"volumes and lengths depend on the pixel size ({stale} image{'s' if stale != 1 else ''} with results in all). Change the pixel size?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
 
     def _filter(self, text: str) -> None:
         query = text.casefold()
