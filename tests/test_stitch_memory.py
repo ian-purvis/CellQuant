@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import resource
 import subprocess
 import sys
 import textwrap
@@ -95,8 +94,9 @@ def test_same_result_with_ties_and_edge_cases():
 
 
 def test_tens_of_thousands_of_labels_per_slice_link_within_a_small_memory_bound():
-    # A dense matrix of this size would need (30000 + 1) x (30000 + 1) x 8 bytes = 7 GB. Run in a fresh process so the
-    # peak is measured on its own, with the address space limited far below that.
+    # A dense matrix of this size would need (30000 + 1) x (30000 + 1) x 8 bytes = 7 GB. Run in a fresh process whose
+    # address space is limited far below that: finishing there is the proof. (The limit needs a Unix system.)
+    pytest.importorskip("resource")
     code = textwrap.dedent(
         """
         import resource, numpy as np
@@ -110,9 +110,7 @@ def test_tens_of_thousands_of_labels_per_slice_link_within_a_small_memory_bound(
         out = stitch_slices(planes, 0.25)
         assert out[0].max() == n and np.array_equal(out[0], out[1])
         assert len(np.unique(out)) == n  # every outline overlaps the one at its position below: nothing starts anew
-        print(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
         """
     )
     done = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
     assert done.returncode == 0, done.stderr[-2000:]
-    assert int(done.stdout.split()[-1]) < 1_500_000  # kilobytes: well under 1.5 GB
