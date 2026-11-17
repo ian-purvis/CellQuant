@@ -3626,6 +3626,7 @@ class ExperimentPanel(QWidget):
             box.setDecimals(4)
             box.setMaximum(100000)
             box.setSpecialValueText("unset")
+            box.setSuffix(" µm")
         self.pixel_z.setToolTip("Distance between slices of a Z-stack, in µm. Needed for 3D volumes and shapes.")
         apply_cal = self.apply_sizes_button = QPushButton("Set sizes (µm)")
         apply_cal.setToolTip("Save these sizes for the images chosen under Apply to.")
@@ -4000,13 +4001,22 @@ class ExperimentPanel(QWidget):
         elif scope == "missing":
             targets += [record.image_id for record in controller.experiment.images if self._lacks_size(record)]
         targets = list(dict.fromkeys(targets))
+        sizes = {}
         for target in targets:
             record = controller.experiment.image(target)
             if scope == "missing" and target != image_id:
                 # Only fill what is missing; sizes read from the file stay.
-                controller.set_pixel_size(target, record.pixel_size_x or x, record.pixel_size_y or y, record.pixel_size_z or z)
+                sizes[target] = (record.pixel_size_x or x, record.pixel_size_y or y, record.pixel_size_z or z)
             else:
-                controller.set_pixel_size(target, x, y, z)
+                sizes[target] = (x, y, z)
+        # Images with results measured at the old sizes must be run again; approved ones are asked about first.
+        stale = [target for target in targets if controller.pixel_size_makes_stale(target, *sizes[target])]
+        approved = [target for target in stale if controller.experiment.image(target).processing_status == "approved"]
+        if approved and not self._ask_change_approved(len(approved), len(stale)):
+            self.shell.message("Pixel size not changed.")
+            return
+        for target in targets:
+            controller.set_pixel_size(target, *sizes[target])
         self.refresh_table()
         self.shell._objects_panel.update_recommendation()
         self.shell._objects_panel._update_size_hint()
@@ -4014,8 +4024,26 @@ class ExperimentPanel(QWidget):
             self.shell.set_pixel_scale(controller.experiment.image(self.shell._shown_image_id))
             self.shell._measure_dock.refresh()
         self.shell._footer.set_units("µm" if x and y else "pixels — no pixel size in this image", keep_detail=True)
-        self.shell.message(f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.")
+        rerun = f" {len(stale)} image{'s need' if len(stale) != 1 else ' needs'} running again." if stale else ""
+        done = f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.{rerun}"
+        if stale:
+            self.shell._show_note = done  # kept in the footer when the image is shown again
+            self.shell._refresh_all(keep_image=True)  # every step shows the images that must be run again
+        self.shell.message(done)
         self.shell._autosave()
+
+    def _ask_change_approved(self, approved: int, stale: int) -> bool:
+        """Approved images lose their approval when their pixel size changes: ask before changing anything."""
+
+        answer = QMessageBox.question(
+            self,
+            "Change pixel size",
+            f"{approved} approved image{'s' if approved != 1 else ''} would need running and approving again, because areas, "
+            f"volumes and lengths depend on the pixel size ({stale} image{'s' if stale != 1 else ''} with results in all). Change the pixel size?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
 
     def _filter(self, text: str) -> None:
         query = text.casefold()
@@ -4214,6 +4242,7 @@ class ObjectsPanel(QWidget):
         self.threshold.setMaximum(1e9)
         self.sigma = QDoubleSpinBox()
         self.sigma.setMaximum(100)
+        self.sigma.setSuffix(" px")  # the smoothing is a Gaussian width in pixels
         guide.add_range_tip(self.sigma, "px")
         self.min_area = QDoubleSpinBox()
         self.max_area = QDoubleSpinBox()
@@ -4225,6 +4254,13 @@ class ObjectsPanel(QWidget):
         self.area_unit = QComboBox()
         _fill_options(self.area_unit, AREA_UNIT_OPTIONS)
         _choose(self.area_unit, "um2")
+        # The size boxes show the unit chosen next to them. Choosing another unit converts what is typed
+        # (see _area_unit_changed); loading settings or showing another image only changes the unit.
+        self._area_unit_shown = "um2"
+        self._loading_area = False
+        self.min_area.setSuffix(" µm²")
+        self.max_area.setSuffix(" µm²")
+        self.area_unit.currentIndexChanged.connect(self._area_unit_changed)
         self.nucleus_diameter_um = QDoubleSpinBox()
         self.nucleus_diameter_um.setRange(1.0, 50.0)
         self.nucleus_diameter_um.setDecimals(1)
@@ -4601,6 +4637,7 @@ class ObjectsPanel(QWidget):
         self.min_size_px.setValue(int(parameters.get("min_size", DEFAULT_CELLPOSE_MIN_SIZE)))
         self.augment.setChecked(bool(parameters.get("augment", False)))
         has_calibration = pixel is not None
+        self._loading_area = True  # the saved numbers are in the saved unit: nothing is converted
         if parameters.get("min_area_um2") is not None:
             _choose(self.area_unit, "um2")
             self.min_area.setValue(float(parameters["min_area_um2"]))
@@ -4620,6 +4657,7 @@ class ObjectsPanel(QWidget):
             self.max_area.setValue(float(parameters["max_area_px"]))
         else:
             self.max_area.setValue(0)
+        self._loading_area = False
         self._update_size_hint()
         self.update_recommendation()
         self.refresh_image_channels()
@@ -4689,6 +4727,43 @@ class ObjectsPanel(QWidget):
             if record.pixel_size_x:
                 return float(record.pixel_size_x)
         return None
+
+    def _shown_pixel_size(self) -> float | None:
+        """µm per pixel of the image on screen (None when it has no size, or different X and Y sizes)."""
+
+        controller = self.shell.controller
+        image_id = self.shell._shown_image_id or (self.shell._nav_ids[self.shell._nav_index] if self.shell._nav_ids else None)
+        if controller is None or image_id is None:
+            return None
+        record = controller.experiment.image(image_id)
+        try:
+            from cellquant.errors import CalibrationError
+            from cellquant.regions import isotropic_pixel_size
+
+            return isotropic_pixel_size(record.pixel_size_x, record.pixel_size_y)
+        except CalibrationError:
+            return None
+
+    def _area_unit_changed(self, _index: int = 0) -> None:
+        """Follow the Size unit in the boxes' suffix; when the user chose it, convert Min size and Max size
+        with the shown image's pixel size, so 20 µm² does not silently become 20 px²."""
+
+        unit = str(self.area_unit.currentData())
+        previous, self._area_unit_shown = self._area_unit_shown, unit
+        suffix = " µm²" if unit == "um2" else " px²"
+        for box in (self.min_area, self.max_area):
+            box.setSuffix(suffix)
+        if self._loading_area or unit == previous or not (self.min_area.value() or self.max_area.value()):
+            return
+        pixel = self._shown_pixel_size()
+        if not pixel:
+            self.shell.message("Min size and Max size kept as typed: the image shown has no pixel size to convert them with.")
+            return
+        factor = pixel * pixel if unit == "um2" else 1.0 / (pixel * pixel)
+        for box in (self.min_area, self.max_area):
+            if box.value():
+                box.setValue(box.value() * factor)
+        self.shell.message(f"Min size and Max size converted to {suffix.strip()} with {pixel:g} µm/pixel.")
 
     def _update_size_hint(self) -> None:
         diameter = self.nucleus_diameter_um.value()
@@ -8634,11 +8709,16 @@ class Footer(QWidget):
             self.status.setText(f"Image {index} of {total} ({filename}): starting")
 
     def run_time_text(self) -> str:
-        """' in 4 min 12 s' for the running single image, or '' outside a run."""
+        """' in 4 min 12 s' for the single image that just finished, or '' outside a run."""
 
         from cellquant.progress import elapsed_text
 
-        return "" if self._clock is None else f" in {elapsed_text(self._clock.image_seconds())}"
+        if self._clock is None:
+            return ""
+        # Finishing an image restarts the clock for the next one, so the time of this one is the last finished.
+        seconds = self._clock.last_image_seconds()
+        seconds = self._clock.image_seconds() if seconds is None else seconds
+        return " in under 1 s" if seconds < 1 else f" in {elapsed_text(seconds)}"  # not "in 0 s" for a quick image
 
     def _show_log(self, shown: bool) -> None:
         self.log.setVisible(shown)
