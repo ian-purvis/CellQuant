@@ -2919,6 +2919,7 @@ class CellQuantWindow:
         """Give every layer the shown image's pixel size, so napari's scale bar reads in µm (px when unknown)."""
 
         x, y = record.pixel_size_x, record.pixel_size_y
+        old = self._pixel_scale
         if x and y:
             self._pixel_scale = (float(record.pixel_size_z) if record.pixel_size_z else None, float(y), float(x))
         else:
@@ -2926,6 +2927,8 @@ class CellQuantWindow:
         for layer in list(self.viewer.layers):
             self._scale_layer(layer)
         self._view_box.apply_rotation()
+        if self._pixel_scale != old and self._has_image_layers():
+            self.viewer.reset_view()  # the image is now a different size in the window: fit it again
         try:
             self.viewer.scale_bar.unit = "µm" if self._pixel_scale else "px"
         except Exception:  # noqa: BLE001 - older napari: the bar keeps its own unit
@@ -2980,12 +2983,31 @@ class CellQuantWindow:
             _set_layer(layer, blending="additive", opacity=1.0, gamma=1.0, visible=visible)
             _initial_contrast(layer)
         if fresh:
-            # Only CellQuant's layers are open: napari would fit a first new layer to the window.
-            self.viewer.reset_view()
+            # Only CellQuant's layers are open: napari would centre the sliders for a first new layer (the view is fitted in _fit_view).
             self.viewer.dims._go_to_center_step()
+
+    def _view_area(self, layers) -> tuple:
+        """The world area these layers cover in the shown axes (pixel size and turn included)."""
+
+        shown = self.viewer.dims.ndisplay
+        return tuple(tuple(np.round(np.asarray(layer.extent.world, dtype=float)[:, -min(shown, layer.ndim):], 6).ravel()) for layer in layers)
+
+    def _fit_view(self, area, camera, layers) -> None:
+        """Fit the view to the image once its layers have their µm scale. The next image covering the same area keeps the
+        zoom and position the user chose (napari may have fitted a first new layer at its pixel size meanwhile)."""
+
+        if not area or self._view_area(layers) != area:
+            self.viewer.reset_view()
+            return
+        center, zoom, angles = camera
+        if tuple(self.viewer.camera.center) != center or self.viewer.camera.zoom != zoom or tuple(self.viewer.camera.angles) != angles:
+            self.viewer.camera.update({"center": center, "zoom": zoom, "angles": angles})
 
     def _show_loaded(self, loaded, record, result) -> None:
         self._edit_panel.keep_drawing()
+        # The area the last image covered and the view on it: the view is fitted again only when the area changes.
+        before = [self.viewer.layers[name] for name in self._managed if name not in _OBJECT_LAYERS and name in self.viewer.layers and self.viewer.layers[name]._type_string == "image"]
+        area, camera = self._view_area(before), (tuple(self.viewer.camera.center), self.viewer.camera.zoom, tuple(self.viewer.camera.angles))
         self._labels_image_id = None
         file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
         # Contrast is remembered per experiment channel, matched by the names stored in the file.
@@ -3057,6 +3079,7 @@ class CellQuantWindow:
         self._set_labels(labels, result)
         if kept:
             self._reset_object_layers()
+        self._fit_view(area, camera, layers)
         self.show_count_area(record)
         self._measure_dock.bring_back(record.image_id)
         self._release_window_later()
