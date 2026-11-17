@@ -92,6 +92,7 @@ class GroupedSheetView(QWidget):
         bar.addWidget(export)
         layout.addLayout(bar)
         self.grid = QTableWidget()
+        tips.tip_corner_button(self.grid)
         self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.grid.horizontalHeader().sectionDoubleClicked.connect(self._rename_data_set)
         self.grid.horizontalHeader().setToolTip("Double-click a title to rename its data set.")

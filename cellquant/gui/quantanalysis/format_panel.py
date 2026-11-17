@@ -1429,6 +1429,7 @@ class MagicDialog(QDialog):
         buttons.button(QDialogButtonBox.Ok).setText("Apply")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Apply this format to the selected graphs.")
         form.addRow(buttons)
         self.setMinimumWidth(440)
 

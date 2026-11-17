@@ -72,6 +72,7 @@ class ContingencySheetView(QWidget):
         bar.addWidget(export)
         layout.addLayout(bar)
         self.grid = QTableWidget()
+        tips.tip_corner_button(self.grid)
         self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.grid.horizontalHeader().sectionDoubleClicked.connect(lambda column: self._rename("column", column))
         self.grid.verticalHeader().sectionDoubleClicked.connect(lambda row: self._rename("row", row))

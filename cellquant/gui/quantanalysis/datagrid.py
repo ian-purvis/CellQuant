@@ -184,6 +184,8 @@ class DataSheetView(QWidget):
         layout.addWidget(self.replicate_note)
 
         self.grid = QTableWidget()
+
+        tips.tip_corner_button(self.grid)
         self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.grid.horizontalHeader().setSectionsClickable(True)
         self.grid.horizontalHeader().sectionDoubleClicked.connect(self._rename)

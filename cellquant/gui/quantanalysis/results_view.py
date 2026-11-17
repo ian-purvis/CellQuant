@@ -204,6 +204,7 @@ class ResultSheetView(QWidget):
         self.warnings.setTextFormat(Qt.RichText)
         layout.addWidget(self.warnings)
         self.table = QTableWidget()
+        tips.tip_corner_button(self.table)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.verticalHeader().hide()
         self.table.horizontalHeader().hide()

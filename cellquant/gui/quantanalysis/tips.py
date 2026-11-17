@@ -674,3 +674,39 @@ PCA_SIMULATIONS = ("How many random data sets parallel analysis compares your ei
 PCA_SEED = "The starting value of the random numbers of parallel analysis. Change it only to check that the result does not depend on it."
 PCA_VIEW = ("Which graph of the principal component analysis to draw. Scree plot: the eigenvalue of each component, to see how many are worth "
             "keeping. Scores and loadings: each case on the first two components, with an arrow for each variable showing which way it pulls.")
+
+
+def tip_buttons(buttons, accept: str, reject: str = "Close without making anything.") -> None:
+    """Hover text for a dialog's standard buttons: ``accept`` says what the main button (Run, Import, Save, OK…) will make; Cancel and Close
+    say they change nothing. A button that already has its own text keeps it."""
+
+    from qtpy.QtWidgets import QDialogButtonBox
+
+    for button in buttons.buttons():
+        if button.toolTip():
+            continue
+        role = buttons.buttonRole(button)
+        if role in (QDialogButtonBox.AcceptRole, QDialogButtonBox.YesRole):
+            button.setToolTip(accept)
+        elif role in (QDialogButtonBox.RejectRole, QDialogButtonBox.NoRole):
+            button.setToolTip(reject)
+
+
+def tip_corner_button(table) -> None:
+    """Hover text for the button in the top-left corner of a table (Qt's select-all button), which has no text of its own."""
+
+    from qtpy.QtWidgets import QAbstractButton
+
+    for button in table.findChildren(QAbstractButton):
+        if button.parentWidget() is table and not button.toolTip():
+            button.setToolTip("Select every cell of the table.")
+
+
+def tip_clear_button(edit) -> None:
+    """Hover text for the clear button a search box shows once it holds text."""
+
+    from qtpy.QtWidgets import QToolButton
+
+    for button in edit.findChildren(QToolButton):
+        if not button.toolTip():
+            button.setToolTip("Clear the search.")

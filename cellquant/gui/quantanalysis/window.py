@@ -311,7 +311,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(file, "Open CellQuant results folder…", self.open_folder_dialog,
                      "A results folder (experiment.json, summaries/) or an export folder (image_summary.csv, objects.csv).")
         file.addSeparator()
-        self._action(file, "Close", self.close)
+        self._action(file, "Close", self.close, "Close QuantAnalysis. It asks first when there is unsaved work.")
         edit = bar.addMenu("&Edit")
         self.rename_action = self._action(edit, "Rename", self.rename_current, "Rename the table, result, graph or layout selected in the list on the left (F2).")
         self.delete_action = self._action(edit, "Delete", self.delete_current,
