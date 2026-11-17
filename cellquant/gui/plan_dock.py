@@ -28,6 +28,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellquant.gui import guide
 from cellquant.plan import GROUPING_LABELS, group_images
 
 IMAGE_ROLE = Qt.UserRole
@@ -121,6 +122,9 @@ class PlanDock(QWidget):
         layout.addLayout(bottom)
         self.grouping.currentIndexChanged.connect(lambda _index: self.refresh())
         self.view_mode.currentIndexChanged.connect(lambda _index: self.refresh())
+        self.tree.itemSelectionChanged.connect(self.update_actions)
+        self.scope.currentIndexChanged.connect(lambda _index: self.update_actions())
+        self.update_actions()
 
     # -- building ----------------------------------------------------------------------------------
 
@@ -143,6 +147,19 @@ class PlanDock(QWidget):
             self._update_summary()
         finally:
             self._building = False
+            self.update_actions()
+
+    def update_actions(self) -> None:
+        """Tick, Untick and Set channel are off while there is nothing for them to apply to, and say why."""
+
+        if self.shell.controller is None:
+            ok, reason = False, "Open an experiment first (Start tab)."
+        elif self.scope.currentData() == "selected" and not self.selected_image_ids():
+            ok, reason = False, "Select images (or groups) in the plan first, or choose 'all images'."
+        else:
+            ok, reason = True, ""
+        for button in (self.tick, self.untick, self.set_channel):
+            guide.gate(button, ok, reason)
 
     def _analyses(self):
         controller = self.shell.controller

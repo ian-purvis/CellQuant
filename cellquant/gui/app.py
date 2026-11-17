@@ -1224,6 +1224,14 @@ class CellQuantWindow:
         self._tabs.setCurrentWidget(self._start_page)
         self.refresh_guidance()
 
+    def _update_action_states(self) -> None:
+        """Buttons that would do nothing are off, with the reason in their tooltip (see guide.gate)."""
+
+        self._experiment_panel.update_actions()
+        self._edit_panel.update_actions()
+        self._analysis_bar.refresh_plan_button()
+        self._plan_dock.update_actions()
+
     def refresh_guidance(self) -> None:
         if self._run_lock_note.isVisibleTo(self._dock):
             # Settings rebuilt during a run (for example a refreshed list) start enabled; lock them too.
@@ -1231,6 +1239,7 @@ class CellQuantWindow:
                 if not widget.testAttribute(Qt.WA_ForceDisabled):
                     self._settings_restore.setdefault(widget, True)
                     widget.setEnabled(False)
+        self._update_action_states()
         states = guide.step_states(self)
         self._start_page.update_state(states)
         # A step's tab opens once every earlier step's Next is allowed; going back is always allowed.
@@ -2184,6 +2193,7 @@ class CellQuantWindow:
             self._lock_settings(False)
             self._footer.end_busy()
             self._plan_dock.setEnabled(True)
+            self._update_action_states()  # the run changed what the buttons can do
             self._refresh_plan()
             if self._exclusive:
                 self._exclusive = False
@@ -3572,11 +3582,9 @@ class ExperimentPanel(QWidget):
         self.no_experiment.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.14); border-radius: 6px; padding: 6px; }")
         layout.addWidget(self.no_experiment)
         buttons = QHBoxLayout()
-        for text, slot in (
-            ("Add images…", self._add_images),
-            ("Add folder…", self._add_folder),
-        ):
-            button = QPushButton(text)
+        self.add_images_button = QPushButton("Add images…")
+        self.add_folder_button = QPushButton("Add folder…")
+        for button, slot in ((self.add_images_button, self._add_images), (self.add_folder_button, self._add_folder)):
             button.clicked.connect(slot)
             buttons.addWidget(button)
         load = QPushButton("Load masks…")
@@ -3628,9 +3636,10 @@ class ExperimentPanel(QWidget):
         header.setMinimumSectionSize(36)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.itemSelectionChanged.connect(self.update_actions)
         layout.addWidget(self.table)
         run_row = QHBoxLayout()
-        add_column = QPushButton("Add column…")
+        add_column = self.add_column_button = QPushButton("Add column…")
         add_column.setToolTip(
             "Add a column of your own to the list (for example Genotype or Age), empty and ready to type or paste into. "
             "Results can be grouped by it. Pasting past the last column adds one too."
@@ -3638,7 +3647,7 @@ class ExperimentPanel(QWidget):
         add_column.clicked.connect(self._add_column)
         run_row.addWidget(add_column)
         run_row.addStretch(1)
-        run_selected = QPushButton("Run selected images")
+        run_selected = self.run_selected_button = QPushButton("Run selected images")
         run_selected.setToolTip("Run the images selected in the table (click rows; Ctrl or Shift for more), for example to rerun failed ones.")
         run_selected.clicked.connect(lambda: shell._results_panel._run_selected())
         run_row.addWidget(run_selected)
@@ -3712,6 +3721,21 @@ class ExperimentPanel(QWidget):
         self._pasting = False  # while a paste fills cells, other panels follow once at the end
         self._pasted_headers: set[str] = set()
 
+    def update_actions(self) -> None:
+        """Buttons that would do nothing are off, with the reason in their tooltip."""
+
+        if self.shell.is_busy():
+            return  # the run buttons are locked while a run goes on; set_busy puts them back
+        controller = self.shell.controller
+        open_first = "Open an experiment first (Start tab)."
+        for button in (self.add_images_button, self.add_folder_button, self.add_column_button):
+            guide.gate(button, controller is not None, open_first)
+        guide.gate(
+            self.run_selected_button,
+            controller is not None and bool(self.selected_ids()),
+            open_first if controller is None else "Select images in the list first (click rows; Ctrl or Shift for more).",
+        )
+
     def _update_rename_button(self) -> None:
         controller = self.shell.controller
         can = controller is not None and bool(controller.experiment.channels)
@@ -3778,6 +3802,7 @@ class ExperimentPanel(QWidget):
         controller = self.shell.controller
         self.no_experiment.setVisible(controller is None)
         self._update_rename_button()
+        self.update_actions()
         if controller is None:
             self.channel_order.setText("No image open.")
             return
@@ -3859,6 +3884,7 @@ class ExperimentPanel(QWidget):
         self._filter(self.filter_box.text())
         self._update_included_label()
         self._update_calibration_visibility()
+        self.update_actions()
         self.shell._release_window_later()
 
     def refresh_status(self) -> None:
@@ -5768,6 +5794,19 @@ class EditPanel(QWidget):
     def refresh(self) -> None:
         return
 
+    def update_actions(self) -> None:
+        """Undo is off while the image shown has no recorded edit to take back, and says why.
+
+        Record drawn edits and Undo all stay on: what was painted in the Objects layer and not recorded
+        yet is only known when they are clicked, and they then say when there was nothing to do.
+        """
+
+        controller = self.shell.controller
+        if self.shell.is_busy():
+            return  # the edit buttons are locked while a run goes on; set_busy puts them back
+        image_id = self.shell._nav_ids[self.shell._nav_index] if controller is not None and self.shell._nav_ids else None
+        guide.gate(self.undo_button, image_id is not None and controller.can_undo(image_id), "No recorded edit on this image to undo.")
+
     _MODE_BUTTONS = {
         "home": ("Delete objects", "Select objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"),
         "delete": ("Delete objects", "Draw area", "Delete in area", "Keep only", "Delete circle", "Undo", "Undo all", "Back"),
@@ -6469,6 +6508,7 @@ class EditPanel(QWidget):
         self.shell._experiment_panel.refresh_status()
         if result is not None:
             self.shell.show_result(result)
+        self.update_actions()
 
     def delete_object(self, object_id: int) -> None:
         """Delete the clicked object at once; Undo brings it back."""
@@ -6530,6 +6570,9 @@ class EditPanel(QWidget):
         if controller is None or not self.shell._nav_ids:
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
+        if not controller.can_undo(image_id):
+            self.shell.message("Nothing to undo: this image has no recorded edits.")
+            return
         self.shell._start_job(lambda: controller.undo(image_id), self._edited)
 
     def _discard_drawing(self, image_id: str) -> None:
@@ -6558,6 +6601,7 @@ class EditPanel(QWidget):
         drawn = self._key(image_id) in self._pending
         if not count and not drawn:
             self._say("Nothing to reset: this image has no edits.")
+            self.shell.message("Nothing to undo: this image has no edits or drawing.")
             return
         parts = [f"{count} edit{'s' if count != 1 else ''}"] if count else []
         if drawn:
@@ -6597,6 +6641,7 @@ class EditPanel(QWidget):
         images = list(dict.fromkeys(edited + drawn))
         if not images:
             self._say("Nothing to reset: no image has edits.")
+            self.shell.message("Nothing to reset: no image has edits or drawing.")
             return
         answer = QMessageBox.question(
             self,
@@ -6652,6 +6697,7 @@ class EditPanel(QWidget):
             return
         if np.array_equal(drawn, current.labels):
             self._say("Nothing to record: paint or erase in the Objects layer first.")
+            self.shell.message("Nothing drawn to record.")
             return
 
         def finish(result) -> None:
@@ -6680,6 +6726,7 @@ class EditPanel(QWidget):
         todo = {image_id: kept for (owner, image_id), kept in self._pending.items() if owner == analysis}
         if not todo:
             self._say("Nothing to record: paint or erase in the Objects layer first.")
+            self.shell.message("Nothing drawn to record.")
             return
         shown = self.shell._labels_image_id
 
@@ -7873,7 +7920,12 @@ class ReviewPanel(QWidget):
             self.shell.message(str(exc))
             return
         source = "this image" if this_image else f"{used} image{'s' if used != 1 else ''}"
-        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff (from {source}): {old:g} → {new:g}.", before)
+        said = (
+            f"The {classification.name} cutoff is already its automatic value ({new:g}): nothing to reset."
+            if this_image and old == new
+            else f"{classification.name} cutoff (from {source}): {old:g} → {new:g}."
+        )
+        self._after_cutoff_change(controller.classified_now(image_id), said, before)
 
     def _slider_moved(self, value: float) -> None:
         self._pending_cutoff = float(value)
@@ -8332,6 +8384,8 @@ class AnalysisBar(QWidget):
             action.setToolTip(tip)
             action.triggered.connect(lambda _checked=False, slot=slot: slot())
             self.remove_button = action
+            if text == "Plan…":
+                self.plan_action = action
         menu_button = QToolButton()
         menu_button.setText("Analyses ▾")
         menu_button.setToolTip("Plan, add, rename or remove analyses.")
@@ -8352,9 +8406,15 @@ class AnalysisBar(QWidget):
         self.choice.blockSignals(False)
         several = controller is not None and len(controller.analyses()) > 1
         self.remove_button.setEnabled(several)
+        self.refresh_plan_button()
         summary = getattr(self.shell, "_results_summary", None)
         if summary is not None:
             summary.show_analysis_actions(several)
+
+    def refresh_plan_button(self) -> None:
+        controller = self.shell.controller
+        guide.gate(self.plan_button, controller is not None, "Open an experiment first (Start tab).")
+        self.plan_action.setEnabled(controller is not None)
 
     def _chosen(self, _index: int) -> None:
         recipe_id = self.choice.currentData()
@@ -8509,6 +8569,8 @@ class Footer(QWidget):
         previous.clicked.connect(lambda: self._step(-1))
         next_image.clicked.connect(lambda: self._step(1))
         self._navigation = (previous, next_image)
+        self._navigation_locked = False  # True while another analysis runs in the background (see set_navigation_enabled)
+        self._position = (0, 0)  # (index, number of images) the buttons were last set for
         self.pause = QPushButton("Pause")
         self.resume = QPushButton("Resume")
         self.cancel = QPushButton("Cancel")
@@ -8537,6 +8599,7 @@ class Footer(QWidget):
         self.cancel.setStyleSheet("QPushButton:enabled { color: #e05050; font-weight: bold; }")
         previous.setToolTip("Show the previous image in the experiment (Page Up).")
         next_image.setToolTip("Show the next image in the experiment (Page Down).")
+        self._update_navigation_buttons()  # no experiment yet: nothing to step through
         from qtpy.QtGui import QKeySequence
 
         try:
@@ -8609,10 +8672,21 @@ class Footer(QWidget):
         layout.addWidget(self.log)
 
     def set_navigation_enabled(self, enabled: bool) -> None:
-        for button in self._navigation:
-            button.setEnabled(enabled)
+        self._navigation_locked = not enabled
+        self._update_navigation_buttons()
+
+    def _update_navigation_buttons(self) -> None:
+        """Previous / Next image are off when there is no image before / after the one shown, and say why."""
+
+        index, total = self._position
+        previous, next_image = self._navigation
+        none = "No included images (step 1)."
+        guide.gate(previous, not self._navigation_locked and index > 0 and total > 0, none if total == 0 else "This is the first image.")
+        guide.gate(next_image, not self._navigation_locked and index < total - 1, none if total == 0 else "This is the last image.")
 
     def set_position(self, index: int, total: int, filename: str, only: str | None = None) -> None:
+        self._position = (index, total)
+        self._update_navigation_buttons()
         if total == 0:
             self.position.setText("No included images (step 1).")
             return
