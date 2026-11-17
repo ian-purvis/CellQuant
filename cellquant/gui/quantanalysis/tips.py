@@ -710,3 +710,17 @@ def tip_clear_button(edit) -> None:
     for button in edit.findChildren(QToolButton):
         if not button.toolTip():
             button.setToolTip("Clear the search.")
+
+
+def fit_to_screen(widget, width: int, height: int) -> None:
+    """Resize a window or dialog to ``width`` × ``height``, but no larger than the screen it opens on leaves room for (a 1280 × 720 screen
+    has less than 720 pixels of height once the task bar and title bar are taken)."""
+
+    from qtpy.QtGui import QGuiApplication
+
+    screen = (widget.screen() if hasattr(widget, "screen") else None) or QGuiApplication.primaryScreen()
+    if screen is None:
+        widget.resize(width, height)
+        return
+    available = screen.availableGeometry()
+    widget.resize(min(width, max(400, available.width() - 40)), min(height, max(300, available.height() - 60)))

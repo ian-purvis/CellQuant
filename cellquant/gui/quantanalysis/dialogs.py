@@ -394,7 +394,7 @@ class ImportDialog(QDialog):
         self.setWindowTitle("Import CellQuant results")
         self.source = source
         self.imported: sources.Imported | None = None
-        self.resize(640, 640)
+        tips.fit_to_screen(self, 640, 640)
         layout = QVBoxLayout(self)
         count = len(source.images)
         where = QLabel(f"From <b>{html.escape(source.label)}</b> · {count} image{'s' if count != 1 else ''}"
@@ -2671,7 +2671,7 @@ class PStackDialog(QDialog):
     def __init__(self, parent, options: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Analyze a stack of P values")
-        self.resize(520, 520)
+        tips.fit_to_screen(self, 520, 520)
         options = {**PSTACK_DEFAULTS, **(options or {})}
         layout = QVBoxLayout(self)
         intro = QLabel(tips.PSTACK_TEXT)

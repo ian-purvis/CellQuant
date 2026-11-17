@@ -35,6 +35,7 @@ from cellquant.stats import transforms
 from cellquant.stats.contingency import ContingencyTable, contingency
 from cellquant.stats.curvefit import nonlinear_regression
 from cellquant.stats.diagnostic import bland_altman, roc_curve
+from cellquant.stats._common import OVERRIDES_TITLE
 from cellquant.stats.survival import SurvivalTable, survival
 from cellquant.stats.units import unit_of
 from cellquant.stats.grouped import GroupedTable, two_way_anova
@@ -190,6 +191,7 @@ class Project(QObject):
 
     changed = Signal(str)
     modified = Signal()  # anything that would be saved may have changed (also a graph's format, a name)
+    working = Signal(str)  # what a pause-time recomputation is doing ("" when it is done), for the status line
 
     def __init__(self):
         super().__init__()
@@ -201,8 +203,9 @@ class Project(QObject):
         self._refreshing: set[str] = set()
         self._renamed_from: dict[str, str] = {}  # sheet id -> its name before a rename that its processed tables follow
         self.changed.connect(lambda _sheet_id: self.modified.emit())
-        # Curve fits are refitted once typing pauses, not on every cell edit.
+        # Curve fits, and everything that follows a table edited cell by cell, are recomputed once typing pauses, not on every cell edit.
         self._pending_fits: set[str] = set()
+        self._pending_data: dict[str, dict[str, str] | None] = {}
         self._fit_timer = QTimer(self)
         self._fit_timer.setSingleShot(True)
         self._fit_timer.setInterval(FIT_DELAY_MS)
@@ -397,10 +400,22 @@ class Project(QObject):
         return ([item for item in self.results.values() if item.data_id == data_id],
                 [item for item in self.graphs.values() if item.data_id == data_id])
 
-    def data_changed(self, data_id: str, renamed: dict[str, str] | None = None) -> None:
+    def data_changed(self, data_id: str, renamed: dict[str, str] | None = None, defer: bool = False) -> None:
         """The table changed: recompute its results, redraw its graphs (live links). ``renamed``: its columns renamed,
-        old name -> new, so the tables computed from it follow the new names."""
+        old name -> new, so the tables computed from it follow the new names. ``defer`` (a cell typed into a grid): the table is already
+        changed; what follows it is recomputed once typing pauses, and at once before anything is saved, exported or copied (``flush_fits``)."""
 
+        if defer:
+            if data_id in self._pending_data:
+                before = self._pending_data[data_id]
+                renamed = {**(before or {}), **(renamed or {})} or None
+            self._pending_data[data_id] = renamed
+            self._fit_timer.start()
+            self.modified.emit()
+            return
+        self._data_changed_now(data_id, renamed)
+
+    def _data_changed_now(self, data_id: str, renamed: dict[str, str] | None = None, refill: bool = True) -> None:
         results, graphs = self.linked(data_id)
         for result in results:
             if result.kind == "curvefit" and result.result is not None:
@@ -408,7 +423,8 @@ class Project(QObject):
                 self._fit_timer.start()
             else:
                 self.compute(result)
-        self.changed.emit(data_id)
+        if refill or any(result.kind == "outliers" for result in results):  # the grid shades flagged outliers; a typed cell is already in it
+            self.changed.emit(data_id)
         for result in results:
             self.changed.emit(result.id)
         for graph in graphs:
@@ -421,12 +437,30 @@ class Project(QObject):
     def fit_pending(self, result_id: str) -> bool:
         """True while a curve fit waits to be refitted after its table changed (its sheet still shows the old fit)."""
 
-        return result_id in self._pending_fits
+        if result_id in self._pending_fits:
+            return True
+        sheet = self.results.get(result_id)
+        return sheet is not None and sheet.data_id in self._pending_data  # its table was edited and the sheet still shows the old numbers
 
     def flush_fits(self) -> None:
-        """Refit the curve fits whose table changed since they were last fitted, and redraw what shows them."""
+        """Bring everything up to date that waits for typing to pause: what follows a table edited cell by cell, and the curve fits
+        whose table changed since they were last fitted. Saving, exporting and copying call this first."""
 
         self._fit_timer.stop()
+        waiting, self._pending_data = self._pending_data, {}
+        if waiting:
+            from qtpy.QtCore import Qt
+            from qtpy.QtWidgets import QApplication
+
+            self.working.emit("Updating the results and graphs that follow the edited table…")
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                for data_id, renamed in waiting.items():
+                    if data_id in self.data:
+                        self._data_changed_now(data_id, renamed, refill=False)
+            finally:
+                QApplication.restoreOverrideCursor()
+                self.working.emit("")
         pending, self._pending_fits = self._pending_fits, set()
         for result_id in pending:
             result = self.results.get(result_id)
@@ -497,6 +531,9 @@ class Project(QObject):
                 sheet.wide, sheet.warnings, sheet.methods = run_column_statistics(data, sheet.options)
             elif sheet.kind == "normality":
                 sheet.wide, sheet.warnings, sheet.methods = run_normality(data, sheet.options)
+            if sheet.result is not None and sheet.kind != "pstack":
+                notes, text = changed_defaults(sheet.result, sheet.options, self.defaults)
+                sheet.warnings, sheet.methods = [*notes, *sheet.warnings], f"{sheet.methods}{text}"
             # A nested analysis uses every value with its replicate, so neither "one value per replicate" nor pseudoreplication applies.
             if data is not None and data.pseudoreplicated and PSEUDO_WARNING not in sheet.warnings and sheet.kind != "nested":
                 sheet.warnings.insert(0, PSEUDO_WARNING)
@@ -530,6 +567,36 @@ def table_signature(table) -> list[int]:
     if isinstance(table, XYTable):
         return [int(table.points(j)[0].size) for j in range(len(table.sets))]
     return [int(column.finite.size) for column in table.columns]
+
+
+SETTING_NAMES = {"alpha": "Alpha", "ci": "Confidence level", "style": "P value style"}
+
+
+def _setting_text(key: str, value) -> str:
+    return f"{100 * float(value):g}%" if key == "ci" else (f"{float(value):g}" if key == "alpha" else str(value))
+
+
+def changed_defaults(result: AnalysisResult, options: dict, defaults: dict) -> tuple[list[str], str]:
+    """Flag an analysis run with an alpha, confidence level or P value style other than the project's defaults, the way a setting changed
+    under Advanced is flagged: a row in the "Changed from the default" section, a warning, and a sentence for the methods. Returns the
+    warnings (for the sheet) and the methods sentence; the result's own section is filled in here. Only settings the analysis used count."""
+
+    used = result.options if any(key in result.options for key in SETTING_NAMES) else options
+    changes = []
+    for key, label in SETTING_NAMES.items():
+        if key not in used or used[key] is None or defaults.get(key) is None:
+            continue
+        same = abs(float(used[key]) - float(defaults[key])) < 1e-9 if key != "style" else used[key] == defaults[key]
+        if not same:
+            changes.append((label, _setting_text(key, used[key]), _setting_text(key, defaults[key])))
+    if not changes:
+        return [], ""
+    section = result.section(OVERRIDES_TITLE)
+    for label, value, default in changes:
+        section.add(label, value, f"{value} (project default {default})")
+    warnings = [f"Set by hand: {label} = {value} (project default {default}). Report this with the result." for label, value, default in changes]
+    methods = "".join(f" Changed from the default: {label} = {value} (project default {default})." for label, value, default in changes)
+    return warnings, methods
 
 
 def _hand_set_notes(result: AnalysisResult, table, options: dict) -> None:

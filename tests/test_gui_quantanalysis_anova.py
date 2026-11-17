@@ -201,7 +201,8 @@ def test_anova_results_sheet_and_live_links(window):
     assert "Dunnett" in result_text(sheet) and "Reference group(s)" in result_text(sheet)
     before = sheet.result.values["p"]
     window.select(data.id)
-    window.stack.currentWidget().grid.item(0, 3).setText("60")  # edit the table: the sheet recomputes
+    window.stack.currentWidget().grid.item(0, 3).setText("60")  # edit the table: the sheet recomputes once typing pauses
+    window.project.flush_fits()
     assert sheet.result.values["p"] != before
     window.change_options(sheet, {**TWO_REFERENCES, "test": "kruskal_wallis", "method": "dunn"})
     assert sheet.name.startswith("Kruskal-Wallis") and len(window.project.results) == 1 and sheet.error == ""
@@ -328,6 +329,7 @@ def test_outliers_are_shaded_hollow_and_cleaned_copy_follows(window):
     assert cleaned.name == "Conditions (cleaned)" and cleaned.cleaned_from == data.id and cleaned is not data
     assert np.isnan(cleaned.table[NAMES[3]].values[7]) and np.array_equal(data.table[NAMES[3]].values, before)
     grid.grid.item(7, 3).setText("12")  # fix the original: the cleaned copy follows
+    window.project.flush_fits()
     assert np.isfinite(cleaned.table[NAMES[3]].values[7]) and sheet.result.values["n_outliers"] == 0
     assert window.create_cleaned_table(sheet) is None  # nothing flagged now
     window.select(cleaned.id)
