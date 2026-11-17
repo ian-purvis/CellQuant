@@ -194,6 +194,7 @@ class ProjectDefaultsDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Use these settings for new analyses in this project.", "Close without changing the project defaults.")
         layout.addWidget(buttons)
 
     def options(self) -> dict:
@@ -393,7 +394,7 @@ class ImportDialog(QDialog):
         self.setWindowTitle("Import CellQuant results")
         self.source = source
         self.imported: sources.Imported | None = None
-        self.resize(640, 640)
+        tips.fit_to_screen(self, 640, 640)
         layout = QVBoxLayout(self)
         count = len(source.images)
         where = QLabel(f"From <b>{html.escape(source.label)}</b> · {count} image{'s' if count != 1 else ''}"
@@ -468,6 +469,7 @@ class ImportDialog(QDialog):
         self.buttons.button(QDialogButtonBox.Ok).setText("Import")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
+        tips.tip_buttons(self.buttons, "Make the data table from these choices.")
         layout.addWidget(self.buttons)
         self.measure.currentIndexChanged.connect(lambda _index: self._measure_changed())
         self.dot.currentIndexChanged.connect(lambda _index: self._dot_changed())
@@ -634,6 +636,8 @@ class ImportCsvDialog(QDialog):
             self.value.setCurrentIndex(self.value.findData(numeric[0]))
         if text:
             self.group.setCurrentIndex(self.group.findData(text[0]))
+        self.value.setToolTip("The column that holds the measurements (long shape).")
+        self.group.setToolTip("The column that names each row's group (long shape).")
         form.addRow("Values", self.value)
         form.addRow("Group", self.group)
         self.replicate = QComboBox()
@@ -654,6 +658,7 @@ class ImportCsvDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Make the data table from the file with these choices.")
         layout.addWidget(buttons)
 
     def table(self, title: str) -> ColumnTable:
@@ -774,6 +779,7 @@ class CompareDialog(QDialog):
         buttons.button(QDialogButtonBox.Ok).setText("Run")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Run the test and add its results sheet.")
         bottom.addWidget(buttons)
         layout.addLayout(bottom)
         self.design.buttonToggled.connect(lambda *_args: self._fill_tests())
@@ -997,6 +1003,7 @@ class AnovaDialog(QDialog):
         buttons.button(QDialogButtonBox.Ok).setText("Run")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Run the ANOVA (or its rank test) and add its results sheet.")
         bottom.addWidget(buttons)
         layout.addLayout(bottom)
         self.design.buttonToggled.connect(lambda *_args: self._fill_tests())
@@ -1300,6 +1307,7 @@ class NestedDialog(QDialog):
         buttons.button(QDialogButtonBox.Ok).setText("Run")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Run the nested analysis and add its results sheet.")
         layout.addWidget(buttons)
         self.goal.buttonToggled.connect(lambda *_args: self._goal_changed())
         self.control.currentIndexChanged.connect(lambda _index: self._fill_second())
@@ -1460,6 +1468,7 @@ class TwoWayDialog(QDialog):
         self.goal = QComboBox()
         self.goal.addItem("Every pair", "all")
         self.goal.addItem("Each with a reference (control)", "control")
+        self.goal.setToolTip("Compare every pair of groups, or each group with one reference (control) group.")
         form.addRow("Which pairs", self.goal)
         self.control = QComboBox()
         self.control.setToolTip("The reference group every other group is compared with.")
@@ -1500,6 +1509,7 @@ class TwoWayDialog(QDialog):
         add_reference_button(buttons, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Run the two-way ANOVA and add its results sheet.")
         layout.addWidget(buttons)
         self.interaction.setChecked(bool(options["interaction"]))
         self.compare.setCurrentIndex(max(0, self.compare.findData(options["compare"])))
@@ -1630,6 +1640,7 @@ class XYDialog(QDialog):
         add_reference_button(buttons, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Run the regression or correlation and add its results sheet.")
         layout.addWidget(buttons)
 
     def options(self) -> dict:
@@ -1692,6 +1703,7 @@ class FixedParameters(QWidget):
             box.setToolTip(tips.CURVE_FIX)
             value = QLineEdit("" if name not in fixed else f"{fixed[name]:g}" if isinstance(fixed[name], (int, float)) else str(fixed[name]))
             value.setPlaceholderText("value")
+            value.setToolTip(f"The value {name} is held at while the curve is fitted. Tick the box first.")
             value.setMaximumWidth(70)
             box.setChecked(name in fixed)
             value.setEnabled(name in fixed)
@@ -1808,6 +1820,7 @@ class CurveFitDialog(QDialog):
         add_reference_button(buttons, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Fit the curve and add its results sheet.")
         layout.addWidget(buttons)
         self._model_changed(options.get("fixed") or {}, options.get("compare_parameter"))
         self.second_fixed.set_model(self.second_model.currentData(), options.get("compare_fixed") or {})
@@ -1948,6 +1961,7 @@ class ContingencyDialog(QDialog):
         add_reference_button(buttons, self)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Run the test on the table of counts and add its results sheet.")
         layout.addWidget(buttons)
 
     def options(self) -> dict:
@@ -2044,6 +2058,7 @@ def _dialog_footer(dialog: QDialog, layout: QVBoxLayout) -> QLabel:
     buttons.button(QDialogButtonBox.Ok).setText("Run")
     buttons.accepted.connect(dialog.accept)
     buttons.rejected.connect(dialog.reject)
+    tips.tip_buttons(buttons, "Run the test on the table of counts and add its results sheet.")
     layout.addWidget(buttons)
     return note
 
@@ -2446,6 +2461,7 @@ class OutlierDialog(QDialog):
         buttons.button(QDialogButtonBox.Ok).setText("Run")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Look for outliers and add the results sheet. Nothing is removed from the table.")
         layout.addWidget(buttons)
         self.method.buttonToggled.connect(lambda *_args: self._method_changed())
         self.style_value = options["style"]
@@ -2507,6 +2523,7 @@ class ProcessDialog(QDialog):
             for key, (label, _needs_k) in transforms.TRANSFORMS.items():
                 self.function.addItem(label, key)
                 self.function.setItemData(self.function.count() - 1, tips.FUNCTION[key], Qt.ToolTipRole)
+            self.function.setToolTip("The function applied to every value. Point at an entry in the list for what it does.")
             self.function.setCurrentIndex(max(0, self.function.findData(options["function"])))
             self.function.currentIndexChanged.connect(lambda _index: self._function_changed())
             form.addRow("Function", self.function)
@@ -2584,6 +2601,7 @@ class ProcessDialog(QDialog):
         buttons.button(QDialogButtonBox.Ok).setText("Create table")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Make a new data table from this one. The original is not changed.")
         layout.addWidget(buttons)
 
     def _combo(self, choices: dict, current, tip: str) -> QComboBox:
@@ -2653,7 +2671,7 @@ class PStackDialog(QDialog):
     def __init__(self, parent, options: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Analyze a stack of P values")
-        self.resize(520, 520)
+        tips.fit_to_screen(self, 520, 520)
         options = {**PSTACK_DEFAULTS, **(options or {})}
         layout = QVBoxLayout(self)
         intro = QLabel(tips.PSTACK_TEXT)
@@ -2698,6 +2716,7 @@ class PStackDialog(QDialog):
         buttons.button(QDialogButtonBox.Ok).setText("Run")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        tips.tip_buttons(buttons, "Correct the pasted P values for multiple testing and add a results sheet.")
         layout.addWidget(buttons)
 
     def options(self) -> dict:

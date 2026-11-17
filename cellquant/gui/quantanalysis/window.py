@@ -93,6 +93,7 @@ from cellquant.stats.contingency import ContingencyTable
 from cellquant.stats.curvefit import MODELS as CURVE_MODELS
 from cellquant.stats.grouped import GroupedTable
 from cellquant.stats.replicates import ReplicateTable
+from cellquant.stats.tables import numbers_with_plain_minus
 from cellquant.stats.xy import XYTable
 
 INSTALL = 'pip install "cellquant[stats]"'
@@ -167,13 +168,14 @@ class QuantAnalysisWindow(QMainWindow):
         self.setWindowFlag(Qt.Window, True)
         self.setWindowTitle("QuantAnalysis")
         self.setObjectName("QuantAnalysis")
-        self.resize(1320, 820)
+        tips.fit_to_screen(self, 1320, 820)
         self.setStyleSheet(dark_stylesheet())
         self._experiment = experiment
         self._busy = busy
         self._signature: str | None = None
         self._folder_sources: dict[str, sources.Source] = {}
         self.project = Project()
+        self.project.working.connect(self._working)
         self.project.changed.connect(self._project_changed)
         self.path: Path | None = None   # the project file, once saved or opened
         self._saved = project_file.fingerprint(self.project)
@@ -310,7 +312,7 @@ class QuantAnalysisWindow(QMainWindow):
         self._action(file, "Open CellQuant results folder…", self.open_folder_dialog,
                      "A results folder (experiment.json, summaries/) or an export folder (image_summary.csv, objects.csv).")
         file.addSeparator()
-        self._action(file, "Close", self.close)
+        self._action(file, "Close", self.close, "Close QuantAnalysis. It asks first when there is unsaved work.")
         edit = bar.addMenu("&Edit")
         self.rename_action = self._action(edit, "Rename", self.rename_current, "Rename the table, result, graph or layout selected in the list on the left (F2).")
         self.delete_action = self._action(edit, "Delete", self.delete_current,
@@ -432,6 +434,17 @@ class QuantAnalysisWindow(QMainWindow):
     def status(self, text: str) -> None:
         self.statusBar().showMessage(text, 8000)
         LOG.info("%s", text)
+
+    def _working(self, text: str) -> None:
+        """What a recomputation after typing is doing. It never replaces a message that is already showing (a rejected entry, say), and
+        it removes only its own when it is done."""
+
+        bar = self.statusBar()
+        if text:
+            if not bar.currentMessage():
+                self.status(text)
+        elif bar.currentMessage().startswith("Updating the results"):
+            bar.clearMessage()
 
     def log(self, text: str) -> None:
         LOG.info("%s", text)
@@ -608,8 +621,10 @@ class QuantAnalysisWindow(QMainWindow):
         box.setDefaultButton(QMessageBox.Save)
         return {QMessageBox.Save: "save", QMessageBox.Discard: "discard"}.get(box.exec(), "cancel")
 
-    def maybe_save(self, action: str) -> bool:
-        """True when it is fine to go on: nothing unsaved, saved now, or the user chose not to save."""
+    def maybe_save(self, action: str, clear: bool = True) -> bool:
+        """True when it is fine to go on: nothing unsaved, saved now, or the user chose not to save. Discarding deletes the recovery copy
+        unless ``clear`` is False: a caller that can still turn back (a file chooser, a file that cannot be read) deletes it itself once
+        the project is really replaced or closed."""
 
         if not self.has_unsaved_changes():
             return True
@@ -617,7 +632,8 @@ class QuantAnalysisWindow(QMainWindow):
         if answer == "save":
             return self.save_project()
         if answer == "discard":
-            self.clear_recovery()  # the user chose to lose these changes: no recovery copy of them either
+            if clear:
+                self.clear_recovery()  # the user chose to lose these changes: no recovery copy of them either
             return True
         return False
 
@@ -660,7 +676,7 @@ class QuantAnalysisWindow(QMainWindow):
 
         box = QMessageBox(QMessageBox.Question, "QuantAnalysis", f"Restore the unsaved changes to {name}?", QMessageBox.Yes | QMessageBox.No, self)
         box.setInformativeText(f"QuantAnalysis found a recovery copy from {when}, newer than the saved project. It was left behind when QuantAnalysis "
-                               "closed without saving. No restores it away.")
+                               "closed without saving. No throws it away.")
         box.setDefaultButton(QMessageBox.Yes)
         return box.exec() == QMessageBox.Yes
 
@@ -723,8 +739,11 @@ class QuantAnalysisWindow(QMainWindow):
         self.views.clear()
 
     def new_project(self) -> bool:
-        if not self.maybe_save("starting a new project"):
+        unsaved = self.has_unsaved_changes()
+        if not self.maybe_save("starting a new project", clear=False):
             return False
+        if unsaved:
+            self.clear_recovery()  # discarded (or saved, which cleared it already): the unsaved project is replaced now
         self._drop_views()
         self.project.defaults = dict(STAT_DEFAULTS)
         self.project.replace({}, {}, {})
@@ -736,17 +755,17 @@ class QuantAnalysisWindow(QMainWindow):
         return True
 
     def open_project_dialog(self) -> None:
-        if not self.maybe_save("opening another project"):
-            return
+        # Choose the file first: cancelling the chooser must not cost the open project its recovery copy.
         path, _ = QFileDialog.getOpenFileName(self, "Open a QuantAnalysis project", str(self._project_folder()),
                                               f"QuantAnalysis projects (*{project_file.SUFFIX});;All files (*)")
         if path:
-            self.open_project(path, ask=False)
+            self.open_project(path)
 
     def open_project(self, path: str | Path, ask: bool = True) -> bool:
         """Open a project file in place of the current project (asking first to save it when ``ask``)."""
 
-        if ask and not self.maybe_save("opening another project"):
+        unsaved = ask and self.has_unsaved_changes()
+        if ask and not self.maybe_save("opening another project", clear=False):
             return False
         path = Path(path)
         experiment = self.experiment_dir()
@@ -757,6 +776,8 @@ class QuantAnalysisWindow(QMainWindow):
             QMessageBox.warning(self, "QuantAnalysis", str(exc))
             self._forget_recent(path)
             return False
+        if unsaved:
+            self.clear_recovery()  # discarded (or saved, which cleared it already): the unsaved project is replaced now
         self._drop_views()
         current, notes = project_file.load(path, self.project, experiment, content)
         self.path = path
@@ -850,7 +871,7 @@ class QuantAnalysisWindow(QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         if watched is self.parent() and event.type() == QEvent.Close:
-            if not self.maybe_save("CellQuant closes"):
+            if not self.maybe_save("CellQuant closes", clear=False):  # closeEvent deletes the copy once the window really closes
                 event.ignore()
                 return True
             # Asked (or nothing to ask): closing QuantAnalysis along with CellQuant must not ask a second time.
@@ -927,7 +948,7 @@ class QuantAnalysisWindow(QMainWindow):
     def import_csv(self, path: str, shape: str | None = None, value: str | None = None, group: str | None = None,
                    replicate: str | None = None) -> DataSheet | None:
         try:
-            frame = pd.read_csv(path, sep=None, engine="python")
+            frame = numbers_with_plain_minus(pd.read_csv(path, sep=None, engine="python"))
         except (OSError, ValueError) as exc:
             self.status(f"{Path(path).name} could not be read: {exc}")
             return None
@@ -1490,8 +1511,10 @@ class QuantAnalysisWindow(QMainWindow):
         dialog = getattr(self, "_engine_check", None)
         if dialog is None:
             dialog = self._engine_check = EngineCheckDialog(self)
-        dialog.show()
+        dialog.show()  # the window first, then the checks with their progress in it
         dialog.raise_()
+        if not dialog.rows:
+            dialog.run()
         return dialog
 
     def open_example(self, name: str, data: dict, paired: bool = False) -> DataSheet:

@@ -31,6 +31,7 @@ from cellquant.storage import default_unit_column, unit_summary
 
 APPROVED = ("approved", "reviewed")
 DOTS = ("image", "unit", "object")
+_DOT_WORD = {"image": "image", "unit": "replicate", "object": "object"}
 # Per-image columns that are never a measure or a group.
 _IMAGE_ID_COLUMNS = {"sample_name", "filename", "image_id", "experiment_id", "run_id", "qc_status", "n_unmeasured", "n_called_by_hand", "summary_note"}
 # Per-object columns that are never a measure.
@@ -55,6 +56,7 @@ class Source:
     names: dict[str, str] = field(default_factory=dict)          # marker id (af594_pos) -> name (AF594)
     measurements: dict[str, str] = field(default_factory=dict)   # measurement column (af594_mean) -> marker name
     statistics: dict[str, str] = field(default_factory=dict)     # measurement column -> its statistic (area, mean…)
+    given: dict[str, str] = field(default_factory=dict)          # measurement column -> the name the user gave the measurement, when it has one
     label: str = ""                         # where it came from, for titles and the log
     path: Path | None = None
 
@@ -93,9 +95,9 @@ class Source:
             if prefix and (prefix in named or re.fullmatch(r"report_\d+", prefix)):
                 out.append(Measure(column, report_name(self.images, prefix, self.names), "image", "percent"))
         if "total_objects" in self.images.columns:
-            out.append(Measure("total_objects", "Objects counted (total_objects)", "image", "count"))
+            out.append(Measure("total_objects", "Objects counted", "image", "count"))
         if "count_area" in self.images.columns and pd.to_numeric(self.images["count_area"], errors="coerce").notna().any():
-            out.append(Measure("count_area", f"Count area (count_area{unit_suffix(self.images, 'count_area_unit')})", "image", "area"))
+            out.append(Measure("count_area", f"Count area{unit_suffix(self.images, 'count_area_unit')}", "image", "area"))
         if self.objects is not None:
             for column in self.objects.columns:
                 if column in _OBJECT_NOT_MEASURES or str(column).endswith("_pos"):
@@ -105,7 +107,11 @@ class Source:
                     continue
                 geometry = {"area": "area_unit", "equivalent_diameter": "length_unit", "centroid_x": "length_unit", "centroid_y": "length_unit"}
                 unit = unit_suffix(self.objects, {"area": "area_unit", "volume": "volume_unit"}.get(str(column)) or geometry.get(self.statistics.get(str(column), ""), ""))
-                out.append(Measure(str(column), f"{object_measure_name(str(column), self.measurements)}{unit} per object", "object", "value"))
+                statistic = self.statistics.get(str(column)) or (str(column).rsplit("_", 1)[-1] if str(column) in self.measurements else "")
+                if not unit and statistic in _INTENSITY:
+                    unit = " (a.u.)"  # an intensity is in arbitrary units
+                name = object_measure_name(str(column), self.measurements, self.given)
+                out.append(Measure(str(column), f"{name}{unit} per object", "object", "value"))
         return out
 
     def measure(self, key: str) -> Measure:
@@ -161,17 +167,25 @@ def unit_suffix(table: pd.DataFrame | None, column: str) -> str:
     if not units:
         return ""
     if len(units) > 1:
-        return " in mixed units (see " + column + ")"
+        return " in mixed units"
     return f" in {_UNIT_TEXT.get(next(iter(units)), next(iter(units)))}"
 
 
-def object_measure_name(column: str, measurements: dict[str, str]) -> str:
+_INTENSITY = ("mean", "median", "max", "min", "integrated", "sum", "std")
+
+
+def object_measure_name(column: str, measurements: dict[str, str], given: dict[str, str] | None = None) -> str:
+    """What a per-object measure is called for the user: its marker's name and statistic, else the name the user gave the measurement,
+    else the column made readable. The column id itself (``nuc_area``) stays internal: it is the key, never the label."""
+
     if column in measurements:
         suffix = column.rsplit("_", 1)[-1]
         what = {"mean": "mean intensity", "pct": "% of pixels bright", "median": "median intensity", "max": "max intensity",
                 "integrated": "integrated intensity", "sum": "integrated intensity"}.get(suffix, suffix)
         return f"{measurements[column]} {what}"
-    return {"area": "Area", "volume": "Volume", "z_slices": "Z slices"}.get(column, column)
+    if given and given.get(column):
+        return given[column]
+    return {"area": "Area", "volume": "Volume", "z_slices": "Z slices"}.get(column) or column.replace("_", " ").strip().capitalize()
 
 
 def group_label(column: str, value, names: dict[str, str]) -> str:
@@ -207,14 +221,14 @@ def read_results_folder(path: str | Path) -> Source:
     if (folder / "image_summary.csv").is_file():
         images = pd.read_csv(folder / "image_summary.csv")
         objects = pd.read_csv(folder / "objects.csv") if (folder / "objects.csv").is_file() else None
-        names, measurements, statistics = _recipe_names(folder / "recipe.yaml")
-        return Source(images, objects, names, measurements, statistics, label=f"export folder {folder.name}", path=folder)
+        names, measurements, statistics, given = _recipe_names(folder / "recipe.yaml")
+        return Source(images, objects, names, measurements, statistics, given, label=f"export folder {folder.name}", path=folder)
     if (folder / "summaries").is_dir():
         experiment = next((parent for parent in (folder.parent, folder.parent.parent, folder.parent.parent.parent)
                            if (parent / "experiment.json").is_file()), None)
         statuses = _statuses(experiment / "experiment.json", folder) if experiment else None
-        names, measurements, statistics = _recipe_names(folder / "recipe_snapshot.yaml")
-        return _read_tables(folder, statuses, names, measurements, statistics, label=folder.name, path=folder)
+        names, measurements, statistics, given = _recipe_names(folder / "recipe_snapshot.yaml")
+        return _read_tables(folder, statuses, names, measurements, statistics, given, label=folder.name, path=folder)
     raise StatisticsError(
         f"{folder} is not a CellQuant results or export folder: it has no experiment.json, image_summary.csv or summaries folder."
     )
@@ -228,8 +242,8 @@ def _read_experiment(folder: Path) -> Source:
     if not (working / "summaries").is_dir():
         raise StatisticsError(f"{folder} has no saved results yet (no {working.name}/summaries folder). Run some images first.")
     statuses = {record.get("image_id"): record.get("processing_status") for record in document.get("images", []) if record.get("include", True)}
-    names, measurements, statistics = _recipe_names(folder / "recipes" / f"{active}.yaml")
-    return _read_tables(working, statuses, names, measurements, statistics, label=document.get("experiment_name") or folder.name, path=folder)
+    names, measurements, statistics, given = _recipe_names(folder / "recipes" / f"{active}.yaml")
+    return _read_tables(working, statuses, names, measurements, statistics, given, label=document.get("experiment_name") or folder.name, path=folder)
 
 
 def _statuses(experiment_json: Path, working: Path) -> dict[str, str] | None:
@@ -246,7 +260,7 @@ def _statuses(experiment_json: Path, working: Path) -> dict[str, str] | None:
     return {record.get("image_id"): record.get("processing_status") for record in document.get("images", []) if record.get("include", True)}
 
 
-def _read_tables(folder: Path, statuses: dict[str, str] | None, names, measurements, statistics, label: str, path: Path) -> Source:
+def _read_tables(folder: Path, statuses: dict[str, str] | None, names, measurements, statistics, given, label: str, path: Path) -> Source:
     images = _concat(folder / "summaries")
     if images.empty:
         raise StatisticsError(f"{folder / 'summaries'} has no image summaries.")
@@ -256,7 +270,7 @@ def _read_tables(folder: Path, statuses: dict[str, str] | None, names, measureme
         images["approved"] = images["image_id"].map(lambda image_id: statuses.get(image_id) in APPROVED)
         if not objects.empty and "image_id" in objects.columns:
             objects = objects.loc[objects["image_id"].isin(statuses)].reset_index(drop=True)
-    return Source(images, None if objects.empty else objects, names, measurements, statistics, label=label, path=path)
+    return Source(images, None if objects.empty else objects, names, measurements, statistics, given, label=label, path=path)
 
 
 def _concat(directory: Path) -> pd.DataFrame:
@@ -264,20 +278,20 @@ def _concat(directory: Path) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-def _recipe_names(path: Path) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
-    """Marker names by classification id, and by the measurement column each one reads."""
+def _recipe_names(path: Path) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+    """Marker names by classification id, and by the measurement column each one reads; each measurement's statistic and given name."""
 
     try:
         import yaml
 
         document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except (OSError, ValueError, ImportError, AttributeError):
-        return {}, {}, {}
+        return {}, {}, {}, {}
     return _names_from(document)
 
 
-def _names_from(document: dict) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
-    names, measurements, statistics = {}, {}, {}
+def _names_from(document: dict) -> tuple[dict[str, str], dict[str, str], dict[str, str], dict[str, str]]:
+    names, measurements, statistics, given = {}, {}, {}, {}
     try:
         for item in document.get("classifications") or []:
             names[str(item["id"])] = str(item.get("name") or item["id"])
@@ -287,6 +301,8 @@ def _names_from(document: dict) -> tuple[dict[str, str], dict[str, str], dict[st
         for item in document.get("measurements") or []:
             channels.setdefault(item.get("channel"), []).append(str(item.get("id")))
             statistics[str(item.get("id"))] = str(item.get("statistic"))
+            if item.get("name"):
+                given[str(item.get("id"))] = str(item["name"])
         # A marker's other statistics on the same channel (af594_pct next to af594_mean) take its name too.
         for ids in channels.values():
             named = next((measurements[key] for key in ids if key in measurements), None)
@@ -295,7 +311,7 @@ def _names_from(document: dict) -> tuple[dict[str, str], dict[str, str], dict[st
                     measurements.setdefault(key, named)
     except (KeyError, TypeError, AttributeError):
         pass
-    return names, measurements, statistics
+    return names, measurements, statistics, given
 
 
 def from_controller(controller) -> Source:
@@ -313,8 +329,8 @@ def from_controller(controller) -> Source:
     shown = controller.marker_names()  # a marker named after a channel the user renamed has the channel's name now
     for item in document.get("classifications") or []:
         item["name"] = shown.get(item.get("id"), item.get("name"))
-    names, measurements, statistics = _names_from(document)
-    return Source(images, objects if not objects.empty else None, names, measurements, statistics,
+    names, measurements, statistics, given = _names_from(document)
+    return Source(images, objects if not objects.empty else None, names, measurements, statistics, given,
                   label=controller.experiment.experiment_name, path=controller.directory)
 
 
@@ -528,7 +544,8 @@ def _build(source: Source, spec: ImportSpec, pair_with: str | None = None, order
         raise StatisticsError("No values for the chosen groups.")
     long = long.loc[long["group"].isin(order)]
     paired = object_group and spec.dot != "object" and not pair_with
-    title = measure.label.replace(" per object", "")
+    # The dot level is part of the title, so the same measure imported at two levels gives two tables that can be told apart (and an axis that says what a dot is).
+    title = f"{measure.label.replace(' per object', '')} per {_DOT_WORD[spec.dot]}"
     if paired:
         table = ColumnTable.from_long(long, value="value", group="group", order=order, subject="dot", title=title)
         row_labels = list(pd.unique(long["dot"]))
