@@ -307,7 +307,8 @@ def step_states(window) -> list[StepState]:
         StepState(
             bool(reviewed),
             f"{len(reviewed)} checked" if reviewed else ("cutoffs set" if classified else ""),
-            "" if classified else "Finish step 4 first.",
+            # Markers exist (step 4 shows its tick) but no result carries their columns yet: say what to do, not "step 4".
+            "" if classified else ("Run this image again so its markers are measured." if markers else "Finish step 4 first."),
             "" if reviewed else "Approve images that look right.",
         )
     )
