@@ -446,11 +446,18 @@ class StepPage(QWidget):
         self.hint.setVisible(bool(state.hint))
 
 
-class StartPage(QWidget):
+class StartPage(QScrollArea):
+    """The Start tab. It scrolls when the window is too short for all of it, so it never sets how tall the CellQuant panel must be."""
+
     def __init__(self, window):
         super().__init__()
         self.window = window
-        layout = QVBoxLayout(self)
+        body = QWidget()
+        self.setWidget(body)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        layout = QVBoxLayout(body)
         self.lock_note = _lock_note_label()
         layout.addWidget(self.lock_note)
         title = QLabel("<h2>CellQuant</h2>")
