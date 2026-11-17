@@ -27,7 +27,7 @@ from qtpy.QtWidgets import (
 
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import tips
-from cellquant.gui.quantanalysis.datagrid import NOTE_STYLE, WARNING_STYLE, parse_cell
+from cellquant.gui.quantanalysis.datagrid import NOTE_STYLE, WARNING_STYLE, parse_cell, reject_entry, skipped_paste
 from cellquant.gui.quantanalysis.grouped_view import _unique
 from cellquant.gui.quantanalysis.project import DataSheet, Project, set_xy
 from cellquant.stats.xy import XYTable
@@ -168,10 +168,12 @@ class XYSheetView(QWidget):
             try:
                 parse_cell(text)
             except ValueError:
-                self.window.status(f"“{text}” is not a number; the cell is left blank.")
+                xy, column = self.xy, item.column()
+                previous = xy.x[item.row()] if column == 0 else xy.values[item.row(), (column - 1) // xy.replicates, (column - 1) % xy.replicates]
                 self._filling = True
-                item.setText("")
+                reject_entry(self.window, item, text, previous)
                 self._filling = False
+                return
         self.commit()
 
     def _resized(self, x: np.ndarray, values: np.ndarray, sets: list[str], x_title: str | None = None) -> None:
@@ -264,16 +266,19 @@ class XYSheetView(QWidget):
         while 1 + len(sets) * depth < left + width:
             sets.append(_unique("Data set", sets))
             values = np.concatenate([values, np.full((values.shape[0], 1, depth), np.nan)], axis=1)
+        skipped = 0
         for r, line in enumerate(lines):
             for offset in range(width):
                 cell = line[offset] if offset < len(line) else ""
                 try:
                     value = parse_cell(cell)
                 except ValueError:
-                    value = np.nan
+                    skipped += 1  # the cell keeps the value it had
+                    continue
                 column = left + offset
                 if column == 0:
                     x[top + r] = value
                 else:
                     values[top + r, (column - 1) // depth, (column - 1) % depth] = value
         self._resized(x, values, sets)
+        skipped_paste(self.window, skipped)

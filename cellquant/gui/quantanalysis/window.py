@@ -93,6 +93,7 @@ from cellquant.stats.contingency import ContingencyTable
 from cellquant.stats.curvefit import MODELS as CURVE_MODELS
 from cellquant.stats.grouped import GroupedTable
 from cellquant.stats.replicates import ReplicateTable
+from cellquant.stats.tables import numbers_with_plain_minus
 from cellquant.stats.xy import XYTable
 
 INSTALL = 'pip install "cellquant[stats]"'
@@ -927,7 +928,7 @@ class QuantAnalysisWindow(QMainWindow):
     def import_csv(self, path: str, shape: str | None = None, value: str | None = None, group: str | None = None,
                    replicate: str | None = None) -> DataSheet | None:
         try:
-            frame = pd.read_csv(path, sep=None, engine="python")
+            frame = numbers_with_plain_minus(pd.read_csv(path, sep=None, engine="python"))
         except (OSError, ValueError) as exc:
             self.status(f"{Path(path).name} could not be read: {exc}")
             return None
