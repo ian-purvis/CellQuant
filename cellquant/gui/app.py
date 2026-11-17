@@ -3052,7 +3052,10 @@ class CellQuantWindow:
         # has the same channels and size (the usual case), its layers are kept and given the new pixels.
         layers = self._reusable_channel_layers(names, loaded)
         kept = layers is not None
-        self._clear_managed(keep=(*names, *_OBJECT_LAYERS) if kept else ())
+        # The object layers are kept even when the channel layers are not: they get the next image's objects in place
+        # (an image not analysed yet has none, so they go).
+        self._clear_managed(keep=(*names, *_OBJECT_LAYERS) if kept else _OBJECT_LAYERS if result is not None else ())
+        objects_before = self.viewer.layers["Objects"] if "Objects" in self.viewer.layers else None
         self._shown_image_id = record.image_id
         self._shown_z = display_z(result)
         self._edit_panel.clear_selection()
@@ -3067,6 +3070,13 @@ class CellQuantWindow:
                 blending="additive",
             )
             layers = added if isinstance(added, list) else [added]
+            kept_objects = [layer for layer in self.viewer.layers if layer.name in _OBJECT_LAYERS]
+            if kept_objects:
+                # New layers go on top: put the channels back under the objects, as when everything is added again.
+                at = self.viewer.layers.index(kept_objects[0])
+                self.viewer.layers.move_multiple([self.viewer.layers.index(layer) for layer in layers], at)
+                if len(self.viewer.layers) == len([name for name in self._managed if name in self.viewer.layers]):
+                    self.viewer.dims._go_to_center_step()  # what napari does for a first new layer
         else:
             for layer in layers:
                 hook = self._contrast_hooks.pop(layer.name, None)
@@ -3105,7 +3115,7 @@ class CellQuantWindow:
             self.viewer.dims.set_current_step(0, int(slice_index))
         labels = result.labels if result is not None else None
         self._set_labels(labels, result)
-        if kept:
+        if objects_before is not None and "Objects" in self.viewer.layers and self.viewer.layers["Objects"] is objects_before:
             self._reset_object_layers()
         self._fit_view(area, camera, layers)
         self.show_count_area(record)
@@ -3242,8 +3252,8 @@ class CellQuantWindow:
             for name in _OBJECT_LAYERS:
                 self._drop(name)
             return
-        fills = self._layer_if_shape("Object fills", labels.shape)
-        boundaries = self._layer_if_shape("Objects", labels.shape)
+        fills = self._layer_if_ndim("Object fills", labels.ndim)
+        boundaries = self._layer_if_ndim("Objects", labels.ndim)
         if fills is not None and boundaries is not None:
             fills.data = labels
             boundaries.data = np.array(labels, copy=True)
@@ -3353,11 +3363,11 @@ class CellQuantWindow:
         inside = ids < len(codes)
         codes[ids[inside]] = flags[inside]
         overlay = codes[labels]
-        existing = self._layer_if_shape("Classification", overlay.shape)
+        existing = self._layer_if_ndim("Classification", overlay.ndim)
         if existing is not None:
             # A cutoff move flips only a few objects: rewrite just their pixels, so napari redraws that part instead of the whole layer.
             shown = existing.data
-            changed = np.nonzero(shown != overlay) if isinstance(shown, np.ndarray) else None
+            changed = np.nonzero(shown != overlay) if isinstance(shown, np.ndarray) and shown.shape == overlay.shape else None
             if changed is None or changed[0].size >= overlay.size // 4:
                 existing.data = overlay
             elif changed[0].size:
@@ -3438,6 +3448,13 @@ class CellQuantWindow:
             visible=visible,
         )
         self._managed.add(points.name)
+
+    def _layer_if_ndim(self, name: str, ndim: int):
+        """The layer to give new data in place: same number of dimensions (another image size is fine)."""
+
+        if name in self.viewer.layers and self.viewer.layers[name].data.ndim == ndim:
+            return self.viewer.layers[name]
+        return None
 
     def _layer_if_shape(self, name: str, shape: tuple[int, ...]):
         if name in self.viewer.layers and tuple(self.viewer.layers[name].data.shape) == tuple(shape):
