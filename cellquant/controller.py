@@ -625,28 +625,27 @@ class AnalysisController:
             record.approved_settings_sha256 = ""
             record.last_result = ""
             record.last_message = "Pixel size changed after this image was run: run it again to measure it at the new size."
+        elif record.processing_status == "not_analyzed" and self.recall(image_id, measure=False) is not None:
+            # The old size was typed back: the saved result fits again (it is not approved again).
+            record.processing_status = "analyzed"
+            record.last_message = "The pixel size is the one this image was run with again, so its saved result is back. Approve it again if it looks right."
 
     def pixel_size_makes_stale(self, image_id: str, pixel_size_x: float | None, pixel_size_y: float | None, pixel_size_z: float | None = None) -> bool:
-        """True when setting these sizes (as ``set_pixel_size`` would) changes the image's sizes and the image has a result."""
+        """True when setting these sizes (as ``set_pixel_size`` would) leaves the image's current result measured at other sizes."""
 
         record = self.experiment.image(image_id)
         z = record.pixel_size_z if pixel_size_z is None else (pixel_size_z or None)
-        if _same_numbers([record.pixel_size_x, record.pixel_size_y, record.pixel_size_z], [pixel_size_x, pixel_size_y, z]):
-            return False
-        return self.recall(image_id, measure=False) is not None
+        result = self.recall(image_id, measure=False)
+        return result is not None and _measured_at_other_size(result.provenance, pixel_size_x, pixel_size_y, z)
 
     def _measured_at_other_size(self, image_id: str, result: ImageResult) -> bool:
-        """True when this result was measured at pixel sizes the image no longer has (results saved before
-        the sizes were recorded in them cannot be told, so they count as current)."""
+        """True when this result was measured at pixel sizes the image no longer has (see the module function)."""
 
-        keys = ("pixel_size_x_um", "pixel_size_y_um", "pixel_size_z_um")
-        if any(key not in result.provenance for key in keys):
-            return False
         try:
             record = self.experiment.image(image_id)
         except KeyError:
             return False
-        return not _same_numbers([result.provenance[key] for key in keys], [record.pixel_size_x, record.pixel_size_y, record.pixel_size_z])
+        return _measured_at_other_size(result.provenance, record.pixel_size_x, record.pixel_size_y, record.pixel_size_z)
 
     def set_status(self, image_id: str, status: str) -> None:
         record = self.experiment.image(image_id)
@@ -662,9 +661,7 @@ class AnalysisController:
         else:
             with self._image_settings(self.experiment.image(image_id)):
                 settings = self.recipe.content_hash()
-        record = self.experiment.image(image_id)
-        # The pixel sizes too: an approval made at other sizes never matches (areas and volumes differ).
-        fingerprint = f"{settings}:{len(self._active_edits(image_id))}:px-{record.pixel_size_x}-{record.pixel_size_y}-{record.pixel_size_z}"
+        fingerprint = f"{settings}:{len(self._active_edits(image_id))}"
         # Only the calls still applied (their object is there), so a stale entry changes nothing.
         objects = result.objects if result is not None else None
         calls = {
@@ -3371,6 +3368,24 @@ def _canonical(value) -> str:
     import json
 
     return json.dumps(value, sort_keys=True, default=str)
+
+
+def _measured_at_other_size(provenance: dict, pixel_size_x: float | None, pixel_size_y: float | None, pixel_size_z: float | None) -> bool:
+    """True when a result's recorded pixel sizes disagree with the sizes the image states.
+
+    A size the image does not state (None) means "whatever the file says" and never makes a result out of date.
+    X and Y count when stated; Z only for results analysed in 3D (a 2D result does not depend on the Z step).
+    Results saved before sizes were recorded in them cannot be told, so they count as current."""
+
+    if "pixel_size_x_um" not in provenance or "pixel_size_y_um" not in provenance:
+        return False
+    wanted = [("pixel_size_x_um", pixel_size_x), ("pixel_size_y_um", pixel_size_y)]
+    if provenance.get("analysis_dimensions") == 3:
+        wanted.append(("pixel_size_z_um", pixel_size_z))
+    for key, stated in wanted:
+        if stated is not None and not _same_numbers([provenance.get(key)], [stated]):
+            return True
+    return False
 
 
 def _same_numbers(stored, current) -> bool:

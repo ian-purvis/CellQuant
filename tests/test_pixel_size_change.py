@@ -37,7 +37,6 @@ def test_a_changed_size_makes_the_result_out_of_date_and_clears_the_approval(tmp
     first, second = _run_and_approve(controller)
     before = controller.recall(first)
     assert before is not None and before.provenance["pixel_size_x_um"] == PIXEL_SIZE_UM
-    old_fingerprint = controller.experiment.image(first).approved_settings_sha256
 
     assert controller.pixel_size_makes_stale(first, 2.0, 2.0)
     controller.set_pixel_size(first, 2.0, 2.0)
@@ -57,7 +56,6 @@ def test_a_changed_size_makes_the_result_out_of_date_and_clears_the_approval(tmp
     after = controller.recall(first)
     assert after.provenance["pixel_size_x_um"] == 2.0
     assert controller.experiment.image(first).processing_status == "analyzed"
-    assert controller._approval_fingerprint(first) != old_fingerprint
 
 
 def test_the_saved_result_is_not_offered_after_reopening(tmp_path: Path):
@@ -96,7 +94,7 @@ def test_the_same_value_changes_nothing(tmp_path: Path):
     assert controller.recall(first) is not None
 
 
-def test_a_z_step_change_counts_and_an_image_without_results_is_simply_updated(tmp_path: Path):
+def test_an_image_without_results_is_simply_updated_and_a_z_step_does_not_touch_a_2d_result(tmp_path: Path):
     controller = _controller(tmp_path)
     first, second = [record.image_id for record in controller.experiment.images]
     controller.run_image(first)
@@ -106,17 +104,87 @@ def test_a_z_step_change_counts_and_an_image_without_results_is_simply_updated(t
     assert controller.experiment.image(second).pixel_size_z == 3.0
     assert controller.experiment.image(second).processing_status == "not_analyzed"
     assert controller.experiment.image(second).last_message == ""
+    # A 2D result does not depend on the Z step: its approval stays.
+    assert not controller.pixel_size_makes_stale(first, PIXEL_SIZE_UM, PIXEL_SIZE_UM, 3.0)
     controller.set_pixel_size(first, PIXEL_SIZE_UM, PIXEL_SIZE_UM, 3.0)
+    assert controller.experiment.image(first).processing_status == "approved"
+    assert controller.recall(first) is not None
+
+
+def _unsized_controller(tmp_path: Path) -> AnalysisController:
+    """Two images whose files carry no pixel size at all."""
+
+    import numpy as np
+    import tifffile
+
+    rng = np.random.default_rng(3)
+    paths = []
+    for index in range(2):
+        data = rng.normal(100, 5, (2, 96, 96)).astype(np.float32)
+        data[0, 20:40, 20:40] = 900
+        data[0, 55:80, 50:75] = 900
+        path = tmp_path / "unsized" / f"plain_{index}.tif"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tifffile.imwrite(path, data.astype(np.uint16), metadata={"axes": "CYX"})
+        paths.append(path)
+    controller = AnalysisController.create(tmp_path / "experiment_unsized", "Unsized")
+    controller.add_image_paths(paths)
+    controller.set_recipe(
+        {"object_set": {"name": "Nuclei", "segmentation_channel": 0, "algorithm": "classical", "parameters": {"threshold_method": "otsu", "min_area_px": 20}}}
+    )
+    return controller
+
+
+def test_a_size_set_after_a_run_without_one_makes_the_result_out_of_date(tmp_path: Path):
+    controller = _unsized_controller(tmp_path)
+    first, second = [record.image_id for record in controller.experiment.images]
+    assert controller.experiment.image(first).pixel_size_x is None
+    controller.run_images()
+    for image_id in (first, second):
+        controller.set_status(image_id, "approved")
+    assert controller.recall(first).provenance["pixel_size_x_um"] is None
+    # Reopened with no size: still current, approvals kept.
+    controller.save()
+    reopened = AnalysisController.open(tmp_path / "experiment_unsized")
+    assert reopened.recall(first) is not None and reopened.experiment.image(first).processing_status == "approved"
+    # Then the user sets one: the result was measured in pixels, so it is out of date.
+    assert controller.pixel_size_makes_stale(first, 0.5, 0.5)
+    controller.set_pixel_size(first, 0.5, 0.5)
     assert controller.experiment.image(first).processing_status == "not_analyzed"
+    assert controller.recall(first) is None
+    # Clearing a size never makes a result stale (None means "whatever the file says").
+    assert not controller.pixel_size_makes_stale(second, None, None)
 
 
-def test_the_approval_fingerprint_covers_the_pixel_sizes(tmp_path: Path):
+def test_typing_the_old_size_back_brings_the_saved_result_back(tmp_path: Path):
     controller = _controller(tmp_path)
     first, _ = _run_and_approve(controller)
-    approved = controller.experiment.image(first).approved_settings_sha256
-    assert approved == controller._approval_fingerprint(first)
-    controller.experiment.image(first).pixel_size_x = 3.0  # as if the size had been changed behind the check
-    assert approved != controller._approval_fingerprint(first)
+    controller.save()
+    controller.set_pixel_size(first, 2.0, 2.0)
+    assert controller.experiment.image(first).processing_status == "not_analyzed"
+    controller.set_pixel_size(first, PIXEL_SIZE_UM, PIXEL_SIZE_UM)
+    record = controller.experiment.image(first)
+    assert record.processing_status == "analyzed" and record.approved_settings_sha256 == ""  # not approved again
+    assert "saved result is back" in record.last_message
+    assert controller.recall(first) is not None
+    # An image that was never run is left as it is.
+    other = AnalysisController.create(tmp_path / "other", "Other")
+    other.add_image_paths([tmp_path / "raw" / next(p.name for p in (tmp_path / "raw").iterdir())])
+    other_id = other.experiment.images[0].image_id
+    other.set_pixel_size(other_id, 1.0, 1.0)
+    assert other.experiment.image(other_id).processing_status == "not_analyzed"
+
+
+def test_an_approval_in_the_format_of_earlier_versions_still_matches(tmp_path: Path):
+    controller = _controller(tmp_path)
+    first, _ = _run_and_approve(controller)
+    result = controller.recall(first)
+    # recipe_sha256 + ":" + number of edits, as written before this change.
+    old = f"{result.provenance['recipe_sha256']}:0"
+    assert controller.experiment.image(first).approved_settings_sha256 == old
+    controller.run_image(first)
+    record = controller.experiment.image(first)
+    assert record.processing_status == "approved" and record.approved_settings_sha256 == old
 
 
 def test_running_again_with_unchanged_sizes_keeps_the_approval(tmp_path: Path):
