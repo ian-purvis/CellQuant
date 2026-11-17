@@ -10,7 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+from qtpy.QtCore import QEvent, Qt
 from qtpy.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -66,13 +68,15 @@ class MeasureDock(QWidget):
         self._drawn: dict[str, list[tuple[np.ndarray, str]]] = {}  # image id -> shapes kept while not shown
         self._layer = None
         self._layer_image: str | None = None
+        self._row_shapes: list[tuple[str, int]] = []  # for each table row: the image id and the shape's place in that image's drawing
         layout = QVBoxLayout(self)
         intro = QLabel("Draw on the image. ⓘ")
         intro.setToolTip(
             "Pick a tool, then draw on the image in napari. Each line or shape is measured here.\n"
             "Lines give a length; rectangles and freehand shapes give perimeter, area and volume.\n"
             "Units are µm from the image file, or pixels when the file has no pixel size.\n"
-            "To move or delete a shape, use the select tool in napari's layer controls."
+            "To delete shapes, select their rows in the table and click Delete.\n"
+            "To move a shape, use the select tool in napari's layer controls."
         )
         layout.addWidget(intro)
         tools = QHBoxLayout()
@@ -102,6 +106,8 @@ class MeasureDock(QWidget):
         layout.addLayout(depth_row)
         self.table = QTableWidget(0, 7)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -109,6 +115,11 @@ class MeasureDock(QWidget):
         self.table.setColumnWidth(0, 140)  # long file names are cut short; the full name is in the tooltip
         layout.addWidget(self.table, 1)
         actions = QHBoxLayout()
+        self.delete_button = QPushButton("Delete")
+        self.delete_button.clicked.connect(self.delete_selected)
+        actions.addWidget(self.delete_button)
+        self.table.itemSelectionChanged.connect(self._selection_changed)
+        self.table.installEventFilter(self)  # the Delete key in the table does the same as the button
         self.clear_button = QPushButton("Clear image")
         self.clear_button.setToolTip("Remove every line and shape drawn on this image.")
         self.clear_button.clicked.connect(self.clear_image)
@@ -182,6 +193,57 @@ class MeasureDock(QWidget):
         self.shell.viewer.layers.selection.active = layer
         layer.mode = mode
 
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt's name
+        if watched is self.table and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Delete:
+            self.delete_selected()
+            return True
+        return super().eventFilter(watched, event)
+
+    def selected_shapes(self) -> list[tuple[str, int]]:
+        """The (image id, shape place) of each selected table row."""
+
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()}) if self.table.selectionModel() else []
+        return [self._row_shapes[row] for row in rows if row < len(self._row_shapes)]
+
+    def _update_delete_button(self) -> None:
+        selected = bool(self.selected_shapes())
+        self.delete_button.setEnabled(selected)
+        self.delete_button.setToolTip(
+            "Delete the shapes selected in the table, from the image and the table (the Delete key does the same)."
+            if selected
+            else "Select one or more rows in the table first (Ctrl or Shift for more). Delete removes those shapes."
+        )
+
+    def _selection_changed(self) -> None:
+        self._update_delete_button()
+        shown = sorted(place for image, place in self.selected_shapes() if image == self._layer_image)
+        if shown and self._layer_alive():
+            self._layer.selected_data = set(shown)  # the shapes show as selected in the image
+
+    def delete_selected(self) -> None:
+        """Remove the shapes whose rows are selected, from the drawing and the table together."""
+
+        chosen = self.selected_shapes()
+        if not chosen:
+            self.shell.message("Select one or more rows in the table first.")
+            return
+        by_image: dict[str, set[int]] = {}
+        for image, place in chosen:
+            by_image.setdefault(image, set()).add(place)
+        for image, places in by_image.items():
+            if self._layer_alive() and image == self._layer_image:
+                self._layer.selected_data = set(places)
+                self._layer.remove_selected()
+            elif image in self._drawn:
+                kept = [shape for place, shape in enumerate(self._drawn[image]) if place not in places]
+                if kept:
+                    self._drawn[image] = kept
+                else:
+                    del self._drawn[image]
+        self.table.clearSelection()  # the rows that remain are other shapes now
+        self.refresh()
+        self.shell.message(f"Deleted {len(chosen)} shape{'s' if len(chosen) != 1 else ''}.")
+
     def clear_image(self) -> None:
         if self._layer_alive():
             self._layer.data = []
@@ -230,6 +292,7 @@ class MeasureDock(QWidget):
         self.table.setHorizontalHeaderLabels(
             ["Image", "#", "Shape", f"Length ({unit})", f"Perimeter ({unit})", f"Area ({area})", f"Volume ({volume_unit(unit)})"]
         )
+        self._row_shapes = [(record.image_id, place) for record, shapes in self._shapes_by_image() for place in range(len(shapes))]
         self.table.setRowCount(len(rows))
         for row, item in enumerate(rows):
             values = [item.image, str(item.number), item.shape]
@@ -242,6 +305,7 @@ class MeasureDock(QWidget):
                     cell.setToolTip(f"Depth: {item.depth}")
                 self.table.setItem(row, column, cell)
         self.export_button.setEnabled(bool(rows))
+        self._update_delete_button()
 
     def export(self) -> None:
         rows = self.measurements()
