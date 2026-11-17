@@ -95,8 +95,9 @@ class LayoutSheetView(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setFixedWidth(372)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Wide enough for the widest row (Grid: rows × columns) at the usual font, so no label or box is cut off; a larger font scrolls it sideways.
+        scroll.setFixedWidth(460)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         panel = QWidget()
         column = QVBoxLayout(panel)
         column.setContentsMargins(0, 0, 6, 0)

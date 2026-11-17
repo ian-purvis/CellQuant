@@ -68,7 +68,7 @@ class ReferenceWindow(QDialog):
         super().__init__(parent)
         self.setWindowTitle("QuantAnalysis: statistics reference")
         self.setModal(False)
-        self.resize(1150, 820)
+        tips.fit_to_screen(self, 1150, 820)
         self.root = reference.parse(text)
         self.index = reference.Index(self.root)
         self._titles = set(self.index.titles)

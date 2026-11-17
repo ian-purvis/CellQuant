@@ -3,9 +3,10 @@ published value (cellquant.stats.benchmarks)."""
 
 from __future__ import annotations
 
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QEventLoop, Qt
 from qtpy.QtGui import QBrush, QColor
 from qtpy.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -28,8 +29,9 @@ class EngineCheckDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("QuantAnalysis: check the engine")
         self.setModal(False)
-        self.resize(1200, 700)
+        tips.fit_to_screen(self, 1200, 700)
         self.rows: list = []
+        self._running = False
         layout = QVBoxLayout(self)
         intro = QLabel(tips.CHECK_ENGINE + " The same checks run in the tests every time the code changes.")
         intro.setWordWrap(True)
@@ -37,6 +39,7 @@ class EngineCheckDialog(QDialog):
         self.summary = QLabel()
         layout.addWidget(self.summary)
         self.table = QTableWidget(0, len(COLUMNS))
+        tips.tip_corner_button(self.table)
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.verticalHeader().hide()
@@ -44,25 +47,44 @@ class EngineCheckDialog(QDialog):
         self.table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.table, 1)
         buttons = QHBoxLayout()
-        run = QPushButton("Run again")
-        run.setToolTip("Run every check again with the engine as it is now.")
-        run.clicked.connect(self.run)
+        self.run_button = QPushButton("Run again")
+        self.run_button.setToolTip("Run every check again with the engine as it is now.")
+        self.run_button.clicked.connect(self.run)
         export = QPushButton("Export CSV…")
         export.setToolTip("Save every check with its published and engine values, for a methods supplement.")
         export.clicked.connect(self.export_csv)
         close = QPushButton("Close")
+        close.setToolTip("Close this window.")
         close.clicked.connect(self.close)
-        buttons.addWidget(run)
+        buttons.addWidget(self.run_button)
         buttons.addWidget(export)
         buttons.addStretch(1)
         buttons.addWidget(close)
         layout.addLayout(buttons)
-        self.run()
+        self.summary.setText("Not run yet.")
 
     def run(self) -> list:
-        from cellquant.stats.benchmarks import run_benchmarks
+        """Run every check, one reference analysis at a time, showing how far it is. It runs on the window's own thread, so the window
+        is painted between the checks (input is held back, which also keeps it from being started twice)."""
 
-        self.rows = run_benchmarks()
+        from cellquant.stats import benchmarks
+
+        if self._running:
+            return self.rows
+        self._running = True
+        self.run_button.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            todo = [item for item in benchmarks.BENCHMARKS if not (item.needs_statsmodels and benchmarks.statsmodels is None)]
+            self.rows = []
+            for number, item in enumerate(todo, 1):
+                self.summary.setText(f"<b>Checking… {number} of {len(todo)} reference analyses</b> ({item.name})")
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
+                self.rows.extend(benchmarks.run_benchmark(item))
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.run_button.setEnabled(True)
+            self._running = False
         self.table.setRowCount(len(self.rows))
         for number, row in enumerate(self.rows):
             cells = (row.name, row.key, _text(row.published), _text(row.engine), "✓" if row.ok else "✗ differs", row.source)

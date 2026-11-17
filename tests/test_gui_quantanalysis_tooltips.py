@@ -142,6 +142,7 @@ def test_every_control_in_the_window_and_its_dialogs_has_a_tooltip(window, monke
     MagicDialog(window.views[bar.id]).exec()
     window.statistics_reference()
     sweep("statistics reference", window.statistics_reference())
+    sweep("engine check", window.check_engine())
     window.select(None)
     sweep("welcome page", window.stack.currentWidget())
     for sheet_id, view in window.views.items():  # every page the window made, whether or not it is showing

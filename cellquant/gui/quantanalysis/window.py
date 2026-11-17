@@ -168,13 +168,14 @@ class QuantAnalysisWindow(QMainWindow):
         self.setWindowFlag(Qt.Window, True)
         self.setWindowTitle("QuantAnalysis")
         self.setObjectName("QuantAnalysis")
-        self.resize(1320, 820)
+        tips.fit_to_screen(self, 1320, 820)
         self.setStyleSheet(dark_stylesheet())
         self._experiment = experiment
         self._busy = busy
         self._signature: str | None = None
         self._folder_sources: dict[str, sources.Source] = {}
         self.project = Project()
+        self.project.working.connect(lambda text: self.status(text) if text else self.statusBar().clearMessage())
         self.project.changed.connect(self._project_changed)
         self.path: Path | None = None   # the project file, once saved or opened
         self._saved = project_file.fingerprint(self.project)
@@ -1499,8 +1500,10 @@ class QuantAnalysisWindow(QMainWindow):
         dialog = getattr(self, "_engine_check", None)
         if dialog is None:
             dialog = self._engine_check = EngineCheckDialog(self)
-        dialog.show()
+        dialog.show()  # the window first, then the checks with their progress in it
         dialog.raise_()
+        if not dialog.rows:
+            dialog.run()
         return dialog
 
     def open_example(self, name: str, data: dict, paired: bool = False) -> DataSheet:

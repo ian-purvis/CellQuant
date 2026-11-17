@@ -270,16 +270,19 @@ class DataSheetView(QWidget):
         self.description.setToolTip("\n".join(sheet.notes))
         self.notes.setText(" ".join(sheet.notes))
         self.stale.setVisible(sheet.stale)
-        for kind, (button, tip) in self.analysis_buttons.items():  # the menu's check: greyed with the reason, not an error after the click
-            reason = self.window.blocker(kind, sheet)
-            button.setEnabled(reason is None)
-            button.setToolTip(tip if reason is None else reason)
+        self._update_buttons()
         self.change.setVisible(sheet.processed_from is not None)
         danger = sheet.pseudoreplicated
         text = "<br>".join(f"⚠ {html.escape(item)}" for item in sheet.warnings)
         self.warnings.setText(text)
         self.warnings.setStyleSheet(DANGER_STYLE if danger else WARNING_STYLE)
         self.warnings.setVisible(bool(text))
+
+    def _update_buttons(self) -> None:
+        for kind, (button, tip) in self.analysis_buttons.items():  # the menu's check: greyed with the reason, not an error after the click
+            reason = self.window.blocker(kind, self.sheet)
+            button.setEnabled(reason is None)
+            button.setToolTip(tip if reason is None else reason)
 
     def _replicate_note(self) -> None:
         replicates = self.sheet.replicates
@@ -334,9 +337,10 @@ class DataSheetView(QWidget):
                 for index in range(self.offset, self.grid.columnCount())]
 
     def commit(self, names: list[str] | None = None, values: list[np.ndarray] | None = None, paired: bool | None = None,
-               labels: list[str] | None = None) -> None:
+               labels: list[str] | None = None, defer: bool = False) -> None:
         """Write the grid back to the sheet and recompute everything linked to it. ``labels`` (the Replicate column) makes
-        it a replicate table; a replicate table reads them from the grid."""
+        it a replicate table; a replicate table reads them from the grid. ``defer`` (one typed cell): what follows the table is
+        recomputed once typing pauses instead of on every edit."""
 
         sheet = self.sheet
         names = names if names is not None else self._names()
@@ -368,8 +372,10 @@ class DataSheetView(QWidget):
             sheet.stale = False
             sheet.notes = [*sheet.notes, "Edited by hand: no longer follows the CellQuant results."]
         renamed = {old: new for old, new in zip(before, names) if old != new} if len(before) == len(names) else None
-        self.project.data_changed(sheet.id, renamed)
+        self.project.data_changed(sheet.id, renamed, defer=defer)
         self._replicate_note()
+        if defer:
+            self._update_buttons()  # the grid is not filled again for a typed cell: the analysis buttons still follow the table
 
     def _edited(self, item: QTableWidgetItem) -> None:
         if self._filling:
@@ -389,7 +395,19 @@ class DataSheetView(QWidget):
             self._filling = True
             self.grid.setRowCount(self.grid.rowCount() + SPARE_ROWS)
             self._filling = False
-        self.commit()
+        values = None
+        if not self.offset:  # one cell changed: the other columns are already in the sheet, so they need not be read from the grid again
+            values = [column.values.copy() for column in self.sheet.table.columns]
+            index, row = item.column(), item.row()
+            if 0 <= index < len(values):
+                column = values[index]
+                if row >= column.size:
+                    column = np.concatenate([column, np.full(row + 1 - column.size, np.nan)])
+                column[row] = parse_cell(text)
+                values[index] = column
+            else:
+                values = None
+        self.commit(values=values, defer=True)
 
     def _stored(self, row: int, column: int) -> float | None:
         """The value the sheet holds for a grid cell (None when the cell is blank or beyond the data)."""
