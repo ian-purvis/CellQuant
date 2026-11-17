@@ -37,9 +37,11 @@ from qtpy.QtWidgets import (
 from cellquant.gui.quantanalysis import graphs, tips
 from cellquant.gui.quantanalysis.project import DataSheet, Project, set_replicates, table_with
 from cellquant.stats import transforms
+from cellquant.stats.tables import parse_number
 from cellquant.stats.replicates import SUMMARIES, ReplicateTable
 
 SPARE_ROWS = 12
+DEFER_CELLS = 5000  # numbers in a table above which an edit recomputes what follows once typing pauses (a recompute below it takes well under 0.2 s)
 WARNING_STYLE = "QLabel { background: rgba(217, 164, 0, 0.20); border-radius: 6px; padding: 6px; }"
 DANGER_STYLE = "QLabel { background: rgba(200, 50, 50, 0.28); border-radius: 6px; padding: 6px; }"
 NOTE_STYLE = "QLabel { color: #a8b0ba; }"
@@ -48,10 +50,22 @@ REPLICATE_BACKGROUND = QColor(90, 130, 190, 45)
 
 
 def parse_cell(text: str) -> float:
-    text = text.strip().replace(",", ".") if text.count(",") == 1 and "." not in text else text.strip()
-    if not text:
-        return np.nan
-    return float(text)
+    return parse_number(text)
+
+
+def reject_entry(window, item: QTableWidgetItem, text: str, previous: float | None) -> None:
+    """Text that is not a number: the cell goes back to its previous value (blank when it had none) and the status line says so.
+    The caller holds its ``_filling`` guard around this."""
+
+    old = f"{previous:.6g}" if previous is not None and np.isfinite(previous) else ""
+    window.status(f"“{text}” is not a number; the cell keeps {old}." if old else f"“{text}” is not a number; the cell stays blank.")
+    item.setText(old)
+
+
+def skipped_paste(window, skipped: int) -> None:
+    if skipped:
+        window.status(f"{skipped} pasted cell{'s are' if skipped != 1 else ' is'} not a number: "
+                      f"{'those cells keep' if skipped != 1 else 'that cell keeps'} the previous value.")
 
 
 def _trim(values: np.ndarray) -> np.ndarray:
@@ -171,6 +185,8 @@ class DataSheetView(QWidget):
         layout.addWidget(self.replicate_note)
 
         self.grid = QTableWidget()
+
+        tips.tip_corner_button(self.grid)
         self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.grid.horizontalHeader().setSectionsClickable(True)
         self.grid.horizontalHeader().sectionDoubleClicked.connect(self._rename)
@@ -255,16 +271,19 @@ class DataSheetView(QWidget):
         self.description.setToolTip("\n".join(sheet.notes))
         self.notes.setText(" ".join(sheet.notes))
         self.stale.setVisible(sheet.stale)
-        for kind, (button, tip) in self.analysis_buttons.items():  # the menu's check: greyed with the reason, not an error after the click
-            reason = self.window.blocker(kind, sheet)
-            button.setEnabled(reason is None)
-            button.setToolTip(tip if reason is None else reason)
+        self._update_buttons()
         self.change.setVisible(sheet.processed_from is not None)
         danger = sheet.pseudoreplicated
         text = "<br>".join(f"⚠ {html.escape(item)}" for item in sheet.warnings)
         self.warnings.setText(text)
         self.warnings.setStyleSheet(DANGER_STYLE if danger else WARNING_STYLE)
         self.warnings.setVisible(bool(text))
+
+    def _update_buttons(self) -> None:
+        for kind, (button, tip) in self.analysis_buttons.items():  # the menu's check: greyed with the reason, not an error after the click
+            reason = self.window.blocker(kind, self.sheet)
+            button.setEnabled(reason is None)
+            button.setToolTip(tip if reason is None else reason)
 
     def _replicate_note(self) -> None:
         replicates = self.sheet.replicates
@@ -319,9 +338,10 @@ class DataSheetView(QWidget):
                 for index in range(self.offset, self.grid.columnCount())]
 
     def commit(self, names: list[str] | None = None, values: list[np.ndarray] | None = None, paired: bool | None = None,
-               labels: list[str] | None = None) -> None:
+               labels: list[str] | None = None, defer: bool = False) -> None:
         """Write the grid back to the sheet and recompute everything linked to it. ``labels`` (the Replicate column) makes
-        it a replicate table; a replicate table reads them from the grid."""
+        it a replicate table; a replicate table reads them from the grid. ``defer`` (one typed cell): what follows the table is
+        recomputed once typing pauses instead of on every edit."""
 
         sheet = self.sheet
         names = names if names is not None else self._names()
@@ -353,8 +373,10 @@ class DataSheetView(QWidget):
             sheet.stale = False
             sheet.notes = [*sheet.notes, "Edited by hand: no longer follows the CellQuant results."]
         renamed = {old: new for old, new in zip(before, names) if old != new} if len(before) == len(names) else None
-        self.project.data_changed(sheet.id, renamed)
+        self.project.data_changed(sheet.id, renamed, defer=defer)
         self._replicate_note()
+        if defer:
+            self._update_buttons()  # the grid is not filled again for a typed cell: the analysis buttons still follow the table
 
     def _edited(self, item: QTableWidgetItem) -> None:
         if self._filling:
@@ -366,15 +388,42 @@ class DataSheetView(QWidget):
             try:
                 parse_cell(text)
             except ValueError:
-                self.window.status(f"“{text}” is not a number; the cell is left blank.")
                 self._filling = True
-                item.setText("")
+                reject_entry(self.window, item, text, self._stored(item.row(), item.column()))
                 self._filling = False
+                return
         if item.row() >= self.grid.rowCount() - 3:
             self._filling = True
             self.grid.setRowCount(self.grid.rowCount() + SPARE_ROWS)
             self._filling = False
-        self.commit()
+        values = None
+        if not self.offset:  # one cell changed: the other columns are already in the sheet, so they need not be read from the grid again
+            values = [column.values.copy() for column in self.sheet.table.columns]
+            index, row = item.column(), item.row()
+            if 0 <= index < len(values):
+                column = values[index]
+                if row >= column.size:
+                    column = np.concatenate([column, np.full(row + 1 - column.size, np.nan)])
+                column[row] = parse_cell(text)
+                values[index] = column
+            else:
+                values = None
+        self.commit(values=values, defer=self._is_large())
+
+    def _is_large(self) -> bool:
+        """True when the table has so many numbers that recomputing what follows it takes noticeable time."""
+
+        return sum(column.values.size for column in self.sheet.table.columns) > DEFER_CELLS
+
+    def _stored(self, row: int, column: int) -> float | None:
+        """The value the sheet holds for a grid cell (None when the cell is blank or beyond the data)."""
+
+        replicates = self.sheet.replicates
+        columns = replicates.values if replicates is not None else [item.values for item in self.sheet.table.columns]
+        index = column - self.offset
+        if 0 <= index < len(columns) and row < columns[index].size:
+            return float(columns[index][row])
+        return None
 
     def _paired_toggled(self, on: bool) -> None:
         self.commit(paired=on)
@@ -544,6 +593,7 @@ class DataSheetView(QWidget):
                 title = title.strip()
                 if title and title not in names[:left + offset] + names[left + offset + 1:]:
                     names[left + offset] = title
+        skipped = 0
         for offset in range(width):
             column = list(values[left + offset])
             for row, line in enumerate(lines):
@@ -554,7 +604,8 @@ class DataSheetView(QWidget):
                 try:
                     column[target] = parse_cell(cell)
                 except ValueError:
-                    column[target] = np.nan
+                    skipped += 1  # the cell keeps the value it had
             values[left + offset] = np.asarray(column, float)
         self.commit(names, values, labels=labels)
         self.fill()
+        skipped_paste(self.window, skipped)

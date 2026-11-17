@@ -87,12 +87,8 @@ def stitch_slices(planes: np.ndarray, threshold: float = 0.25) -> np.ndarray:
             lookup = np.zeros(int(previous_ids.max()) + 1, dtype=np.int64)
             lookup[previous_ids] = np.arange(1, previous_ids.size + 1)
             previous = lookup[output[z - 1]]
-            iou = _iou(current, n_current, previous, previous_ids.size)
-            iou[iou < threshold] = 0.0
-            iou[iou < iou.max(axis=0, keepdims=True)] = 0.0
-            best = iou.argmax(axis=1)
-            linked = iou.max(axis=1) > 0
-            assigned[1:][linked] = previous_ids[best[linked]]
+            rows, columns = _best_matches(current, n_current, previous, previous_ids.size, threshold)
+            assigned[rows] = previous_ids[columns - 1]
         new = np.nonzero(assigned[1:] == 0)[0] + 1
         assigned[new] = np.arange(next_id, next_id + new.size, dtype=np.int32)
         next_id += int(new.size)
@@ -110,18 +106,34 @@ def _compact(labels: np.ndarray) -> tuple[np.ndarray, int]:
     return lookup[labels], int(ids.size)
 
 
-def _iou(current: np.ndarray, n_current: int, previous: np.ndarray, n_previous: int) -> np.ndarray:
-    """Intersection over union, rows = current outlines, columns = previous outlines."""
+def _best_matches(current: np.ndarray, n_current: int, previous: np.ndarray, n_previous: int, threshold: float) -> tuple[np.ndarray, np.ndarray]:
+    """Which previous outline each current outline is linked to: ``(rows, columns)``, both numbered from 1.
+
+    Intersection over union of every overlapping pair of outlines, below ``threshold`` ignored. Each
+    previous outline keeps only its best overlap (several current outlines tie, all stay), then each
+    current outline takes its best remaining one (the first on a tie). Only pairs that overlap are held,
+    so memory follows the number of overlapping pairs, not the number of outlines squared.
+    """
 
     width = n_previous + 1
-    pairs = np.bincount((current * width + previous).ravel(), minlength=(n_current + 1) * width)
-    overlap = pairs.reshape(n_current + 1, width).astype(np.float64)
-    area_current = overlap.sum(axis=1, keepdims=True)
-    area_previous = overlap.sum(axis=0, keepdims=True)
-    union = area_current + area_previous - overlap
-    with np.errstate(divide="ignore", invalid="ignore"):
-        iou = np.where(union > 0, overlap / union, 0.0)
-    return iou[1:, 1:]
+    both = (current > 0) & (previous > 0)
+    codes, counts = np.unique(current[both] * width + previous[both], return_counts=True)
+    rows, columns = codes // width, codes % width
+    overlap = counts.astype(np.float64)
+    union = np.bincount(current.ravel(), minlength=n_current + 1)[rows] + np.bincount(previous.ravel(), minlength=width)[columns] - overlap
+    iou = overlap / union
+    keep = iou >= threshold
+    rows, columns, iou = rows[keep], columns[keep], iou[keep]
+    best_in_column = np.zeros(width)
+    np.maximum.at(best_in_column, columns, iou)
+    keep = iou >= best_in_column[columns]
+    rows, columns, iou = rows[keep], columns[keep], iou[keep]
+    best_in_row = np.zeros(n_current + 1)
+    np.maximum.at(best_in_row, rows, iou)
+    keep = iou >= best_in_row[rows]
+    rows, columns = rows[keep], columns[keep]
+    first = np.unique(rows, return_index=True)[1]  # pairs are ordered by row, then column: the first column wins a tie
+    return rows[first], columns[first]
 
 
 def _segment_whole(volume, algorithm, backend, parameters, mode, scale, ratio, info) -> np.ndarray:

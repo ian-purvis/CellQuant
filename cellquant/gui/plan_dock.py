@@ -28,6 +28,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellquant.gui import guide
 from cellquant.plan import GROUPING_LABELS, group_images
 
 IMAGE_ROLE = Qt.UserRole
@@ -77,6 +78,7 @@ class PlanDock(QWidget):
         self.view_mode = QComboBox()
         self.view_mode.addItem("Grid: images × analyses", "grid")
         self.view_mode.addItem("Tree: image ▸ analyses", "tree")
+        self.view_mode.setToolTip("Grid: one row per image and one column per analysis. Tree: each image with its analyses under it.")
         options.addWidget(self.view_mode, 1)
         layout.addLayout(options)
         self.tree = QTreeWidget()
@@ -93,17 +95,22 @@ class PlanDock(QWidget):
         self.scope = QComboBox()
         self.scope.addItem("selected images", "selected")
         self.scope.addItem("all images", "all")
+        self.scope.setToolTip("Which images Tick, Untick and Set channel change: the images selected in the plan, or every image.")
         apply_row.addWidget(self.scope)
         apply_row.addWidget(QLabel("in"))
         self.target = QComboBox()
+        self.target.setToolTip("Which analysis Tick, Untick and Set channel change: one analysis, or all of them.")
         apply_row.addWidget(self.target, 1)
         layout.addLayout(apply_row)
         actions = QHBoxLayout()
         self.tick = QPushButton("Tick")
         self.untick = QPushButton("Untick")
+        self.tick.setToolTip("Tick the chosen images for the chosen analysis, so Run all analyses runs them.")
+        self.untick.setToolTip("Untick the chosen images for the chosen analysis, so Run all analyses leaves them out.")
         self.channel = QComboBox()
         self.channel.setToolTip("The channel to find objects in, for the chosen images only.")
         self.set_channel = QPushButton("Set channel")
+        self.set_channel.setToolTip("Find objects in the channel chosen on the left, for the chosen images only.")
         for widget in (self.tick, self.untick):
             actions.addWidget(widget)
         actions.addWidget(QLabel("Find objects in"))
@@ -121,6 +128,9 @@ class PlanDock(QWidget):
         layout.addLayout(bottom)
         self.grouping.currentIndexChanged.connect(lambda _index: self.refresh())
         self.view_mode.currentIndexChanged.connect(lambda _index: self.refresh())
+        self.tree.itemSelectionChanged.connect(self.update_actions)
+        self.scope.currentIndexChanged.connect(lambda _index: self.update_actions())
+        self.update_actions()
 
     # -- building ----------------------------------------------------------------------------------
 
@@ -143,6 +153,19 @@ class PlanDock(QWidget):
             self._update_summary()
         finally:
             self._building = False
+            self.update_actions()
+
+    def update_actions(self) -> None:
+        """Tick, Untick and Set channel are off while there is nothing for them to apply to, and say why."""
+
+        if self.shell.controller is None:
+            ok, reason = False, "Open an experiment first (Start tab)."
+        elif self.scope.currentData() == "selected" and not self.selected_image_ids():
+            ok, reason = False, "Select images (or groups) in the plan first, or choose 'all images'."
+        else:
+            ok, reason = True, ""
+        for button in (self.tick, self.untick, self.set_channel):
+            guide.gate(button, ok, reason)
 
     def _analyses(self):
         controller = self.shell.controller
@@ -177,7 +200,7 @@ class PlanDock(QWidget):
         record = controller.experiment.image(image_id)
         item = QTreeWidgetItem(parent, [record.relative_path or record.filename])
         self._mark(item, "image", [image_id])
-        item.setToolTip(0, f"{record.relative_path or record.filename}\nChannels: {', '.join(record.channel_names) or 'unnamed'}")
+        item.setToolTip(0, f"{record.relative_path or record.filename}\nChannels: {', '.join(controller.shown_channel_names(record)) or 'unnamed'}")
         for column, analysis in enumerate(analyses, start=1):
             status = controller.plan_status(image_id, analysis.recipe_id)
             channel, reason = controller.segmentation_channel_for(image_id, analysis.recipe_id)
@@ -263,7 +286,7 @@ class PlanDock(QWidget):
     def _channel_names(self, record) -> list[str]:
         controller = self.shell.controller
         if record.channel_names:
-            return list(record.channel_names)
+            return controller.shown_channel_names(record)  # a renamed channel under its new name
         count = record.number_of_channels or len(controller.experiment.channels)
         return [controller._channel_name(index) for index in range(count)]
 

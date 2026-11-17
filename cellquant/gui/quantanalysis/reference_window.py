@@ -21,7 +21,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellquant.gui.quantanalysis import reference
+from cellquant.gui.quantanalysis import reference, tips
 
 CSS = """
 <style>
@@ -68,7 +68,7 @@ class ReferenceWindow(QDialog):
         super().__init__(parent)
         self.setWindowTitle("QuantAnalysis: statistics reference")
         self.setModal(False)
-        self.resize(1150, 820)
+        tips.fit_to_screen(self, 1150, 820)
         self.root = reference.parse(text)
         self.index = reference.Index(self.root)
         self._titles = set(self.index.titles)
@@ -85,6 +85,7 @@ class ReferenceWindow(QDialog):
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search, e.g. Welch, df, Tukey (Enter opens the first)")
         self.search.setClearButtonEnabled(True)
+        tips.tip_clear_button(self.search)
         self.search.setToolTip("Finds titles and words in the pages. Enter opens the first match.")
         self.search.textChanged.connect(self._search_changed)
         self.search.returnPressed.connect(self._open_first_match)

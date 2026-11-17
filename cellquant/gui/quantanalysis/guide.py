@@ -72,7 +72,7 @@ class AnalysisGuideDialog(QDialog):
     def __init__(self, parent, facts: Facts | None = None, answers: Answers | None = None):
         super().__init__(parent)
         self.setWindowTitle("Help me choose an analysis")
-        self.resize(1080, 760)
+        tips.fit_to_screen(self, 1080, 760)
         self.facts = facts or Facts()
         start = suggested(self.facts, answers)
         outer = QVBoxLayout(self)
@@ -135,6 +135,7 @@ class AnalysisGuideDialog(QDialog):
         self.use = buttons.addButton("Run this analysis…", QDialogButtonBox.AcceptRole)
         self.use.setToolTip(tips.GUIDE_RUN)
         buttons.addButton(QDialogButtonBox.Close)
+        tips.tip_buttons(buttons, tips.GUIDE_RUN, "Close the guide without running anything.")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         outer.addWidget(buttons)

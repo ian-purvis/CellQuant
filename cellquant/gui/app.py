@@ -636,6 +636,7 @@ class NewExperimentDialog(QDialog):
         form = QFormLayout()
         self.name = QLineEdit()
         self.name.setPlaceholderText("e.g. P7 OTX2 counts")
+        self.name.setToolTip("A name for this experiment. It is shown in the window and saved with the experiment.")
         self.images = QLineEdit()
         self.images.setToolTip(
             "Only read, never changed. This folder and its subfolders are scanned, not folders beside it.\n"
@@ -649,12 +650,12 @@ class NewExperimentDialog(QDialog):
             "your own. Pick the image folder only if you want results next to the images."
         )
         form.addRow("Experiment name", self.name)
-        form.addRow("Image folder", self._browse_row(self.images, self._pick_images))
+        form.addRow("Image folder", self._browse_row(self.images, self._pick_images, "Choose the folder of images in a file window."))
         self.images_check = QLabel("")
         self.images_check.setWordWrap(True)
         self.images_check.setTextFormat(Qt.RichText)
         form.addRow("", self.images_check)
-        form.addRow("Results folder", self._browse_row(self.results, self._pick_results))
+        form.addRow("Results folder", self._browse_row(self.results, self._pick_results, "Choose the folder for the results in a file window."))
         self.results_check = QLabel("")
         self.results_check.setWordWrap(True)
         self.results_check.setTextFormat(Qt.RichText)
@@ -662,6 +663,8 @@ class NewExperimentDialog(QDialog):
         types = QHBoxLayout()
         self.use_nd2 = QCheckBox("ND2 files")
         self.use_tiff = QCheckBox("TIFF files")
+        self.use_nd2.setToolTip("Include ND2 files when looking for images in the image folder.")
+        self.use_tiff.setToolTip("Include TIFF files (.tif, .tiff) when looking for images in the image folder.")
         for box in (self.use_nd2, self.use_tiff):
             box.setChecked(True)
             types.addWidget(box)
@@ -691,6 +694,8 @@ class NewExperimentDialog(QDialog):
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         self.ok_button = buttons.button(QDialogButtonBox.Ok)
+        self.ok_button.setToolTip("Create the experiment and open it.")
+        buttons.button(QDialogButtonBox.Cancel).setToolTip("Close without creating an experiment.")
         layout.addWidget(buttons)
         self._show_images_note()
         self._update_ok()
@@ -722,12 +727,13 @@ class NewExperimentDialog(QDialog):
         self._debounce.stop()
         super().done(result)
 
-    def _browse_row(self, field: QLineEdit, slot) -> QWidget:
+    def _browse_row(self, field: QLineEdit, slot, tip: str) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(field)
         button = QPushButton("Browse…")
+        button.setToolTip(tip)
         button.clicked.connect(slot)
         layout.addWidget(button)
         return row
@@ -980,30 +986,73 @@ SHORTCUTS = (
 )
 
 
-def pan_with_right_button(viewer, event):
-    """Hold the right mouse button and drag to move the view, whichever tool is active. View only: no data is touched.
+def pan_camera(viewer, start, position, dims_displayed) -> None:
+    """Move the view so the world point `start` comes back under the cursor, now at world point `position`. View only: no data is touched.
 
-    The point under the cursor when the button went down stays under it, so it also holds for a rotated or 3D view."""
+    Using world points (not screen pixels) keeps it right for a rotated or 3D view."""
 
-    if getattr(event, "button", None) != 2:
-        return
-    start = np.asarray(event.position, dtype=float)
-    shown = list(event.dims_displayed)
-    yield
-    while event.type == "mouse_move":
-        shift = start - np.asarray(event.position, dtype=float)
-        center = list(viewer.camera.center)
-        offset = len(center) - len(shown)
-        for k, axis in enumerate(shown):
-            if offset + k >= 0 and axis < len(shift):
-                center[offset + k] += float(shift[axis])
-        viewer.camera.center = tuple(center)
-        yield
+    shift = np.asarray(start, dtype=float) - np.asarray(position, dtype=float)
+    shown = list(dims_displayed)
+    center = list(viewer.camera.center)
+    offset = len(center) - len(shown)
+    for k, axis in enumerate(shown):
+        if offset + k >= 0 and axis < len(shift):
+            center[offset + k] += float(shift[axis])
+    viewer.camera.center = tuple(center)
+
+
+class RightButtonPan(QObject):
+    """Hold the right mouse button and drag to move the view, whichever tool is active; a plain right click does nothing.
+
+    It sits on the canvas widget itself and keeps every right-button event to itself, so neither the active tool or layer
+    (napari's or CellQuant's, including ones added later) nor the camera's own right-drag zoom ever sees one."""
+
+    def __init__(self, viewer) -> None:
+        super().__init__(viewer.window._qt_viewer.canvas.native)
+        self.viewer = viewer
+        self._start = None  # (world point under the cursor at the press, viewbox) while a right drag is on
+
+    def _world(self, event, view=None):
+        canvas = self.viewer.window._qt_viewer.canvas
+        pos = (event.position().x(), event.position().y())
+        if not hasattr(canvas, "_get_viewbox_at"):
+            return canvas._map_canvas2world(pos), None  # napari 0.5: one view, mapped without naming it
+        if view is None:
+            view, _coords = canvas._get_viewbox_at(np.asarray(pos))
+            view = view if view is not None else canvas.view
+        return canvas._map_canvas2world(pos, view), view
+
+    def eventFilter(self, obj, event) -> bool:
+        kind = event.type()
+        if kind not in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick, QEvent.MouseMove, QEvent.MouseButtonRelease):
+            return False
+        right = Qt.MouseButton.RightButton
+        if kind in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick) and event.button() == right:
+            # With another button already down (a left drag in progress) the right button only stays out of its way.
+            if event.buttons() == right:
+                try:
+                    self._start = self._world(event)
+                except Exception:  # noqa: BLE001 - no view to map into (no layers yet): nothing to move
+                    self._start = None
+            return True
+        if kind == QEvent.MouseButtonRelease and event.button() == right:
+            self._start = None
+            return True
+        if self._start is not None and not event.buttons() & right:
+            self._start = None  # the release went elsewhere
+        if self._start is None:
+            return kind == QEvent.MouseMove and event.buttons() == right  # the right button alone is down but nothing to move
+        if kind == QEvent.MouseMove:
+            start, view = self._start
+            position, _view = self._world(event, view)
+            pan_camera(self.viewer, start, position, self.viewer.dims.displayed)
+        return True
 
 
 def bind_right_button_pan(viewer) -> None:
-    if pan_with_right_button not in viewer.mouse_drag_callbacks:
-        viewer.mouse_drag_callbacks.append(pan_with_right_button)
+    native = viewer.window._qt_viewer.canvas.native
+    if native.findChild(RightButtonPan) is None:
+        native.installEventFilter(RightButtonPan(viewer))
 
 
 class ShortcutsWindow(QDialog):
@@ -1063,6 +1112,12 @@ class CellQuantWindow:
         self._job: CallWorker | None = None
         self._shown_image_id: str | None = None
         self._pixel_scale: tuple[float, float, float] | None = None  # (z, y, x) in µm for the shown image (z None: no Z step, stays 1 px); None: pixels
+        # While a cutoff slider moves, the step 4 Markers table is refilled once the movement stops (see show_classification).
+        self._cutoff_settle = QTimer()
+        self._cutoff_settle.setSingleShot(True)
+        self._cutoff_settle.setInterval(250)
+        self._cutoff_settle.timeout.connect(self.settle_cutoff)
+        self._settle_due = False
         self._shown_z: tuple[str | None, int | None] = (None, None)
         self._labels_image_id: str | None = None  # image the Objects layer holds
         self._wanted_image_id: str | None = None
@@ -1224,6 +1279,14 @@ class CellQuantWindow:
         self._tabs.setCurrentWidget(self._start_page)
         self.refresh_guidance()
 
+    def _update_action_states(self) -> None:
+        """Buttons that would do nothing are off, with the reason in their tooltip (see guide.gate)."""
+
+        self._experiment_panel.update_actions()
+        self._edit_panel.update_actions()
+        self._analysis_bar.refresh_plan_button()
+        self._plan_dock.update_actions()
+
     def refresh_guidance(self) -> None:
         if self._run_lock_note.isVisibleTo(self._dock):
             # Settings rebuilt during a run (for example a refreshed list) start enabled; lock them too.
@@ -1231,6 +1294,7 @@ class CellQuantWindow:
                 if not widget.testAttribute(Qt.WA_ForceDisabled):
                     self._settings_restore.setdefault(widget, True)
                     widget.setEnabled(False)
+        self._update_action_states()
         states = guide.step_states(self)
         self._start_page.update_state(states)
         # A step's tab opens once every earlier step's Next is allowed; going back is always allowed.
@@ -2184,6 +2248,7 @@ class CellQuantWindow:
             self._lock_settings(False)
             self._footer.end_busy()
             self._plan_dock.setEnabled(True)
+            self._update_action_states()  # the run changed what the buttons can do
             self._refresh_plan()
             if self._exclusive:
                 self._exclusive = False
@@ -2688,6 +2753,7 @@ class CellQuantWindow:
     def _panels_to_recipe(self) -> None:
         if self.controller is None:
             return
+        self.settle_cutoff()  # the Markers table shows the cutoff just dragged before it is read back
         self._objects_panel.write_recipe()
         self._measurements_panel.write_recipe()
         self._results_panel.write_reports()
@@ -2777,8 +2843,11 @@ class CellQuantWindow:
         if result is not None:
             self.show_classification(result)
 
-    def show_classification(self, result) -> None:
-        """After a threshold change: recolor objects and update counts. Nothing is reloaded."""
+    def show_classification(self, result, moving: bool = False) -> None:
+        """After a threshold change: recolor objects and update counts. Nothing is reloaded.
+
+        ``moving``: a cutoff slider is being dragged. The overlay and counts follow every step; the Markers table
+        (rebuilt whole) waits until the slider is released or stops for a moment (settle_cutoff)."""
 
         if result is None or self.controller is None:
             return
@@ -2786,8 +2855,26 @@ class CellQuantWindow:
         self._review_panel.show_result(result)
         self._results_panel.show_result(result)
         self._results_summary.show_result(result, self.controller.recipe)
+        if moving:
+            self._settle_due = True
+            self._cutoff_settle.start()
+            return
+        self._settle_due = False
+        self._cutoff_settle.stop()
         # The Markers table is read back into the settings before every run; keep its cutoffs current.
         self._measurements_panel.refresh()
+
+    def settle_cutoff(self) -> None:
+        """A cutoff slider stopped: the Markers table catches up (it is read back into the settings, so never left behind)."""
+
+        self._cutoff_settle.stop()
+        if not self._settle_due:
+            return
+        self._settle_due = False
+        try:
+            self._measurements_panel.refresh()
+        except RuntimeError:
+            pass  # the window was closed meanwhile
 
     def cutoff_mode_changed(self) -> None:
         """Step 4's "Set cutoff by" changed: step 5 shows the slider or the example tools."""
@@ -2876,6 +2963,7 @@ class CellQuantWindow:
         """Give every layer the shown image's pixel size, so napari's scale bar reads in µm (px when unknown)."""
 
         x, y = record.pixel_size_x, record.pixel_size_y
+        old = self._pixel_scale
         if x and y:
             self._pixel_scale = (float(record.pixel_size_z) if record.pixel_size_z else None, float(y), float(x))
         else:
@@ -2883,6 +2971,8 @@ class CellQuantWindow:
         for layer in list(self.viewer.layers):
             self._scale_layer(layer)
         self._view_box.apply_rotation()
+        if self._pixel_scale != old and self._has_image_layers():
+            self.viewer.reset_view()  # the image is now a different size in the window: fit it again
         try:
             self.viewer.scale_bar.unit = "µm" if self._pixel_scale else "px"
         except Exception:  # noqa: BLE001 - older napari: the bar keeps its own unit
@@ -2937,12 +3027,33 @@ class CellQuantWindow:
             _set_layer(layer, blending="additive", opacity=1.0, gamma=1.0, visible=visible)
             _initial_contrast(layer)
         if fresh:
-            # Only CellQuant's layers are open: napari would fit a first new layer to the window.
-            self.viewer.reset_view()
+            # Only CellQuant's layers are open: napari would centre the sliders for a first new layer (the view is fitted in _fit_view).
             self.viewer.dims._go_to_center_step()
+
+    def _view_area(self, layers) -> tuple:
+        """The world area these layers cover in the shown axes (pixel size and turn included)."""
+
+        shown = self.viewer.dims.ndisplay
+        return tuple(tuple(np.round(np.asarray(layer.extent.world, dtype=float)[:, -min(shown, layer.ndim):], 6).ravel()) for layer in layers)
+
+    def _fit_view(self, area, camera, layers) -> None:
+        """Fit the view to the image once its layers have their µm scale. With layers of the user's own open, the next image
+        covering the same area keeps the zoom and position (napari may have fitted a first new layer at its pixel size meanwhile)."""
+
+        # Only CellQuant's layers are open: every image is fitted to the window, as napari does for a first new layer.
+        fresh = len(self.viewer.layers) == len([name for name in self._managed if name in self.viewer.layers])
+        if fresh or not area or self._view_area(layers) != area:
+            self.viewer.reset_view()
+            return
+        center, zoom, angles = camera
+        if tuple(self.viewer.camera.center) != center or self.viewer.camera.zoom != zoom or tuple(self.viewer.camera.angles) != angles:
+            self.viewer.camera.update({"center": center, "zoom": zoom, "angles": angles})
 
     def _show_loaded(self, loaded, record, result) -> None:
         self._edit_panel.keep_drawing()
+        # The area the last image covered and the view on it: the view is fitted again only when the area changes.
+        before = [self.viewer.layers[name] for name in self._managed if name not in _OBJECT_LAYERS and name in self.viewer.layers and self.viewer.layers[name]._type_string == "image"]
+        area, camera = self._view_area(before), (tuple(self.viewer.camera.center), self.viewer.camera.zoom, tuple(self.viewer.camera.angles))
         self._labels_image_id = None
         file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
         # Contrast is remembered per experiment channel, matched by the names stored in the file.
@@ -2959,7 +3070,10 @@ class CellQuantWindow:
         # has the same channels and size (the usual case), its layers are kept and given the new pixels.
         layers = self._reusable_channel_layers(names, loaded)
         kept = layers is not None
-        self._clear_managed(keep=(*names, *_OBJECT_LAYERS) if kept else ())
+        # The object layers are kept even when the channel layers are not: they get the next image's objects in place
+        # (an image not analysed yet has none, so they go).
+        self._clear_managed(keep=(*names, *_OBJECT_LAYERS) if kept else _OBJECT_LAYERS if result is not None else ())
+        objects_before = self.viewer.layers["Objects"] if "Objects" in self.viewer.layers else None
         self._shown_image_id = record.image_id
         self._shown_z = display_z(result)
         self._edit_panel.clear_selection()
@@ -2974,6 +3088,13 @@ class CellQuantWindow:
                 blending="additive",
             )
             layers = added if isinstance(added, list) else [added]
+            kept_objects = [layer for layer in self.viewer.layers if layer.name in _OBJECT_LAYERS]
+            if kept_objects:
+                # New layers go on top: put the channels back under the objects, as when everything is added again.
+                at = self.viewer.layers.index(kept_objects[0])
+                self.viewer.layers.move_multiple([self.viewer.layers.index(layer) for layer in layers], at)
+                if len(self.viewer.layers) == len([name for name in self._managed if name in self.viewer.layers]):
+                    self.viewer.dims._go_to_center_step()  # what napari does for a first new layer
         else:
             for layer in layers:
                 hook = self._contrast_hooks.pop(layer.name, None)
@@ -3012,8 +3133,9 @@ class CellQuantWindow:
             self.viewer.dims.set_current_step(0, int(slice_index))
         labels = result.labels if result is not None else None
         self._set_labels(labels, result)
-        if kept:
+        if objects_before is not None and "Objects" in self.viewer.layers and self.viewer.layers["Objects"] is objects_before:
             self._reset_object_layers()
+        self._fit_view(area, camera, layers)
         self.show_count_area(record)
         self._measure_dock.bring_back(record.image_id)
         self._release_window_later()
@@ -3100,6 +3222,53 @@ class CellQuantWindow:
         self.message(f"Channel {position + 1} is now called {typed}. Markers named after it and exported columns use this name.")
         QTimer.singleShot(0, self._channel_names_changed)  # after napari has finished with the rename
 
+    def rename_channels(self, names: dict[int, str]) -> None:
+        """Rename channels from step 1 (``names``: channel index -> new name; unchanged ones are skipped).
+
+        This goes the way renaming a channel's layer does: the layer is renamed and its handler names the
+        channel, so both give the same refusals and refresh the same lists. With no layer on screen for
+        the channel (no image shown yet) the channel is named directly.
+        """
+
+        controller = self.controller
+        if controller is None:
+            self.message("Open an experiment before renaming a channel.")
+            return
+        pending = {index: name for index, name in names.items() if name.strip() != controller._channel_name(index)}
+        for index, typed in sorted(pending.items()):
+            layer = self._layer_of_channel(index)
+            if layer is not None:
+                layer.name = typed  # its handler (_channel_layer_renamed) names the channel and refreshes the lists
+                continue
+            if self.is_busy():
+                self.message("Wait for the current analysis to finish before renaming a channel.")
+                return
+            try:
+                controller.rename_channel(index, typed)
+            except (CellQuantError, OSError) as exc:
+                self.message(str(exc))
+                return
+            self.message(f"Channel {index + 1} is now called {typed.strip()}. Markers named after it and exported columns use this name.")
+            self._channel_names_changed()
+
+    def _layer_of_channel(self, index: int):
+        """The channel layer on screen for this experiment channel, or None."""
+
+        controller = self.controller
+        if controller is None or self._shown_image_id is None:
+            return None
+        try:
+            record = controller.experiment.image(self._shown_image_id)
+        except KeyError:
+            return None
+        layers = [layer for layer in self.viewer.layers if layer.name in self._name_hooks]
+        owners = controller.display_channels(record, len(layers))
+        for position, owner in enumerate(owners):
+            label = channel_label(position, controller._channel_name(index))
+            if owner == index and label in self._name_hooks and label in self.viewer.layers:
+                return self.viewer.layers[label]
+        return None
+
     def _channel_names_changed(self) -> None:
         """Every list that names channels or markers shows the names as they are now."""
 
@@ -3118,6 +3287,11 @@ class CellQuantWindow:
         self._marker_setup.refresh()
         self._experiment_panel.set_notices(self.controller.channel_notices())
         self.markers_changed()  # steps 5 and 6 name the markers of the image on screen
+        result = self.controller.recall(self._shown_image_id, measure=False) if self._shown_image_id else None
+        if result is not None:
+            self._results_panel.show_result(result)  # the counts by kind of object and the summary name the markers too
+            self._results_summary.show_result(result, self.controller.recipe)
+        self.refresh_guidance()  # the Start page and step headers list the markers by name
 
     def _store_contrast(self, index: int, layer) -> None:
         if self.controller is None:
@@ -3148,8 +3322,8 @@ class CellQuantWindow:
             for name in _OBJECT_LAYERS:
                 self._drop(name)
             return
-        fills = self._layer_if_shape("Object fills", labels.shape)
-        boundaries = self._layer_if_shape("Objects", labels.shape)
+        fills = self._layer_if_ndim("Object fills", labels.ndim)
+        boundaries = self._layer_if_ndim("Objects", labels.ndim)
         if fills is not None and boundaries is not None:
             fills.data = labels
             boundaries.data = np.array(labels, copy=True)
@@ -3259,9 +3433,16 @@ class CellQuantWindow:
         inside = ids < len(codes)
         codes[ids[inside]] = flags[inside]
         overlay = codes[labels]
-        existing = self._layer_if_shape("Classification", overlay.shape)
+        existing = self._layer_if_ndim("Classification", overlay.ndim)
         if existing is not None:
-            existing.data = overlay
+            # A cutoff move flips only a few objects: rewrite just their pixels, so napari redraws that part instead of the whole layer.
+            shown = existing.data
+            changed = np.nonzero(shown != overlay) if isinstance(shown, np.ndarray) and shown.shape == overlay.shape else None
+            if changed is None or changed[0].size >= overlay.size // 4:
+                existing.data = overlay
+            elif changed[0].size:
+                existing.data_setitem(changed, overlay[changed])
+                existing._reset_history()  # a new call, not an edit to undo
             self.apply_classification_colors()  # one marker or All markers: different colors
             return
         self._drop("Classification")
@@ -3281,8 +3462,15 @@ class CellQuantWindow:
             colors = {code: _rgba(color) for code, color in self._review_panel.combined.code_colors().items()}
         else:
             colors = {1: _rgba(negative), 2: _rgba(positive)}
-        layer.colormap = DirectLabelColormap(color_dict={None: np.array([0, 0, 0, 0], dtype=np.float32), **colors})
-        layer.contour = 2 if classification_outline() else 0
+        # Setting a colormap or contour redraws the whole layer: only when it really changes (not on every cutoff move).
+        wanted = {None: np.array([0, 0, 0, 0], dtype=np.float32), **colors}
+        current = getattr(layer.colormap, "color_dict", None) if isinstance(layer.colormap, DirectLabelColormap) else None
+        same = current is not None and all(code in current and np.allclose(current[code], color) for code, color in wanted.items())
+        if not same or any(np.asarray(color)[3] != 0 for code, color in current.items() if code not in wanted):  # napari adds transparent entries
+            layer.colormap = DirectLabelColormap(color_dict=wanted)
+        contour = 2 if classification_outline() else 0
+        if layer.contour != contour:
+            layer.contour = contour
 
     def _set_ids(self, result) -> None:
         frame = result.objects
@@ -3330,6 +3518,13 @@ class CellQuantWindow:
             visible=visible,
         )
         self._managed.add(points.name)
+
+    def _layer_if_ndim(self, name: str, ndim: int):
+        """The layer to give new data in place: same number of dimensions (another image size is fine)."""
+
+        if name in self.viewer.layers and self.viewer.layers[name].data.ndim == ndim:
+            return self.viewer.layers[name]
+        return None
 
     def _layer_if_shape(self, name: str, shape: tuple[int, ...]):
         if name in self.viewer.layers and tuple(self.viewer.layers[name].data.shape) == tuple(shape):
@@ -3520,11 +3715,9 @@ class ExperimentPanel(QWidget):
         self.no_experiment.setStyleSheet("QLabel { background: rgba(217, 164, 0, 0.14); border-radius: 6px; padding: 6px; }")
         layout.addWidget(self.no_experiment)
         buttons = QHBoxLayout()
-        for text, slot in (
-            ("Add images…", self._add_images),
-            ("Add folder…", self._add_folder),
-        ):
-            button = QPushButton(text)
+        self.add_images_button = QPushButton("Add images…")
+        self.add_folder_button = QPushButton("Add folder…")
+        for button, slot in ((self.add_images_button, self._add_images), (self.add_folder_button, self._add_folder)):
             button.clicked.connect(slot)
             buttons.addWidget(button)
         load = QPushButton("Load masks…")
@@ -3576,9 +3769,10 @@ class ExperimentPanel(QWidget):
         header.setMinimumSectionSize(36)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.itemSelectionChanged.connect(self.update_actions)
         layout.addWidget(self.table)
         run_row = QHBoxLayout()
-        add_column = QPushButton("Add column…")
+        add_column = self.add_column_button = QPushButton("Add column…")
         add_column.setToolTip(
             "Add a column of your own to the list (for example Genotype or Age), empty and ready to type or paste into. "
             "Results can be grouped by it. Pasting past the last column adds one too."
@@ -3586,7 +3780,7 @@ class ExperimentPanel(QWidget):
         add_column.clicked.connect(self._add_column)
         run_row.addWidget(add_column)
         run_row.addStretch(1)
-        run_selected = QPushButton("Run selected images")
+        run_selected = self.run_selected_button = QPushButton("Run selected images")
         run_selected.setToolTip("Run the images selected in the table (click rows; Ctrl or Shift for more), for example to rerun failed ones.")
         run_selected.clicked.connect(lambda: shell._results_panel._run_selected())
         run_row.addWidget(run_selected)
@@ -3599,7 +3793,13 @@ class ExperimentPanel(QWidget):
         self.channel_order.setWordWrap(True)
         self.channel_order.setTextFormat(Qt.RichText)
         self.channel_order.setStyleSheet("QLabel { background: rgba(60, 130, 220, 0.10); border-radius: 6px; padding: 6px; }")
-        layout.addWidget(self.channel_order)
+        self.rename_button = QPushButton("Rename…")
+        self.rename_button.clicked.connect(self._rename_channels)
+        order_row = QHBoxLayout()
+        order_row.addWidget(self.channel_order, 1)
+        order_row.addWidget(self.rename_button, 0, Qt.AlignTop)
+        layout.addLayout(order_row)
+        self._update_rename_button()
         self.pixel_summary = QLabel("")
         self.pixel_summary.setToolTip("Pixel size of the included images. Nothing to set.")
         self.pixel_summary.setWordWrap(True)
@@ -3626,6 +3826,7 @@ class ExperimentPanel(QWidget):
             box.setDecimals(4)
             box.setMaximum(100000)
             box.setSpecialValueText("unset")
+            box.setSuffix(" µm")
         self.pixel_z.setToolTip("Distance between slices of a Z-stack, in µm. Needed for 3D volumes and shapes.")
         apply_cal = self.apply_sizes_button = QPushButton("Set sizes (µm)")
         apply_cal.setToolTip("Save these sizes for the images chosen under Apply to.")
@@ -3654,10 +3855,88 @@ class ExperimentPanel(QWidget):
         self._pasting = False  # while a paste fills cells, other panels follow once at the end
         self._pasted_headers: set[str] = set()
 
+    def update_actions(self) -> None:
+        """Buttons that would do nothing are off, with the reason in their tooltip."""
+
+        if self.shell.is_busy():
+            return  # the run buttons are locked while a run goes on; set_busy puts them back
+        controller = self.shell.controller
+        open_first = "Open an experiment first (Start tab)."
+        for button in (self.add_images_button, self.add_folder_button, self.add_column_button):
+            guide.gate(button, controller is not None, open_first)
+        guide.gate(
+            self.run_selected_button,
+            controller is not None and bool(self.selected_ids()),
+            open_first if controller is None else "Select images in the list first (click rows; Ctrl or Shift for more).",
+        )
+
+    def _update_rename_button(self) -> None:
+        controller = self.shell.controller
+        can = controller is not None and bool(controller.experiment.channels)
+        self.rename_button.setEnabled(can)
+        self.rename_button.setToolTip(
+            "Give the channels names of your own, for example OTX2 instead of AF594. The names are used in every image, "
+            "the channel lists, markers named after a channel and the exported columns. (You can also rename a channel's layer in the layer list.)"
+            if can
+            else "Open an experiment first: the channels are named for the whole experiment."
+        )
+
+    def _rename_channels(self) -> None:
+        controller = self.shell.controller
+        if controller is None or not controller.experiment.channels:
+            self.shell.message("Open an experiment before renaming a channel.")
+            return
+        channels = sorted(controller.experiment.channels, key=lambda item: item.channel_index)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Rename channels")
+        column = QVBoxLayout(dialog)
+        column.addWidget(QLabel("Name each channel. The names are used in every image of the experiment."))
+        form = QFormLayout()
+        fields = {}
+        for channel in channels:
+            field = QLineEdit(str(channel.channel_name))
+            field.setToolTip(f"The name of channel {channel.channel_index + 1}. Two channels cannot share a name.")
+            fields[channel.channel_index] = field
+            form.addRow(f"Channel {channel.channel_index + 1}", field)
+        column.addLayout(form)
+        problem = QLabel("")
+        problem.setWordWrap(True)
+        problem.setStyleSheet("QLabel { color: #c0392b; }")
+        column.addWidget(problem)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok = buttons.button(QDialogButtonBox.Ok)
+        ok.setToolTip("Save these names.")
+        buttons.button(QDialogButtonBox.Cancel).setToolTip("Close without renaming anything.")
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        column.addWidget(buttons)
+
+        def check() -> None:
+            # Silent until something is wrong; then the reason, in red, with OK off.
+            typed = {index: field.text().strip() for index, field in fields.items()}
+            why = ""
+            if any(not name for name in typed.values()):
+                why = "A channel needs a name."
+            elif len({name.casefold() for name in typed.values()}) < len(typed):
+                why = "Two channels have the same name."
+            problem.setText(why)
+            ok.setEnabled(not why)
+
+        for field in fields.values():
+            field.textChanged.connect(check)
+        check()
+        self._rename_dialog = dialog  # for tests
+        self._rename_fields = fields
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self.shell.rename_channels({index: field.text().strip() for index, field in fields.items()})
+
     def refresh(self) -> None:
         self.refresh_table()
         controller = self.shell.controller
         self.no_experiment.setVisible(controller is None)
+        self._update_rename_button()
+        self.update_actions()
         if controller is None:
             self.channel_order.setText("No image open.")
             return
@@ -3674,7 +3953,8 @@ class ExperimentPanel(QWidget):
             self.channel_order.setText("No image open.")
 
     def show_channel_order(self, record) -> None:
-        names = list(record.channel_names or ())
+        controller = self.shell.controller
+        names = controller.shown_channel_names(record) if controller is not None else list(record.channel_names or ())  # a renamed channel under its new name
         count = record.number_of_channels or len(names)
         if not count:
             self.channel_order.setText("No channel information in the file.")
@@ -3712,7 +3992,7 @@ class ExperimentPanel(QWidget):
             image_item.setToolTip(record.source_path)
             self.table.setItem(row, 1, image_item)
             self.table.setItem(row, 2, QTableWidgetItem(record.sample_name))
-            channels = ", ".join(record.channel_names) if record.channel_names else str(record.number_of_channels or "")
+            channels = ", ".join(controller.shown_channel_names(record)) if record.channel_names else str(record.number_of_channels or "")
             values = [
                 (
                     f"{record.z_planes} × {record.pixel_size_z:g} µm"
@@ -3738,6 +4018,7 @@ class ExperimentPanel(QWidget):
         self._filter(self.filter_box.text())
         self._update_included_label()
         self._update_calibration_visibility()
+        self.update_actions()
         self.shell._release_window_later()
 
     def refresh_status(self) -> None:
@@ -3835,10 +4116,10 @@ class ExperimentPanel(QWidget):
         else:
             return
         record.sample_name = controller.experiment.image(image_id).sample_name
-        self.shell._autosave()
         if self._pasting:
-            self._pasted_headers.add(header)  # the other panels follow once, when the paste is done
+            self._pasted_headers.add(header)  # the other panels follow, and the experiment is saved, once when the paste is done
             return
+        self.shell._autosave()
         self._cell_edited_elsewhere(header)
 
     def _cell_edited_elsewhere(self, header: str) -> None:
@@ -3927,6 +4208,8 @@ class ExperimentPanel(QWidget):
             self._paste_cells(controller, row, column, lines, headers)
         finally:
             self._pasting = False
+            if self._pasted_headers:
+                self.shell._autosave()  # one save for the whole paste
             for header in ("Include", "Sample name"):
                 if header in self._pasted_headers:
                     self._cell_edited_elsewhere(header)
@@ -3943,7 +4226,12 @@ class ExperimentPanel(QWidget):
                     headers = [self.table.horizontalHeaderItem(index).text() for index in range(self.table.columnCount())]
                 item = self.table.item(target_row, target_column)
                 if item is not None and headers[target_column] not in {"Image", "Slices", "Channels", "µm/pixel", "Objective", "Status"}:
-                    item.setText(value)
+                    # Setting the text would also apply the cell through itemChanged: apply it once, here.
+                    self.table.blockSignals(True)
+                    try:
+                        item.setText(value)
+                    finally:
+                        self.table.blockSignals(False)
                     self.apply_cell_edit(target_row, target_column)
 
     def _add_images(self) -> None:
@@ -4000,13 +4288,22 @@ class ExperimentPanel(QWidget):
         elif scope == "missing":
             targets += [record.image_id for record in controller.experiment.images if self._lacks_size(record)]
         targets = list(dict.fromkeys(targets))
+        sizes = {}
         for target in targets:
             record = controller.experiment.image(target)
             if scope == "missing" and target != image_id:
                 # Only fill what is missing; sizes read from the file stay.
-                controller.set_pixel_size(target, record.pixel_size_x or x, record.pixel_size_y or y, record.pixel_size_z or z)
+                sizes[target] = (record.pixel_size_x or x, record.pixel_size_y or y, record.pixel_size_z or z)
             else:
-                controller.set_pixel_size(target, x, y, z)
+                sizes[target] = (x, y, z)
+        # Images with results measured at the old sizes must be run again; approved ones are asked about first.
+        stale = [target for target in targets if controller.pixel_size_makes_stale(target, *sizes[target])]
+        approved = [target for target in stale if controller.experiment.image(target).processing_status == "approved"]
+        if approved and not self._ask_change_approved(len(approved), len(stale)):
+            self.shell.message("Pixel size not changed.")
+            return
+        for target in targets:
+            controller.set_pixel_size(target, *sizes[target])
         self.refresh_table()
         self.shell._objects_panel.update_recommendation()
         self.shell._objects_panel._update_size_hint()
@@ -4014,8 +4311,26 @@ class ExperimentPanel(QWidget):
             self.shell.set_pixel_scale(controller.experiment.image(self.shell._shown_image_id))
             self.shell._measure_dock.refresh()
         self.shell._footer.set_units("µm" if x and y else "pixels — no pixel size in this image", keep_detail=True)
-        self.shell.message(f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.")
+        rerun = f" {len(stale)} image{'s need' if len(stale) != 1 else ' needs'} running again." if stale else ""
+        done = f"Pixel size set for {len(targets)} image{'s' if len(targets) != 1 else ''}.{rerun}"
+        if stale:
+            self.shell._show_note = done  # kept in the footer when the image is shown again
+            self.shell._refresh_all(keep_image=True)  # every step shows the images that must be run again
+        self.shell.message(done)
         self.shell._autosave()
+
+    def _ask_change_approved(self, approved: int, stale: int) -> bool:
+        """Approved images lose their approval when their pixel size changes: ask before changing anything."""
+
+        answer = QMessageBox.question(
+            self,
+            "Change pixel size",
+            f"{approved} approved image{'s' if approved != 1 else ''} would need running and approving again, because areas, "
+            f"volumes and lengths depend on the pixel size ({stale} image{'s' if stale != 1 else ''} with results in all). Change the pixel size?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
 
     def _filter(self, text: str) -> None:
         query = text.casefold()
@@ -4214,6 +4529,7 @@ class ObjectsPanel(QWidget):
         self.threshold.setMaximum(1e9)
         self.sigma = QDoubleSpinBox()
         self.sigma.setMaximum(100)
+        self.sigma.setSuffix(" px")  # the smoothing is a Gaussian width in pixels
         guide.add_range_tip(self.sigma, "px")
         self.min_area = QDoubleSpinBox()
         self.max_area = QDoubleSpinBox()
@@ -4225,6 +4541,13 @@ class ObjectsPanel(QWidget):
         self.area_unit = QComboBox()
         _fill_options(self.area_unit, AREA_UNIT_OPTIONS)
         _choose(self.area_unit, "um2")
+        # The size boxes show the unit chosen next to them. Choosing another unit converts what is typed
+        # (see _area_unit_changed); loading settings or showing another image only changes the unit.
+        self._area_unit_shown = "um2"
+        self._loading_area = False
+        self.min_area.setSuffix(" µm²")
+        self.max_area.setSuffix(" µm²")
+        self.area_unit.currentIndexChanged.connect(self._area_unit_changed)
         self.nucleus_diameter_um = QDoubleSpinBox()
         self.nucleus_diameter_um.setRange(1.0, 50.0)
         self.nucleus_diameter_um.setDecimals(1)
@@ -4404,7 +4727,7 @@ class ObjectsPanel(QWidget):
         self.crop.toggled.connect(lambda _checked: self._crop_changed())
         self.crop_channels.itemChanged.connect(lambda _item: self._crop_changed())
         # Rarely used: collapsed until needed, and open from the start when a saved recipe already crops.
-        self.crop_section = CollapsibleSection("Region of interest (optional)")
+        self.crop_section = CollapsibleSection("Region of interest (optional)", tip="Optional: find objects only in the part of the image that holds the positive cells.")
         self.crop_section.add_widget(self.crop)
         self.crop_section.add_widget(self.crop_box)
         layout.addWidget(self.crop_section)
@@ -4601,6 +4924,7 @@ class ObjectsPanel(QWidget):
         self.min_size_px.setValue(int(parameters.get("min_size", DEFAULT_CELLPOSE_MIN_SIZE)))
         self.augment.setChecked(bool(parameters.get("augment", False)))
         has_calibration = pixel is not None
+        self._loading_area = True  # the saved numbers are in the saved unit: nothing is converted
         if parameters.get("min_area_um2") is not None:
             _choose(self.area_unit, "um2")
             self.min_area.setValue(float(parameters["min_area_um2"]))
@@ -4620,6 +4944,7 @@ class ObjectsPanel(QWidget):
             self.max_area.setValue(float(parameters["max_area_px"]))
         else:
             self.max_area.setValue(0)
+        self._loading_area = False
         self._update_size_hint()
         self.update_recommendation()
         self.refresh_image_channels()
@@ -4689,6 +5014,43 @@ class ObjectsPanel(QWidget):
             if record.pixel_size_x:
                 return float(record.pixel_size_x)
         return None
+
+    def _shown_pixel_size(self) -> float | None:
+        """µm per pixel of the image on screen (None when it has no size, or different X and Y sizes)."""
+
+        controller = self.shell.controller
+        image_id = self.shell._shown_image_id or (self.shell._nav_ids[self.shell._nav_index] if self.shell._nav_ids else None)
+        if controller is None or image_id is None:
+            return None
+        record = controller.experiment.image(image_id)
+        try:
+            from cellquant.errors import CalibrationError
+            from cellquant.regions import isotropic_pixel_size
+
+            return isotropic_pixel_size(record.pixel_size_x, record.pixel_size_y)
+        except CalibrationError:
+            return None
+
+    def _area_unit_changed(self, _index: int = 0) -> None:
+        """Follow the Size unit in the boxes' suffix; when the user chose it, convert Min size and Max size
+        with the shown image's pixel size, so 20 µm² does not silently become 20 px²."""
+
+        unit = str(self.area_unit.currentData())
+        previous, self._area_unit_shown = self._area_unit_shown, unit
+        suffix = " µm²" if unit == "um2" else " px²"
+        for box in (self.min_area, self.max_area):
+            box.setSuffix(suffix)
+        if self._loading_area or unit == previous or not (self.min_area.value() or self.max_area.value()):
+            return
+        pixel = self._shown_pixel_size()
+        if not pixel:
+            self.shell.message("Min size and Max size kept as typed: the image shown has no pixel size to convert them with.")
+            return
+        factor = pixel * pixel if unit == "um2" else 1.0 / (pixel * pixel)
+        for box in (self.min_area, self.max_area):
+            if box.value():
+                box.setValue(box.value() * factor)
+        self.shell.message(f"Min size and Max size converted to {suffix.strip()} with {pixel:g} µm/pixel.")
 
     def _update_size_hint(self) -> None:
         diameter = self.nucleus_diameter_um.value()
@@ -5265,8 +5627,12 @@ class MeasurementsPanel(QWidget):
             self.class_measurement.addItem(_measurement_text(controller, measurement), measurement.id)
         self.class_measurement.blockSignals(False)
         self.classes.setRowCount(len(controller.recipe.classifications))
+        shown = controller.marker_names()  # a marker follows its channel when the user renames it; the settings keep the name it was made with
         for row, classification in enumerate(controller.recipe.classifications):
-            self.classes.setItem(row, 0, QTableWidgetItem(classification.name))
+            name_item = QTableWidgetItem(shown.get(classification.id, classification.name))
+            name_item.setData(Qt.UserRole, classification.name)
+            name_item.setData(Qt.UserRole + 1, name_item.text())
+            self.classes.setItem(row, 0, name_item)
             spec = next((m for m in controller.recipe.measurements if m.id == classification.measurement), None)
             measured = QTableWidgetItem(_measurement_text(controller, spec) if spec is not None else classification.measurement)
             measured.setData(Qt.UserRole, classification.measurement)
@@ -5280,6 +5646,7 @@ class MeasurementsPanel(QWidget):
         for text, data in COMPARISONS:
             box.addItem(text, data)
         box.setCurrentIndex(max(box.findData(value), 0))
+        box.setToolTip(self.class_comparison.toolTip())
         return box
 
     def _row_comparison(self, row: int) -> str:
@@ -5299,7 +5666,10 @@ class MeasurementsPanel(QWidget):
         data["measurements"] = measurements
         classifications = []
         for row in range(self.classes.rowCount()):
-            name = self.classes.item(row, 0).text()
+            name_item = self.classes.item(row, 0)
+            name = name_item.text()
+            if name_item.data(Qt.UserRole) is not None and name == name_item.data(Qt.UserRole + 1):
+                name = str(name_item.data(Qt.UserRole))  # shown under its channel's new name and not edited: the settings keep their name
             measurement_item = self.classes.item(row, 1)
             measurement = str(measurement_item.data(Qt.UserRole) or measurement_item.text())
             try:
@@ -5632,6 +6002,19 @@ class EditPanel(QWidget):
 
     def refresh(self) -> None:
         return
+
+    def update_actions(self) -> None:
+        """Undo is off while the image shown has no recorded edit to take back, and says why.
+
+        Record drawn edits and Undo all stay on: what was painted in the Objects layer and not recorded
+        yet is only known when they are clicked, and they then say when there was nothing to do.
+        """
+
+        controller = self.shell.controller
+        if self.shell.is_busy():
+            return  # the edit buttons are locked while a run goes on; set_busy puts them back
+        image_id = self.shell._nav_ids[self.shell._nav_index] if controller is not None and self.shell._nav_ids else None
+        guide.gate(self.undo_button, image_id is not None and controller.can_undo(image_id), "No recorded edit on this image to undo.")
 
     _MODE_BUTTONS = {
         "home": ("Delete objects", "Select objects", "Add new objects", "Undo", "Undo all", "Record drawn edits", "Reset all images"),
@@ -6334,6 +6717,7 @@ class EditPanel(QWidget):
         self.shell._experiment_panel.refresh_status()
         if result is not None:
             self.shell.show_result(result)
+        self.update_actions()
 
     def delete_object(self, object_id: int) -> None:
         """Delete the clicked object at once; Undo brings it back."""
@@ -6395,6 +6779,9 @@ class EditPanel(QWidget):
         if controller is None or not self.shell._nav_ids:
             return
         image_id = self.shell._nav_ids[self.shell._nav_index]
+        if not controller.can_undo(image_id):
+            self.shell.message("Nothing to undo: this image has no recorded edits.")
+            return
         self.shell._start_job(lambda: controller.undo(image_id), self._edited)
 
     def _discard_drawing(self, image_id: str) -> None:
@@ -6423,6 +6810,7 @@ class EditPanel(QWidget):
         drawn = self._key(image_id) in self._pending
         if not count and not drawn:
             self._say("Nothing to reset: this image has no edits.")
+            self.shell.message("Nothing to undo: this image has no edits or drawing.")
             return
         parts = [f"{count} edit{'s' if count != 1 else ''}"] if count else []
         if drawn:
@@ -6462,6 +6850,7 @@ class EditPanel(QWidget):
         images = list(dict.fromkeys(edited + drawn))
         if not images:
             self._say("Nothing to reset: no image has edits.")
+            self.shell.message("Nothing to reset: no image has edits or drawing.")
             return
         answer = QMessageBox.question(
             self,
@@ -6517,6 +6906,7 @@ class EditPanel(QWidget):
             return
         if np.array_equal(drawn, current.labels):
             self._say("Nothing to record: paint or erase in the Objects layer first.")
+            self.shell.message("Nothing drawn to record.")
             return
 
         def finish(result) -> None:
@@ -6545,6 +6935,7 @@ class EditPanel(QWidget):
         todo = {image_id: kept for (owner, image_id), kept in self._pending.items() if owner == analysis}
         if not todo:
             self._say("Nothing to record: paint or erase in the Objects layer first.")
+            self.shell.message("Nothing drawn to record.")
             return
         shown = self.shell._labels_image_id
 
@@ -6755,6 +7146,7 @@ class ReviewPanel(QWidget):
         self.threshold_slider = QLabeledDoubleSlider(Qt.Horizontal)
         self.threshold_slider.setRange(0.0, 1.0)
         self.threshold_slider.valueChanged.connect(self._slider_moved)
+        self.threshold_slider.sliderReleased.connect(self._slider_released)
         layout.addWidget(self.threshold_slider)
         # Where a cutoff change goes: the image shown (the default), or every image.
         self.scope_row = QWidget()
@@ -7738,7 +8130,12 @@ class ReviewPanel(QWidget):
             self.shell.message(str(exc))
             return
         source = "this image" if this_image else f"{used} image{'s' if used != 1 else ''}"
-        self._after_cutoff_change(controller.classified_now(image_id), f"{classification.name} cutoff (from {source}): {old:g} → {new:g}.", before)
+        said = (
+            f"The {classification.name} cutoff is already its automatic value ({new:g}): nothing to reset."
+            if this_image and old == new
+            else f"{classification.name} cutoff (from {source}): {old:g} → {new:g}."
+        )
+        self._after_cutoff_change(controller.classified_now(image_id), said, before)
 
     def _slider_moved(self, value: float) -> None:
         self._pending_cutoff = float(value)
@@ -7748,7 +8145,14 @@ class ReviewPanel(QWidget):
     def _apply_pending_cutoff(self) -> None:
         value, self._pending_cutoff = self._pending_cutoff, None
         if value is not None:
-            self._threshold_moved(value)
+            self._threshold_moved(value, moving=True)
+
+    def _slider_released(self) -> None:
+        """The cutoff slider is let go: the last step applies now and every panel catches up."""
+
+        self._cutoff_timer.stop()
+        self._apply_pending_cutoff()
+        self.shell.settle_cutoff()
 
     def _show_colors(self) -> None:
         positive, negative = classification_colors()
@@ -7785,14 +8189,14 @@ class ReviewPanel(QWidget):
         self._show_colors()
         self.shell.apply_classification_colors()
 
-    def _threshold_moved(self, value: float) -> None:
+    def _threshold_moved(self, value: float, moving: bool = False) -> None:
         classification_id = self.classification_id()
         if not classification_id or self._current_classification() is None:
             return  # the marker shown was removed in step 4
-        self.set_cutoffs({classification_id: value})
+        self.set_cutoffs({classification_id: value}, moving=moving)
 
-    def set_cutoffs(self, cutoffs: dict[str, float]) -> None:
-        """This image's cutoff for each marker given (the slider, or All markers' sliders)."""
+    def set_cutoffs(self, cutoffs: dict[str, float], moving: bool = False) -> None:
+        """This image's cutoff for each marker given (the slider, or All markers' sliders). ``moving``: a slider is being dragged."""
 
         controller = self.shell.controller
         if controller is None or not self.shell._nav_ids:
@@ -7812,7 +8216,7 @@ class ReviewPanel(QWidget):
         if controller.cleared_approvals or controller.kept_approvals:
             self._after_cutoff_change(result, "", before)
         elif result is not None:
-            self.shell.show_classification(result)
+            self.shell.show_classification(result, moving=moving)
 
     def redraw(self) -> None:
         self._recolor()
@@ -8004,10 +8408,11 @@ class ResultsPanel(QWidget):
         """Each marker positive or negative, and pairs of two markers; 'all objects' for Among."""
 
         markers = controller.recipe.classifications
+        shown = controller.marker_names()  # a marker follows its channel when the user renames it
         choices = []
         for item in markers:
-            choices.append((f"{item.name}+", item.id))
-            choices.append((f"{item.name}-", f"NOT {item.id}"))
+            choices.append((f"{shown.get(item.id, item.name)}+", item.id))
+            choices.append((f"{shown.get(item.id, item.name)}-", f"NOT {item.id}"))
         for first_index, first in enumerate(markers):
             for second in markers[first_index + 1 :]:
                 for first_sign in ("+", "-"):
@@ -8015,7 +8420,7 @@ class ResultsPanel(QWidget):
                         expression = " AND ".join(
                             (item.id if sign == "+" else f"NOT {item.id}") for item, sign in ((first, first_sign), (second, second_sign))
                         )
-                        choices.append((f"{first.name}{first_sign} and {second.name}{second_sign}", expression))
+                        choices.append((f"{shown.get(first.id, first.name)}{first_sign} and {shown.get(second.id, second.name)}{second_sign}", expression))
         for box, extra in ((self.report_count, []), (self.report_among, [("all objects", "all_objects")])):
             keep = box.currentData()
             box.blockSignals(True)
@@ -8068,7 +8473,7 @@ class ResultsPanel(QWidget):
         controller.set_recipe(data)
 
     def show_result(self, result) -> None:
-        frame = result.phenotype_counts
+        frame = self.shell.controller.named_phenotype_counts(result)[0]  # markers under their names now
         self.phenotypes.setRowCount(len(frame))
         for row_index, row in enumerate(frame.itertuples(index=False)):
             self.phenotypes.setItem(row_index, 0, QTableWidgetItem(str(row.phenotype)))
@@ -8196,6 +8601,8 @@ class AnalysisBar(QWidget):
             action.setToolTip(tip)
             action.triggered.connect(lambda _checked=False, slot=slot: slot())
             self.remove_button = action
+            if text == "Plan…":
+                self.plan_action = action
         menu_button = QToolButton()
         menu_button.setText("Analyses ▾")
         menu_button.setToolTip("Plan, add, rename or remove analyses.")
@@ -8216,9 +8623,15 @@ class AnalysisBar(QWidget):
         self.choice.blockSignals(False)
         several = controller is not None and len(controller.analyses()) > 1
         self.remove_button.setEnabled(several)
+        self.refresh_plan_button()
         summary = getattr(self.shell, "_results_summary", None)
         if summary is not None:
             summary.show_analysis_actions(several)
+
+    def refresh_plan_button(self) -> None:
+        controller = self.shell.controller
+        guide.gate(self.plan_button, controller is not None, "Open an experiment first (Start tab).")
+        self.plan_action.setEnabled(controller is not None)
 
     def _chosen(self, _index: int) -> None:
         recipe_id = self.choice.currentData()
@@ -8373,6 +8786,8 @@ class Footer(QWidget):
         previous.clicked.connect(lambda: self._step(-1))
         next_image.clicked.connect(lambda: self._step(1))
         self._navigation = (previous, next_image)
+        self._navigation_locked = False  # True while another analysis runs in the background (see set_navigation_enabled)
+        self._position = (0, 0)  # (index, number of images) the buttons were last set for
         self.pause = QPushButton("Pause")
         self.resume = QPushButton("Resume")
         self.cancel = QPushButton("Cancel")
@@ -8401,6 +8816,7 @@ class Footer(QWidget):
         self.cancel.setStyleSheet("QPushButton:enabled { color: #e05050; font-weight: bold; }")
         previous.setToolTip("Show the previous image in the experiment (Page Up).")
         next_image.setToolTip("Show the next image in the experiment (Page Down).")
+        self._update_navigation_buttons()  # no experiment yet: nothing to step through
         from qtpy.QtGui import QKeySequence
 
         try:
@@ -8473,10 +8889,21 @@ class Footer(QWidget):
         layout.addWidget(self.log)
 
     def set_navigation_enabled(self, enabled: bool) -> None:
-        for button in self._navigation:
-            button.setEnabled(enabled)
+        self._navigation_locked = not enabled
+        self._update_navigation_buttons()
+
+    def _update_navigation_buttons(self) -> None:
+        """Previous / Next image are off when there is no image before / after the one shown, and say why."""
+
+        index, total = self._position
+        previous, next_image = self._navigation
+        none = "No included images (step 1)."
+        guide.gate(previous, not self._navigation_locked and index > 0 and total > 0, none if total == 0 else "This is the first image.")
+        guide.gate(next_image, not self._navigation_locked and index < total - 1, none if total == 0 else "This is the last image.")
 
     def set_position(self, index: int, total: int, filename: str, only: str | None = None) -> None:
+        self._position = (index, total)
+        self._update_navigation_buttons()
         if total == 0:
             self.position.setText("No included images (step 1).")
             return
@@ -8634,11 +9061,16 @@ class Footer(QWidget):
             self.status.setText(f"Image {index} of {total} ({filename}): starting")
 
     def run_time_text(self) -> str:
-        """' in 4 min 12 s' for the running single image, or '' outside a run."""
+        """' in 4 min 12 s' for the single image that just finished, or '' outside a run."""
 
         from cellquant.progress import elapsed_text
 
-        return "" if self._clock is None else f" in {elapsed_text(self._clock.image_seconds())}"
+        if self._clock is None:
+            return ""
+        # Finishing an image restarts the clock for the next one, so the time of this one is the last finished.
+        seconds = self._clock.last_image_seconds()
+        seconds = self._clock.image_seconds() if seconds is None else seconds
+        return " in under 1 s" if seconds < 1 else f" in {elapsed_text(seconds)}"  # not "in 0 s" for a quick image
 
     def _show_log(self, shown: bool) -> None:
         self.log.setVisible(shown)

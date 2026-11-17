@@ -38,6 +38,7 @@ from cellquant.gui.quantanalysis.graph_format import (
 )
 from cellquant.stats import compact_letter_display, format_p, p_summary, p_text
 from cellquant.stats.descriptive import describe, percentiles
+from cellquant.stats.units import unit_of
 
 # key: (menu name, tooltip)
 KINDS = {
@@ -417,8 +418,12 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         elif result.analysis and compared[2] not in ESTIMATION:
             notes.append("The estimation plot shows a difference of means, from an unpaired, Welch or paired t test. This graph shows the columns only.")
             kind = "scatter"
+        elif len(table.names) > 2:
+            left_out = [name for name in table.names if name not in compared[:2]]
+            notes.append(f"The estimation plot shows the two columns of the comparison, {compared[0]} and {compared[1]}. "
+                         f"{', '.join(left_out)} {'is' if len(left_out) == 1 else 'are'} left out; choose the two columns in the comparison (Change options…).")
     if kind == "before_after" and not table.paired:
-        notes.append("Before-after joins rows of a paired table. Tick Paired on the data table if row i is the same subject in every column.")
+        notes.append("Before-after joins rows of a paired table, so no lines are drawn here. Tick Paired on the data table if row i is the same subject in every column.")
     if kind in ("superplot", "estimation") and any(np.any(mask) for mask in (outliers or {}).values()):
         notes.append("Outliers are marked on column graphs (hollow points), not on a SuperPlot or an estimation plot.")
     levels = superplot_levels(data) if kind == "superplot" else None
@@ -556,7 +561,7 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
         right.tick_params(axis="y", which="both", left=False, right=fmt.right.visible, labelright=fmt.right.visible)
     legend = None
     if fmt.legend.show and kind != "estimation" and fmt.legend.position != "custom":
-        legend = _legend(ax, kind, _series(columns, table, places), fmt, font, None, replicate_entries)
+        legend = _legend(ax, "scatter" if kind == "before_after" and not table.paired else kind, _series(columns, table, places), fmt, font, None, replicate_entries)
     figure._cq_axes = {"main": ax, "segments": segments, "bottom": bottom, "right": right}
     if gaps:
         figure.align_ylabels(segments)  # the Y title clears the numbers of every segment
@@ -572,7 +577,7 @@ def draw(figure, data, graph, result=None, outliers=None) -> list[str]:
     plot = plot_transform(figure, segments)
     figure._cq_plot = plot
     if fmt.legend.show and kind != "estimation" and fmt.legend.position == "custom":
-        legend = _legend(ax, kind, _series(columns, table, places), fmt, font, plot, replicate_entries)  # dragged: placed after the layout, which it does not change
+        legend = _legend(ax, "scatter" if kind == "before_after" and not table.paired else kind, _series(columns, table, places), fmt, font, plot, replicate_entries)  # dragged: placed after the layout, which it does not change
     figure._cq_legend = legend
     for note in fmt.annotations:
         _annotation(figure, note, fmt, font, plot)
@@ -680,7 +685,7 @@ def _draw_columns(ax, right, kind: str, table, columns, fmt: GraphFormat, outlie
                     _tag(target.hlines(caps, index - cap, index + cap, color=style.error_color, linewidth=style.error_width, zorder=4), *tag)
         elif kind in ("box", "violin", "before_after") and values.size:
             centers.append((index, float(np.median(values)), key))
-    if kind == "before_after" and fmt.pair_lines:
+    if kind == "before_after" and fmt.pair_lines and table.paired:  # an unpaired table's rows are unrelated: no lines between them
         _draw_pairs(ax, table, [column for column in columns if fmt.dataset(column.name).visible], log, fmt)
     # A grouped table joins each data set's means across the blocks (an interaction plot); a column table, all of them.
     for key in dict.fromkeys(key for _x, _y, key in centers) if places else [None]:
@@ -1175,7 +1180,8 @@ def _draw_estimation(ax, figure, columns, compared, result, fmt: GraphFormat, fo
     secondary.tick_params(labelsize=font, colors="#222222", width=fmt.axis_width)
     _tag(secondary.spines["right"], "axis", "right", radius=5)
     ci = result.options.get("ci", 0.95)
-    secondary.set_ylabel(f"Difference ({second} − {first})\nwith {100 * ci:g}% CI", fontsize=font, fontfamily=_family(fmt))
+    unit = unit_of(result.table_title)
+    secondary.set_ylabel(f"Difference ({second} − {first}){f' in {unit}' if unit else ''}\nwith {100 * ci:g}% CI", fontsize=font, fontfamily=_family(fmt))
     ax.set_xlim(-0.6, x + 0.6)
     names = [first, second, "Difference"]
     return names, {first: 0, second: 1}

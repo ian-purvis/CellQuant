@@ -192,7 +192,20 @@ class CellposeBackend:
         classic = details["engine"] == CELLPOSE_CLASSIC
         if not _model_loaded(models, classic, details["model"], gpu, details.get("precision")):
             progress.update(f"Loading {_short_label(details)} (the first image of a session only)")
-        return _cached_model(models, classic, details["model"], gpu, details.get("precision"))
+        try:
+            return _cached_model(models, classic, details["model"], gpu, details.get("precision"))
+        except Exception as exc:
+            if not _is_download_failure(exc):
+                raise
+            # The technical detail goes to the run log and the error log; the message says what to do.
+            from cellquant.errorlog import log_exception
+            from cellquant.hardware import add_log_note
+
+            add_log_note(f"Cellpose could not download its model: {type(exc).__name__}: {exc}")
+            log_exception(exc, "Cellpose model download")
+            raise SegmentationError(
+                "Cellpose could not download its model. Check the internet connection and run again, or choose the classical method."
+            ) from exc
 
     def _finish(self, model, details: dict[str, Any], parameters: dict[str, Any]) -> dict[str, Any]:
         device = getattr(model, "device", None)
@@ -489,6 +502,24 @@ def stage_timer() -> Iterator[dict]:
 
 # Why the Apple GPU failed, once it has: later runs in this session go straight to the CPU.
 _APPLE_GPU_FAILED: str | bool = False
+
+
+def _is_download_failure(exc: BaseException) -> bool:
+    """True when this error, or one it was raised from, is a failed network transfer (the model is downloaded on first use)."""
+
+    import http.client
+    import socket
+    import ssl
+    import urllib.error
+
+    network = (urllib.error.URLError, socket.gaierror, socket.herror, TimeoutError, ConnectionError, ssl.SSLError, http.client.HTTPException)
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, network) or any(klass.__module__.split(".")[0] in ("requests", "urllib3", "httpx") for klass in type(exc).__mro__):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
 
 
 def _model_key(models, classic: bool, name: str, gpu: bool, precision: str | None) -> tuple:

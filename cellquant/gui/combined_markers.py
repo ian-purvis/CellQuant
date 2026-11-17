@@ -312,7 +312,7 @@ class CombinedMarkersView(QWidget):
     def _apply_pending(self) -> None:
         pending, self._pending = self._pending, {}
         if pending:
-            self.panel.set_cutoffs(pending)
+            self.panel.set_cutoffs(pending, moving=True)  # the Markers table catches up once the sliders stop
 
     def settings_inputs(self) -> list[QWidget]:
         """The sliders and histograms: greyed out while a run uses the settings."""
