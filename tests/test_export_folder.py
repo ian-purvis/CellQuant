@@ -49,7 +49,7 @@ def test_files_listed_without_choices_follow_the_default_unit():
     from cellquant.export_folder import export_files
 
     plain = _names(export_files(None, None, ["Folder 1", "Folder 2"]))
-    assert plain == ["objects.csv", "image_summary.csv", "settings_index.csv", "recipe.yaml", "run.json", "mixed_settings.txt", "units_by_Folder 2.csv"]
+    assert plain == ["objects.csv", "image_summary.csv", "settings_index.csv", "segmented_channels.csv", "recipe.yaml", "run.json", "mixed_settings.txt", "units_by_Folder 2.csv"]
     assert "units_by_Folder 2.csv" not in _names(export_files(None, None, ["Condition"]))  # no folder level: no automatic unit
 
 

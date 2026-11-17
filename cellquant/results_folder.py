@@ -18,10 +18,10 @@ another tool such as Cellpose. Subfolders are searched too.
 * An ``images.csv`` in the folder (or, for a folder named ``results``, beside
   it) with columns ``name``, ``source_file`` and ``position`` (from 1) names
   each mask's image file exactly; masks it lists are matched by it first.
-* Masks CellQuant saved (``labels/<id>_final.tif`` next to
-  ``provenance/<id>.json``) are matched by the image name saved in that provenance,
-  so results from another CellQuant experiment load the same way. The edited
-  objects (``_final``) are used over the unedited ones (``_automated``).
+* Masks CellQuant saved (``labels/<id>_<channel>_final.tif``, or ``labels/<id>_final.tif``
+  from older versions, next to ``provenance/<id>.json``) are matched by the image name
+  saved in that provenance, so results from another CellQuant experiment load the same
+  way. The edited objects (``_final``) are used over the unedited ones (``_automated``).
 * Object tables beside the masks are not read: CellQuant measures every
   marker itself from the masks and the image.
 * When one image has more than one mask, the newest file is used.
@@ -71,8 +71,8 @@ def mask_name(path: Path) -> tuple[str, bool, bool]:
         provenance = path.parent.parent / "provenance"
         for suffix in ("_final", "_automated"):
             if stem.endswith(suffix):
-                saved = provenance / f"{stem[: -len(suffix)]}.json"
-                if saved.is_file():
+                saved = _saved_provenance(provenance, stem[: -len(suffix)])
+                if saved is not None:
                     try:
                         data = json.loads(saved.read_text(encoding="utf-8"))
                     except (OSError, ValueError):
@@ -86,6 +86,20 @@ def mask_name(path: Path) -> tuple[str, bool, bool]:
             edited = suffix == "_final"
             break
     return stem, edited, False
+
+
+def _saved_provenance(provenance: Path, stem: str) -> Path | None:
+    """``provenance/<id>.json`` of a mask CellQuant saved as ``<id>`` or ``<id>_<channel>`` (the
+    channel the objects were found in, which may itself hold ``_``)."""
+
+    while stem:
+        saved = provenance / f"{stem}.json"
+        if saved.is_file():
+            return saved
+        stem, separator, _channel = stem.rpartition("_")
+        if not separator:
+            break
+    return None
 
 
 def name_key(name: str) -> str:

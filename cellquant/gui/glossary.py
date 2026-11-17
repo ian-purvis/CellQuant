@@ -227,6 +227,11 @@ class Source:
         if relative.startswith("run/"):
             relative, base = relative[4:], self.folder
         image = self.image_id or ""
+        if image and relative.startswith("labels/<image>_") and relative.endswith(("_final.tif", "_automated.tif")):
+            from cellquant.storage import label_paths
+
+            # Named after the segmented channel, or as older versions saved it.
+            return label_paths(base, image)[0 if relative.endswith("_final.tif") else 1]
         for placeholder in ("<image>", "<id>"):
             relative = relative.replace(placeholder, image)
         return base / relative
@@ -565,7 +570,8 @@ def _tif_page(path: Path, source: Source) -> DataPage:
                    f"<code>object_id</code>, background is 0.</p>")
     except Exception:
         out.append("<p class='muted'>Open it in napari or Fiji to see the objects.</p>")
-    others = sorted(path.parent.glob("*" + path.name.split(source.image_id or "\0")[-1])) if source.image_id else []
+    kind = "_automated.tif" if path.name.endswith("_automated.tif") else "_final.tif"
+    others = sorted(path.parent.glob("*" + kind)) if source.image_id else []
     if len(others) > 1:
         out.append(f"<p class='muted'>{len(others)} images have this file in this results set.</p>")
     return DataPage("".join(out), file=path)
