@@ -980,30 +980,73 @@ SHORTCUTS = (
 )
 
 
-def pan_with_right_button(viewer, event):
-    """Hold the right mouse button and drag to move the view, whichever tool is active. View only: no data is touched.
+def pan_camera(viewer, start, position, dims_displayed) -> None:
+    """Move the view so the world point `start` comes back under the cursor, now at world point `position`. View only: no data is touched.
 
-    The point under the cursor when the button went down stays under it, so it also holds for a rotated or 3D view."""
+    Using world points (not screen pixels) keeps it right for a rotated or 3D view."""
 
-    if getattr(event, "button", None) != 2:
-        return
-    start = np.asarray(event.position, dtype=float)
-    shown = list(event.dims_displayed)
-    yield
-    while event.type == "mouse_move":
-        shift = start - np.asarray(event.position, dtype=float)
-        center = list(viewer.camera.center)
-        offset = len(center) - len(shown)
-        for k, axis in enumerate(shown):
-            if offset + k >= 0 and axis < len(shift):
-                center[offset + k] += float(shift[axis])
-        viewer.camera.center = tuple(center)
-        yield
+    shift = np.asarray(start, dtype=float) - np.asarray(position, dtype=float)
+    shown = list(dims_displayed)
+    center = list(viewer.camera.center)
+    offset = len(center) - len(shown)
+    for k, axis in enumerate(shown):
+        if offset + k >= 0 and axis < len(shift):
+            center[offset + k] += float(shift[axis])
+    viewer.camera.center = tuple(center)
+
+
+class RightButtonPan(QObject):
+    """Hold the right mouse button and drag to move the view, whichever tool is active; a plain right click does nothing.
+
+    It sits on the canvas widget itself and keeps every right-button event to itself, so neither the active tool or layer
+    (napari's or CellQuant's, including ones added later) nor the camera's own right-drag zoom ever sees one."""
+
+    def __init__(self, viewer) -> None:
+        super().__init__(viewer.window._qt_viewer.canvas.native)
+        self.viewer = viewer
+        self._start = None  # (world point under the cursor at the press, viewbox) while a right drag is on
+
+    def _world(self, event, view=None):
+        canvas = self.viewer.window._qt_viewer.canvas
+        pos = (event.position().x(), event.position().y())
+        if not hasattr(canvas, "_get_viewbox_at"):
+            return canvas._map_canvas2world(pos), None  # napari 0.5: one view, mapped without naming it
+        if view is None:
+            view, _coords = canvas._get_viewbox_at(np.asarray(pos))
+            view = view if view is not None else canvas.view
+        return canvas._map_canvas2world(pos, view), view
+
+    def eventFilter(self, obj, event) -> bool:
+        kind = event.type()
+        if kind not in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick, QEvent.MouseMove, QEvent.MouseButtonRelease):
+            return False
+        right = Qt.MouseButton.RightButton
+        if kind in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick) and event.button() == right:
+            # With another button already down (a left drag in progress) the right button only stays out of its way.
+            if event.buttons() == right:
+                try:
+                    self._start = self._world(event)
+                except Exception:  # noqa: BLE001 - no view to map into (no layers yet): nothing to move
+                    self._start = None
+            return True
+        if kind == QEvent.MouseButtonRelease and event.button() == right:
+            self._start = None
+            return True
+        if self._start is not None and not event.buttons() & right:
+            self._start = None  # the release went elsewhere
+        if self._start is None:
+            return kind == QEvent.MouseMove and event.buttons() == right  # the right button alone is down but nothing to move
+        if kind == QEvent.MouseMove:
+            start, view = self._start
+            position, _view = self._world(event, view)
+            pan_camera(self.viewer, start, position, self.viewer.dims.displayed)
+        return True
 
 
 def bind_right_button_pan(viewer) -> None:
-    if pan_with_right_button not in viewer.mouse_drag_callbacks:
-        viewer.mouse_drag_callbacks.append(pan_with_right_button)
+    native = viewer.window._qt_viewer.canvas.native
+    if native.findChild(RightButtonPan) is None:
+        native.installEventFilter(RightButtonPan(viewer))
 
 
 class ShortcutsWindow(QDialog):
