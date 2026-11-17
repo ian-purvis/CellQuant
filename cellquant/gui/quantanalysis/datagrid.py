@@ -37,6 +37,7 @@ from qtpy.QtWidgets import (
 from cellquant.gui.quantanalysis import graphs, tips
 from cellquant.gui.quantanalysis.project import DataSheet, Project, set_replicates, table_with
 from cellquant.stats import transforms
+from cellquant.stats.tables import parse_number
 from cellquant.stats.replicates import SUMMARIES, ReplicateTable
 
 SPARE_ROWS = 12
@@ -48,10 +49,22 @@ REPLICATE_BACKGROUND = QColor(90, 130, 190, 45)
 
 
 def parse_cell(text: str) -> float:
-    text = text.strip().replace(",", ".") if text.count(",") == 1 and "." not in text else text.strip()
-    if not text:
-        return np.nan
-    return float(text)
+    return parse_number(text)
+
+
+def reject_entry(window, item: QTableWidgetItem, text: str, previous: float | None) -> None:
+    """Text that is not a number: the cell goes back to its previous value (blank when it had none) and the status line says so.
+    The caller holds its ``_filling`` guard around this."""
+
+    old = f"{previous:.6g}" if previous is not None and np.isfinite(previous) else ""
+    window.status(f"“{text}” is not a number; the cell keeps {old}." if old else f"“{text}” is not a number; the cell stays blank.")
+    item.setText(old)
+
+
+def skipped_paste(window, skipped: int) -> None:
+    if skipped:
+        window.status(f"{skipped} pasted cell{'s are' if skipped != 1 else ' is'} not a number: "
+                      f"{'those cells keep' if skipped != 1 else 'that cell keeps'} the previous value.")
 
 
 def _trim(values: np.ndarray) -> np.ndarray:
@@ -366,15 +379,25 @@ class DataSheetView(QWidget):
             try:
                 parse_cell(text)
             except ValueError:
-                self.window.status(f"“{text}” is not a number; the cell is left blank.")
                 self._filling = True
-                item.setText("")
+                reject_entry(self.window, item, text, self._stored(item.row(), item.column()))
                 self._filling = False
+                return
         if item.row() >= self.grid.rowCount() - 3:
             self._filling = True
             self.grid.setRowCount(self.grid.rowCount() + SPARE_ROWS)
             self._filling = False
         self.commit()
+
+    def _stored(self, row: int, column: int) -> float | None:
+        """The value the sheet holds for a grid cell (None when the cell is blank or beyond the data)."""
+
+        replicates = self.sheet.replicates
+        columns = replicates.values if replicates is not None else [item.values for item in self.sheet.table.columns]
+        index = column - self.offset
+        if 0 <= index < len(columns) and row < columns[index].size:
+            return float(columns[index][row])
+        return None
 
     def _paired_toggled(self, on: bool) -> None:
         self.commit(paired=on)
@@ -544,6 +567,7 @@ class DataSheetView(QWidget):
                 title = title.strip()
                 if title and title not in names[:left + offset] + names[left + offset + 1:]:
                     names[left + offset] = title
+        skipped = 0
         for offset in range(width):
             column = list(values[left + offset])
             for row, line in enumerate(lines):
@@ -554,7 +578,8 @@ class DataSheetView(QWidget):
                 try:
                     column[target] = parse_cell(cell)
                 except ValueError:
-                    column[target] = np.nan
+                    skipped += 1  # the cell keeps the value it had
             values[left + offset] = np.asarray(column, float)
         self.commit(names, values, labels=labels)
         self.fill()
+        skipped_paste(self.window, skipped)

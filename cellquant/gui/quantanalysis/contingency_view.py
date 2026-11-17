@@ -26,7 +26,7 @@ from qtpy.QtWidgets import (
 
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import tips
-from cellquant.gui.quantanalysis.datagrid import NOTE_STYLE, WARNING_STYLE, parse_cell
+from cellquant.gui.quantanalysis.datagrid import NOTE_STYLE, WARNING_STYLE, parse_cell, reject_entry, skipped_paste
 from cellquant.gui.quantanalysis.grouped_view import _unique
 from cellquant.gui.quantanalysis.project import DataSheet, Project, set_contingency
 from cellquant.stats.contingency import ContingencyTable
@@ -161,10 +161,10 @@ class ContingencySheetView(QWidget):
             try:
                 parse_cell(text)
             except ValueError:
-                self.window.status(f"“{text}” is not a number; the cell is left blank.")
                 self._filling = True
-                item.setText("")
+                reject_entry(self.window, item, text, self.counts.counts[item.row(), item.column()])
                 self._filling = False
+                return
         if self.commit():
             self.fill()
 
@@ -248,10 +248,12 @@ class ContingencySheetView(QWidget):
         while len(columns) < left + width:
             columns.append(_unique("Outcome", columns))
             counts = np.hstack([counts, np.full((counts.shape[0], 1), np.nan)])
+        skipped = 0
         for r, line in enumerate(lines):
             for offset in range(width):
                 try:
                     counts[top + r, left + offset] = parse_cell(line[offset] if offset < len(line) else "")
                 except ValueError:
-                    counts[top + r, left + offset] = np.nan
+                    skipped += 1  # the cell keeps the count it had
         self._resized(counts, rows, columns)
+        skipped_paste(self.window, skipped)
