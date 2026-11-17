@@ -36,6 +36,7 @@ from cellquant.stats.contingency import ContingencyTable, contingency
 from cellquant.stats.curvefit import nonlinear_regression
 from cellquant.stats.diagnostic import bland_altman, roc_curve
 from cellquant.stats.survival import SurvivalTable, survival
+from cellquant.stats.units import unit_of
 from cellquant.stats.grouped import GroupedTable, two_way_anova
 from cellquant.stats.multivariate import correlation_matrix, pca
 from cellquant.stats.nested import nested
@@ -157,6 +158,7 @@ class ResultSheet:
     warnings: list[str] = field(default_factory=list)
     methods: str = ""
     error: str = ""
+    unit: str = ""                      # the unit of the table's values (µm², a.u.…) when the sheet states one; worked out again on every run
 
 
 @dataclass
@@ -463,7 +465,7 @@ class Project(QObject):
 
     def compute(self, sheet: ResultSheet) -> None:
         data = self.data.get(sheet.data_id)
-        sheet.result, sheet.wide, sheet.warnings, sheet.methods, sheet.error = None, None, [], "", ""
+        sheet.result, sheet.wide, sheet.warnings, sheet.methods, sheet.error, sheet.unit = None, None, [], "", "", ""
         try:
             if sheet.kind in ("compare", "anova", "nested", "outliers", "twoway"):
                 run = {"compare": run_compare, "anova": run_anova, "nested": run_nested, "outliers": run_outliers, "twoway": run_two_way}[sheet.kind]
@@ -500,6 +502,11 @@ class Project(QObject):
                 sheet.warnings.insert(0, PSEUDO_WARNING)
             if data is not None and data.replicates is not None and sheet.kind not in ("pstack", "nested"):
                 sheet.methods = f"{replicate_methods(data)} {sheet.methods}".strip()
+            if data is not None and sheet.kind in ("compare", "anova", "colstats") and data.processed_from is None:
+                # A transformed table (log, normalised…) is no longer in the unit its title names.
+                sheet.unit = unit_of(data.table.title)
+                if sheet.unit and sheet.methods:
+                    sheet.methods = f"{sheet.methods} Values are in {sheet.unit}."
         except CellQuantError as exc:
             sheet.error = str(exc)
         except Exception as exc:  # noqa: BLE001 - kept in the log; the sheet says it could not be computed

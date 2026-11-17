@@ -31,6 +31,7 @@ from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNI
 from cellquant.gui.quantanalysis.project import PSEUDO_WARNING, Project, ResultSheet
 from cellquant.stats import steps as working
 from cellquant.stats.results import fmt
+from cellquant.stats.units import wide_with_unit, with_unit
 
 SECTION_BACKGROUND = QColor(60, 72, 88)
 LOG = logging.getLogger(__name__)
@@ -107,12 +108,12 @@ def result_rows(sheet: ResultSheet) -> tuple[list[str], list[tuple[str, list[str
 
     if sheet.result is not None and sheet.wide is None:
         rows = []
-        for section in sheet.result.sections:
+        for section in with_unit(sheet.result, sheet.unit).sections:
             rows.append((section.title, None))
             rows += [(row.label, [row.formatted]) for row in section.rows]
         return ["", ""], rows
     if sheet.wide is not None and not sheet.wide.empty:
-        frame = sheet.wide
+        frame = wide_with_unit(sheet.wide, sheet.unit)
         rows, last = [], None
         for (section, statistic), values in frame.iterrows():
             if section != last:
@@ -127,8 +128,8 @@ def result_frame(sheet: ResultSheet) -> pd.DataFrame:
     """What Export results CSV writes."""
 
     if sheet.result is not None and sheet.wide is None:
-        return sheet.result.to_frame()
-    frame = sheet.wide.reset_index() if sheet.wide is not None else pd.DataFrame()
+        return with_unit(sheet.result, sheet.unit).to_frame()
+    frame = wide_with_unit(sheet.wide, sheet.unit).reset_index() if sheet.wide is not None else pd.DataFrame()
     extra = [{"section": "Warnings", "statistic": text} for text in sheet.warnings]
     if sheet.methods:
         extra.append({"section": "Methods", "statistic": sheet.methods})

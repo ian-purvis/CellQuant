@@ -38,6 +38,7 @@ from cellquant.gui.quantanalysis.graph_format import (
 )
 from cellquant.stats import compact_letter_display, format_p, p_summary, p_text
 from cellquant.stats.descriptive import describe, percentiles
+from cellquant.stats.units import unit_of
 
 # key: (menu name, tooltip)
 KINDS = {
@@ -1175,7 +1176,8 @@ def _draw_estimation(ax, figure, columns, compared, result, fmt: GraphFormat, fo
     secondary.tick_params(labelsize=font, colors="#222222", width=fmt.axis_width)
     _tag(secondary.spines["right"], "axis", "right", radius=5)
     ci = result.options.get("ci", 0.95)
-    secondary.set_ylabel(f"Difference ({second} − {first})\nwith {100 * ci:g}% CI", fontsize=font, fontfamily=_family(fmt))
+    unit = unit_of(result.table_title)
+    secondary.set_ylabel(f"Difference ({second} − {first}){f' in {unit}' if unit else ''}\nwith {100 * ci:g}% CI", fontsize=font, fontfamily=_family(fmt))
     ax.set_xlim(-0.6, x + 0.6)
     names = [first, second, "Difference"]
     return names, {first: 0, second: 1}
