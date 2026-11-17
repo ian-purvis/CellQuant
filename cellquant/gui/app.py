@@ -986,30 +986,73 @@ SHORTCUTS = (
 )
 
 
-def pan_with_right_button(viewer, event):
-    """Hold the right mouse button and drag to move the view, whichever tool is active. View only: no data is touched.
+def pan_camera(viewer, start, position, dims_displayed) -> None:
+    """Move the view so the world point `start` comes back under the cursor, now at world point `position`. View only: no data is touched.
 
-    The point under the cursor when the button went down stays under it, so it also holds for a rotated or 3D view."""
+    Using world points (not screen pixels) keeps it right for a rotated or 3D view."""
 
-    if getattr(event, "button", None) != 2:
-        return
-    start = np.asarray(event.position, dtype=float)
-    shown = list(event.dims_displayed)
-    yield
-    while event.type == "mouse_move":
-        shift = start - np.asarray(event.position, dtype=float)
-        center = list(viewer.camera.center)
-        offset = len(center) - len(shown)
-        for k, axis in enumerate(shown):
-            if offset + k >= 0 and axis < len(shift):
-                center[offset + k] += float(shift[axis])
-        viewer.camera.center = tuple(center)
-        yield
+    shift = np.asarray(start, dtype=float) - np.asarray(position, dtype=float)
+    shown = list(dims_displayed)
+    center = list(viewer.camera.center)
+    offset = len(center) - len(shown)
+    for k, axis in enumerate(shown):
+        if offset + k >= 0 and axis < len(shift):
+            center[offset + k] += float(shift[axis])
+    viewer.camera.center = tuple(center)
+
+
+class RightButtonPan(QObject):
+    """Hold the right mouse button and drag to move the view, whichever tool is active; a plain right click does nothing.
+
+    It sits on the canvas widget itself and keeps every right-button event to itself, so neither the active tool or layer
+    (napari's or CellQuant's, including ones added later) nor the camera's own right-drag zoom ever sees one."""
+
+    def __init__(self, viewer) -> None:
+        super().__init__(viewer.window._qt_viewer.canvas.native)
+        self.viewer = viewer
+        self._start = None  # (world point under the cursor at the press, viewbox) while a right drag is on
+
+    def _world(self, event, view=None):
+        canvas = self.viewer.window._qt_viewer.canvas
+        pos = (event.position().x(), event.position().y())
+        if not hasattr(canvas, "_get_viewbox_at"):
+            return canvas._map_canvas2world(pos), None  # napari 0.5: one view, mapped without naming it
+        if view is None:
+            view, _coords = canvas._get_viewbox_at(np.asarray(pos))
+            view = view if view is not None else canvas.view
+        return canvas._map_canvas2world(pos, view), view
+
+    def eventFilter(self, obj, event) -> bool:
+        kind = event.type()
+        if kind not in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick, QEvent.MouseMove, QEvent.MouseButtonRelease):
+            return False
+        right = Qt.MouseButton.RightButton
+        if kind in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick) and event.button() == right:
+            # With another button already down (a left drag in progress) the right button only stays out of its way.
+            if event.buttons() == right:
+                try:
+                    self._start = self._world(event)
+                except Exception:  # noqa: BLE001 - no view to map into (no layers yet): nothing to move
+                    self._start = None
+            return True
+        if kind == QEvent.MouseButtonRelease and event.button() == right:
+            self._start = None
+            return True
+        if self._start is not None and not event.buttons() & right:
+            self._start = None  # the release went elsewhere
+        if self._start is None:
+            return kind == QEvent.MouseMove and event.buttons() == right  # the right button alone is down but nothing to move
+        if kind == QEvent.MouseMove:
+            start, view = self._start
+            position, _view = self._world(event, view)
+            pan_camera(self.viewer, start, position, self.viewer.dims.displayed)
+        return True
 
 
 def bind_right_button_pan(viewer) -> None:
-    if pan_with_right_button not in viewer.mouse_drag_callbacks:
-        viewer.mouse_drag_callbacks.append(pan_with_right_button)
+    native = viewer.window._qt_viewer.canvas.native
+    if native.findChild(RightButtonPan) is None:
+        native.installEventFilter(RightButtonPan(viewer))
 
 
 class ShortcutsWindow(QDialog):
@@ -1069,6 +1112,12 @@ class CellQuantWindow:
         self._job: CallWorker | None = None
         self._shown_image_id: str | None = None
         self._pixel_scale: tuple[float, float, float] | None = None  # (z, y, x) in µm for the shown image (z None: no Z step, stays 1 px); None: pixels
+        # While a cutoff slider moves, the step 4 Markers table is refilled once the movement stops (see show_classification).
+        self._cutoff_settle = QTimer()
+        self._cutoff_settle.setSingleShot(True)
+        self._cutoff_settle.setInterval(250)
+        self._cutoff_settle.timeout.connect(self.settle_cutoff)
+        self._settle_due = False
         self._shown_z: tuple[str | None, int | None] = (None, None)
         self._labels_image_id: str | None = None  # image the Objects layer holds
         self._wanted_image_id: str | None = None
@@ -2704,6 +2753,7 @@ class CellQuantWindow:
     def _panels_to_recipe(self) -> None:
         if self.controller is None:
             return
+        self.settle_cutoff()  # the Markers table shows the cutoff just dragged before it is read back
         self._objects_panel.write_recipe()
         self._measurements_panel.write_recipe()
         self._results_panel.write_reports()
@@ -2793,8 +2843,11 @@ class CellQuantWindow:
         if result is not None:
             self.show_classification(result)
 
-    def show_classification(self, result) -> None:
-        """After a threshold change: recolor objects and update counts. Nothing is reloaded."""
+    def show_classification(self, result, moving: bool = False) -> None:
+        """After a threshold change: recolor objects and update counts. Nothing is reloaded.
+
+        ``moving``: a cutoff slider is being dragged. The overlay and counts follow every step; the Markers table
+        (rebuilt whole) waits until the slider is released or stops for a moment (settle_cutoff)."""
 
         if result is None or self.controller is None:
             return
@@ -2802,8 +2855,26 @@ class CellQuantWindow:
         self._review_panel.show_result(result)
         self._results_panel.show_result(result)
         self._results_summary.show_result(result, self.controller.recipe)
+        if moving:
+            self._settle_due = True
+            self._cutoff_settle.start()
+            return
+        self._settle_due = False
+        self._cutoff_settle.stop()
         # The Markers table is read back into the settings before every run; keep its cutoffs current.
         self._measurements_panel.refresh()
+
+    def settle_cutoff(self) -> None:
+        """A cutoff slider stopped: the Markers table catches up (it is read back into the settings, so never left behind)."""
+
+        self._cutoff_settle.stop()
+        if not self._settle_due:
+            return
+        self._settle_due = False
+        try:
+            self._measurements_panel.refresh()
+        except RuntimeError:
+            pass  # the window was closed meanwhile
 
     def cutoff_mode_changed(self) -> None:
         """Step 4's "Set cutoff by" changed: step 5 shows the slider or the example tools."""
@@ -2892,6 +2963,7 @@ class CellQuantWindow:
         """Give every layer the shown image's pixel size, so napari's scale bar reads in µm (px when unknown)."""
 
         x, y = record.pixel_size_x, record.pixel_size_y
+        old = self._pixel_scale
         if x and y:
             self._pixel_scale = (float(record.pixel_size_z) if record.pixel_size_z else None, float(y), float(x))
         else:
@@ -2899,6 +2971,8 @@ class CellQuantWindow:
         for layer in list(self.viewer.layers):
             self._scale_layer(layer)
         self._view_box.apply_rotation()
+        if self._pixel_scale != old and self._has_image_layers():
+            self.viewer.reset_view()  # the image is now a different size in the window: fit it again
         try:
             self.viewer.scale_bar.unit = "µm" if self._pixel_scale else "px"
         except Exception:  # noqa: BLE001 - older napari: the bar keeps its own unit
@@ -2953,12 +3027,31 @@ class CellQuantWindow:
             _set_layer(layer, blending="additive", opacity=1.0, gamma=1.0, visible=visible)
             _initial_contrast(layer)
         if fresh:
-            # Only CellQuant's layers are open: napari would fit a first new layer to the window.
-            self.viewer.reset_view()
+            # Only CellQuant's layers are open: napari would centre the sliders for a first new layer (the view is fitted in _fit_view).
             self.viewer.dims._go_to_center_step()
+
+    def _view_area(self, layers) -> tuple:
+        """The world area these layers cover in the shown axes (pixel size and turn included)."""
+
+        shown = self.viewer.dims.ndisplay
+        return tuple(tuple(np.round(np.asarray(layer.extent.world, dtype=float)[:, -min(shown, layer.ndim):], 6).ravel()) for layer in layers)
+
+    def _fit_view(self, area, camera, layers) -> None:
+        """Fit the view to the image once its layers have their µm scale. The next image covering the same area keeps the
+        zoom and position the user chose (napari may have fitted a first new layer at its pixel size meanwhile)."""
+
+        if not area or self._view_area(layers) != area:
+            self.viewer.reset_view()
+            return
+        center, zoom, angles = camera
+        if tuple(self.viewer.camera.center) != center or self.viewer.camera.zoom != zoom or tuple(self.viewer.camera.angles) != angles:
+            self.viewer.camera.update({"center": center, "zoom": zoom, "angles": angles})
 
     def _show_loaded(self, loaded, record, result) -> None:
         self._edit_panel.keep_drawing()
+        # The area the last image covered and the view on it: the view is fitted again only when the area changes.
+        before = [self.viewer.layers[name] for name in self._managed if name not in _OBJECT_LAYERS and name in self.viewer.layers and self.viewer.layers[name]._type_string == "image"]
+        area, camera = self._view_area(before), (tuple(self.viewer.camera.center), self.viewer.camera.zoom, tuple(self.viewer.camera.angles))
         self._labels_image_id = None
         file_names = list(getattr(loaded, "channel_names", None) or record.channel_names or ())
         # Contrast is remembered per experiment channel, matched by the names stored in the file.
@@ -2975,7 +3068,10 @@ class CellQuantWindow:
         # has the same channels and size (the usual case), its layers are kept and given the new pixels.
         layers = self._reusable_channel_layers(names, loaded)
         kept = layers is not None
-        self._clear_managed(keep=(*names, *_OBJECT_LAYERS) if kept else ())
+        # The object layers are kept even when the channel layers are not: they get the next image's objects in place
+        # (an image not analysed yet has none, so they go).
+        self._clear_managed(keep=(*names, *_OBJECT_LAYERS) if kept else _OBJECT_LAYERS if result is not None else ())
+        objects_before = self.viewer.layers["Objects"] if "Objects" in self.viewer.layers else None
         self._shown_image_id = record.image_id
         self._shown_z = display_z(result)
         self._edit_panel.clear_selection()
@@ -2990,6 +3086,13 @@ class CellQuantWindow:
                 blending="additive",
             )
             layers = added if isinstance(added, list) else [added]
+            kept_objects = [layer for layer in self.viewer.layers if layer.name in _OBJECT_LAYERS]
+            if kept_objects:
+                # New layers go on top: put the channels back under the objects, as when everything is added again.
+                at = self.viewer.layers.index(kept_objects[0])
+                self.viewer.layers.move_multiple([self.viewer.layers.index(layer) for layer in layers], at)
+                if len(self.viewer.layers) == len([name for name in self._managed if name in self.viewer.layers]):
+                    self.viewer.dims._go_to_center_step()  # what napari does for a first new layer
         else:
             for layer in layers:
                 hook = self._contrast_hooks.pop(layer.name, None)
@@ -3028,8 +3131,9 @@ class CellQuantWindow:
             self.viewer.dims.set_current_step(0, int(slice_index))
         labels = result.labels if result is not None else None
         self._set_labels(labels, result)
-        if kept:
+        if objects_before is not None and "Objects" in self.viewer.layers and self.viewer.layers["Objects"] is objects_before:
             self._reset_object_layers()
+        self._fit_view(area, camera, layers)
         self.show_count_area(record)
         self._measure_dock.bring_back(record.image_id)
         self._release_window_later()
@@ -3216,8 +3320,8 @@ class CellQuantWindow:
             for name in _OBJECT_LAYERS:
                 self._drop(name)
             return
-        fills = self._layer_if_shape("Object fills", labels.shape)
-        boundaries = self._layer_if_shape("Objects", labels.shape)
+        fills = self._layer_if_ndim("Object fills", labels.ndim)
+        boundaries = self._layer_if_ndim("Objects", labels.ndim)
         if fills is not None and boundaries is not None:
             fills.data = labels
             boundaries.data = np.array(labels, copy=True)
@@ -3327,9 +3431,16 @@ class CellQuantWindow:
         inside = ids < len(codes)
         codes[ids[inside]] = flags[inside]
         overlay = codes[labels]
-        existing = self._layer_if_shape("Classification", overlay.shape)
+        existing = self._layer_if_ndim("Classification", overlay.ndim)
         if existing is not None:
-            existing.data = overlay
+            # A cutoff move flips only a few objects: rewrite just their pixels, so napari redraws that part instead of the whole layer.
+            shown = existing.data
+            changed = np.nonzero(shown != overlay) if isinstance(shown, np.ndarray) and shown.shape == overlay.shape else None
+            if changed is None or changed[0].size >= overlay.size // 4:
+                existing.data = overlay
+            elif changed[0].size:
+                existing.data_setitem(changed, overlay[changed])
+                existing._reset_history()  # a new call, not an edit to undo
             self.apply_classification_colors()  # one marker or All markers: different colors
             return
         self._drop("Classification")
@@ -3349,8 +3460,15 @@ class CellQuantWindow:
             colors = {code: _rgba(color) for code, color in self._review_panel.combined.code_colors().items()}
         else:
             colors = {1: _rgba(negative), 2: _rgba(positive)}
-        layer.colormap = DirectLabelColormap(color_dict={None: np.array([0, 0, 0, 0], dtype=np.float32), **colors})
-        layer.contour = 2 if classification_outline() else 0
+        # Setting a colormap or contour redraws the whole layer: only when it really changes (not on every cutoff move).
+        wanted = {None: np.array([0, 0, 0, 0], dtype=np.float32), **colors}
+        current = getattr(layer.colormap, "color_dict", None) if isinstance(layer.colormap, DirectLabelColormap) else None
+        same = current is not None and all(code in current and np.allclose(current[code], color) for code, color in wanted.items())
+        if not same or any(np.asarray(color)[3] != 0 for code, color in current.items() if code not in wanted):  # napari adds transparent entries
+            layer.colormap = DirectLabelColormap(color_dict=wanted)
+        contour = 2 if classification_outline() else 0
+        if layer.contour != contour:
+            layer.contour = contour
 
     def _set_ids(self, result) -> None:
         frame = result.objects
@@ -3398,6 +3516,13 @@ class CellQuantWindow:
             visible=visible,
         )
         self._managed.add(points.name)
+
+    def _layer_if_ndim(self, name: str, ndim: int):
+        """The layer to give new data in place: same number of dimensions (another image size is fine)."""
+
+        if name in self.viewer.layers and self.viewer.layers[name].data.ndim == ndim:
+            return self.viewer.layers[name]
+        return None
 
     def _layer_if_shape(self, name: str, shape: tuple[int, ...]):
         if name in self.viewer.layers and tuple(self.viewer.layers[name].data.shape) == tuple(shape):
@@ -7019,6 +7144,7 @@ class ReviewPanel(QWidget):
         self.threshold_slider = QLabeledDoubleSlider(Qt.Horizontal)
         self.threshold_slider.setRange(0.0, 1.0)
         self.threshold_slider.valueChanged.connect(self._slider_moved)
+        self.threshold_slider.sliderReleased.connect(self._slider_released)
         layout.addWidget(self.threshold_slider)
         # Where a cutoff change goes: the image shown (the default), or every image.
         self.scope_row = QWidget()
@@ -8017,7 +8143,14 @@ class ReviewPanel(QWidget):
     def _apply_pending_cutoff(self) -> None:
         value, self._pending_cutoff = self._pending_cutoff, None
         if value is not None:
-            self._threshold_moved(value)
+            self._threshold_moved(value, moving=True)
+
+    def _slider_released(self) -> None:
+        """The cutoff slider is let go: the last step applies now and every panel catches up."""
+
+        self._cutoff_timer.stop()
+        self._apply_pending_cutoff()
+        self.shell.settle_cutoff()
 
     def _show_colors(self) -> None:
         positive, negative = classification_colors()
@@ -8054,14 +8187,14 @@ class ReviewPanel(QWidget):
         self._show_colors()
         self.shell.apply_classification_colors()
 
-    def _threshold_moved(self, value: float) -> None:
+    def _threshold_moved(self, value: float, moving: bool = False) -> None:
         classification_id = self.classification_id()
         if not classification_id or self._current_classification() is None:
             return  # the marker shown was removed in step 4
-        self.set_cutoffs({classification_id: value})
+        self.set_cutoffs({classification_id: value}, moving=moving)
 
-    def set_cutoffs(self, cutoffs: dict[str, float]) -> None:
-        """This image's cutoff for each marker given (the slider, or All markers' sliders)."""
+    def set_cutoffs(self, cutoffs: dict[str, float], moving: bool = False) -> None:
+        """This image's cutoff for each marker given (the slider, or All markers' sliders). ``moving``: a slider is being dragged."""
 
         controller = self.shell.controller
         if controller is None or not self.shell._nav_ids:
@@ -8081,7 +8214,7 @@ class ReviewPanel(QWidget):
         if controller.cleared_approvals or controller.kept_approvals:
             self._after_cutoff_change(result, "", before)
         elif result is not None:
-            self.shell.show_classification(result)
+            self.shell.show_classification(result, moving=moving)
 
     def redraw(self) -> None:
         self._recolor()
