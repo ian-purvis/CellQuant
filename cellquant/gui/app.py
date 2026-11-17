@@ -3626,6 +3626,7 @@ class ExperimentPanel(QWidget):
             box.setDecimals(4)
             box.setMaximum(100000)
             box.setSpecialValueText("unset")
+            box.setSuffix(" µm")
         self.pixel_z.setToolTip("Distance between slices of a Z-stack, in µm. Needed for 3D volumes and shapes.")
         apply_cal = self.apply_sizes_button = QPushButton("Set sizes (µm)")
         apply_cal.setToolTip("Save these sizes for the images chosen under Apply to.")
@@ -4241,6 +4242,7 @@ class ObjectsPanel(QWidget):
         self.threshold.setMaximum(1e9)
         self.sigma = QDoubleSpinBox()
         self.sigma.setMaximum(100)
+        self.sigma.setSuffix(" px")  # the smoothing is a Gaussian width in pixels
         guide.add_range_tip(self.sigma, "px")
         self.min_area = QDoubleSpinBox()
         self.max_area = QDoubleSpinBox()
@@ -4252,6 +4254,13 @@ class ObjectsPanel(QWidget):
         self.area_unit = QComboBox()
         _fill_options(self.area_unit, AREA_UNIT_OPTIONS)
         _choose(self.area_unit, "um2")
+        # The size boxes show the unit chosen next to them. Choosing another unit converts what is typed
+        # (see _area_unit_changed); loading settings or showing another image only changes the unit.
+        self._area_unit_shown = "um2"
+        self._loading_area = False
+        self.min_area.setSuffix(" µm²")
+        self.max_area.setSuffix(" µm²")
+        self.area_unit.currentIndexChanged.connect(self._area_unit_changed)
         self.nucleus_diameter_um = QDoubleSpinBox()
         self.nucleus_diameter_um.setRange(1.0, 50.0)
         self.nucleus_diameter_um.setDecimals(1)
@@ -4628,6 +4637,7 @@ class ObjectsPanel(QWidget):
         self.min_size_px.setValue(int(parameters.get("min_size", DEFAULT_CELLPOSE_MIN_SIZE)))
         self.augment.setChecked(bool(parameters.get("augment", False)))
         has_calibration = pixel is not None
+        self._loading_area = True  # the saved numbers are in the saved unit: nothing is converted
         if parameters.get("min_area_um2") is not None:
             _choose(self.area_unit, "um2")
             self.min_area.setValue(float(parameters["min_area_um2"]))
@@ -4647,6 +4657,7 @@ class ObjectsPanel(QWidget):
             self.max_area.setValue(float(parameters["max_area_px"]))
         else:
             self.max_area.setValue(0)
+        self._loading_area = False
         self._update_size_hint()
         self.update_recommendation()
         self.refresh_image_channels()
@@ -4716,6 +4727,43 @@ class ObjectsPanel(QWidget):
             if record.pixel_size_x:
                 return float(record.pixel_size_x)
         return None
+
+    def _shown_pixel_size(self) -> float | None:
+        """µm per pixel of the image on screen (None when it has no size, or different X and Y sizes)."""
+
+        controller = self.shell.controller
+        image_id = self.shell._shown_image_id or (self.shell._nav_ids[self.shell._nav_index] if self.shell._nav_ids else None)
+        if controller is None or image_id is None:
+            return None
+        record = controller.experiment.image(image_id)
+        try:
+            from cellquant.errors import CalibrationError
+            from cellquant.regions import isotropic_pixel_size
+
+            return isotropic_pixel_size(record.pixel_size_x, record.pixel_size_y)
+        except CalibrationError:
+            return None
+
+    def _area_unit_changed(self, _index: int = 0) -> None:
+        """Follow the Size unit in the boxes' suffix; when the user chose it, convert Min size and Max size
+        with the shown image's pixel size, so 20 µm² does not silently become 20 px²."""
+
+        unit = str(self.area_unit.currentData())
+        previous, self._area_unit_shown = self._area_unit_shown, unit
+        suffix = " µm²" if unit == "um2" else " px²"
+        for box in (self.min_area, self.max_area):
+            box.setSuffix(suffix)
+        if self._loading_area or unit == previous or not (self.min_area.value() or self.max_area.value()):
+            return
+        pixel = self._shown_pixel_size()
+        if not pixel:
+            self.shell.message("Min size and Max size kept as typed: the image shown has no pixel size to convert them with.")
+            return
+        factor = pixel * pixel if unit == "um2" else 1.0 / (pixel * pixel)
+        for box in (self.min_area, self.max_area):
+            if box.value():
+                box.setValue(box.value() * factor)
+        self.shell.message(f"Min size and Max size converted to {suffix.strip()} with {pixel:g} µm/pixel.")
 
     def _update_size_hint(self) -> None:
         diameter = self.nucleus_diameter_um.value()
