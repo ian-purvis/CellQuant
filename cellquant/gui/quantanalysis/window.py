@@ -609,8 +609,10 @@ class QuantAnalysisWindow(QMainWindow):
         box.setDefaultButton(QMessageBox.Save)
         return {QMessageBox.Save: "save", QMessageBox.Discard: "discard"}.get(box.exec(), "cancel")
 
-    def maybe_save(self, action: str) -> bool:
-        """True when it is fine to go on: nothing unsaved, saved now, or the user chose not to save."""
+    def maybe_save(self, action: str, clear: bool = True) -> bool:
+        """True when it is fine to go on: nothing unsaved, saved now, or the user chose not to save. Discarding deletes the recovery copy
+        unless ``clear`` is False: a caller that can still turn back (a file chooser, a file that cannot be read) deletes it itself once
+        the project is really replaced or closed."""
 
         if not self.has_unsaved_changes():
             return True
@@ -618,7 +620,8 @@ class QuantAnalysisWindow(QMainWindow):
         if answer == "save":
             return self.save_project()
         if answer == "discard":
-            self.clear_recovery()  # the user chose to lose these changes: no recovery copy of them either
+            if clear:
+                self.clear_recovery()  # the user chose to lose these changes: no recovery copy of them either
             return True
         return False
 
@@ -724,8 +727,11 @@ class QuantAnalysisWindow(QMainWindow):
         self.views.clear()
 
     def new_project(self) -> bool:
-        if not self.maybe_save("starting a new project"):
+        unsaved = self.has_unsaved_changes()
+        if not self.maybe_save("starting a new project", clear=False):
             return False
+        if unsaved:
+            self.clear_recovery()  # discarded (or saved, which cleared it already): the unsaved project is replaced now
         self._drop_views()
         self.project.defaults = dict(STAT_DEFAULTS)
         self.project.replace({}, {}, {})
@@ -737,17 +743,17 @@ class QuantAnalysisWindow(QMainWindow):
         return True
 
     def open_project_dialog(self) -> None:
-        if not self.maybe_save("opening another project"):
-            return
+        # Choose the file first: cancelling the chooser must not cost the open project its recovery copy.
         path, _ = QFileDialog.getOpenFileName(self, "Open a QuantAnalysis project", str(self._project_folder()),
                                               f"QuantAnalysis projects (*{project_file.SUFFIX});;All files (*)")
         if path:
-            self.open_project(path, ask=False)
+            self.open_project(path)
 
     def open_project(self, path: str | Path, ask: bool = True) -> bool:
         """Open a project file in place of the current project (asking first to save it when ``ask``)."""
 
-        if ask and not self.maybe_save("opening another project"):
+        unsaved = ask and self.has_unsaved_changes()
+        if ask and not self.maybe_save("opening another project", clear=False):
             return False
         path = Path(path)
         experiment = self.experiment_dir()
@@ -758,6 +764,8 @@ class QuantAnalysisWindow(QMainWindow):
             QMessageBox.warning(self, "QuantAnalysis", str(exc))
             self._forget_recent(path)
             return False
+        if unsaved:
+            self.clear_recovery()  # discarded (or saved, which cleared it already): the unsaved project is replaced now
         self._drop_views()
         current, notes = project_file.load(path, self.project, experiment, content)
         self.path = path
@@ -851,7 +859,7 @@ class QuantAnalysisWindow(QMainWindow):
 
     def eventFilter(self, watched, event) -> bool:
         if watched is self.parent() and event.type() == QEvent.Close:
-            if not self.maybe_save("CellQuant closes"):
+            if not self.maybe_save("CellQuant closes", clear=False):  # closeEvent deletes the copy once the window really closes
                 event.ignore()
                 return True
             # Asked (or nothing to ask): closing QuantAnalysis along with CellQuant must not ask a second time.
