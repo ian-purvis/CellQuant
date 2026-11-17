@@ -115,6 +115,40 @@ class ColumnTable:
         return pd.DataFrame.from_records(records, columns=["group", "row", "value"])
 
 
+def plain_minus(text: str) -> str:
+    """The text with a typographic minus (U+2212) or an en dash used as a minus turned into a hyphen-minus, as pasted from documents."""
+
+    return text.replace("\u2212", "-").replace("\u2013", "-")
+
+
+def parse_number(text: str) -> float:
+    """The number a cell or CSV field holds (NaN when blank; a comma is a decimal point when it is the only separator); ValueError when
+    the text is not a number. The one parser behind typing, pasting and CSV import."""
+
+    text = plain_minus(text).strip()
+    text = text.replace(",", ".") if text.count(",") == 1 and "." not in text else text
+    if not text:
+        return np.nan
+    return float(text)
+
+
+def numbers_with_plain_minus(frame: pd.DataFrame) -> pd.DataFrame:
+    """The frame with text columns whose every filled cell is a number once a typographic minus is read as a minus turned into numbers."""
+
+    out = frame
+    for name in frame.columns:
+        column = frame[name]
+        if pd.api.types.is_numeric_dtype(column):
+            continue
+        cleaned = column.map(lambda item: plain_minus(item) if isinstance(item, str) else item)
+        numbers = pd.to_numeric(cleaned, errors="coerce")
+        if numbers.notna().sum() and numbers.notna().sum() == column.notna().sum() and (cleaned != column).any():
+            if out is frame:
+                out = frame.copy()
+            out[name] = numbers
+    return out
+
+
 def _as_float(values: Iterable[float], name: str) -> np.ndarray:
     raw = np.asarray(list(values) if not isinstance(values, (np.ndarray, pd.Series)) else values, dtype=object).ravel()
     out = np.empty(raw.shape, dtype=float)
@@ -123,7 +157,7 @@ def _as_float(values: Iterable[float], name: str) -> np.ndarray:
             out[i] = np.nan
             continue
         try:
-            out[i] = float(item)
+            out[i] = float(plain_minus(item) if isinstance(item, str) else item)
         except (TypeError, ValueError):
             raise StatisticsError(f"Column {name!r} has a value that is not a number: {item!r}.") from None
     if np.isinf(out).any():

@@ -28,7 +28,7 @@ from qtpy.QtWidgets import (
 
 from cellquant.errors import CellQuantError
 from cellquant.gui.quantanalysis import tips
-from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE, parse_cell
+from cellquant.gui.quantanalysis.datagrid import DANGER_STYLE, NOTE_STYLE, WARNING_STYLE, parse_cell, reject_entry, skipped_paste
 from cellquant.gui.quantanalysis.project import DataSheet, Project, set_grouped
 from cellquant.stats.grouped import GroupedTable
 
@@ -92,6 +92,7 @@ class GroupedSheetView(QWidget):
         bar.addWidget(export)
         layout.addLayout(bar)
         self.grid = QTableWidget()
+        tips.tip_corner_button(self.grid)
         self.grid.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.grid.horizontalHeader().sectionDoubleClicked.connect(self._rename_data_set)
         self.grid.horizontalHeader().setToolTip("Double-click a title to rename its data set.")
@@ -182,10 +183,11 @@ class GroupedSheetView(QWidget):
             try:
                 parse_cell(text)
             except ValueError:
-                self.window.status(f"“{text}” is not a number; the cell is left blank.")
+                depth = self.grouped.replicates
                 self._filling = True
-                item.setText("")
+                reject_entry(self.window, item, text, self.grouped.values[item.row(), item.column() // depth, item.column() % depth])
                 self._filling = False
+                return
         self.commit()
 
     def _resized(self, values: np.ndarray, rows: list[str], columns: list[str]) -> None:
@@ -277,6 +279,7 @@ class GroupedSheetView(QWidget):
         while len(columns) * depth < left + width:
             columns.append(_unique("Data set", columns))
             values = np.concatenate([values, np.full((values.shape[0], 1, depth), np.nan)], axis=1)
+        skipped = 0
         for r, line in enumerate(lines):
             for offset in range(width):
                 cell = line[offset] if offset < len(line) else ""
@@ -284,5 +287,6 @@ class GroupedSheetView(QWidget):
                 try:
                     values[top + r, column // depth, column % depth] = parse_cell(cell)
                 except ValueError:
-                    values[top + r, column // depth, column % depth] = np.nan
+                    skipped += 1  # the cell keeps the value it had
         self._resized(values, rows, columns)
+        skipped_paste(self.window, skipped)
