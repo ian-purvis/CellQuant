@@ -8709,11 +8709,16 @@ class Footer(QWidget):
             self.status.setText(f"Image {index} of {total} ({filename}): starting")
 
     def run_time_text(self) -> str:
-        """' in 4 min 12 s' for the running single image, or '' outside a run."""
+        """' in 4 min 12 s' for the single image that just finished, or '' outside a run."""
 
         from cellquant.progress import elapsed_text
 
-        return "" if self._clock is None else f" in {elapsed_text(self._clock.image_seconds())}"
+        if self._clock is None:
+            return ""
+        # Finishing an image restarts the clock for the next one, so the time of this one is the last finished.
+        seconds = self._clock.last_image_seconds()
+        seconds = self._clock.image_seconds() if seconds is None else seconds
+        return " in under 1 s" if seconds < 1 else f" in {elapsed_text(seconds)}"  # not "in 0 s" for a quick image
 
     def _show_log(self, shown: bool) -> None:
         self.log.setVisible(shown)
