@@ -1106,6 +1106,12 @@ class CellQuantWindow:
         self._job: CallWorker | None = None
         self._shown_image_id: str | None = None
         self._pixel_scale: tuple[float, float, float] | None = None  # (z, y, x) in µm for the shown image (z None: no Z step, stays 1 px); None: pixels
+        # While a cutoff slider moves, the step 4 Markers table is refilled once the movement stops (see show_classification).
+        self._cutoff_settle = QTimer()
+        self._cutoff_settle.setSingleShot(True)
+        self._cutoff_settle.setInterval(250)
+        self._cutoff_settle.timeout.connect(self.settle_cutoff)
+        self._settle_due = False
         self._shown_z: tuple[str | None, int | None] = (None, None)
         self._labels_image_id: str | None = None  # image the Objects layer holds
         self._wanted_image_id: str | None = None
@@ -2731,6 +2737,7 @@ class CellQuantWindow:
     def _panels_to_recipe(self) -> None:
         if self.controller is None:
             return
+        self.settle_cutoff()  # the Markers table shows the cutoff just dragged before it is read back
         self._objects_panel.write_recipe()
         self._measurements_panel.write_recipe()
         self._results_panel.write_reports()
@@ -2820,8 +2827,11 @@ class CellQuantWindow:
         if result is not None:
             self.show_classification(result)
 
-    def show_classification(self, result) -> None:
-        """After a threshold change: recolor objects and update counts. Nothing is reloaded."""
+    def show_classification(self, result, moving: bool = False) -> None:
+        """After a threshold change: recolor objects and update counts. Nothing is reloaded.
+
+        ``moving``: a cutoff slider is being dragged. The overlay and counts follow every step; the Markers table
+        (rebuilt whole) waits until the slider is released or stops for a moment (settle_cutoff)."""
 
         if result is None or self.controller is None:
             return
@@ -2829,8 +2839,26 @@ class CellQuantWindow:
         self._review_panel.show_result(result)
         self._results_panel.show_result(result)
         self._results_summary.show_result(result, self.controller.recipe)
+        if moving:
+            self._settle_due = True
+            self._cutoff_settle.start()
+            return
+        self._settle_due = False
+        self._cutoff_settle.stop()
         # The Markers table is read back into the settings before every run; keep its cutoffs current.
         self._measurements_panel.refresh()
+
+    def settle_cutoff(self) -> None:
+        """A cutoff slider stopped: the Markers table catches up (it is read back into the settings, so never left behind)."""
+
+        self._cutoff_settle.stop()
+        if not self._settle_due:
+            return
+        self._settle_due = False
+        try:
+            self._measurements_panel.refresh()
+        except RuntimeError:
+            pass  # the window was closed meanwhile
 
     def cutoff_mode_changed(self) -> None:
         """Step 4's "Set cutoff by" changed: step 5 shows the slider or the example tools."""
@@ -3327,7 +3355,14 @@ class CellQuantWindow:
         overlay = codes[labels]
         existing = self._layer_if_shape("Classification", overlay.shape)
         if existing is not None:
-            existing.data = overlay
+            # A cutoff move flips only a few objects: rewrite just their pixels, so napari redraws that part instead of the whole layer.
+            shown = existing.data
+            changed = np.nonzero(shown != overlay) if isinstance(shown, np.ndarray) else None
+            if changed is None or changed[0].size >= overlay.size // 4:
+                existing.data = overlay
+            elif changed[0].size:
+                existing.data_setitem(changed, overlay[changed])
+                existing._reset_history()  # a new call, not an edit to undo
             self.apply_classification_colors()  # one marker or All markers: different colors
             return
         self._drop("Classification")
@@ -3347,8 +3382,15 @@ class CellQuantWindow:
             colors = {code: _rgba(color) for code, color in self._review_panel.combined.code_colors().items()}
         else:
             colors = {1: _rgba(negative), 2: _rgba(positive)}
-        layer.colormap = DirectLabelColormap(color_dict={None: np.array([0, 0, 0, 0], dtype=np.float32), **colors})
-        layer.contour = 2 if classification_outline() else 0
+        # Setting a colormap or contour redraws the whole layer: only when it really changes (not on every cutoff move).
+        wanted = {None: np.array([0, 0, 0, 0], dtype=np.float32), **colors}
+        current = getattr(layer.colormap, "color_dict", None) if isinstance(layer.colormap, DirectLabelColormap) else None
+        same = current is not None and all(code in current and np.allclose(current[code], color) for code, color in wanted.items())
+        if not same or any(np.asarray(color)[3] != 0 for code, color in current.items() if code not in wanted):  # napari adds transparent entries
+            layer.colormap = DirectLabelColormap(color_dict=wanted)
+        contour = 2 if classification_outline() else 0
+        if layer.contour != contour:
+            layer.contour = contour
 
     def _set_ids(self, result) -> None:
         frame = result.objects
@@ -6821,6 +6863,7 @@ class ReviewPanel(QWidget):
         self.threshold_slider = QLabeledDoubleSlider(Qt.Horizontal)
         self.threshold_slider.setRange(0.0, 1.0)
         self.threshold_slider.valueChanged.connect(self._slider_moved)
+        self.threshold_slider.sliderReleased.connect(self._slider_released)
         layout.addWidget(self.threshold_slider)
         # Where a cutoff change goes: the image shown (the default), or every image.
         self.scope_row = QWidget()
@@ -7814,7 +7857,14 @@ class ReviewPanel(QWidget):
     def _apply_pending_cutoff(self) -> None:
         value, self._pending_cutoff = self._pending_cutoff, None
         if value is not None:
-            self._threshold_moved(value)
+            self._threshold_moved(value, moving=True)
+
+    def _slider_released(self) -> None:
+        """The cutoff slider is let go: the last step applies now and every panel catches up."""
+
+        self._cutoff_timer.stop()
+        self._apply_pending_cutoff()
+        self.shell.settle_cutoff()
 
     def _show_colors(self) -> None:
         positive, negative = classification_colors()
@@ -7851,14 +7901,14 @@ class ReviewPanel(QWidget):
         self._show_colors()
         self.shell.apply_classification_colors()
 
-    def _threshold_moved(self, value: float) -> None:
+    def _threshold_moved(self, value: float, moving: bool = False) -> None:
         classification_id = self.classification_id()
         if not classification_id or self._current_classification() is None:
             return  # the marker shown was removed in step 4
-        self.set_cutoffs({classification_id: value})
+        self.set_cutoffs({classification_id: value}, moving=moving)
 
-    def set_cutoffs(self, cutoffs: dict[str, float]) -> None:
-        """This image's cutoff for each marker given (the slider, or All markers' sliders)."""
+    def set_cutoffs(self, cutoffs: dict[str, float], moving: bool = False) -> None:
+        """This image's cutoff for each marker given (the slider, or All markers' sliders). ``moving``: a slider is being dragged."""
 
         controller = self.shell.controller
         if controller is None or not self.shell._nav_ids:
@@ -7878,7 +7928,7 @@ class ReviewPanel(QWidget):
         if controller.cleared_approvals or controller.kept_approvals:
             self._after_cutoff_change(result, "", before)
         elif result is not None:
-            self.shell.show_classification(result)
+            self.shell.show_classification(result, moving=moving)
 
     def redraw(self) -> None:
         self._recolor()
