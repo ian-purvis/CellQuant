@@ -636,6 +636,7 @@ class NewExperimentDialog(QDialog):
         form = QFormLayout()
         self.name = QLineEdit()
         self.name.setPlaceholderText("e.g. P7 OTX2 counts")
+        self.name.setToolTip("A name for this experiment. It is shown in the window and saved with the experiment.")
         self.images = QLineEdit()
         self.images.setToolTip(
             "Only read, never changed. This folder and its subfolders are scanned, not folders beside it.\n"
@@ -649,12 +650,12 @@ class NewExperimentDialog(QDialog):
             "your own. Pick the image folder only if you want results next to the images."
         )
         form.addRow("Experiment name", self.name)
-        form.addRow("Image folder", self._browse_row(self.images, self._pick_images))
+        form.addRow("Image folder", self._browse_row(self.images, self._pick_images, "Choose the folder of images in a file window."))
         self.images_check = QLabel("")
         self.images_check.setWordWrap(True)
         self.images_check.setTextFormat(Qt.RichText)
         form.addRow("", self.images_check)
-        form.addRow("Results folder", self._browse_row(self.results, self._pick_results))
+        form.addRow("Results folder", self._browse_row(self.results, self._pick_results, "Choose the folder for the results in a file window."))
         self.results_check = QLabel("")
         self.results_check.setWordWrap(True)
         self.results_check.setTextFormat(Qt.RichText)
@@ -662,6 +663,8 @@ class NewExperimentDialog(QDialog):
         types = QHBoxLayout()
         self.use_nd2 = QCheckBox("ND2 files")
         self.use_tiff = QCheckBox("TIFF files")
+        self.use_nd2.setToolTip("Include ND2 files when looking for images in the image folder.")
+        self.use_tiff.setToolTip("Include TIFF files (.tif, .tiff) when looking for images in the image folder.")
         for box in (self.use_nd2, self.use_tiff):
             box.setChecked(True)
             types.addWidget(box)
@@ -691,6 +694,8 @@ class NewExperimentDialog(QDialog):
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         self.ok_button = buttons.button(QDialogButtonBox.Ok)
+        self.ok_button.setToolTip("Create the experiment and open it.")
+        buttons.button(QDialogButtonBox.Cancel).setToolTip("Close without creating an experiment.")
         layout.addWidget(buttons)
         self._show_images_note()
         self._update_ok()
@@ -722,12 +727,13 @@ class NewExperimentDialog(QDialog):
         self._debounce.stop()
         super().done(result)
 
-    def _browse_row(self, field: QLineEdit, slot) -> QWidget:
+    def _browse_row(self, field: QLineEdit, slot, tip: str) -> QWidget:
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(field)
         button = QPushButton("Browse…")
+        button.setToolTip(tip)
         button.clicked.connect(slot)
         layout.addWidget(button)
         return row
@@ -3983,7 +3989,7 @@ class ExperimentPanel(QWidget):
             return
         record.sample_name = controller.experiment.image(image_id).sample_name
         if self._pasting:
-            self._pasted_headers.add(header)  # the other panels follow once, when the paste is done
+            self._pasted_headers.add(header)  # the other panels follow, and the experiment is saved, once when the paste is done
             return
         self.shell._autosave()
         self._cell_edited_elsewhere(header)
@@ -4558,7 +4564,7 @@ class ObjectsPanel(QWidget):
         self.crop.toggled.connect(lambda _checked: self._crop_changed())
         self.crop_channels.itemChanged.connect(lambda _item: self._crop_changed())
         # Rarely used: collapsed until needed, and open from the start when a saved recipe already crops.
-        self.crop_section = CollapsibleSection("Region of interest (optional)")
+        self.crop_section = CollapsibleSection("Region of interest (optional)", tip="Optional: find objects only in the part of the image that holds the positive cells.")
         self.crop_section.add_widget(self.crop)
         self.crop_section.add_widget(self.crop_box)
         layout.addWidget(self.crop_section)
@@ -5438,6 +5444,7 @@ class MeasurementsPanel(QWidget):
         for text, data in COMPARISONS:
             box.addItem(text, data)
         box.setCurrentIndex(max(box.findData(value), 0))
+        box.setToolTip(self.class_comparison.toolTip())
         return box
 
     def _row_comparison(self, row: int) -> str:
