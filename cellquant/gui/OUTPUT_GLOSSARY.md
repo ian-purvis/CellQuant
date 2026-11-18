@@ -384,7 +384,7 @@ IoU means intersection over union. Each outline links to its best-overlapping pa
 
 **In short:** Which channel the objects are found in and with which method.
 
-**What it means:** `name` is the object type (default `Cells`; it appears in the `object_set` column). `segmentation_channel` is the channel the objects are found in, counting from 0. `algorithm` is the method (`classical` or `cellpose`). `parameters` holds that method's settings, such as the diameter or the Min/Max size from step 2.
+**What it means:** `name` is the object type (default `Cells`; it appears in the `object_set` column). `segmentation_channel` is the channel the objects are found in, counting from 0. `algorithm` is the method (`classical` or `cellpose`). `parameters` holds that method's settings, such as the diameter or the Min/Max size from step 2, and `extra_channels` (see `segmentation_extra_channels`) when Cellpose-SAM reads extra input channels.
 
 **For experts:** `recipe.ObjectSetSpec`. Size limits are `min_area_px`, `max_area_px`, `min_area_um2`, `max_area_um2`: an object is removed when its area is below the minimum or above the maximum, so an object exactly at a limit is kept.
 
@@ -629,7 +629,7 @@ Each press of **Run** that starts a new batch creates a run folder, `runs/run_xx
 | `run.json` | The run record (below) |
 | `recipe_snapshot.yaml` | Settings used |
 | `labels/<image>_<channel>_automated.tif` | Objects as found by the program, before your edits |
-| `labels/<image>_<channel>_final.tif` | Objects after your edits. **Use this one.** Results saved by older versions use `labels/<image>_final.tif`, and are read the same way. |
+| `labels/<image>_<channel>_final.tif` | Objects after your edits. **Use this one.** With extra input channels (Cellpose-SAM) the name is `labels/<image>_<channel>+<extra>_final.tif`. Results saved by older versions use `labels/<image>_final.tif`, and are read the same way. |
 | `segmented_channels.csv` | Which channel the objects of each image were found in |
 | `measurements/<image>.csv` | One row per object (the object table) |
 | `summaries/<image>.csv` | One row for the image (percent positive) |
@@ -659,7 +659,7 @@ Each press of **Run** that starts a new batch creates a run folder, `runs/run_xx
 
 **In short:** The ids of the run, the experiment and the analysis's settings.
 
-**What it means:** `run_id` looks like `run_e402fc66_AF647` and is also the folder name. After `run_` and 8 hex characters comes the channel the run's objects were found in (two channels are written `A+B`, more than two `mixed`). Older runs have no channel part. The channel name is written with letters, digits and `-`; any other character becomes `_`, and at most 20 characters are used. The other two ids say which experiment and which analysis made the run.
+**What it means:** `run_id` looks like `run_e402fc66_AF647` and is also the folder name. After `run_` and 8 hex characters comes the channel the run's objects were found in (two channels are written `A+B`, more than two `mixed`). When Cellpose-SAM also read extra input channels, they follow the source channel with `+` (`AF647+DAPI`); `mixed` is used when the name would be too long or the images differ. Older runs have no channel part. The channel name is written with letters, digits and `-`; any other character becomes `_`, and at most 20 characters are used. The other two ids say which experiment and which analysis made the run.
 
 **For experts:** `run_` plus 8 hex characters of a random UUID, then `_` and `storage.run_channel_tag` of the channels (`storage.channel_tag` for each name).
 
@@ -737,7 +737,7 @@ Each press of **Run** that starts a new batch creates a run folder, `runs/run_xx
 
 **In short:** The objects as the program found them, before your edits.
 
-**What it means:** It is a picture the same size as the analyzed image (a stack of pictures for 3D). Background is `0` and every object is filled with its `object_id` number. It is the starting point that your edits are replayed on. `<channel>` is the name of the channel the objects were found in, as shown in the app, written with letters, digits and `-` (other characters become `_`).
+**What it means:** It is a picture the same size as the analyzed image (a stack of pictures for 3D). Background is `0` and every object is filled with its `object_id` number. It is the starting point that your edits are replayed on. `<channel>` is the name of the channel the objects were found in, as shown in the app, written with letters, digits and `-` (other characters become `_`). When Cellpose-SAM read extra input channels, their names follow with `+` (`<channel>+<extra>`).
 
 **Good to know:** Use `_final` for analysis. This file is for going back and for deleted objects: a deleted object is still here. Results saved by older versions have no channel in the name (`labels/<image>_automated.tif`) and are read the same way.
 
@@ -750,7 +750,7 @@ Each press of **Run** that starts a new batch creates a run folder, `runs/run_xx
 
 **In short:** The objects after your edits. Use this one.
 
-**What it means:** A picture the same size as the analyzed image (a stack for 3D). Background is `0`; every object is filled with its `object_id` number. The same `object_id` appears in `measurements/<image>.csv`. Open it in napari or Fiji to see which objects were counted. Deleted objects are `0` here. `<channel>` is the name of the channel the objects were found in, so the file name tells you what was segmented.
+**What it means:** A picture the same size as the analyzed image (a stack for 3D). Background is `0`; every object is filled with its `object_id` number. The same `object_id` appears in `measurements/<image>.csv`. Open it in napari or Fiji to see which objects were counted. Deleted objects are `0` here. `<channel>` is the name of the channel the objects were found in, so the file name tells you what was segmented; with extra input channels the names follow with `+` (`<channel>+<extra>`).
 
 **Good to know:** When the channel changes or is renamed and the image is saved again, the masks with the new name replace the old ones in `working/`. Runs you made earlier keep their own names. Results saved by older versions have no channel in the name (`labels/<image>_final.tif`) and are read the same way.
 
@@ -778,6 +778,12 @@ Each press of **Run** that starts a new batch creates a run folder, `runs/run_xx
 **In short:** The channel the objects were found in, named as the app shows it.
 
 **What it means:** A channel you renamed appears under its new name. This is the `<channel>` in the mask file names, before the characters that file names cannot hold are replaced.
+
+##### `extra_input_channels`
+
+**In short:** The extra channels Cellpose-SAM read together with the source channel.
+
+**What it means:** The channel names, separated by commas, as the app shows them. The column appears only when some image has extra input channels; it is blank for an image that has none.
 
 ##### `mask_file`
 
@@ -1572,11 +1578,19 @@ These are: the Z-stack mode and slice (and the 3D settings only for the modes th
 
 **What it means:** The method's `parameters` from the recipe, such as the diameter, Min/Max size or threshold.
 
+**Good to know:** `extra_channels` lists the positions (counting from 0) of the extra input channels Cellpose-SAM read together with the source channel. It is written only when some are chosen. `extra_channels_skipped` names the extra channels this image does not have; they were left out for it, and its result carries a warning.
+
 ###### `segmentation_channel`
 
 **In short:** The channel the objects were found in, counting from 0.
 
 **What it means:** The number of the channel that step 2 Find objects used to find the objects, for example the nuclear stain. The first channel is 0, so it is one less than the channel number you may count in your head. The export shows the channel name instead, in `all_analyses_image_summary.csv`.
+
+###### `segmentation_extra_channels`
+
+**In short:** The extra input channels Cellpose-SAM read with the source channel, counting from 0.
+
+**What it means:** The positions, in this image, of the extra channels read together with `segmentation_channel`. Recorded only when extra input channels were used; an extra channel the image lacks is left out.
 
 ###### `segmentation_seconds`, `segmentation_timings`
 
@@ -1988,7 +2002,7 @@ The sums run over the images of the unit.
 
 **In short:** Which channel the objects of each image were found in.
 
-**What it means:** One row per image: `image_id`, `image` and `segmented_channel`, the channel named as the app shows it. It is the same list as in the results folder, without the `mask_file` column. Nothing reads it back.
+**What it means:** One row per image: `image_id`, `image` and `segmented_channel`, the channel named as the app shows it, and `extra_input_channels` when some image has extra input channels. It is the same list as in the results folder, without the `mask_file` column. Nothing reads it back.
 
 **Related:** `settings_index.csv`
 
