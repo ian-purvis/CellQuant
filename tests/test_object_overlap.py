@@ -268,3 +268,110 @@ def test_a_batch_finds_the_compared_objects_first(tmp_path: Path):
         first = int(result.objects["object_id"].iloc[0])
         expected = 100 * np.count_nonzero(theirs[result.labels == first]) / np.count_nonzero(result.labels == first)
         assert result.objects[column].iloc[0] == pytest.approx(expected)
+
+
+# -- Z-stacks --------------------------------------------------------------------------------------
+
+PIXEL = 0.5  # µm per pixel in X and Y
+STEP = 1.5  # µm between slices
+
+
+def _ball(shape, center, radius_um):
+    z, y, x = np.ogrid[: shape[0], : shape[1], : shape[2]]
+    cz, cy, cx = center
+    return ((z - cz) * STEP) ** 2 + ((y - cy) * PIXEL) ** 2 + ((x - cx) * PIXEL) ** 2 <= radius_um**2
+
+
+def _stack_experiment(tmp_path: Path, z_stack: str) -> tuple[AnalysisController, str, str, str]:
+    """Three nuclei in channel 1, two of them stacked in Z; channel 2 shows only the upper stacked one.
+
+    One analysis finds the objects of each channel, with the same Z handling.
+    """
+
+    import tifffile
+
+    shape = (9, 64, 64)
+    nuclear = np.full(shape, 50, dtype=np.uint16)
+    marker = np.full(shape, 20, dtype=np.uint16)
+    upper = _ball(shape, (6, 20, 20), 2.8)
+    for mask in (_ball(shape, (2, 20, 20), 2.8), upper, _ball(shape, (4, 44, 44), 2.9)):
+        nuclear[mask] = 1000
+    marker[upper] = 800
+    path = tmp_path / "data" / "stack.tif"
+    path.parent.mkdir(parents=True)
+    tifffile.imwrite(
+        path,
+        np.stack([nuclear, marker], axis=1),
+        imagej=True,
+        resolution=(1 / PIXEL, 1 / PIXEL),
+        metadata={"axes": "ZCYX", "unit": "um", "spacing": STEP},
+    )
+    controller = AnalysisController.create(tmp_path / "results", "3D overlap", input_directory=path.parent)
+    controller.add_image_paths([path])
+    for index, name in enumerate(("Nuclei", "OTX2")):
+        controller.set_channel_name(index, name)
+    controller.set_recipe(
+        {
+            "z_stack": z_stack,
+            "object_set": {
+                "segmentation_channel": 0,
+                "algorithm": "classical",
+                "parameters": {"threshold_method": "manual", "threshold": 300},
+            },
+            "measurements": [],
+            "classifications": [],
+            "reports": [],
+        }
+    )
+    controller.save()
+    here = controller.recipe.recipe_id
+    other = controller.analyses_for_channels([1])[0]
+    controller.run_analyses()
+    return controller, here, other, controller.experiment.images[0].image_id
+
+
+@pytest.mark.parametrize("mode", ["stitch_slices", "full_3d"])
+def test_in_a_z_stack_only_the_object_at_the_same_depth_is_inside(tmp_path: Path, mode: str):
+    controller, here, other, image_id = _stack_experiment(tmp_path, mode)
+    marker = _add_marker(controller, other)
+    result = controller.run_image(image_id)
+
+    theirs = controller.objects_of(other, image_id)
+    assert result.labels.shape == theirs.shape == (9, 64, 64)
+    assert len(np.unique(theirs)) - 1 == 1  # the other analysis found the upper nucleus only
+    objects = result.objects.sort_values("centroid_z").reset_index(drop=True)
+    stacked = objects.loc[(objects["centroid_x"] - 10).abs() < 1]
+    side = objects.loc[(objects["centroid_x"] - 10).abs() >= 1]
+    # Same XY position, different depths: the lower nucleus is outside, the upper one inside.
+    assert stacked["otx2_objects_overlap"].tolist() == [0.0, 100.0]
+    assert stacked[marker].tolist() == [False, True]
+    assert side["otx2_objects_overlap"].tolist() == [0.0] and side[marker].tolist() == [False]
+    assert result.reports.loc[0, "count"] == 1 and result.reports.loc[0, "denominator_count"] == 3
+    assert result.provenance["object_overlap"] == {other: controller.objects_digest(other, image_id)}
+
+
+def test_a_projection_cannot_tell_the_stacked_objects_apart(tmp_path: Path):
+    """Why the Z handling matters here: projected, the two stacked nuclei are one object, and it is inside."""
+
+    controller, here, other, image_id = _stack_experiment(tmp_path, "max_projection")
+    marker = _add_marker(controller, other)
+    result = controller.run_image(image_id)
+    assert result.labels.ndim == 2 and result.qc.n_objects == 2
+    assert sorted(result.objects["otx2_objects_overlap"].tolist()) == [0.0, 100.0]
+    assert int(result.objects[marker].astype(bool).sum()) == 1
+
+
+def test_objects_found_with_another_z_handling_are_not_compared(tmp_path: Path):
+    controller, here, other, image_id = _stack_experiment(tmp_path, "stitch_slices")
+    _add_marker(controller, other)
+    controller.switch_analysis(other)
+    projected = controller.recipe.model_dump(mode="json")
+    projected["z_stack"] = "max_projection"
+    controller.set_recipe(projected)
+    controller.save()
+    controller.run_image(image_id)
+    controller.switch_analysis(here)
+    result = controller.run_image(image_id)
+    assert result.labels.ndim == 3 and controller.objects_of(other, image_id).ndim == 2
+    assert result.objects["otx2_objects_overlap"].isna().all()
+    assert OVERLAP_NOT_MEASURED in result.qc.warnings
