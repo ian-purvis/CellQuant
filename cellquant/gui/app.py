@@ -351,6 +351,8 @@ STATISTIC_OPTIONS = (
     ("centroid_y", "Center Y"),
     ("percent_above", "Percent of pixels above a level"),
 )
+# How a saved statistic reads in lists: the choices above, and the one step 4's "By overlap" makes (not a choice to add by hand).
+STATISTIC_NAMES = (*STATISTIC_OPTIONS, ("object_overlap", "Percent of the object inside another analysis's objects"))
 BACKGROUND_OPTIONS = (
     ("none", "None"),
     ("global", "Subtract image background"),
@@ -369,7 +371,7 @@ def _measurement_text(controller, measurement) -> str:
 
     return (
         f"{controller._channel_name(int(measurement.channel))}: "
-        f"{_option_text(STATISTIC_OPTIONS, measurement.statistic)}, {_option_text(REGION_OPTIONS, measurement.region.type)}"
+        f"{_option_text(STATISTIC_NAMES, measurement.statistic)}, {_option_text(REGION_OPTIONS, measurement.region.type)}"
     )
 
 
@@ -461,6 +463,23 @@ def classification_outline() -> bool:
         return str(_settings().value("review/classification_style", "outline")) != "fill"
     except Exception:  # noqa: BLE001 - settings unreadable: use the default
         return True
+
+
+# Outline colors for the other analysis's objects in step 5, tried in turn: the first one that is not close to the
+# positive and negative colors or to the mask colors chosen in step 3 is used.
+OTHER_OBJECTS_COLORS = ("#ffd700", "#00ffff", "#ff8c00", "#ffffff")
+
+
+def other_objects_color() -> str:
+    """The outline color of the other analysis's objects (as #rrggbb), apart from every color the objects can have."""
+
+    taken = [QColor(color) for color in (*classification_colors(), *mask_colors())]
+
+    def gap(color: str) -> float:
+        value = QColor(color)
+        return min(((value.red() - t.red()) ** 2 + (value.green() - t.green()) ** 2 + (value.blue() - t.blue()) ** 2) ** 0.5 for t in taken)
+
+    return next((color for color in OTHER_OBJECTS_COLORS if gap(color) >= 120), max(OTHER_OBJECTS_COLORS, key=gap))
 
 
 def save_classification_style(outline: bool) -> None:
@@ -1104,6 +1123,8 @@ class CellQuantWindow:
         self._name_hooks: dict[str, object] = {}  # channel layer name -> the callback for the user renaming it
         self._naming_layer = False  # True while CellQuant itself names a channel layer
         self._ids_image_id: str | None = None  # image whose object numbers the Object IDs layer shows
+        self._other_objects_name: str | None = None  # the layer showing another analysis's objects in step 5 (not a managed layer)
+        self._other_objects_data = None  # the labels it shows
         self._channel_defaults: dict[str, object] = {}  # channel layer name -> colormap from the file
         self._mask_colors_set: dict[str, tuple] = {}  # object layer name -> (colors, layer, colormap) last set
         self._nav_ids: list[str] = []
@@ -1204,6 +1225,7 @@ class CellQuantWindow:
         self._tabs.currentChanged.connect(lambda _index: self._edit_panel.leave_delete())
         self._tabs.currentChanged.connect(lambda _index: self._edit_panel._set_circle(None))
         self._tabs.currentChanged.connect(lambda _index: self._review_panel.leave_marking())
+        self._tabs.currentChanged.connect(lambda _index: self.refresh_other_objects())
         main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
         from cellquant.gui.panel_fit import PanelFitter, PanelScroll
         from cellquant.gui.plan_dock import PlanDock
@@ -1528,21 +1550,32 @@ class CellQuantWindow:
             return
         self._record_drawing_first()
         self._panels_to_recipe()
-        controller.set_recipe(
-            guide.marker_recipe(controller.recipe.model_dump(mode="json"), chosen, rule=rule, min_percent=min_percent)
-        )
+        data = controller.recipe.model_dump(mode="json")
+        if guide.overlap_markers(data):
+            # Markers called by overlap with another analysis's objects stay: the channels' markers are merged in beside them
+            # (the first setup starts every marker again).
+            segmentation = controller.recipe.object_set.segmentation_channel
+            shown = {channel.channel_index for channel in controller.experiment.channels if channel.channel_index != segmentation}
+            plan = guide.merge_marker_recipe(data, chosen, shown, rule, min_percent, reset_rule=True)
+            self.apply_marker_merge(plan, clear_approvals=bool(plan.removed or plan.reset))
+            return
+        controller.set_recipe(guide.marker_recipe(data, chosen, rule=rule, min_percent=min_percent))
         controller.save()
         self._measurements_panel.refresh()
         self._results_panel.refresh()
         self._marker_setup.refresh()
         self._measure_new_markers(None, rerun=True, first=True)
 
-    def apply_marker_merge(self, plan, *, clear_approvals: bool = False, min_percent: float | None = None) -> None:
+    def apply_marker_merge(
+        self, plan, *, clear_approvals: bool = False, min_percent: float | None = None, min_overlap: float | None = None, note: str = ""
+    ) -> None:
         """Step 4 after markers exist: ticking or unticking a channel (or the rule) changed the markers.
 
         Markers that stay keep their cutoffs, cutoffs of single images, calls by hand and approvals (see
         ``quicksetup.merge_marker_recipe``); added ones are measured; ``min_percent`` is the new minimum
-        percent for the percent markers that stay. The user stays on step 4.
+        percent for the percent markers that stay, ``min_overlap`` the new minimum overlap for the markers
+        called by overlap that stay. ``note`` is added to the message said when the markers are measured.
+        The user stays on step 4.
         """
 
         controller = self.require_controller()
@@ -1554,13 +1587,16 @@ class CellQuantWindow:
         if clear_approvals:
             controller.clear_all_approvals("Approval was cleared because the markers changed.")
         image_id = self._nav_ids[self._nav_index] if self._nav_ids else controller.current_image_id
-        if min_percent is not None and image_id is not None:
-            # A shared minimum percent, like moving the slider: approved images keep the one they were approved with.
-            stay = {
-                item.id: float(min_percent)
-                for item in controller.recipe.classifications
-                if item.id not in plan.new_ids and guide.uses_pixel_level(controller.recipe, item)
-            }
+        if (min_percent is not None or min_overlap is not None) and image_id is not None:
+            # A shared minimum percent (or overlap), like moving the slider: approved images keep the one they were approved with.
+            stay = {}
+            for item in controller.recipe.classifications:
+                if item.id in plan.new_ids or item.name in plan.added:
+                    continue
+                if min_percent is not None and guide.uses_pixel_level(controller.recipe, item):
+                    stay[item.id] = float(min_percent)
+                elif min_overlap is not None and guide.uses_overlap(controller.recipe, item):
+                    stay[item.id] = float(min_overlap)
             if stay:
                 controller.update_thresholds(image_id, stay)
         controller.save()
@@ -1569,16 +1605,18 @@ class CellQuantWindow:
         self._marker_setup.refresh()
         self._experiment_panel.refresh_status()
         if plan.added or plan.reset:
-            self._measure_new_markers(set(plan.new_ids), rerun=False, first=False)
+            self._measure_new_markers(set(plan.new_ids), rerun=False, first=False, note=note)
             return
         # Nothing to measure: markers were taken away (or the minimum changed); show the image at the new settings.
         self.markers_changed()
         if image_id is not None and not self.is_busy():
-            self._measure_new_markers(set(), rerun=False, first=False, removed=plan.removed)
+            self._measure_new_markers(set(), rerun=False, first=False, removed=plan.removed, note=note)
         elif plan.removed:
             self.message(f"Removed the marker{'s' if len(plan.removed) != 1 else ''} {', '.join(plan.removed)}.")
 
-    def _measure_new_markers(self, only: set[str] | None, *, rerun: bool, first: bool, removed: list[str] | None = None) -> None:
+    def _measure_new_markers(
+        self, only: set[str] | None, *, rerun: bool, first: bool, removed: list[str] | None = None, note: str = ""
+    ) -> None:
         """Measure the markers in the image shown and give the markers in ``only`` (None: all) a starting cutoff.
 
         ``rerun`` runs the image again (the first setup); otherwise its objects are measured as they are, which
@@ -1620,6 +1658,7 @@ class CellQuantWindow:
                 if (only is None or item.id in only)
                 and item.measurement in result.objects.columns
                 and not guide.uses_pixel_level(controller.recipe, item)
+                and not guide.uses_overlap(controller.recipe, item)  # its cutoff is a minimum overlap, never a guess from the image
             }
             if first:
                 updated = controller.update_thresholds(image_id, starting) or result
@@ -1636,10 +1675,15 @@ class CellQuantWindow:
                 first_id = controller.recipe.classifications[0].id if controller.recipe.classifications else None
                 if first_id is not None and panel.display.findData(first_id) >= 0:
                     panel.display.setCurrentIndex(panel.display.findData(first_id))
+            from cellquant.quantify import OVERLAP_NOT_MEASURED
+
             if removed:
-                self.message(f"Removed the marker{'s' if len(removed) != 1 else ''} {', '.join(removed)}.")
+                text = f"Removed the marker{'s' if len(removed) != 1 else ''} {', '.join(removed)}."
             else:
-                self.message("Markers measured. Next: check the cutoffs in step 5.")
+                text = "Markers measured. Next: check the cutoffs in step 5."
+            if OVERLAP_NOT_MEASURED in updated.qc.warnings:
+                text += " A marker called by overlap is blank in this image: the other analysis has no objects for it yet (run that analysis on this image first)."
+            self.message(text + note)
             self.refresh_guidance()
 
         self._start_job(work, measured)
@@ -2727,6 +2771,7 @@ class CellQuantWindow:
             self.show_error(str(exc))
             self._analysis_bar.refresh()
             return
+        self._drop_other_objects()  # the other analysis's objects belong to the analysis being left
         self._refresh_all(keep_image=True)
         self.refresh_guidance()
         item = controller.active_analysis()
@@ -3339,6 +3384,7 @@ class CellQuantWindow:
         if labels is None:
             for name in _OBJECT_LAYERS:
                 self._drop(name)
+            self._drop_other_objects()
             return
         fills = self._layer_if_ndim("Object fills", labels.ndim)
         boundaries = self._layer_if_ndim("Objects", labels.ndim)
@@ -3359,6 +3405,7 @@ class CellQuantWindow:
             self._drop("Classification")
             self._drop("Object IDs")
             self._drop("Crop regions")
+            self._drop_other_objects()
         else:
             self._set_classification_overlay(result)
             self._set_ids(result)
@@ -3369,6 +3416,7 @@ class CellQuantWindow:
     def apply_mask_colors(self) -> None:
         """Give the object layers the colors chosen in step 3."""
 
+        self._apply_other_objects_color()  # the other analysis's outlines keep apart from these colors
         colors = mask_colors()
         for name in ("Object fills", "Objects"):
             if name in self.viewer.layers:
@@ -3468,10 +3516,95 @@ class CellQuantWindow:
         self._managed.add("Classification")
         self.apply_classification_colors()
 
+    def _other_objects_wanted(self, result):
+        """(layer name, labels) of the other analysis's objects to show with ``result``, or None: only in step 5, for a
+        marker called by overlap, when that analysis has objects for this image in the same shape as these."""
+
+        controller, panel = self.controller, self._review_panel
+        pages = getattr(self, "_step_pages", None)
+        if result is None or controller is None or not pages or self._tabs.currentWidget() is not pages[4]:
+            return None
+        other = panel.other_analysis()
+        if other is None:
+            return None
+        labels = controller.objects_of(other["id"], result.provenance.get("image_id"))
+        if labels is None or tuple(labels.shape) != tuple(np.asarray(result.labels).shape):
+            return None
+        return f"{other['channel_name']} objects (other analysis)", labels
+
+    def _set_other_objects(self, result) -> None:
+        """Step 5, a marker called by overlap: the other analysis's objects on the same image, as outlines in a color of
+        their own, in a layer that cannot be edited. No such marker, another step, or no objects: no layer."""
+
+        wanted = self._other_objects_wanted(result)
+        self._review_panel.show_other_objects.setVisible(wanted is not None)  # nothing to show, nothing to hide
+        if wanted is None:
+            self._drop_other_objects()
+            return
+        name, labels = wanted
+        layers = self.viewer.layers
+        layer = self._other_objects_layer()
+        if layer is not None and self._other_objects_name == name and self._other_objects_data is labels and layer.ndim == labels.ndim:
+            self._apply_other_objects_color()
+            return
+        self._drop_other_objects()
+        active = layers.selection.active
+        layer = self.viewer.add_labels(np.asarray(labels), name=name, opacity=0.9)
+        layer.contour = 2  # outlines only: the objects underneath stay visible
+        layer.editable = False  # never the layer the edit tools or drawn edits use
+        self._other_objects_name, self._other_objects_data = layer.name, labels
+        _set_layer(layer, visible=self._review_panel.show_other_objects.isChecked())
+        layer.events.visible.connect(lambda _event, layer=layer: self._other_objects_eye(layer))
+        self._apply_other_objects_color()
+        if active is not None and active in layers and layers.selection.active is not active:
+            layers.selection.active = active  # the layer the user had chosen stays chosen
+
+    def _other_objects_layer(self):
+        name = self._other_objects_name
+        return self.viewer.layers[name] if name and name in self.viewer.layers else None
+
+    def _drop_other_objects(self) -> None:
+        name, self._other_objects_name, self._other_objects_data = self._other_objects_name, None, None
+        if name and name in self.viewer.layers:
+            self.viewer.layers.remove(name)
+
+    def _apply_other_objects_color(self) -> None:
+        layer = self._other_objects_layer()
+        if layer is None:
+            return
+        wanted = {0: np.array([0, 0, 0, 0], dtype=np.float32), None: _rgba(other_objects_color())}
+        current = getattr(layer.colormap, "color_dict", None) if isinstance(layer.colormap, DirectLabelColormap) else None
+        if current is None or not all(key in current and np.allclose(current[key], value) for key, value in wanted.items()):
+            layer.colormap = DirectLabelColormap(color_dict=wanted)
+
+    def _other_objects_eye(self, layer) -> None:
+        """The layer's eye icon and the checkbox in step 5 say the same."""
+
+        box = self._review_panel.show_other_objects
+        if box.isChecked() != bool(layer.visible):
+            box.blockSignals(True)
+            box.setChecked(bool(layer.visible))
+            box.blockSignals(False)
+
+    def set_other_objects_visible(self, on: bool) -> None:
+        layer = self._other_objects_layer()
+        if layer is not None:
+            _set_layer(layer, visible=bool(on))
+
+    def refresh_other_objects(self) -> None:
+        """A step or a marker was chosen: the other analysis's objects show only in step 5, for a marker called by overlap."""
+
+        controller, image_id = self.controller, self._shown_image_id
+        result = controller.last_results.get(image_id) if controller is not None and image_id is not None else None
+        if result is None and controller is not None and image_id is not None and not self.is_busy():
+            result = controller.recall(image_id, measure=False)
+        self._set_other_objects(result)
+
     def apply_classification_colors(self) -> None:
         """Positive objects in the positive color, negative in the negative color; with All markers,
         each mix of markers in its own color."""
 
+        self._apply_other_objects_color()  # the other analysis's outlines keep apart from these colors
         if "Classification" not in self.viewer.layers:
             return
         positive, negative = classification_colors()
@@ -3563,6 +3696,7 @@ class CellQuantWindow:
         for name in list(self._managed):
             if name not in keep:
                 self._drop(name)
+        self._drop_other_objects()  # shown again with the next image's objects, when a marker needs it
 
 
 class ViewBox(QWidget):
@@ -5730,7 +5864,7 @@ class MeasurementsPanel(QWidget):
             self.table.setItem(row, 0, QTableWidgetItem(measurement.id))
             self.table.setItem(row, 1, QTableWidgetItem(controller._channel_name(int(measurement.channel))))
             self.table.setItem(row, 2, QTableWidgetItem(_option_text(REGION_OPTIONS, measurement.region.type)))
-            self.table.setItem(row, 3, QTableWidgetItem(_option_text(STATISTIC_OPTIONS, measurement.statistic)))
+            self.table.setItem(row, 3, QTableWidgetItem(_option_text(STATISTIC_NAMES, measurement.statistic)))
             self.table.setItem(row, 4, QTableWidgetItem(_option_text(BACKGROUND_OPTIONS, measurement.background.type)))
             level = ""
             if measurement.pixel_level is not None:
@@ -7238,6 +7372,12 @@ class ReviewPanel(QWidget):
         self.display.currentIndexChanged.connect(lambda _index: self._display_changed())
         layout.addWidget(QLabel("Display objects by"))
         layout.addWidget(self.display)
+        # A marker called by overlap: the other analysis's objects are drawn on the same image, and can be hidden here.
+        self.show_other_objects = QCheckBox("Show objects")
+        self.show_other_objects.setChecked(True)
+        self.show_other_objects.setVisible(False)
+        self.show_other_objects.toggled.connect(lambda on: self.shell.set_other_objects_visible(on))
+        layout.addWidget(self.show_other_objects)
         # "All markers": every marker's cutoff at once, objects colored by their mix of markers.
         from cellquant.gui.combined_markers import CombinedMarkersView
 
@@ -7253,6 +7393,7 @@ class ReviewPanel(QWidget):
 
         self.cutoff_label = QLabel("Cutoff")
         self.cutoff_label.setToolTip("Drag until the right objects are positive.")
+        self.cutoff_label.setWordWrap(True)
         layout.addWidget(self.cutoff_label)
         self.histogram = CutoffHistogram()
         self.histogram.cutoff_dragged.connect(lambda value: self.threshold_slider.setValue(value))
@@ -7307,6 +7448,7 @@ class ReviewPanel(QWidget):
         self._cutoff_timer.timeout.connect(self._apply_pending_cutoff)
         layout.addWidget(self._pixel_level_box())
         self.counts = QLabel("Positive: 0\nNegative: 0\nPercent positive: —")
+        self.counts.setWordWrap(True)  # the rule in words can be long
         layout.addWidget(self.counts)
         layout.addWidget(self._strip_box())
         # Optional boxes, closed until opened (or until something in them is in use).
@@ -7810,6 +7952,23 @@ class ReviewPanel(QWidget):
             return None
         return next((item for item in controller.recipe.classifications if item.id == classification_id), None)
 
+    def other_analysis(self) -> dict | None:
+        """The other analysis the marker shown is compared with (an entry of ``controller.overlap_choices()``), or None
+        when the marker shown is not called by overlap."""
+
+        controller, classification = self.shell.controller, self._current_classification()
+        if controller is None or classification is None or not guide.uses_overlap(controller.recipe, classification):
+            return None
+        spec = next((m for m in controller.recipe.measurements if m.id == classification.measurement), None)
+        return next((choice for choice in controller.overlap_choices() if spec is not None and choice["id"] == spec.objects_from), None)
+
+    def _show_other_checkbox(self) -> dict | None:
+        other = self.other_analysis()
+        self.show_other_objects.setVisible(other is not None)
+        if other is not None:
+            self.show_other_objects.setText(f"Show {other['channel_name']} objects")
+        return other
+
     def _current_percent_measurement(self):
         classification = self._current_classification()
         if classification is None:
@@ -7871,6 +8030,7 @@ class ReviewPanel(QWidget):
         """An image not run yet: no numbers left over from the previous image."""
 
         self.update_status_line()
+        self.show_other_objects.setVisible(False)
         self.counts.setText("Not run yet.")
         self.qc.setText("")
         self.combined.show_no_result()
@@ -7910,6 +8070,7 @@ class ReviewPanel(QWidget):
             f"Checks: {QC_WORDS.get(result.qc.status, result.qc.status)}"
         )
         self.shell.refresh_edit_cells(result)
+        self.shell._set_other_objects(result)  # a marker called by overlap shows the other analysis's objects too
 
     def classification_id(self) -> str:
         """The one marker shown; empty for Objects and for All markers."""
@@ -7942,6 +8103,7 @@ class ReviewPanel(QWidget):
 
     def _show_cutoff(self, result) -> None:
         self._show_level_box()
+        other = self._show_other_checkbox()
         all_markers = self.showing_all_markers()
         self.combined_box.setVisible(all_markers and not self.combined.popped_out())
         if all_markers or self.combined.popped_out():
@@ -7969,8 +8131,8 @@ class ReviewPanel(QWidget):
         image_id = result.provenance["image_id"]
         cutoff = classification.threshold_for(image_id)
         values = result.objects[classification.measurement].to_numpy(dtype=float)
-        percent_rule = self._current_percent_measurement() is not None
-        self._set_slider(values, cutoff, percent_rule)
+        percent_rule = self._current_percent_measurement() is not None or other is not None
+        self._set_slider(values, cutoff, percent_rule, other)
         slider = self.threshold_slider
         self.histogram.set_data(values, slider.minimum(), slider.maximum(), cutoff, classification.comparison)
         self._show_cutoff_tools(classification, image_id, percent_rule)
@@ -7991,10 +8153,19 @@ class ReviewPanel(QWidget):
         )
         self._show_strip()
 
-    def _set_slider(self, values: np.ndarray, threshold: float, percent_rule: bool) -> None:
-        """Range: 0-100 % for the percent rule, otherwise the objects' values (and the cutoff)."""
+    def _set_slider(self, values: np.ndarray, threshold: float, percent_rule: bool, other: dict | None = None) -> None:
+        """Range: 0-100 % for the percent rule and for overlap, otherwise the objects' values (and the cutoff)."""
 
-        if percent_rule:
+        default_tip = "Drag until the right objects are positive."
+        self.cutoff_label.setToolTip(default_tip)
+        if other is not None:
+            low, high, decimals = 0.0, 100.0, 1
+            self.cutoff_label.setText(f"Cutoff (min % of the object inside {other['channel_name']} objects)")
+            self.cutoff_label.setToolTip(
+                f"An object is positive when at least this percent of it (of its volume in 3D) lies inside an object "
+                f"that the analysis \"{other['name']}\" found in this image. Drag, or type a number."
+            )
+        elif percent_rule:
             low, high, decimals = 0.0, 100.0, 1
             self.cutoff_label.setText("Cutoff (min % of object)")
         else:
@@ -8741,6 +8912,9 @@ class AnalysisBar(QWidget):
         summary = getattr(self.shell, "_results_summary", None)
         if summary is not None:
             summary.show_analysis_actions(several)
+        setup = getattr(self.shell, "_marker_setup", None)
+        if setup is not None:
+            setup.refresh_overlap()  # step 4 lists the other analyses
 
     def refresh_plan_button(self) -> None:
         controller = self.shell.controller

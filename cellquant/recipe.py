@@ -149,6 +149,7 @@ class MeasurementSpec(BaseModel):
         "centroid_x",
         "centroid_y",
         "percent_above",
+        "object_overlap",
     ]
     background: BackgroundSpec = Field(default_factory=BackgroundSpec)
     # percent_above only: the percent (0-100) of the region's pixels whose value
@@ -156,11 +157,16 @@ class MeasurementSpec(BaseModel):
     # pixel_level_high is set, at most pixel_level_high.
     pixel_level: float | None = None
     pixel_level_high: float | None = None
+    # object_overlap only: the analysis (its recipe_id) whose objects this one's objects are
+    # compared with. The value is the percent (0-100) of the region's pixels (voxels in 3D) that lie
+    # inside any object of that analysis, in the same image. ``channel`` is then the channel that
+    # analysis finds its objects in (for display only; no pixel of it is read).
+    objects_from: str | None = None
 
     @model_serializer(mode="wrap")
     def _drop_unused(self, handler):
         # Settings added later are left out when unused, so older recipes keep their hash.
-        return _without_defaults(handler(self), {"pixel_level": None, "pixel_level_high": None})
+        return _without_defaults(handler(self), {"pixel_level": None, "pixel_level_high": None, "objects_from": None})
 
     @model_validator(mode="after")
     def _check(self) -> MeasurementSpec:
@@ -177,6 +183,13 @@ class MeasurementSpec(BaseModel):
                 raise ValueError("pixel_level_high must be at least pixel_level")
         elif self.pixel_level is not None or self.pixel_level_high is not None:
             raise ValueError(f"A pixel level applies only to 'percent_above', not '{self.statistic}'")
+        if self.statistic == "object_overlap":
+            if not self.objects_from:
+                raise ValueError("'object_overlap' needs the analysis whose objects to compare with (objects_from)")
+            if self.background.type != "none":
+                raise ValueError("Background correction does not apply to 'object_overlap'")
+        elif self.objects_from is not None:
+            raise ValueError(f"objects_from applies only to 'object_overlap', not '{self.statistic}'")
         geometric = {"area", "equivalent_diameter", "centroid_x", "centroid_y"}
         if self.statistic in geometric and self.background.type != "none":
             raise ValueError(
@@ -340,6 +353,9 @@ class Recipe(BaseModel):
         classification_ids = [item.id for item in self.classifications]
         _unique(classification_ids, "classification id")
         _unique([item.name for item in self.classifications], "classification name")
+        for item in self.measurements:
+            if item.objects_from and item.objects_from == self.recipe_id:
+                raise ValueError(f"Measurement '{item.id}' compares this analysis's objects with themselves")
         known = set(measurement_ids)
         for item in self.classifications:
             if item.measurement not in known:

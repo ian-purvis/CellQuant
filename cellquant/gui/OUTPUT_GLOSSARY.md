@@ -416,7 +416,7 @@ IoU means intersection over union. Each outline links to its best-overlapping pa
 
 **In short:** What is calculated from the pixels in the region.
 
-**What it means:** One of `mean`, `median`, `min`, `max`, `std` (spread), `integrated` (sum), `area`, `equivalent_diameter`, `centroid_x`, `centroid_y` or `percent_above`. The equation for each is on the `<measurement>` page.
+**What it means:** One of `mean`, `median`, `min`, `max`, `std` (spread), `integrated` (sum), `area`, `equivalent_diameter`, `centroid_x`, `centroid_y`, `percent_above` or `object_overlap`. The equation for each is on the `<measurement>` page. `object_overlap` is the percent of an object that lies inside the objects of another analysis (see `<marker>_overlap`); its settings name that analysis in `objects_from`.
 
 **Good to know:** Background correction does not apply to `area`, `equivalent_diameter`, `centroid_x`, `centroid_y` or `std`, and CellQuant refuses it for them.
 
@@ -959,6 +959,24 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
 
 **Related:** `pixel_level`, `<marker>_pos`
 
+##### `<marker>_overlap`
+
+**In short:** The percent of an object that lies inside an object another analysis found in the same image. Only for a marker called by overlap.
+
+**What it means:** Step 4 can call a marker by overlap instead of by brightness: an object of the analysis you are in is positive when at least a set percent of it lies inside an object that another analysis found in the same image. This column holds that percent for each object, from 0 to 100, and is named from the channel the other analysis finds its objects in: `otx2_objects_overlap`. The call is in `<marker>_objects_pos` (`otx2_objects_pos`), and its cutoff is the minimum overlap (50 to start with), set in step 4 and changed per image in step 5. It is blank, and the object is unmeasured, when the other analysis has no objects for this image, or found them with another Z-stack handling (flat against 3D); the image then carries the warning that starts *A marker compares these objects with the objects of another analysis*.
+
+**How it's calculated:**
+
+    percent = 100 × pixels of the object inside any object of the other analysis ÷ pixels of the object
+
+In 3D the same ratio is taken over voxels, so it is a share of the object's volume.
+
+**Good to know:** The whole is the object of the analysis you are in. To read it the other way round, give the other analysis the mirror marker (**Also add the reverse marker to that analysis** in step 4). A 2D max projection puts cells from different depths on top of each other, so true 3D or 2D with stitching is safer for thick tissue. The marker is measured again by itself when the other analysis's objects change (an object deleted or added there, a new run), and an approval of an image that was measured with the old objects is cleared. `provenance/<image>.json` records which objects were compared (`object_overlap`).
+
+**For experts:** `quantify.measure_objects` with `statistic: object_overlap` and `objects_from` (the id of the other analysis); an exact division of whole numbers, so "at least N %" is exact at the boundary. Not measured (all blank, warning `quantify.OVERLAP_NOT_MEASURED`) when the other analysis's mask is missing or its shape differs. Overlap markers are made by `quicksetup.add_overlap_marker` (default minimum `DEFAULT_MIN_OVERLAP` = 50, comparison `at_least`, no starting cutoff is guessed from the image); ticking channels in step 4 never changes them.
+
+**Related:** `<marker>_pos`, `<measurement>`, `statistic`, `object_overlap`
+
 ##### `<measurement>`
 
 **In short:** Any other measurement you defined in step 4. The column name is the measurement's id.
@@ -1054,7 +1072,7 @@ Without a pixel size the unit is px² (each pixel counts 1). In 3D it is the obj
     positive ⇔ measurement > cutoff       (or ≥ cutoff with "at least")
     an object called by hand takes that call instead
 
-**Good to know:** Equal to the cutoff is negative unless the marker uses the "at least" rule. If you move a cutoff, only this column and what is counted from it change; nothing is measured again. Objects called by hand keep their call.
+**Good to know:** Equal to the cutoff is negative unless the marker uses the "at least" rule. If you move a cutoff, only this column and what is counted from it change; nothing is measured again. Objects called by hand keep their call. For a marker called by overlap with another analysis's objects (`otx2_objects_pos`) the cutoff is a minimum overlap in percent (`<marker>_overlap`), and the rule is always "at least".
 
 **For experts:** `quantify.classify_objects`: a nullable boolean column; values that are not finite stay missing, and `unmeasured` is set. `quantify._positive` uses `>` for `comparison: above` and `≥` for `at_least`.
 
@@ -1459,6 +1477,16 @@ These are: the Z-stack mode and slice (and the 3D settings only for the modes th
 **What it means:** The list of measurement entries (`id`, `name`, `channel`, `region`, `statistic`, `background`, and the pixel levels when used). Each `id` is a column in the object table.
 
 **Related:** `measurements`
+
+###### `object_overlap`
+
+**In short:** Which objects of another analysis this image's overlap markers were compared with. Only present when the analysis has such a marker.
+
+**What it means:** The id of each other analysis (the key) and a fingerprint of the objects it had for this image when the markers were measured (the value; blank when it had none). When the other analysis's objects change, the fingerprint no longer matches, and the markers are measured again the next time the image is shown or run.
+
+**For experts:** The fingerprint is `controller.objects_digest`: a SHA-256 (first 16 hex characters) of the other analysis's saved mask file, which holds its edits (`pipeline.labels_digest` of the mask when no digest is passed in). `controller.overlap_changed` compares it with the current one.
+
+**Related:** `<marker>_overlap`
 
 ###### `classification_definitions`
 

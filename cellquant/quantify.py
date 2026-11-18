@@ -19,6 +19,11 @@ from cellquant.recipe import ClassificationSpec, MeasurementSpec, ReportSpec
 from cellquant.regions import create_measurement_region, ring_from_background
 
 _INTENSITY_STATS = {"mean", "median", "min", "max", "integrated"}
+OBJECT_OVERLAP = "object_overlap"
+OVERLAP_NOT_MEASURED = (
+    "A marker compares these objects with the objects of another analysis, which has no objects for "
+    "this image with the same Z handling: that marker is not measured here. Run that analysis on this image first."
+)
 _AND = re.compile(r"\s+AND\s+", flags=re.IGNORECASE)
 
 
@@ -29,6 +34,7 @@ def measure_objects(
     *,
     pixel_size: float | None,
     pixel_size_z: float | None = None,
+    object_masks: dict[str, np.ndarray | None] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Measure every segmented object.
 
@@ -46,6 +52,11 @@ def measure_objects(
 
     except integrated intensity, which subtracts background mean times the
     number of pixels in the measurement region.
+
+    ``object_masks`` (analysis id -> array shaped like ``labels``, non-zero inside that analysis's
+    objects; None when it has none for this image) serves the ``object_overlap`` measurements: the
+    percent of each object's region inside the other analysis's objects. Without a mask the value is
+    blank.
     """
 
     warnings: list[str] = []
@@ -67,8 +78,10 @@ def measure_objects(
     ring_cache: dict[str, np.ndarray] = {}
     global_cache: dict[tuple[int, str], float] = {}
 
+    unknown_sources: list[str] = []
     for spec in measurements:
-        _require_channel(image, spec.channel, f"Measurement '{spec.id}'")
+        if spec.statistic != OBJECT_OVERLAP:
+            _require_channel(image, spec.channel, f"Measurement '{spec.id}'")
         region_labels = _cached_region(
             region_cache,
             labels,
@@ -76,6 +89,14 @@ def measure_objects(
             pixel_size,
             z_scale,
         )
+        if spec.statistic == OBJECT_OVERLAP:
+            mask = (object_masks or {}).get(str(spec.objects_from))
+            if mask is not None and tuple(np.shape(mask)) != tuple(labels.shape):
+                mask = None
+            if mask is None and spec.objects_from not in unknown_sources:
+                unknown_sources.append(str(spec.objects_from))
+            frame[spec.id] = _object_overlap(frame["object_id"].to_numpy(), region_labels, mask)
+            continue
         channel = np.asarray(image[spec.channel], dtype=np.float64)
         if spec.statistic == "percent_above":
             frame[spec.id] = _percent_above(
@@ -144,7 +165,40 @@ def measure_objects(
             else:
                 values = values - background_values
         frame[spec.id] = values
+    if unknown_sources:
+        warnings.append(OVERLAP_NOT_MEASURED)
     return frame, warnings
+
+
+def overlap_sources(measurements) -> list[str]:
+    """The analyses (ids) whose objects ``object_overlap`` measurements compare with, in order of first use."""
+
+    sources: list[str] = []
+    for spec in measurements:
+        if spec.statistic == OBJECT_OVERLAP and spec.objects_from and spec.objects_from not in sources:
+            sources.append(str(spec.objects_from))
+    return sources
+
+
+def _object_overlap(object_ids: np.ndarray, region_labels: np.ndarray, mask: np.ndarray | None) -> np.ndarray:
+    """Percent (0-100) of each object's region pixels (voxels) that lie inside the other analysis's objects.
+
+    ``100 * inside / pixels`` as one division of whole numbers, so "at least N%" is exact at the
+    boundary. Blank when there is no mask, or the object has no region pixels.
+    """
+
+    n = len(object_ids)
+    result = np.full(n, np.nan, dtype=np.float64)
+    if n == 0 or mask is None:
+        return result
+    flat = np.asarray(region_labels).ravel()
+    top = int(max(int(flat.max(initial=0)), int(np.max(object_ids, initial=0)))) + 1
+    counts = np.bincount(flat, minlength=top).astype(np.int64)
+    inside = np.bincount(flat[np.asarray(mask).ravel() > 0], minlength=top).astype(np.int64)
+    ids = np.asarray(object_ids, dtype=np.int64)
+    valid = counts[ids] > 0
+    result[valid] = (100 * inside[ids][valid]) / counts[ids][valid]
+    return result
 
 
 def classify_objects(
