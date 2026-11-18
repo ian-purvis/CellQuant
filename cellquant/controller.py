@@ -58,6 +58,7 @@ from cellquant.quantify import (
     hand_call,
     hand_calls,
     name_reports,
+    overlap_sources,
     rename_in_expression,
     rename_object_columns,
     rename_recipe_markers,
@@ -74,6 +75,7 @@ from cellquant.storage import (
     export_run_tables,
     file_fingerprint,
     finish_run,
+    label_paths,
     grouped_summary,
     load_edits,
     persist_image_result,
@@ -158,6 +160,8 @@ def read_unfinished_run(directory: str | Path) -> dict | None:
 # Loaded images kept for fast re-measuring after an edit. Only the most recent
 # few are kept so a long batch does not hold every image in memory.
 SESSION_IMAGE_LIMIT = 2
+# Label images of other analyses kept in memory for markers called by overlap (their fingerprints are all kept).
+OTHER_OBJECTS_LIMIT = 2
 
 
 _DISPLAY_CACHE_IMAGES = 4
@@ -323,14 +327,240 @@ class AnalysisController:
         if image_id in self.last_results:
             result = self._at_current_cutoffs(image_id, self.last_results[image_id])
             self.last_results[image_id] = result
-            return result
+            return self._at_current_overlap(image_id, result) if measure else result
         for folder in self._result_folders():
             result = read_persisted_result(folder, image_id)
             if result is not None and not self._measured_at_other_size(image_id, result):
                 result = self._at_current_cutoffs(image_id, self._with_count_area(image_id, result))
                 self.last_results[image_id] = result
-                return result
+                return self._at_current_overlap(image_id, result) if measure else result
         return None
+
+    # -- markers called by overlap with another analysis's objects ---------------------------------
+    # Such a marker is the percent of each object inside the objects another analysis of the same
+    # image last saved. A result remembers a fingerprint of those objects; when they change (that
+    # analysis was run again or edited) the marker is measured again the next time the result is asked for.
+
+    def overlap_analyses(self) -> list[str]:
+        """Ids of the analyses whose objects this analysis's markers are compared with."""
+
+        return overlap_sources(self.recipe.measurements)
+
+    def objects_of(self, recipe_id: str, image_id: str) -> np.ndarray | None:
+        """The objects (labels, with their edits) another analysis last saved for this image; None when
+        it has none, or is this analysis or off the list."""
+
+        import tifffile
+
+        path = self._objects_path(recipe_id, image_id)
+        if path is None:
+            return None
+        kept = self.__dict__.setdefault("_other_labels", OrderedDict())
+        key = (recipe_id, image_id)
+        stamp = self._objects_stamp(path)
+        hit = kept.get(key)
+        if hit is None or hit[0] != stamp:
+            try:
+                labels = np.asarray(tifffile.imread(path))
+            except Exception:  # noqa: BLE001 - an unreadable mask is no mask
+                return None
+            kept[key] = hit = (stamp, labels)
+        kept.move_to_end(key)
+        while len(kept) > OTHER_OBJECTS_LIMIT:
+            kept.popitem(last=False)
+        return hit[1]
+
+    def objects_digest(self, recipe_id: str, image_id: str) -> str:
+        """A fingerprint of those objects' file (blank when there are none). Reads the file only when it changed."""
+
+        path = self._objects_path(recipe_id, image_id)
+        if path is None:
+            return ""
+        kept = self.__dict__.setdefault("_other_digests", {})
+        stamp = self._objects_stamp(path)
+        hit = kept.get((recipe_id, image_id))
+        if hit is None or hit[0] != stamp:
+            try:
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+            except OSError:
+                return ""
+            kept[(recipe_id, image_id)] = hit = (stamp, digest)
+        return hit[1]
+
+    @staticmethod
+    def _objects_stamp(path: Path) -> tuple:
+        try:
+            status = path.stat()
+        except OSError:
+            return (str(path), 0, 0)
+        return (str(path), status.st_mtime_ns, status.st_size)
+
+    def _objects_path(self, recipe_id: str, image_id: str) -> Path | None:
+        """The saved mask (with edits) of another analysis for this image: open work, then its runs, newest first."""
+
+        if recipe_id == self.recipe.recipe_id:
+            return None
+        try:
+            item = self._analysis(recipe_id)
+        except KeyError:
+            return None
+        for folder in self._folders_of(item):
+            path = label_paths(folder, image_id)[0]
+            if path.is_file():
+                return path
+        return None
+
+    def _folders_of(self, item: AnalysisRecord) -> list[Path]:
+        """Where an analysis that is not the active one keeps its saved results, in the order
+        ``_result_folders`` gives the active one's."""
+
+        runs = self.directory / "runs"
+        try:
+            signature = (item.latest_run_id, item.working_folder, runs.stat().st_mtime_ns)
+        except OSError:
+            signature = (item.latest_run_id, item.working_folder, 0)
+        kept = self.__dict__.setdefault("_other_folders", {})
+        hit = kept.get(item.recipe_id)
+        if hit is not None and hit[0] == signature:
+            return hit[1]
+        folders = [self.directory / Path(item.working_folder)]
+        latest = runs / item.latest_run_id if item.latest_run_id else None
+        if latest is not None and latest.is_dir():
+            folders.append(latest)
+        others = {entry.recipe_id for entry in self.experiment.analyses if entry.recipe_id != item.recipe_id}
+        earlier = []
+        for run in runs.glob("*/run.json"):
+            if latest is not None and run.parent == latest:
+                continue
+            try:
+                data = json.loads(run.read_text(encoding="utf-8"))
+                started, recipe_id = str(data.get("start_timestamp") or ""), data.get("recipe_id")
+            except (OSError, ValueError):
+                started, recipe_id = "", None
+            if recipe_id == item.recipe_id or (item.owns_legacy and recipe_id not in others):
+                earlier.append((started, run.parent))
+        folders.extend(folder for _started, folder in sorted(earlier, key=lambda entry: entry[0], reverse=True))
+        kept[item.recipe_id] = (signature, folders)
+        return folders
+
+    def overlap_choices(self) -> list[dict]:
+        """The other analyses a marker of this one can be compared with, in list order: ``id``, ``name``,
+        ``channel`` (where that analysis finds its objects), ``channel_name``, and ``marker`` (the id of
+        this analysis's marker compared with it, or blank)."""
+
+        from cellquant.quicksetup import overlap_markers
+
+        made = overlap_markers(self.recipe.model_dump(mode="json"))
+        choices = []
+        for item in self.analyses():
+            if item.recipe_id == self.recipe.recipe_id:
+                continue
+            channel = int(self._recipe_of(item.recipe_id).object_set.segmentation_channel)
+            choices.append(
+                {
+                    "id": item.recipe_id,
+                    "name": item.name,
+                    "channel": channel,
+                    "channel_name": self._channel_name(channel),
+                    "marker": str(made.get(item.recipe_id, {}).get("id", "")),
+                }
+            )
+        return choices
+
+    def overlap_marker_plan(self, recipe_id: str, on: bool, min_overlap: float | None = None):
+        """What adding (``on``) or taking away this analysis's marker compared with another analysis's
+        objects does to its settings: a ``quicksetup.MarkerMerge`` (apply ``plan.data`` with set_recipe)."""
+
+        from cellquant.quicksetup import DEFAULT_MIN_OVERLAP, add_overlap_marker, remove_overlap_marker
+
+        data = self.recipe.model_dump(mode="json")
+        if not on:
+            return remove_overlap_marker(data, recipe_id)
+        choice = next((item for item in self.overlap_choices() if item["id"] == recipe_id), None)
+        if choice is None:
+            raise CellQuantError("That analysis is not on the list.")
+        return add_overlap_marker(
+            data, recipe_id, choice["channel"], choice["channel_name"], DEFAULT_MIN_OVERLAP if min_overlap is None else float(min_overlap)
+        )
+
+    def add_reverse_overlap_marker(self, recipe_id: str, min_overlap: float | None = None) -> bool:
+        """Give another analysis the same kind of marker the other way round: its objects compared with
+        this analysis's objects. Its settings file is changed; the active analysis is not. False when it
+        already has that marker."""
+
+        from cellquant.quicksetup import DEFAULT_MIN_OVERLAP, add_overlap_marker
+
+        self._analysis(recipe_id)
+        if recipe_id == self.recipe.recipe_id:
+            return False
+        path = self.directory / "recipes" / f"{recipe_id}.yaml"
+        if not path.is_file():
+            return False
+        other = load_recipe(path)
+        channel = int(self.recipe.object_set.segmentation_channel)
+        plan = add_overlap_marker(
+            other.model_dump(mode="json"),
+            self.recipe.recipe_id,
+            channel,
+            self._channel_name(channel),
+            DEFAULT_MIN_OVERLAP if min_overlap is None else float(min_overlap),
+        )
+        if not plan.changes:
+            return False
+        save_recipe(load_recipe(plan.data), path)
+        return True
+
+    def _other_objects(self, image_id: str) -> dict:
+        """What ``process_image`` needs for this image's markers called by overlap ({} without any)."""
+
+        sources = self.overlap_analyses()
+        if not sources:
+            return {}
+        objects = {source: self.objects_of(source, image_id) for source in sources}
+        digests = {source: self.objects_digest(source, image_id) if objects[source] is not None else "" for source in sources}
+        return {"other_objects": objects, "other_digests": digests}
+
+    def overlap_changed(self, image_id: str, result: ImageResult | None = None) -> bool:
+        """True when a marker of this image's result was measured against objects of another analysis
+        that have changed since (or were not there, and are now)."""
+
+        sources = self.overlap_analyses()
+        if not sources:
+            return False
+        result = self.last_results.get(image_id) if result is None else result
+        stored = result.provenance.get("object_overlap") if result is not None else None
+        if not isinstance(stored, dict):
+            return False  # not measured with these markers yet (see lacks_markers)
+        return any(str(stored.get(source, "")) != self.objects_digest(source, image_id) for source in sources)
+
+    def _at_current_overlap(self, image_id: str, result: ImageResult) -> ImageResult:
+        """The result with its overlap markers measured against the other analyses' objects as they
+        are now. Measures again (never segments) only when those objects changed; when that is not
+        possible here (the image file is away), the result is returned as it was saved."""
+
+        if getattr(self, "_unswapped_recipe", None) is not None or not self.overlap_changed(image_id, result):
+            return result
+        busy = self.__dict__.setdefault("_overlap_busy", set())
+        failed = self.__dict__.setdefault("_overlap_failed", {})
+        now = {source: self.objects_digest(source, image_id) for source in self.overlap_analyses()}
+        if image_id in busy or failed.get(image_id) == now:
+            return result
+        busy.add(image_id)
+        try:
+            record = self.experiment.image(image_id)
+            was_approved = record.processing_status == "approved"
+            refreshed = self.measure_markers(image_id)
+        except (CellQuantError, KeyError, OSError):
+            failed[image_id] = now
+            return result
+        finally:
+            busy.discard(image_id)
+        failed.pop(image_id, None)
+        if was_approved:
+            record.processing_status = "analyzed"
+            record.approved_settings_sha256 = ""
+            record.last_message = "Approval was cleared because the objects this image's markers are compared with changed."
+        return refreshed
 
     def _at_current_cutoffs(self, image_id: str, result: ImageResult) -> ImageResult:
         """The result classified at the cutoffs this image uses now (a cutoff set for all images
@@ -1864,6 +2094,7 @@ class AnalysisController:
             segmentation_details=_details_to_keep(prior),
             count_area=record.count_area,
             previous=prior if only_changed else None,
+            **self._other_objects(image_id),
         )
         carry_segmentation_provenance(prior, result)
         self.last_results[image_id] = result
@@ -2413,6 +2644,7 @@ class AnalysisController:
                 automated_labels=labels,
                 segmentation_details={"engine": {"engine": "loaded", "source": str(path)}},
                 count_area=record.count_area,
+                **self._other_objects(record.image_id),
             )
             result.provenance.update(
                 {
@@ -2482,6 +2714,7 @@ class AnalysisController:
                 filename=record.filename,
                 user_metadata=record.user_metadata,
                 count_area=record.count_area,
+                **self._other_objects(record.image_id),
             )
             return result, loaded
         if not allow_segmentation:
@@ -2536,6 +2769,10 @@ class AnalysisController:
             "pixel_size_y": loaded.pixel_size_y,
             "pixel_size_z": loaded.pixel_size_z if loaded.is_3d else None,
         }
+        others = self._other_objects(record.image_id)
+        if others:
+            # Only with markers called by overlap, so keys of other analyses do not change.
+            measurement_payload["object_overlap"] = dict(others["other_digests"])
         measurement_id = stage_key("measurement", measurement_payload)
         measured = self.cache.get_table(measurement_id)
         if automated is not None and measured is not None:
@@ -2556,6 +2793,7 @@ class AnalysisController:
                 filename=record.filename,
                 user_metadata=record.user_metadata,
                 count_area=record.count_area,
+                object_overlap=measurement_payload.get("object_overlap"),
             )
             result.provenance["segmentation_key"] = segmentation_id
             return result, loaded
@@ -2578,6 +2816,7 @@ class AnalysisController:
                 else {"crop_rectangles_given": rectangles, "crop_info_given": crop_info}
             ),
             count_area=record.count_area,
+            **others,
         )
         self.cache.put_labels(segmentation_id, result.automated_labels)
         stored_details = _details_to_keep(result)
@@ -2935,7 +3174,7 @@ class AnalysisController:
             listed = {record.image_id for record in self.experiment.images}
             work = [(recipe_id, [image for image in images if image in listed]) for recipe_id, images in work if recipe_id in known]
         original = self.recipe.recipe_id
-        work = [(recipe_id, images) for recipe_id, images in work if images]
+        work = self._sources_first([(recipe_id, images) for recipe_id, images in work if images])
         total = sum(len(images) for _recipe_id, images in work)
         reports: list[BatchReport] = []
         offset = 0
@@ -2963,6 +3202,8 @@ class AnalysisController:
                 if report.cancelled:
                     stopped = True
                     break
+            if not stopped:
+                self._measure_overlaps_again(work)
             completed = True  # reached the end, or stopped with Cancel; not an error
         finally:
             self._fresh_segmentation = False
@@ -2970,6 +3211,43 @@ class AnalysisController:
             if original and original != self.recipe.recipe_id and any(item.recipe_id == original for item in self.analyses()):
                 self.switch_analysis(original)
         return reports
+
+    def _overlap_sources_of(self, recipe_id: str) -> list[str]:
+        try:
+            return overlap_sources(self._recipe_of(recipe_id).measurements)
+        except Exception:  # noqa: BLE001 - settings that cannot be read compare with nothing
+            return []
+
+    def _sources_first(self, work: list[tuple[str, list[str]]]) -> list[tuple[str, list[str]]]:
+        """The analyses in an order that finds objects before a marker of another analysis is compared
+        with them. Analyses that compare with each other keep their order (see _measure_overlaps_again)."""
+
+        ids = [recipe_id for recipe_id, _images in work]
+        needs = {recipe_id: [source for source in self._overlap_sources_of(recipe_id) if source in ids] for recipe_id in ids}
+        if not any(needs.values()):
+            return work
+        ordered: list[tuple[str, list[str]]] = []
+        left = list(work)
+        while left:
+            placed = {recipe_id for recipe_id, _images in ordered}
+            ready = next((entry for entry in left if all(source in placed for source in needs[entry[0]])), left[0])
+            ordered.append(ready)
+            left.remove(ready)
+        return ordered
+
+    def _measure_overlaps_again(self, work: list[tuple[str, list[str]]]) -> None:
+        """After a batch of several analyses: a marker compared with the objects of an analysis that ran
+        later in the batch is measured again against the objects that analysis has now."""
+
+        ids = [recipe_id for recipe_id, _images in work]
+        for position, (recipe_id, images) in enumerate(work):
+            if not any(source in ids[position + 1 :] for source in self._overlap_sources_of(recipe_id)):
+                continue
+            self.switch_analysis(recipe_id)
+            for index, image_id in enumerate(images):
+                progress.update(f"Measuring markers again: image {index + 1} of {len(images)}", index, len(images))
+                self.recall(image_id)
+            self.save()
 
     def export_all(self, directory: str | Path, *, group_by: str | None = None, unit: str | None = None) -> Path:
         """Export every analysis that has results, one folder each, and one table of all image summaries."""

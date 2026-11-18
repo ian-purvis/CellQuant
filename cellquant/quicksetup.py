@@ -16,7 +16,11 @@ import numpy as np
 
 RULE_MEAN = "mean"
 RULE_PERCENT = "percent_above"
+# A marker of another kind, beside the channel markers: positive when enough of the object lies inside
+# an object another analysis of the same images found (see ``add_overlap_marker``).
+RULE_OVERLAP = "object_overlap"
 DEFAULT_MIN_PERCENT = 50.0
+DEFAULT_MIN_OVERLAP = 50.0
 
 
 def marker_recipe(
@@ -190,7 +194,9 @@ def merge_marker_recipe(
 
     def channel_of(call: dict) -> int | None:
         spec = by_id.get(call["measurement"])
-        return int(spec["channel"]) if spec is not None else None
+        if spec is None or spec.get("statistic") == RULE_OVERLAP:
+            return None  # a marker called by overlap belongs to no channel tick box
+        return int(spec["channel"])
 
     wanted = {int(index): name for index, name in chosen}
     existing: dict[int, list[dict]] = {}
@@ -281,6 +287,109 @@ def merge_marker_recipe(
     return result
 
 
+def overlap_markers(recipe_data: dict) -> dict[str, dict]:
+    """The markers called by overlap in these settings: analysis id (whose objects) -> the marker's call."""
+
+    by_id = {item["id"]: item for item in recipe_data.get("measurements", [])}
+    found: dict[str, dict] = {}
+    for call in recipe_data.get("classifications", []):
+        spec = by_id.get(call.get("measurement"))
+        if spec is not None and spec.get("statistic") == RULE_OVERLAP and spec.get("objects_from"):
+            found.setdefault(str(spec["objects_from"]), call)
+    return found
+
+
+def add_overlap_marker(
+    recipe_data: dict,
+    analysis_id: str,
+    channel_index: int,
+    channel_name: str,
+    min_overlap: float = DEFAULT_MIN_OVERLAP,
+) -> MarkerMerge:
+    """Add a marker that is positive when at least ``min_overlap`` % of the object lies inside an object
+    of another analysis (``analysis_id``; ``channel_index`` and ``channel_name``: the channel that analysis
+    finds its objects in). Named ``<channel> objects``. It gets a result row, and one per pair with every
+    other marker. Nothing changes when these settings already have that marker.
+    """
+
+    data = copy.deepcopy(dict(recipe_data))
+    result = MarkerMerge(data=data)
+    if str(analysis_id) in overlap_markers(data):
+        return result
+    measurements: list[dict] = data.setdefault("measurements", [])
+    classifications: list[dict] = data.setdefault("classifications", [])
+    reports: list[dict] = data.setdefault("reports", [])
+    taken = {re.sub(r"_(pos|mean|pct|overlap)$", "", item["id"]) for item in [*measurements, *classifications]}
+    slug = _unused_slug(f"{channel_name} objects", int(channel_index), taken)
+    name, counter = f"{channel_name} objects", 2
+    while name in {call["name"] for call in classifications}:
+        name, counter = f"{channel_name} objects {counter}", counter + 1
+    measurements.append(
+        {
+            "id": f"{slug}_overlap",
+            "name": f"% inside {channel_name} objects",
+            "channel": int(channel_index),
+            "region": {"type": "object"},
+            "statistic": RULE_OVERLAP,
+            "objects_from": str(analysis_id),
+        }
+    )
+    call = {
+        "id": f"{slug}_pos",
+        "name": name,
+        "measurement": f"{slug}_overlap",
+        "threshold": float(min_overlap),
+        "comparison": "at_least",
+    }
+    reports.append({"numerator": call["id"], "denominator": "all_objects"})
+    for other in classifications:
+        reports.append({"numerator": f"{other['id']} AND {call['id']}", "denominator": "all_objects"})
+    classifications.append(call)
+    result.added.append(name)
+    return result
+
+
+def remove_overlap_marker(recipe_data: dict, analysis_id: str) -> MarkerMerge:
+    """Take away the marker called by overlap with ``analysis_id``'s objects: its measurement, its call and
+    the result rows that use it."""
+
+    data = copy.deepcopy(dict(recipe_data))
+    result = MarkerMerge(data=data)
+    call = overlap_markers(data).get(str(analysis_id))
+    if call is None:
+        return result
+    classifications: list[dict] = data["classifications"]
+    all_names = {item["id"]: item["name"] for item in classifications}
+    every_id = set(all_names)
+    remaining = [item for item in classifications if item["id"] != call["id"]]
+    if call["measurement"] not in {item["measurement"] for item in remaining}:
+        data["measurements"] = [m for m in data.get("measurements", []) if m["id"] != call["measurement"]]
+    data["classifications"] = remaining
+    result.removed.append(call["name"])
+    calls = sum(len(per_image) for per_image in (call.get("cell_calls") or {}).values())
+    if calls:
+        result.calls_lost[call["name"]] = calls
+    kept = []
+    for report in data.get("reports", []):
+        if _uses_marker(f"{report.get('numerator', '')} {report.get('denominator', '')}", {call["id"], call["name"]}):
+            result.reports_dropped += 1
+            if not _is_quick_report(report, every_id):
+                result.reports_lost.append(
+                    f"{_words(report.get('numerator', ''), all_names)} among {_words(report.get('denominator', ''), all_names)}"
+                )
+        else:
+            kept.append(report)
+    data["reports"] = kept
+    return result
+
+
+def uses_overlap(recipe, classification) -> bool:
+    """True when a classification is called by overlap with another analysis's objects."""
+
+    measurement = next((item for item in recipe.measurements if item.id == classification.measurement), None)
+    return measurement is not None and measurement.statistic == RULE_OVERLAP
+
+
 def uses_pixel_level(recipe, classification) -> bool:
     """True when a classification counts pixels at or above a level (percent_above)."""
 
@@ -299,6 +408,9 @@ def describe_rule(recipe, classification) -> str:
             band = f"{measurement.pixel_level:g}–{measurement.pixel_level_high:g}"
         amount = "at least" if classification.comparison == "at_least" else "more than"
         return f"{amount} {classification.threshold:g}% of pixels {band}"
+    if measurement is not None and measurement.statistic == RULE_OVERLAP:
+        amount = "at least" if classification.comparison == "at_least" else "more than"
+        return f"{amount} {classification.threshold:g}% of the object inside the other analysis's objects"
     statistic = measurement.statistic if measurement is not None else classification.measurement
     return f"{statistic} {sign} {classification.threshold:g}"
 

@@ -30,7 +30,9 @@ from cellquant.quantify import (
     generate_phenotypes,
     image_summary_row,
     measure_objects,
+    overlap_sources,
     summarize_image,
+    OBJECT_OVERLAP,
 )
 from cellquant.recipe import Recipe, load_recipe
 from cellquant.regions import isotropic_pixel_size, spatial_unit
@@ -107,13 +109,18 @@ def process_image(
     segmentation_details: dict | None = None,
     count_area: list | None = None,
     previous: ImageResult | None = None,
+    other_objects: dict[str, np.ndarray | None] | None = None,
+    other_digests: dict[str, str] | None = None,
 ) -> ImageResult:
     """Run segmentation, measurement, classification, and summaries for one image.
 
     Pass ``automated_labels`` to reuse a segmentation. Pass a cached measurement
     table to ``assemble_result`` when only classification or summaries change.
     Pass ``previous`` (the result of the same image and segmentation before new
-    edits) to measure again only the objects the edits can change.
+    edits) to measure again only the objects the edits can change. ``other_objects``
+    (analysis id -> that analysis's labels for this image, or None) serves markers
+    called by overlap with another analysis's objects; ``other_digests`` names those
+    labels (analysis id -> any fingerprint of them), else one is made from the labels.
     """
 
     parsed = load_recipe(recipe)
@@ -136,7 +143,8 @@ def process_image(
         automated = np.asarray(automated_labels, dtype=np.int32)
     final_labels = apply_edits(automated, edits)
     progress.update("Measuring markers in each object")
-    changed = _measure_changed(loaded, parsed, automated, final_labels, edits, previous, pixel_size)
+    masks, overlap = object_masks(parsed, other_objects, final_labels.shape, other_digests)
+    changed = _measure_changed(loaded, parsed, automated, final_labels, edits, previous, pixel_size, masks, overlap)
     if changed is not None:
         measured, measure_warnings = changed
     else:
@@ -146,6 +154,7 @@ def process_image(
             parsed.measurements,
             pixel_size=pixel_size,
             pixel_size_z=loaded.pixel_size_z,
+            object_masks=masks,
         )
         measured, measure_warnings = _append_excluded_objects(
             measured,
@@ -156,6 +165,7 @@ def process_image(
             parsed.measurements,
             pixel_size,
             loaded.pixel_size_z,
+            masks,
         )
     return assemble_result(
         loaded=loaded,
@@ -173,7 +183,46 @@ def process_image(
         filename=filename,
         user_metadata=user_metadata,
         count_area=count_area,
+        object_overlap=overlap,
     )
+
+
+def labels_digest(labels: np.ndarray | None) -> str:
+    """A short fingerprint of a label image (blank for None): which objects an overlap was measured against."""
+
+    if labels is None:
+        return ""
+    array = np.ascontiguousarray(np.asarray(labels, dtype=np.int32))
+    return hashlib.sha256(str(array.shape).encode("ascii") + array.tobytes()).hexdigest()[:16]
+
+
+def object_masks(
+    recipe: Recipe,
+    other_objects: dict[str, np.ndarray | None] | None,
+    shape: tuple,
+    other_digests: dict[str, str] | None = None,
+) -> tuple[dict[str, np.ndarray | None], dict[str, str] | None]:
+    """What the ``object_overlap`` measurements of ``recipe`` need for one image.
+
+    Returns (analysis id -> mask of that analysis's objects, or None when it has none shaped like
+    this image's objects; analysis id -> fingerprint of the labels offered, blank when there are
+    none). The second is None for settings without such measurements. Labels of another shape
+    (another Z handling) are named by their fingerprint but give no mask: nothing is measured
+    against them, and nothing is measured again until they change.
+    """
+
+    sources = overlap_sources(recipe.measurements)
+    if not sources:
+        return {}, None
+    masks: dict[str, np.ndarray | None] = {}
+    digests: dict[str, str] = {}
+    for source in sources:
+        labels = (other_objects or {}).get(source)
+        given = (other_digests or {}).get(source)
+        digests[source] = "" if labels is None else str(given) if given else labels_digest(labels)
+        fits = labels is not None and tuple(np.shape(labels)) == tuple(shape)
+        masks[source] = np.asarray(labels) > 0 if fits else None
+    return masks, digests
 
 
 def segment_channel(
@@ -360,11 +409,14 @@ def assemble_result(
     filename: str | None = None,
     user_metadata: dict | None = None,
     count_area: list | None = None,
+    object_overlap: dict[str, str] | None = None,
 ) -> ImageResult:
     """Classify and summarize measurements without rerunning segmentation.
 
     ``count_area`` (polygons in pixels, see ``cellquant.count_area``) limits the counts to
     objects whose centroid is inside it; the others stay in the table, marked.
+    ``object_overlap`` (analysis id -> fingerprint of its labels, from ``object_masks``) records
+    which objects the overlap markers in ``measured`` were measured against.
     """
 
     parsed = load_recipe(recipe)
@@ -506,6 +558,9 @@ def assemble_result(
     digest = _hand_calls_digest(parsed.classifications)
     if digest:
         provenance["hand_calls_sha256"] = digest  # only with calls by hand, so other results are unchanged
+    if overlap_sources(parsed.measurements):
+        # Only with markers called by overlap, so other results are unchanged.
+        provenance["object_overlap"] = {source: str((object_overlap or {}).get(source, "")) for source in overlap_sources(parsed.measurements)}
     extra_channels = extra_input_channels(loaded, parsed)
     if extra_channels:
         # Only with extra input channels, so other results are unchanged.
@@ -657,6 +712,8 @@ def remeasure_persisted_result(
     filename: str | None = None,
     user_metadata: dict | None = None,
     count_area: list | None = None,
+    other_objects: dict[str, np.ndarray | None] | None = None,
+    other_digests: dict[str, str] | None = None,
 ) -> ImageResult:
     """Measure a saved segmentation again: apply edits to its automated labels, measure, classify.
 
@@ -684,6 +741,8 @@ def remeasure_persisted_result(
         automated_labels=persisted.automated_labels,
         segmentation_details=segmentation_details_of(persisted),
         count_area=count_area,
+        other_objects=other_objects,
+        other_digests=other_digests,
     )
     return carry_segmentation_provenance(persisted, result)
 
@@ -769,7 +828,7 @@ def export_image_result(result: ImageResult, directory: str | Path) -> Path:
 
 def _validate_channels(image: LoadedImage, recipe: Recipe) -> None:
     expected = [recipe.object_set.segmentation_channel]
-    expected.extend(item.channel for item in recipe.measurements)
+    expected.extend(item.channel for item in recipe.measurements if item.statistic != OBJECT_OVERLAP)
     invalid = sorted({index for index in expected if index < 0 or index >= image.n_channels})
     if not invalid:
         return
@@ -844,6 +903,7 @@ def _append_excluded_objects(
     measurements,
     pixel_size: float | None,
     pixel_size_z: float | None = None,
+    masks: dict[str, np.ndarray | None] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     removed = excluded_object_ids(automated, edits)
     if not removed:
@@ -855,11 +915,12 @@ def _append_excluded_objects(
         measurements,
         pixel_size=pixel_size,
         pixel_size_z=pixel_size_z,
+        object_masks=masks,
     )
     extra = extra.loc[extra["object_id"].isin(removed)]
     combined = pd.concat([measured, extra], ignore_index=True)
     combined = combined.sort_values("object_id").reset_index(drop=True)
-    return combined, warnings + extra_warnings
+    return combined, warnings + [item for item in extra_warnings if item not in warnings]
 
 
 def _measure_changed(
@@ -870,6 +931,8 @@ def _measure_changed(
     edits: list[EditOperation],
     previous: ImageResult | None,
     pixel_size: float | None,
+    masks: dict[str, np.ndarray | None] | None = None,
+    overlap: dict[str, str] | None = None,
 ) -> tuple[pd.DataFrame, list[str]] | None:
     """Measure again only the objects near pixels that changed since ``previous``; keep the other rows.
 
@@ -886,6 +949,8 @@ def _measure_changed(
     definitions = [item.model_dump(mode="json") for item in recipe.measurements]
     if previous.provenance.get("measurement_definitions") != definitions:
         return None
+    if overlap is not None and previous.provenance.get("object_overlap") != overlap:
+        return None  # the other analysis's objects changed: every overlap is measured again
     if (previous.provenance.get("pixel_size_x_um"), previous.provenance.get("pixel_size_y_um"), previous.provenance.get("pixel_size_z_um")) != (
         loaded.pixel_size_x,
         loaded.pixel_size_y,
@@ -916,13 +981,13 @@ def _measure_changed(
     warnings: list[str] = []
     margin = 2 * reach + 2
     if present:
-        part, part_warnings = _measure_in_window(loaded, recipe, final_labels, present, margin, pixel_size)
+        part, part_warnings = _measure_in_window(loaded, recipe, final_labels, present, margin, pixel_size, masks)
         measured_parts.append(part)
         warnings += part_warnings
     gone = affected & removed
     if gone:
         deleted_labels = np.where(np.isin(automated, sorted(removed)), automated, 0).astype(np.int32)
-        part, part_warnings = _measure_in_window(loaded, recipe, deleted_labels, gone, margin, pixel_size)
+        part, part_warnings = _measure_in_window(loaded, recipe, deleted_labels, gone, margin, pixel_size, masks)
         measured_parts.append(part)
         warnings += part_warnings
     rest = kept.loc[~kept["object_id"].astype(int).isin(affected)] if len(kept) else kept
@@ -965,6 +1030,7 @@ def _measure_in_window(
     object_ids: set[int],
     margin: int,
     pixel_size: float | None,
+    masks: dict[str, np.ndarray | None] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Measure ``object_ids`` of ``labels`` in a window around them; positions are for the whole image."""
 
@@ -980,6 +1046,7 @@ def _measure_in_window(
         recipe.measurements,
         pixel_size=pixel_size,
         pixel_size_z=loaded.pixel_size_z,
+        object_masks={key: None if mask is None else mask[window] for key, mask in (masks or {}).items()},
     )
     measured = measured.loc[measured["object_id"].astype(int).isin(object_ids)].copy()
     linear = 1.0 if pixel_size is None else float(pixel_size)
