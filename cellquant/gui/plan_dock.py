@@ -13,7 +13,7 @@ the selected images or to all images, in one analysis or in all of them.
 
 from __future__ import annotations
 
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QSize, Qt
 from qtpy.QtGui import QBrush, QColor, QFont
 from qtpy.QtWidgets import (
     QAbstractItemView,
@@ -82,7 +82,7 @@ class PlanDock(QWidget):
         options.addWidget(self.view_mode, 1)
         layout.addLayout(options)
         self.tree = QTreeWidget()
-        self.tree.setMinimumHeight(260)
+        self.tree.setMinimumHeight(120)  # about four rows; sizeHint asks for more
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._context_menu)
@@ -131,6 +131,10 @@ class PlanDock(QWidget):
         self.tree.itemSelectionChanged.connect(self.update_actions)
         self.scope.currentIndexChanged.connect(lambda _index: self.update_actions())
         self.update_actions()
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        return QSize(max(hint.width(), 560), max(hint.height(), 480))
 
     # -- building ----------------------------------------------------------------------------------
 
