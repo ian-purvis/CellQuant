@@ -3206,6 +3206,7 @@ class AnalysisController:
         work = self._sources_first([(recipe_id, images) for recipe_id, images in work if images])
         total = sum(len(images) for _recipe_id, images in work)
         reports: list[BatchReport] = []
+        runs: dict[str, tuple] = {}  # analysis -> its run of this batch (folder, record, log)
         offset = 0
         owner = self._start_journal(work, continuing=continuing)
         stopped = False
@@ -3228,11 +3229,12 @@ class AnalysisController:
                 offset += len(images)
                 report = self.run_images(images, on_progress=progress_across, should_continue=should_continue)
                 reports.append(report)
+                runs[recipe_id] = (self.run_dir, self.run_record, self.run_log)
                 if report.cancelled:
                     stopped = True
                     break
             if not stopped:
-                self._measure_overlaps_again(work)
+                self._measure_overlaps_again(work, reports, runs)
             completed = True  # reached the end, or stopped with Cancel; not an error
         finally:
             self._fresh_segmentation = False
@@ -3264,19 +3266,58 @@ class AnalysisController:
             left.remove(ready)
         return ordered
 
-    def _measure_overlaps_again(self, work: list[tuple[str, list[str]]]) -> None:
+    def _measure_overlaps_again(
+        self,
+        work: list[tuple[str, list[str]]],
+        reports: list[BatchReport] | None = None,
+        runs: dict[str, tuple] | None = None,
+    ) -> None:
         """After a batch of several analyses: a marker compared with the objects of an analysis that ran
-        later in the batch is measured again against the objects that analysis has now."""
+        later in the batch is measured again against the objects that analysis has now. The image's
+        saved objects are used (nothing is found again), and its results in the run of this batch, its
+        status and the batch's report are replaced, so nothing keeps saying the marker was not measured."""
 
         ids = [recipe_id for recipe_id, _images in work]
-        for position, (recipe_id, images) in enumerate(work):
-            if not any(source in ids[position + 1 :] for source in self._overlap_sources_of(recipe_id)):
-                continue
-            self.switch_analysis(recipe_id)
-            for index, image_id in enumerate(images):
-                progress.update(f"Measuring markers again: image {index + 1} of {len(images)}", index, len(images))
-                self.recall(image_id)
-            self.save()
+        fresh, self._fresh_segmentation = getattr(self, "_fresh_segmentation", False), False
+        try:
+            for position, (recipe_id, images) in enumerate(work):
+                if not any(source in ids[position + 1 :] for source in self._overlap_sources_of(recipe_id)):
+                    continue
+                self.switch_analysis(recipe_id)
+                run = (runs or {}).get(recipe_id)
+                report = reports[position] if reports is not None and position < len(reports) else None
+                if run is None or run[0] is None or report is None:
+                    for index, image_id in enumerate(images):
+                        progress.update(f"Measuring markers again: image {index + 1} of {len(images)}", index, len(images))
+                        self.recall(image_id)
+                    self.save()
+                    continue
+                self.run_dir, self.run_record, self.run_log = run
+                jobs = {job.image_id: job for job in report.jobs}
+                for index, image_id in enumerate(images):
+                    job = jobs.get(image_id)
+                    if job is None or job.status == "Failure":
+                        continue
+                    progress.update(f"Measuring markers again: image {index + 1} of {len(images)}", index, len(images))
+                    record = self.experiment.image(image_id)
+                    said = f"{record.filename}: {job.message}"
+                    try:
+                        result = self.run_image(image_id, persist=True, new_run=False)
+                    except AnalysisCancelled:
+                        raise
+                    except Exception:  # noqa: BLE001 - what the run saved for this image stays
+                        continue
+                    if job.message and said in self.run_record.warnings:
+                        self.run_record.warnings.remove(said)  # what the first pass said about this image
+                    self.run_log.write(
+                        record.filename, "markers", "Measured again: the objects its markers are compared with were found later in this batch."
+                    )
+                    job.status, job.message = _job_status(result)
+                    job.qc_status = result.qc.status
+                finish_run(self.run_dir, self.run_record, self.run_record.processing_status)
+                self.save()
+        finally:
+            self._fresh_segmentation = fresh
 
     def export_all(self, directory: str | Path, *, group_by: str | None = None, unit: str | None = None) -> Path:
         """Export every analysis that has results, one folder each, and one table of all image summaries."""

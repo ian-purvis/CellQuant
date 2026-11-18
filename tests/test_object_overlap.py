@@ -3,9 +3,11 @@ analysis of the same image found. The cutoff markers are unchanged."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from cellquant.controller import AnalysisController
@@ -162,7 +164,7 @@ def test_quick_setup_adds_and_removes_the_marker_and_leaves_it_alone_otherwise()
 # -- two analyses of the same images ---------------------------------------------------------------
 
 
-def _experiment(tmp_path: Path) -> tuple[AnalysisController, str, str]:
+def _experiment(tmp_path: Path, run: bool = True) -> tuple[AnalysisController, str, str]:
     """An experiment with an analysis of the PAX6 channel (active) and one of the OTX2 channel, both run."""
 
     write_retina_set(tmp_path / "images", size=96, retinas=1, seed=4)
@@ -176,7 +178,8 @@ def _experiment(tmp_path: Path) -> tuple[AnalysisController, str, str]:
     controller.save()
     here = controller.recipe.recipe_id
     other = controller.analyses_for_channels([0])[0]
-    controller.run_analyses()
+    if run:
+        controller.run_analyses()
     assert controller.recipe.recipe_id == here
     return controller, here, other
 
@@ -252,16 +255,30 @@ def test_no_objects_or_another_z_handling_leave_the_marker_unmeasured(tmp_path: 
 
 
 def test_a_batch_finds_the_compared_objects_first(tmp_path: Path):
-    controller, here, other = _experiment(tmp_path)
+    controller, here, other = _experiment(tmp_path, run=False)  # nothing has objects yet
     _add_marker(controller, other)
     assert [recipe_id for recipe_id, _images in controller._sources_first([(here, ["a"]), (other, ["a"])])] == [other, here]
     # Each compared with the other: the first to run is measured again once the second has its objects.
     assert controller.add_reverse_overlap_marker(other) and not controller.add_reverse_overlap_marker(other)
-    reports = controller.run_analyses(fresh=True)
+    before = {path.name for path in (controller.directory / "runs").iterdir()}
+    reports = controller.run_analyses()
     assert len(reports) == 2
     image_id = controller.experiment.images[0].image_id
+    # Nothing is left saying the first one was not measured: its report, its run folder, its status.
+    made = sorted({path.name for path in (controller.directory / "runs").iterdir()} - before)
+    assert len(made) == 2 and sorted(report.run_id for report in reports) == made
+    for report, column in zip(reports, ("otx2_objects_overlap", "pax6_objects_overlap")):
+        assert report.jobs and all((job.status, job.message) == ("Success", "") for job in report.jobs)
+        for job in report.jobs:
+            saved = pd.read_csv(Path(report.run_dir) / "measurements" / f"{job.image_id}.csv")
+            assert saved[column].notna().all()
+            assert json.loads((Path(report.run_dir) / "qc" / f"{job.image_id}.json").read_text())["warnings"] == []
+        run = json.loads((Path(report.run_dir) / "run.json").read_text())
+        assert run["processing_status"] == "completed" and not run["warnings"]
     for recipe_id, column in ((here, "otx2_objects_overlap"), (other, "pax6_objects_overlap")):
         controller.switch_analysis(recipe_id)
+        record = controller.experiment.image(image_id)
+        assert (record.processing_status, record.last_result) == ("analyzed", "Success")
         result = controller.recall(image_id)
         assert result.objects[column].notna().all() and not controller.overlap_changed(image_id)
         theirs = controller.objects_of(here if recipe_id == other else other, image_id)
