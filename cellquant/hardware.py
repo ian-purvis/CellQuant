@@ -544,6 +544,12 @@ def add_log_note(text: str) -> None:
     _BATCH_NOTES.append(text)
 
 
+def z_mode_log_line(mode: str, analysis: str) -> str:
+    """The Run log line that says how a run handles Z-stacks."""
+
+    return f"Z-stack mode for this run ({analysis}): {Z_OPTION_LABELS.get(mode, mode)}."
+
+
 def batch_notes() -> list[str]:
     """The batch-size lines not shown yet (each is returned once)."""
 

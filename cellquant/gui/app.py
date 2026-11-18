@@ -4657,6 +4657,7 @@ class ObjectsPanel(QWidget):
         z_column.addLayout(z_row)
         z_column.addWidget(self.z3d_box)
         self.z_stack.currentIndexChanged.connect(lambda _index: self._z_mode_changed())
+        self.z_stack.activated.connect(lambda _index: self._note_z_mode())  # only a choice made by the user
         from cellquant.engines import CELLPOSE_CLASSIC, CELLPOSE_SAM, ENGINE_LABELS, cellpose_engine
 
         self.engine = cellpose_engine()
@@ -5327,7 +5328,12 @@ class ObjectsPanel(QWidget):
             return
         self.z_stack.setCurrentIndex(max(0, self.z_stack.findData(self._recommended)))
         self.update_recommendation()
-        self.shell.message(f"Z-stacks: using {self.z_stack.currentText().split('  (')[0]}.")
+        self._note_z_mode()
+
+    def _note_z_mode(self) -> None:
+        from cellquant.hardware import Z_OPTION_LABELS
+
+        self.shell.message(f"Z-stacks: using {Z_OPTION_LABELS[self.z_stack.currentData()]}.")
 
     def show_gpu_status(self, status: dict) -> None:
         """Called once PyTorch has been checked in the background."""
