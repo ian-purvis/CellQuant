@@ -38,14 +38,21 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellquant.errors import CellQuantError
 from cellquant.quicksetup import (  # noqa: F401 - used by app.py
+    DEFAULT_MIN_OVERLAP,
     DEFAULT_MIN_PERCENT,
     RULE_MEAN,
+    RULE_OVERLAP,
     RULE_PERCENT,
+    MarkerMerge,
     describe_rule,
+    join_merges,
     marker_recipe,
     merge_marker_recipe,
+    overlap_markers,
     starting_threshold,
+    uses_overlap,
     uses_pixel_level,
 )
 
@@ -133,6 +140,8 @@ STEPS = (
         "Choose how: by the object's <b>mean brightness</b>, or by the <b>percent of the object</b> whose "
         "pixels are at or above a pixel level (set the minimum percent here). "
         "It picks a starting cutoff (or pixel level); you check it in the next step.<br>"
+        "With more than one analysis, <b>By overlap with another analysis</b> adds a marker for cells found as objects in two channels: "
+        "an object is positive when at least the <b>Minimum overlap</b> of it lies inside an object the other analysis found, with no brightness cutoff.<br>"
         "Once markers exist there is no button: ticking or unticking a channel, or changing <b>Positive when</b> or "
         "<b>Min % of object</b>, applies by itself a moment later. Markers that stay keep their cutoffs, calls by hand and "
         "approvals; you are asked first only when something you made would be lost, and told exactly what. "
@@ -151,7 +160,8 @@ STEPS = (
         "(this image's cutoff goes to the other images at once, asking first about approved ones, and every later change "
         "follows them until you choose <i>This image</i>). If you chose <b>Examples</b> in step 4, click <b>Mark +</b> or <b>Mark −</b> and click "
         "objects instead: the cutoff goes halfway between them. For the percent-of-object rule the slider is the minimum percent; change the "
-        "pixel level below it and click <b>Apply pixel level</b>. Click <b>Approve</b> (always at the bottom) when it looks right; it then opens the next image to check (key <b>A</b>). "
+        "pixel level below it and click <b>Apply pixel level</b>. For a marker called by overlap the slider is the minimum percent of the object inside the other "
+        "analysis's objects, which are outlined in their own color (untick <b>Show … objects</b> to hide them). Click <b>Approve</b> (always at the bottom) when it looks right; it then opens the next image to check (key <b>A</b>). "
         "A cutoff change that clears approvals says so in a banner at the top, with <b>Undo</b>. "
         "Hover over a button to see what it does.",
         "The green objects are the ones you would call positive by eye.",
@@ -200,7 +210,11 @@ HELP = {
     ("_objects_panel", "augment"): "Cellpose reads the image several times (shifted and flipped) and averages the answers. Often gives cleaner, steadier outlines on noisy images, but takes several times longer. Off by default. Not used in true 3D.",
     ("_objects_panel", "engine_choice"): "The Cellpose installed here. Cellpose-SAM (4) is most accurate, best with a GPU; Classic Cellpose (3) is faster on the CPU. Only one is installed per environment; start CellQuant with the other to use it.",
     ("_review_panel", "display"): "Which marker to color by: green positive, magenta negative (colors can be changed).",
-    ("_review_panel", "threshold_slider"): "The cutoff for this marker: objects at or past it are positive. Drag, or type a number. For the percent-of-object rule it is the minimum percent of each object's pixels that must pass the pixel level.",
+    ("_review_panel", "threshold_slider"): "The cutoff for this marker: objects at or past it are positive. Drag, or type a number. For the percent-of-object rule it is the minimum percent of each object's pixels that must pass the pixel level. For a marker called by overlap it is the minimum percent of the object (of its volume in 3D) that lies inside the other analysis's objects.",
+    ("_review_panel", "show_other_objects"): "Shown while a marker called by overlap is displayed. Draws the objects of the other analysis on this image as outlines in their own color, so you can see what each object is compared with. Untick to hide them. They are only for looking: they cannot be edited here, and they are hidden again when you pick another marker or another step.",
+    ("_marker_setup", "overlap_heading"): "Another way to call a marker positive, with no brightness cutoff: an object is positive when enough of it lies inside an object that another analysis found in the same image. Use it for cells that are found as objects in two channels. Shown only when the experiment has another analysis.",
+    ("_marker_setup", "min_overlap"): "The least percent of an object (of its volume in 3D) that must lie inside an object of the other analysis for it to be positive. 50 % is the starting value. Changing it here changes it for the markers called by overlap; step 5 can change it per image.",
+    ("_marker_setup", "reverse_overlap"): "Also give the other analysis a marker for its objects inside this analysis's objects, so the percentage can be read with either channel's objects as the whole. Applies to a marker you tick now; the other analysis is changed, you stay in this one.",
     ("_review_panel", "histogram"): "Every object's value in this image (log scale): green past the cutoff, magenta below. Drag the line, or click, to move the cutoff.",
     ("_review_panel", "auto_method"): "How the automatic cutoff is found, from this image's objects. Choosing one sets this image's cutoff now; Reset cutoff uses it again later. Hover each choice for what it does.",
     ("_review_panel", "auto_percent"): "Top N %: this percent of the brightest objects are called positive.",
@@ -644,6 +658,34 @@ class MarkerSetup(QGroupBox):
         self.rule.currentIndexChanged.connect(lambda _index: self._rule_changed())
         self.layout_.addLayout(rule_form)
         self._rule_changed()
+        # Markers called by overlap with another analysis's objects: shown only when there is another analysis.
+        self.overlap_section = QWidget()
+        overlap_layout = QVBoxLayout(self.overlap_section)
+        overlap_layout.setContentsMargins(0, 4, 0, 0)
+        self.overlap_heading = QLabel("By overlap with another analysis")
+        overlap_layout.addWidget(self.overlap_heading)
+        self.overlap_holder = QVBoxLayout()
+        overlap_layout.addLayout(self.overlap_holder)
+        self.overlap_boxes: list[QCheckBox] = []
+        overlap_form = QFormLayout()
+        self.min_overlap = QDoubleSpinBox()
+        self.min_overlap.setRange(0.0, 100.0)
+        self.min_overlap.setDecimals(1)
+        self.min_overlap.setSingleStep(5.0)
+        self.min_overlap.setSuffix(" %")
+        self.min_overlap.setValue(DEFAULT_MIN_OVERLAP)
+        self.min_overlap.setToolTip("Minimum percent of an object that must lie inside an object of the other analysis.")
+        add_range_tip(self.min_overlap)
+        overlap_form.addRow("Minimum overlap", self.min_overlap)
+        overlap_layout.addLayout(overlap_form)
+        self.reverse_overlap = QCheckBox("Also add the reverse marker to that analysis")
+        self.reverse_overlap.setToolTip(
+            "The other analysis also gets a marker for its objects inside this analysis's objects, "
+            "so the percentage can be read with either channel's objects as the whole."
+        )
+        overlap_layout.addWidget(self.reverse_overlap)
+        self.overlap_section.setVisible(False)
+        self.layout_.addWidget(self.overlap_section)
         self.button = QPushButton("Set up markers")
         self.button.setMinimumHeight(32)
         self.button.setToolTip("Measure each ticked channel inside every object, and count positives.")
@@ -660,8 +702,13 @@ class MarkerSetup(QGroupBox):
         self._auto_timer.timeout.connect(self._auto_apply)
         self._rule_dirty = False  # the user picked another rule: kept markers that use a different one are rebuilt
         self._min_dirty = False  # the user typed another minimum percent: percent markers get it
+        self._overlap_dirty = False  # an overlap box was ticked or unticked
+        self._held: dict | None = None  # a channel change waiting while an overlap change is applied (see _hold_channel_change)
+        self._restoring = False
+        self._min_overlap_dirty = False  # the user typed another minimum overlap: overlap markers get it
         self.rule.activated.connect(lambda _index: self._changed(rule=True))
         self.min_percent.valueChanged.connect(lambda _value: self._changed(minimum=True))
+        self.min_overlap.valueChanged.connect(lambda _value: self._overlap_changed(minimum=True))
         self.current = QLabel("")
         self.current.setWordWrap(True)
         self.layout_.addWidget(self.current)
@@ -682,20 +729,21 @@ class MarkerSetup(QGroupBox):
 
     def refresh(self) -> None:
         self._auto_timer.stop()
-        self._rule_dirty = self._min_dirty = False
+        self._rule_dirty = self._min_dirty = self._overlap_dirty = self._min_overlap_dirty = False
         for box in self.boxes:
             box.setParent(None)
         self.boxes = []
         self._show_modes()
         controller = self.window.controller
         self.button.setEnabled(controller is not None)
-        has_markers = controller is not None and bool(controller.recipe.classifications)
+        has_markers = self._has_channel_markers()
         self.button.setVisible(not has_markers)
         self.auto_note.setVisible(has_markers)
+        self._show_overlap()
         if controller is None:
             return
         segmentation = controller.recipe.object_set.segmentation_channel
-        existing = {item.channel for item in controller.recipe.measurements}
+        existing = {item.channel for item in controller.recipe.measurements if item.statistic != RULE_OVERLAP}
         for channel in controller.experiment.channels:
             if channel.channel_index == segmentation:
                 continue
@@ -729,6 +777,49 @@ class MarkerSetup(QGroupBox):
             self.rule.blockSignals(False)
             self.min_percent.blockSignals(False)
             self._rule_changed()
+        self._restore_channel_change()
+
+    def _has_channel_markers(self) -> bool:
+        """True when some marker is called by a channel's brightness (not only by overlap with another analysis)."""
+
+        controller = self.window.controller
+        return controller is not None and any(not uses_overlap(controller.recipe, item) for item in controller.recipe.classifications)
+
+    def refresh_overlap(self) -> None:
+        """The analyses changed (added, renamed, removed): the overlap section lists them as they are now."""
+
+        self._show_overlap()
+
+    def _show_overlap(self) -> None:
+        """One tick box per other analysis (shown only when there is one), ticked when this analysis has the marker."""
+
+        for box in self.overlap_boxes:
+            self.overlap_holder.removeWidget(box)
+            box.setParent(None)
+            box.deleteLater()
+        self.overlap_boxes = []
+        controller = self.window.controller
+        choices = controller.overlap_choices() if controller is not None else []
+        self.overlap_section.setVisible(bool(choices))
+        for choice in choices:
+            box = QCheckBox(f'{choice["channel_name"]} objects (analysis "{choice["name"]}"{", removed" if choice["removed"] else ""})')
+            box.setToolTip(
+                "That analysis was removed, so this marker is blank in every image. Untick to take the marker away."
+                if choice["removed"]
+                else "Positive when at least the minimum overlap of an object lies inside an object that analysis found in the same image. "
+                "No brightness cutoff is used."
+            )
+            box.setProperty("analysis_id", choice["id"])
+            box.setChecked(bool(choice["marker"]))
+            box.toggled.connect(lambda _on: self._overlap_changed())
+            self.overlap_boxes.append(box)
+            self.overlap_holder.addWidget(box)
+        if controller is not None:
+            made = [item for item in controller.recipe.classifications if uses_overlap(controller.recipe, item)]
+            if made:
+                self.min_overlap.blockSignals(True)
+                self.min_overlap.setValue(float(made[0].threshold))
+                self.min_overlap.blockSignals(False)
 
     def _show_modes(self) -> None:
         """One "Set cutoff by" choice per marker."""
@@ -774,19 +865,21 @@ class MarkerSetup(QGroupBox):
         if not chosen:
             self.window.message("Tick at least one marker channel.")
             return
-        if controller.recipe.classifications:
+        if self._has_channel_markers():
             self._auto_apply()  # markers exist: the same merge that runs by itself (a button press is not needed)
             return
+        # Only markers called by overlap exist (or none): the first setup adds the channels' markers beside them.
         self.window.apply_marker_setup(chosen, rule=str(self.rule.currentData()), min_percent=self.min_percent.value())
 
     def _changed(self, rule: bool = False, minimum: bool = False) -> None:
         """A tick, the rule or the minimum percent changed: with markers already set up, apply it after a short pause."""
 
-        controller = self.window.controller
-        if controller is None or not controller.recipe.classifications:
+        if not self._has_channel_markers():
             return
         self._rule_dirty = self._rule_dirty or rule
         self._min_dirty = self._min_dirty or minimum
+        if self._held is not None and not self._restoring:
+            self._hold_channel_change()  # the user changed it again while it waits
         self._auto_timer.start()
 
     def flush(self) -> None:
@@ -800,11 +893,17 @@ class MarkerSetup(QGroupBox):
         """Make the markers match the ticked channels, keeping what the user made for markers that stay."""
 
         window, controller = self.window, self.window.controller
-        if controller is None or not controller.recipe.classifications:
+        if controller is None or not (self._has_channel_markers() or self._overlap_dirty or self._min_overlap_dirty):
             return
         if window.is_busy():
             self._auto_timer.start()  # after the current analysis
             return
+        if self._overlap_dirty or self._min_overlap_dirty:
+            self._apply_overlap()
+            return
+        if not self._has_channel_markers():
+            return
+        self._held = None  # applied now
         chosen = [(int(box.property("channel_index")), box.text()) for box in self.boxes if box.isChecked()]
         if not chosen:
             window.message("Tick at least one marker channel: unticking every channel would remove all the markers.")
@@ -841,6 +940,115 @@ class MarkerSetup(QGroupBox):
                 self.refresh()  # the boxes go back to the markers that exist
                 return
         window.apply_marker_merge(plan, clear_approvals=clear, min_percent=minimum if min_changed else None)
+
+    def _overlap_changed(self, minimum: bool = False) -> None:
+        """An overlap box or the minimum overlap changed: apply it after the same short pause as a channel tick."""
+
+        controller = self.window.controller
+        if controller is None or not self.overlap_boxes:
+            return
+        self._overlap_dirty = self._overlap_dirty or not minimum
+        self._min_overlap_dirty = self._min_overlap_dirty or minimum
+        self._auto_timer.start()
+
+    def _apply_overlap(self) -> None:
+        """Make the markers called by overlap match the ticked boxes, keeping what the user made for markers
+        that stay; a changed minimum overlap goes to the overlap markers that stay. A channel tick or rule
+        change still waiting for its pause is applied after this."""
+
+        window, controller = self.window, self.window.controller
+        minimum = self.min_overlap.value()
+        min_changed = self._min_overlap_dirty
+        self._overlap_dirty = self._min_overlap_dirty = False
+        window._panels_to_recipe()
+        choices = {choice["id"]: choice for choice in controller.overlap_choices()}
+        todo = [
+            (box, choices[str(box.property("analysis_id"))])
+            for box in self.overlap_boxes
+            if str(box.property("analysis_id")) in choices and box.isChecked() != bool(choices[str(box.property("analysis_id"))]["marker"])
+        ]
+        self._hold_channel_change()
+        if not todo:
+            if min_changed and any(uses_overlap(controller.recipe, item) for item in controller.recipe.classifications):
+                window.apply_marker_merge(MarkerMerge(data=controller.recipe.model_dump(mode="json")), min_overlap=minimum)
+            return
+        plan, wanted = None, []
+        try:
+            for box, choice in todo:  # every box that changed, as one change
+                step = controller.overlap_marker_plan(choice["id"], box.isChecked(), minimum, None if plan is None else plan.data)
+                if box.isChecked() and step.added:
+                    wanted.append(choice)
+                plan = step if plan is None else join_merges(plan, step)
+        except CellQuantError as exc:
+            window.show_error(str(exc))
+            self.refresh()
+            return
+        approved = [record.image_id for record in controller.experiment.images if record.processing_status in ("approved", "reviewed")]
+        clear = bool(approved) and bool(plan.removed or plan.reset)
+        lines = self.loss_lines(plan, len(approved) if clear else 0)
+        if lines:
+            answer = QMessageBox.question(
+                self,
+                "Change the markers?",
+                "\n".join([*lines, "", "Continue?"]),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                self.refresh()  # the boxes go back to the markers that exist
+                return
+        also = ""
+        if self.reverse_overlap.isChecked():
+            for choice in wanted:
+                try:
+                    if controller.add_reverse_overlap_marker(choice["id"], minimum):
+                        also += f' "{choice["name"]}" also has the reverse marker.'
+                except (CellQuantError, OSError) as exc:
+                    also += f" The reverse marker could not be added: {exc}"
+        window.apply_marker_merge(plan, clear_approvals=clear, min_overlap=minimum if min_changed else None, note=also)
+
+    def _hold_channel_change(self) -> None:
+        """Remember the channel ticks, rule and minimum percent as the user left them, when a change to them is
+        waiting for its pause: applying an overlap change shows the saved settings again (``refresh``), which
+        would undo it. ``refresh`` puts it back on the boxes, and it is applied after the usual pause."""
+
+        controller = self.window.controller
+        self._held = None
+        if controller is None or not self._has_channel_markers():
+            return
+        existing = {item.channel for item in controller.recipe.measurements if item.statistic != RULE_OVERLAP}
+        ticks = {int(box.property("channel_index")): box.isChecked() for box in self.boxes}
+        if not (self._rule_dirty or self._min_dirty or any(on != (index in existing) for index, on in ticks.items())):
+            return
+        self._held = {
+            "analysis": controller.recipe.recipe_id,
+            "ticks": ticks,
+            "rule": self.rule.currentData() if self._rule_dirty else None,
+            "min_percent": self.min_percent.value() if self._min_dirty else None,
+        }
+
+    def _restore_channel_change(self) -> None:
+        """Put a held channel change back on the boxes (never on another analysis's boxes)."""
+
+        held, controller = self._held, self.window.controller
+        if held is None:
+            return
+        if controller is None or controller.recipe.recipe_id != held["analysis"] or not self._has_channel_markers():
+            self._held = None
+            return
+        self._restoring = True
+        try:
+            for box in self.boxes:
+                on = held["ticks"].get(int(box.property("channel_index")))
+                if on is not None and box.isChecked() != on:
+                    box.setChecked(on)
+            if held["rule"] is not None and self.rule.findData(held["rule"]) >= 0:
+                self.rule.setCurrentIndex(self.rule.findData(held["rule"]))
+            if held["min_percent"] is not None:
+                self.min_percent.setValue(float(held["min_percent"]))
+            self._changed(rule=held["rule"] is not None, minimum=held["min_percent"] is not None)
+        finally:
+            self._restoring = False
 
     @staticmethod
     def loss_lines(plan, approved: int) -> list[str]:

@@ -33,6 +33,7 @@ from cellquant.quantify import (
     overlap_sources,
     summarize_image,
     OBJECT_OVERLAP,
+    OVERLAP_NOT_MEASURED,
 )
 from cellquant.recipe import Recipe, load_recipe
 from cellquant.regions import isotropic_pixel_size, spatial_unit
@@ -484,11 +485,18 @@ def assemble_result(
         engine_warnings.append(
             f"{count} object{'s touch' if count != 1 else ' touches'} a crop edge and may be cut (column at_crop_edge)."
         )
+    measure_warnings = list(measure_warnings)
+    if OVERLAP_NOT_MEASURED not in measure_warnings and any(
+        spec.statistic == OBJECT_OVERLAP and spec.id in measured.columns and len(measured) and measured[spec.id].isna().all()
+        for spec in parsed.measurements
+    ):
+        # The table came from the rows kept after an edit, or from the cache: the reason is said again.
+        measure_warnings.append(OVERLAP_NOT_MEASURED)
     qc = _qc_report(
         labels,
         with_phenotypes,
         automated_labels,
-        engine_warnings + list(measure_warnings) + summary_warnings + z_warnings,
+        engine_warnings + measure_warnings + summary_warnings + z_warnings,
         details.get("percent_excluded_by_size", float("nan")),
     )
     metadata = dict(user_metadata or {})

@@ -137,6 +137,22 @@ class MarkerMerge:
         return bool(self.calls_lost or self.reports_lost or self.reset or self.own_cutoffs_lost)
 
 
+def join_merges(first: MarkerMerge, second: MarkerMerge) -> MarkerMerge:
+    """One plan for two changes made one after the other (``second`` was planned on ``first.data``)."""
+
+    return MarkerMerge(
+        data=second.data,
+        added=[*first.added, *second.added],
+        removed=[*first.removed, *second.removed],
+        reset=[*first.reset, *second.reset],
+        new_ids=[*first.new_ids, *second.new_ids],
+        calls_lost={**first.calls_lost, **second.calls_lost},
+        own_cutoffs_lost={**first.own_cutoffs_lost, **second.own_cutoffs_lost},
+        reports_lost=[*first.reports_lost, *second.reports_lost],
+        reports_dropped=first.reports_dropped + second.reports_dropped,
+    )
+
+
 def _uses_marker(expression: str, tokens: set[str]) -> bool:
     return any(re.search(rf"(?<![^\s()]){re.escape(token)}(?![^\s()])", expression) for token in tokens if token)
 

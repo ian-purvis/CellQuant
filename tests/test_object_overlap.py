@@ -375,3 +375,65 @@ def test_objects_found_with_another_z_handling_are_not_compared(tmp_path: Path):
     assert result.labels.ndim == 3 and controller.objects_of(other, image_id).ndim == 2
     assert result.objects["otx2_objects_overlap"].isna().all()
     assert OVERLAP_NOT_MEASURED in result.qc.warnings
+
+
+# -- kept up to date everywhere ---------------------------------------------------------------------
+
+
+def test_an_export_measures_the_marker_again_when_the_other_objects_changed(tmp_path: Path):
+    controller, here, other = _experiment(tmp_path)
+    marker = _add_marker(controller, other)
+    image_id = controller.experiment.images[0].image_id
+    before = controller.run_image(image_id)
+    inside = before.objects.loc[before.objects["otx2_objects_overlap"] > 0, "object_id"].astype(int).tolist()
+    controller.switch_analysis(other)
+    theirs = controller.recall(image_id)
+    controller.delete_objects(image_id, sorted(set(np.unique(theirs.labels[before.labels == inside[0]]).tolist()) - {0}))
+    controller.switch_analysis(here)
+    # Straight to the export, without showing the image first.
+    exported = controller._results_for_export()[0]
+    row = exported.objects.loc[exported.objects["object_id"] == inside[0]].iloc[0]
+    assert row["otx2_objects_overlap"] == 0.0 and not bool(row[marker])
+    assert exported.provenance["object_overlap"] == {other: controller.objects_digest(other, image_id)}
+
+
+def test_a_marker_compared_with_a_removed_analysis_stays_listed_until_it_is_taken_away(tmp_path: Path):
+    from cellquant.errors import CellQuantError
+
+    controller, here, other = _experiment(tmp_path)
+    _add_marker(controller, other)
+    image_id = controller.experiment.images[0].image_id
+    assert [item["removed"] for item in controller.overlap_choices()] == [False]
+    controller.remove_analysis(other)
+    listed = [(item["id"], item["name"], item["channel_name"], item["marker"], item["removed"]) for item in controller.overlap_choices()]
+    assert listed == [(other, "Objects in OTX2", "OTX2", "otx2_objects_pos", True)]
+    # The reason for the blank marker is said every time: a first run, a run from the saved table, and after an edit.
+    first = controller.run_image(image_id)
+    again = controller.run_image(image_id)
+    controller.delete_objects(image_id, [int(first.objects["object_id"].iloc[0])])
+    edited = controller.recall(image_id)
+    for result in (first, again, edited):
+        assert result.objects["otx2_objects_overlap"].isna().all() and OVERLAP_NOT_MEASURED in result.qc.warnings
+    with pytest.raises(CellQuantError):
+        controller.overlap_marker_plan(other, True)  # nothing to compare with any more
+    plan = controller.overlap_marker_plan(other, False)
+    assert plan.removed == ["OTX2 objects"]
+    controller.set_recipe(plan.data)
+    assert controller.overlap_choices() == [] and controller.overlap_analyses() == []
+
+
+def test_several_markers_are_planned_as_one_change(tmp_path: Path):
+    from cellquant.quicksetup import join_merges
+
+    controller, here, other = _experiment(tmp_path)
+    third = controller.analyses_for_channels([1])[0]
+    first = controller.overlap_marker_plan(other, True, 40)
+    second = controller.overlap_marker_plan(third, True, 40, first.data)
+    plan = join_merges(first, second)
+    assert plan.added == ["OTX2 objects", "Fluor objects"] and not plan.loses_something
+    controller.set_recipe(plan.data)
+    assert controller.overlap_analyses() == [other, third]
+    assert {item["marker"] for item in controller.overlap_choices()} == {"otx2_objects_pos", "fluor_objects_pos"}
+    assert [item.threshold for item in controller.recipe.classifications] == [40.0, 40.0]
+    back = join_merges(controller.overlap_marker_plan(other, False), controller.overlap_marker_plan(third, False, None, controller.overlap_marker_plan(other, False).data))
+    assert back.removed == ["OTX2 objects", "Fluor objects"] and not back.data["classifications"]

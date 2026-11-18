@@ -445,8 +445,10 @@ class AnalysisController:
 
     def overlap_choices(self) -> list[dict]:
         """The other analyses a marker of this one can be compared with, in list order: ``id``, ``name``,
-        ``channel`` (where that analysis finds its objects), ``channel_name``, and ``marker`` (the id of
-        this analysis's marker compared with it, or blank)."""
+        ``channel`` (where that analysis finds its objects), ``channel_name``, ``marker`` (the id of
+        this analysis's marker compared with it, or blank) and ``removed``. An analysis that was removed
+        is listed (last, ``removed`` True) only while this analysis still has a marker compared with it,
+        so that marker can be taken away."""
 
         from cellquant.quicksetup import overlap_markers
 
@@ -463,21 +465,41 @@ class AnalysisController:
                     "channel": channel,
                     "channel_name": self._channel_name(channel),
                     "marker": str(made.get(item.recipe_id, {}).get("id", "")),
+                    "removed": False,
+                }
+            )
+        listed = {choice["id"] for choice in choices}
+        for source, call in made.items():
+            if source in listed or source == self.recipe.recipe_id:
+                continue
+            record = next((item for item in self.experiment.analyses if item.recipe_id == source), None)
+            spec = next((item for item in self.recipe.measurements if item.id == call.get("measurement")), None)
+            channel = int(spec.channel) if spec is not None else 0
+            choices.append(
+                {
+                    "id": source,
+                    "name": record.name if record is not None else "an analysis no longer in this experiment",
+                    "channel": channel,
+                    "channel_name": self._channel_name(channel),
+                    "marker": str(call.get("id", "")),
+                    "removed": True,
                 }
             )
         return choices
 
-    def overlap_marker_plan(self, recipe_id: str, on: bool, min_overlap: float | None = None):
+    def overlap_marker_plan(self, recipe_id: str, on: bool, min_overlap: float | None = None, data: dict | None = None):
         """What adding (``on``) or taking away this analysis's marker compared with another analysis's
-        objects does to its settings: a ``quicksetup.MarkerMerge`` (apply ``plan.data`` with set_recipe)."""
+        objects does to its settings: a ``quicksetup.MarkerMerge`` (apply ``plan.data`` with set_recipe).
+        ``data``: the settings to change instead of the current ones (the ``data`` of an earlier plan,
+        for several changes at once; see ``quicksetup.join_merges``)."""
 
         from cellquant.quicksetup import DEFAULT_MIN_OVERLAP, add_overlap_marker, remove_overlap_marker
 
-        data = self.recipe.model_dump(mode="json")
+        data = self.recipe.model_dump(mode="json") if data is None else data
         if not on:
             return remove_overlap_marker(data, recipe_id)
         choice = next((item for item in self.overlap_choices() if item["id"] == recipe_id), None)
-        if choice is None:
+        if choice is None or choice["removed"]:
             raise CellQuantError("That analysis is not on the list.")
         return add_overlap_marker(
             data, recipe_id, choice["channel"], choice["channel_name"], DEFAULT_MIN_OVERLAP if min_overlap is None else float(min_overlap)
@@ -543,11 +565,16 @@ class AnalysisController:
         busy = self.__dict__.setdefault("_overlap_busy", set())
         failed = self.__dict__.setdefault("_overlap_failed", {})
         now = {source: self.objects_digest(source, image_id) for source in self.overlap_analyses()}
+        try:
+            record = self.experiment.image(image_id)
+        except KeyError:
+            return result
+        # Tried again when the other objects change once more, or the image file is linked again.
+        now["image file"] = f"{record.source_path}|{record.relative_path}"
         if image_id in busy or failed.get(image_id) == now:
             return result
         busy.add(image_id)
         try:
-            record = self.experiment.image(image_id)
             was_approved = record.processing_status == "approved"
             refreshed = self.measure_markers(image_id)
         except (CellQuantError, KeyError, OSError):
@@ -2369,6 +2396,8 @@ class AnalysisController:
                 if result is not None and self._measured_at_other_size(record.image_id, result):
                     result = None  # out of date (the pixel size changed since): it must be run again
             if result is not None:
+                # A marker compared with another analysis's objects is measured again when those changed since.
+                result = self._at_current_overlap(record.image_id, result)
                 result = apply_count_area(self._at_current_cutoffs(record.image_id, result), record.count_area)
                 results.append(dataclasses.replace(result, labels=_NO_MASK, automated_labels=_NO_MASK))
                 if isinstance(self.last_results, ResultCache):
