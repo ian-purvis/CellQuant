@@ -282,6 +282,32 @@ def test_3d_results_show_as_a_volume_with_a_recommendation(tmp_path: Path):
         viewer.close()
 
 
+def test_the_log_names_the_z_stack_mode_chosen_and_used(tmp_path: Path):
+    viewer, shell = _stack_window(tmp_path, mode="max_projection")
+    try:
+        panel = shell._objects_panel
+        panel.show_gpu_status({"available": False, "reason": "test"})
+
+        def log_lines() -> list[str]:
+            return shell._footer.log.toPlainText().splitlines()
+
+        panel.z_stack.setCurrentIndex(panel.z_stack.findData("full_3d"))
+        panel.z_stack.activated.emit(panel.z_stack.currentIndex())
+        assert log_lines()[-1] == "Z-stacks: using True 3D (whole volume)."
+        panel.use_recommendation()
+        assert log_lines()[-1] == "Z-stacks: using 2D + stitching (link slices)."
+        count = sum(line.startswith("Z-stacks: using") for line in log_lines())
+        panel.refresh()
+        assert sum(line.startswith("Z-stacks: using") for line in log_lines()) == count
+        panel.z_stack.setCurrentIndex(panel.z_stack.findData("full_3d"))
+        panel.z_stack.activated.emit(panel.z_stack.currentIndex())
+        shell.run_current()
+        _wait(shell)
+        assert any(line.startswith("Z-stack mode for this run (") and line.endswith("True 3D (whole volume).") for line in log_lines())
+    finally:
+        viewer.close()
+
+
 def _stack_window(tmp_path: Path, count: int = 1, mode: str = "stitch_slices"):
     from cellquant.controller import AnalysisController
     from cellquant.gui.app import CellQuantWindow

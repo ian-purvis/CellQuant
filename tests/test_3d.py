@@ -473,3 +473,29 @@ def test_a_single_plane_file_has_no_slices_to_scroll(tmp_path: Path):
     controller.add_image_paths([path])
     controller.set_recipe(_recipe("max_projection"))
     assert controller._load_display(controller.experiment.images[0]).data.shape == (2, 32, 32)
+
+
+def test_each_run_of_z_stacks_logs_the_mode_it_uses(tmp_path: Path):
+    from cellquant.hardware import Z_OPTION_LABELS, batch_notes
+
+    stack = tmp_path / "data" / "stack.tif"
+    _stack(stack)
+    flat = tmp_path / "data" / "flat.tif"
+    tifffile.imwrite(flat, _stack()[4], metadata={"axes": "CYX"})  # one plane of the stack, both channels
+    prefix = "Z-stack mode for this run ("
+
+    batch_notes()
+    for mode in ("stitch_slices", "full_3d"):
+        controller = AnalysisController.create(tmp_path / f"results_{mode}", "3D", input_directory=stack.parent)
+        controller.add_image_paths([stack])
+        controller.set_recipe(_recipe(mode))
+        controller.run_image(controller.experiment.images[0].image_id)
+        notes = [note for note in batch_notes() if note.startswith(prefix)]
+        assert len(notes) == 1
+        assert notes[0].endswith(f"): {Z_OPTION_LABELS[mode]}.")
+
+    controller = AnalysisController.create(tmp_path / "results_flat", "2D", input_directory=flat.parent)
+    controller.add_image_paths([flat])
+    controller.set_recipe(_recipe("max_projection"))
+    controller.run_image(controller.experiment.images[0].image_id)
+    assert not [note for note in batch_notes() if note.startswith(prefix)]

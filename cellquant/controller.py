@@ -2716,6 +2716,10 @@ class AnalysisController:
         self.run_dir = run_dir
         self.run_log = RunLog(run_dir)
         self.experiment.latest_run_id = record.run_id
+        if any(item.z_planes > 1 for item in records):
+            from cellquant.hardware import add_log_note, z_mode_log_line
+
+            add_log_note(z_mode_log_line(self.recipe.z_stack, self.active_analysis().name))
 
     def _load_bound_recipe(self) -> Recipe:
         path = self._recipe_path()
