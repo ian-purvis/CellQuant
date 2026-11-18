@@ -34,7 +34,7 @@ from cellquant.quantify import (
 )
 from cellquant.recipe import Recipe, load_recipe
 from cellquant.regions import isotropic_pixel_size, spatial_unit
-from cellquant.segmentation import segment_objects, segment_regions
+from cellquant.segmentation import MAX_INPUT_CHANNELS, extra_channel_indices, segment_objects, segment_regions
 from cellquant.volume import flag_z_problems, segment_volume
 from skimage.measure import regionprops
 
@@ -245,10 +245,46 @@ def _segmentation_parameters(loaded: LoadedImage, recipe: Recipe, details: dict)
     return parameters
 
 
+def extra_input_channels(loaded: LoadedImage, recipe: Recipe) -> list[int]:
+    """The extra channels of this image that Cellpose-SAM reads together with the source channel.
+
+    The settings' ``extra_channels`` that this image has, without the source channel itself, at most
+    two. [] for the classical method, which finds objects in one channel.
+    """
+
+    if recipe.object_set.algorithm != "cellpose":
+        return []
+    source = int(recipe.object_set.segmentation_channel)
+    chosen = [
+        index
+        for index in extra_channel_indices(recipe.object_set.parameters)
+        if index < loaded.n_channels and index != source
+    ]
+    return chosen[: MAX_INPUT_CHANNELS - 1]
+
+
+def _extra_channel_warnings(loaded: LoadedImage, recipe: Recipe) -> list[str]:
+    """Extra input channels the settings ask for that this image does not have."""
+
+    if recipe.object_set.algorithm != "cellpose":
+        return []
+    parameters = recipe.object_set.parameters or {}
+    missing = [str(name) for name in parameters.get("extra_channels_skipped") or ()]
+    missing += [f"Channel {index + 1}" for index in extra_channel_indices(parameters) if index >= loaded.n_channels]
+    if not missing:
+        return []
+    names = ", ".join(missing)
+    return [
+        f"Extra input channel{'s' if len(missing) != 1 else ''} {names} {'are' if len(missing) != 1 else 'is'} not in this image, "
+        "so its objects were found without " + ("them." if len(missing) != 1 else "it.")
+    ]
+
+
 def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
     from cellquant.crop import regions_for
 
     channel = loaded.data[recipe.object_set.segmentation_channel]
+    extra = [loaded.data[index] for index in extra_input_channels(loaded, recipe)] or None
     parameters = _segmentation_parameters(loaded, recipe, details)
     # Crop rectangles: given by the caller (None: the full image), or found here when cropping is on.
     rectangles = details.pop("crop_rectangles_given", _NOT_GIVEN)
@@ -278,6 +314,7 @@ def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
             pixel_size_x=loaded.pixel_size_x,
             pixel_size_y=loaded.pixel_size_y,
             details=details,
+            extra_channels=extra,
         )
     if loaded.is_3d:
         return segment_volume(
@@ -293,6 +330,7 @@ def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
             min_slices=recipe.z_min_slices,
             details=details,
             rectangles=rectangles or None,
+            extra_channels=extra,
         )
     return segment_objects(
         channel,
@@ -301,6 +339,7 @@ def _segment(loaded: LoadedImage, recipe: Recipe, details: dict) -> np.ndarray:
         pixel_size_x=loaded.pixel_size_x,
         pixel_size_y=loaded.pixel_size_y,
         details=details,
+        extra_channels=extra,
     )
 
 
@@ -387,6 +426,7 @@ def assemble_result(
         engine_warnings.append(details["warning_z_step"])
     if details.get("crop_warning"):
         engine_warnings.append(details["crop_warning"])
+    engine_warnings.extend(_extra_channel_warnings(loaded, parsed))
     if len(objects) and "at_crop_edge" in objects.columns and bool(objects["at_crop_edge"].any()):
         count = int(objects["at_crop_edge"].sum())
         engine_warnings.append(
@@ -466,6 +506,10 @@ def assemble_result(
     digest = _hand_calls_digest(parsed.classifications)
     if digest:
         provenance["hand_calls_sha256"] = digest  # only with calls by hand, so other results are unchanged
+    extra_channels = extra_input_channels(loaded, parsed)
+    if extra_channels:
+        # Only with extra input channels, so other results are unchanged.
+        provenance["segmentation_extra_channels"] = extra_channels
     if polygons:
         # Only with a count area, so results without one are unchanged.
         provenance["count_area"] = polygons

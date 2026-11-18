@@ -65,7 +65,7 @@ from cellquant.quantify import (
 )
 from cellquant.recipe import Recipe, load_recipe, save_recipe
 from cellquant.result_cache import ResultCache
-from cellquant.segmentation import engine_signature
+from cellquant.segmentation import MAX_INPUT_CHANNELS, engine_signature, extra_channel_indices
 from cellquant.storage import (
     RunLog,
     RunRecord,
@@ -456,7 +456,7 @@ class AnalysisController:
         for image_id, result in list(self.last_results.items()):
             edits = self._active_edits(image_id)
             if not self._saved_already(image_id, result, edits, destination):
-                persist_image_result(destination, result, edits, self.segmented_channel_name(image_id, result))
+                persist_image_result(destination, result, edits, self.input_channel_names(image_id, result))
                 self._mark_saved(image_id, result, edits, destination)
                 if isinstance(self.last_results, ResultCache):
                     self.last_results.trim()  # saving read back masks that were out of memory
@@ -779,7 +779,7 @@ class AnalysisController:
             progress.update("Saving results")
             self._ensure_run([record], fresh=new_run)
             assert self.run_dir is not None and self.run_record is not None and self.run_log is not None
-            persist_image_result(self.run_dir, result, self._active_edits(image_id), self.segmented_channel_name(image_id, result))
+            persist_image_result(self.run_dir, result, self._active_edits(image_id), self.input_channel_names(image_id, result))
             self._record_recipe_use(image_id, result)
             self.run_record.manual_edits[image_id] = [item.model_dump(mode="json") for item in self._active_edits(image_id)]
             self.run_record.input_hashes[image_id] = record.content_hash
@@ -1882,7 +1882,7 @@ class AnalysisController:
         for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits"):
             (destination / relative).mkdir(parents=True, exist_ok=True)
         edits = self._active_edits(image_id)
-        persist_image_result(destination, result, edits, self.segmented_channel_name(image_id, result))
+        persist_image_result(destination, result, edits, self.input_channel_names(image_id, result))
         self._mark_saved(image_id, result, edits, destination)
 
     def _record_recipe_use(self, image_id: str, result: ImageResult) -> None:
@@ -1983,9 +1983,11 @@ class AnalysisController:
                 {
                     "image_id": str(item.provenance.get("image_id") or ""),
                     "image": str(item.provenance.get("filename") or ""),
-                    "segmented_channel": self.segmented_channel_name(str(item.provenance.get("image_id") or ""), item),
+                    "segmented_channel": names[0],
+                    "extra_input_channels": ", ".join(names[1:]),
                 }
                 for item in results
+                for names in [self.input_channel_names(str(item.provenance.get("image_id") or ""), item)]
             ],
         )
         hashes = self._settings_versions(results)
@@ -2080,20 +2082,28 @@ class AnalysisController:
             except KeyError:
                 versions.add(("hash", result.provenance.get("recipe_sha256")))
                 continue
+            used_parameters = recipe.get("object_set", {}).get("parameters") or {}
             used = (
                 int(recipe.get("object_set", {}).get("segmentation_channel", -1)),
                 tuple(int(item.get("channel", -1)) for item in recipe.get("measurements", [])),
+                tuple(extra_channel_indices(used_parameters)),
             )
             with self._image_settings(record):
                 expected = (
                     int(self.recipe.object_set.segmentation_channel),
                     tuple(int(item.channel) for item in self.recipe.measurements),
+                    tuple(extra_channel_indices(self.recipe.object_set.parameters)),
                 )
             try:
                 normalized = load_recipe(
                     {
                         **recipe,
-                        "object_set": {**recipe.get("object_set", {}), "segmentation_channel": 0},
+                        "object_set": {
+                            **recipe.get("object_set", {}),
+                            "segmentation_channel": 0,
+                            # Nor are extra input channels found by name at another position in this image.
+                            "parameters": _with_extra_channels(used_parameters, [], []),
+                        },
                         "measurements": [{**item, "channel": 0} for item in recipe.get("measurements", [])],
                         # Nor is a cutoff set for one image (results are classified at the current cutoffs).
                         "classifications": [{**item, "threshold": 0.0} for item in recipe.get("classifications", [])],
@@ -2710,12 +2720,17 @@ class AnalysisController:
         if self.run_dir is not None and not fresh:
             return
         self._touch_recipe()
-        channels = [self.segmented_channel_name(item.image_id) for item in records]
+        channels = [self.input_channel_names(item.image_id) for item in records]
         record, run_dir = start_run(self.experiment, self.recipe, records, channels)
         self.run_record = record
         self.run_dir = run_dir
         self.run_log = RunLog(run_dir)
         self.experiment.latest_run_id = record.run_id
+        extra = self.extra_channel_names()
+        if extra:
+            from cellquant.hardware import add_log_note
+
+            add_log_note(extra_channels_log_line(extra, self.active_analysis().name))
         if any(item.z_planes > 1 for item in records):
             from cellquant.hardware import add_log_note, z_mode_log_line
 
@@ -3214,16 +3229,20 @@ class AnalysisController:
         crop_mapped, _missing = self._crop_mapping(record)
         channel, _reason = self.segmentation_channel_for(record.image_id)
         measured = {item.id: self._map_channel(record, int(item.channel))[0] for item in self.recipe.measurements}
+        extra, skipped = self.extra_channels_for(record.image_id)
         own_cutoffs = self.recipe.for_image(record.image_id)  # each marker at this image's cutoff
         same = channel == self.recipe.object_set.segmentation_channel and all(
             measured[item.id] == item.channel for item in self.recipe.measurements
-        ) and (crop_mapped is None or crop_mapped == crop_channels(self.recipe)) and own_cutoffs is self.recipe
+        ) and (crop_mapped is None or crop_mapped == crop_channels(self.recipe)) and own_cutoffs is self.recipe and (
+            not skipped and extra == extra_channel_indices(self.recipe.object_set.parameters)
+        )
         if same:
             yield
             return
         saved = self.recipe
         changed = own_cutoffs.model_copy(deep=True)
         changed.object_set.segmentation_channel = channel
+        changed.object_set.parameters = _with_extra_channels(changed.object_set.parameters, extra, skipped)
         for item in changed.measurements:
             item.channel = measured[item.id]
         if crop_mapped is not None and changed.crop is not None:
@@ -3257,6 +3276,71 @@ class AnalysisController:
         except Exception:  # noqa: BLE001 - an image the experiment no longer lists: the analysis's channel
             return self._channel_name(int(self.recipe.object_set.segmentation_channel) if index is None else index)
         return str(names[index]) if 0 <= index < len(names) and names[index] else f"Channel {index + 1}"
+
+    def extra_channels_for(self, image_id: str, recipe_id: str | None = None) -> tuple[list[int], list[str]]:
+        """The extra input channels of this analysis in this image, and the names of those it lacks.
+
+        Cellpose-SAM reads them together with the image's source channel. Like the markers, each is
+        found by its name in the file, so an image with another channel layout uses the right
+        channel. Left out: a channel this image does not have (its name is returned, and the result
+        carries a warning), and the image's own source channel. At most two are used.
+        """
+
+        recipe_id = recipe_id or self.recipe.recipe_id
+        analysis = self._recipe_of(recipe_id)
+        if recipe_id == self.recipe.recipe_id:
+            analysis = getattr(self, "_unswapped_recipe", None) or analysis
+        wanted = extra_channel_indices(analysis.object_set.parameters)
+        if not wanted or analysis.object_set.algorithm != "cellpose":
+            return [], []
+        record = self.experiment.image(image_id)
+        entry = self._analysis(recipe_id).plan.get(image_id) if self.experiment.analyses else None
+        if entry is not None and entry.channel is not None:
+            source = int(entry.channel)
+        else:
+            source = self._map_channel(record, int(analysis.object_set.segmentation_channel))[0]
+        count = record.number_of_channels or len(record.channel_names or ()) or None
+        mapped: list[int] = []
+        missing: list[str] = []
+        for wanted_index in wanted:
+            index, reason = self._map_channel(record, wanted_index)
+            if reason == "not in this image" or (count is not None and index >= count):
+                missing.append(self._channel_name(wanted_index))
+            elif index != source and index not in mapped:
+                mapped.append(index)
+        return mapped[: MAX_INPUT_CHANNELS - 1], missing
+
+    def extra_channel_names(self, recipe_id: str | None = None) -> list[str]:
+        """The names of this analysis's extra input channels ([] when it has none, or is not Cellpose)."""
+
+        recipe_id = recipe_id or self.recipe.recipe_id
+        analysis = self._recipe_of(recipe_id)
+        if recipe_id == self.recipe.recipe_id:
+            analysis = getattr(self, "_unswapped_recipe", None) or analysis
+        if analysis.object_set.algorithm != "cellpose":
+            return []
+        return [self._channel_name(index) for index in extra_channel_indices(analysis.object_set.parameters)]
+
+    def input_channel_names(self, image_id: str, result: ImageResult | None = None) -> list[str]:
+        """The names of the channels this image's objects are found from: the source channel first,
+        then any extra input channels. With a ``result``: the channels that result was found from.
+
+        Folder and file names, and ``segmented_channels.csv``, carry these names.
+        """
+
+        names = [self.segmented_channel_name(image_id, result)]
+        try:
+            if result is not None:
+                extra = [int(index) for index in result.provenance.get("segmentation_extra_channels") or ()]
+            else:
+                extra, _missing = self.extra_channels_for(image_id)
+            record = self.experiment.image(image_id)
+            shown = self.shown_channel_names(record) or self.image_channel_names(image_id)
+        except Exception:  # noqa: BLE001 - an image the experiment no longer lists: only the source channel
+            return names
+        for index in extra:
+            names.append(str(shown[index]) if 0 <= index < len(shown) and shown[index] else f"Channel {index + 1}")
+        return names
 
     def _segmentation_channel_labels(self, table, recipe_id: str) -> list[str]:
         """The name of the channel objects were found in, per row: this image's own channel name."""
@@ -3507,6 +3591,28 @@ def _clamp(start: int, stop: int, limit: int) -> tuple[int, int]:
     start = max(0, min(int(start), limit))
     stop = max(start + 1, min(int(stop), limit)) if limit else start
     return start, stop
+
+
+def _with_extra_channels(parameters: dict | None, extra: list[int], skipped: list[str]) -> dict:
+    """Object-finding settings with these extra input channels (and the names of skipped ones);
+    the keys are left out when empty, so settings without extra channels keep their content."""
+
+    changed = {key: value for key, value in (parameters or {}).items() if key not in ("extra_channels", "extra_channels_skipped")}
+    if extra:
+        changed["extra_channels"] = [int(index) for index in extra]
+    if skipped:
+        changed["extra_channels_skipped"] = [str(name) for name in skipped]
+    return changed
+
+
+def extra_channels_log_line(names: list[str], analysis: str) -> str:
+    """The Run log line that says a run finds objects from more than the source channel."""
+
+    listed = " and ".join(names)
+    return (
+        f"Extra input channel{'s' if len(names) != 1 else ''} for this run ({analysis}): {listed}. "
+        "Cellpose-SAM reads " + ("them" if len(names) != 1 else "it") + " together with each image's source channel."
+    )
 
 
 def _details_to_keep(result: ImageResult) -> dict:

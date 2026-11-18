@@ -99,16 +99,31 @@ def channel_tag(name: str | None) -> str:
     return text[:_CHANNEL_TAG_LENGTH].rstrip("_-")
 
 
+def input_tag(channel) -> str:
+    """One image's input channels as folder and file names carry them: the channel's tag, or for
+    objects found from several channels together their tags joined by ``+`` (the source channel first).
+
+    ``channel`` is a name, or a list of names (the source channel, then the extra input channels).
+    """
+
+    names = [channel] if isinstance(channel, str) or channel is None else list(channel)
+    return "+".join(tag for tag in (channel_tag(name) for name in names) if tag)
+
+
 def run_channel_tag(names) -> str:
     """What a run folder's name says about the channels its images' objects are found in: the channel,
-    two channels as ``A+B``, or ``mixed`` for more (or for names too long to fit)."""
+    two channels as ``A+B``, or ``mixed`` for more (or for names too long to fit).
 
-    found = {tag.casefold(): tag for tag in reversed([channel_tag(name) for name in names or ()]) if tag}
+    Each entry is one image's channel: a name, or a list of names when its objects are found from
+    several channels together (also ``A+B``).
+    """
+
+    found = {tag.casefold(): tag for tag in reversed([input_tag(name) for name in names or ()]) if tag}
     tags = list(found.values())  # one per channel, whatever its upper and lower case (folder names do not tell them apart)
     if len(tags) <= 1:
-        return tags[0] if tags else ""
+        return (tags[0] if len(tags[0]) <= _RUN_TAG_LENGTH else "mixed") if tags else ""
     joined = "+".join(sorted(tags, key=str.casefold))
-    return joined if len(tags) == 2 and len(joined) <= _RUN_TAG_LENGTH else "mixed"
+    return joined if len(tags) == 2 and "+" not in "".join(tags) and len(joined) <= _RUN_TAG_LENGTH else "mixed"
 
 
 def start_run(
@@ -142,7 +157,9 @@ def finish_run(run_dir: Path, record: RunRecord, status: str) -> None:
     _write_run(run_dir, record)
 
 
-def persist_image_result(run_dir: Path, result: ImageResult, edits: list[EditOperation], channel: str | None = None) -> None:
+def persist_image_result(
+    run_dir: Path, result: ImageResult, edits: list[EditOperation], channel: str | list[str] | None = None
+) -> None:
     """Save every part of a result so ``read_persisted_result`` gives the same result back.
 
     Tables are CSV, with a small ``tables/<image>.json`` that records each
@@ -154,12 +171,15 @@ def persist_image_result(run_dir: Path, result: ImageResult, edits: list[EditOpe
     (``labels/<image>_<channel>_final.tif``) and ``segmented_channels.csv`` in the folder lists it,
     so nobody has to open a mask to know what was segmented. ``tables/<image>.json`` records the
     mask names; masks saved by older versions (``labels/<image>_final.tif``) are read as before.
+    A list names every channel the objects were found from, the source channel first
+    (``labels/<image>_<channel>+<extra>_final.tif``); the list file shows the extra ones in their own column.
     """
 
     image_id = _safe(str(result.provenance.get("image_id") or "image"))
     for relative in ("labels", "measurements", "classifications", "summaries", "provenance", "edits", "reports", "qc", "tables"):
         (run_dir / relative).mkdir(parents=True, exist_ok=True)
-    tag = channel_tag(channel)
+    channels = [channel] if isinstance(channel, str) or channel is None else list(channel)
+    tag = input_tag(channels)
     stem = f"{image_id}_{tag}" if tag else image_id
     names = (f"{stem}_final.tif", f"{stem}_automated.tif")
     earlier = {*_recorded_label_names(run_dir, image_id), f"{image_id}_final.tif", f"{image_id}_automated.tif"} - set(names)
@@ -207,8 +227,9 @@ def persist_image_result(run_dir: Path, result: ImageResult, edits: list[EditOpe
         run_dir,
         str(result.provenance.get("image_id") or "image"),
         str(result.provenance.get("filename") or ""),
-        channel,
+        channels[0] if channels else None,
         f"labels/{names[0]}",
+        ", ".join(str(name) for name in channels[1:]),
     )
 
 
@@ -248,7 +269,9 @@ def label_paths(run_dir: Path, image_id: str) -> tuple[Path, Path]:
     return labels / names[0], labels / names[1]
 
 
-_CHANNEL_LIST_COLUMNS = ("image_id", "image", "segmented_channel", "mask_file")
+_CHANNEL_LIST_COLUMNS = ("image_id", "image", "segmented_channel", "extra_input_channels", "mask_file")
+# Written only when a row has a value: lists without them look as they always did.
+_OPTIONAL_LIST_COLUMNS = ("extra_input_channels", "mask_file")
 
 
 def read_segmented_channels(folder: Path) -> list[dict[str, str]]:
@@ -266,7 +289,7 @@ def write_segmented_channels(folder: Path, rows: list[dict[str, str]]) -> bool:
     so a failure (the file is open in another program) is not an error: False is returned."""
 
     path = Path(folder) / CHANNEL_LIST_FILE
-    columns = [name for name in _CHANNEL_LIST_COLUMNS if name != "mask_file" or any(row.get("mask_file") for row in rows)]
+    columns = [name for name in _CHANNEL_LIST_COLUMNS if name not in _OPTIONAL_LIST_COLUMNS or any(row.get(name) for row in rows)]
     temporary = path.with_suffix(".csv.tmp")
     try:
         with temporary.open("w", newline="", encoding="utf-8") as handle:
@@ -283,10 +306,18 @@ def write_segmented_channels(folder: Path, rows: list[dict[str, str]]) -> bool:
     return True
 
 
-def list_segmented_channel(folder: Path, image_id: str, image: str, channel: str | None, mask_file: str = "") -> None:
+def list_segmented_channel(
+    folder: Path, image_id: str, image: str, channel: str | None, mask_file: str = "", extra_input_channels: str = ""
+) -> None:
     """Add this image to the folder's ``segmented_channels.csv``, or update its row."""
 
-    row = {"image_id": image_id, "image": image, "segmented_channel": str(channel or ""), "mask_file": mask_file}
+    row = {
+        "image_id": image_id,
+        "image": image,
+        "segmented_channel": str(channel or ""),
+        "extra_input_channels": extra_input_channels,
+        "mask_file": mask_file,
+    }
     rows = read_segmented_channels(folder)
     for index, existing in enumerate(rows):
         if existing["image_id"] == image_id:

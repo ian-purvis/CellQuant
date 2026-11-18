@@ -47,6 +47,47 @@ def available_segmentation_backends() -> list[str]:
     return sorted(_BACKENDS)
 
 
+# Cellpose-SAM reads up to three channels of an image together: the source channel and two more.
+MAX_INPUT_CHANNELS = 3
+
+
+def extra_channel_indices(parameters: dict[str, Any] | None) -> list[int]:
+    """The extra input channels in the settings (``extra_channels``): channel positions, counted from 0.
+
+    Cellpose-SAM reads them together with the source channel, as one image with two or three
+    channels. Repeats and anything that is not a channel position are left out.
+    """
+
+    chosen: list[int] = []
+    for value in (parameters or {}).get("extra_channels") or ():
+        try:
+            index = int(value)
+        except (TypeError, ValueError):
+            continue
+        if index >= 0 and index not in chosen:
+            chosen.append(index)
+    return chosen
+
+
+def _input_channels(image: np.ndarray, extra_channels, backend, algorithm: str) -> list[np.ndarray]:
+    """The extra input channels as arrays shaped like ``image``; [] when there are none."""
+
+    extras = [np.asarray(item) for item in extra_channels or ()]
+    if not extras:
+        return []
+    if not getattr(backend, "multi_channel", False):
+        raise SegmentationError(
+            f"The '{algorithm}' method finds objects in one channel. Extra input channels need Cellpose-SAM."
+        )
+    if len(extras) > MAX_INPUT_CHANNELS - 1:
+        raise SegmentationError(
+            f"Cellpose-SAM reads at most {MAX_INPUT_CHANNELS} channels: the source channel and {MAX_INPUT_CHANNELS - 1} more."
+        )
+    if any(item.shape != image.shape for item in extras):
+        raise SegmentationError("An extra input channel does not match the shape of the source channel.")
+    return extras
+
+
 class ClassicalParameters(BaseModel):
     """Threshold, cleanup, optional watershed, then size filtering by the engine."""
 
@@ -117,7 +158,12 @@ class CellposeBackend:
     recipe made for the other engine is refused rather than run with a
     different model, because Cellpose 4 silently replaces model names it does
     not know with its own default.
+
+    Cellpose-SAM also takes an image with two or three channels (the channel axis last: the source
+    channel, then the extra input channels) and reads them together. Classic Cellpose is refused.
     """
+
+    multi_channel = True
 
     def describe(self, parameters: dict[str, Any]) -> dict[str, Any]:
         """Engine, version, model and (Cellpose-SAM) numeric precision that will run.
@@ -273,13 +319,16 @@ class CellposeBackend:
     ) -> tuple[np.ndarray, dict[str, Any]]:
 
         from cellquant.engines import CELLPOSE_CLASSIC
-        from cellquant.volume import scale_brightness
+        from cellquant.volume import scale_channels
 
         details = self.describe(parameters)
+        volume = np.asarray(volume)
+        several = _several_channels(volume, 3, details)  # (z, y, x, channels)
         model = self._model(details, parameters)
         classic = details["engine"] == CELLPOSE_CLASSIC
         # A part of a stack already scaled with the whole stack (cropping) is not scaled again.
-        scaled = volume if parameters.get("prescaled_volume") else scale_brightness(volume, "stack" if mode == "full_3d" else scale)
+        # Each channel is scaled on its own, as Cellpose scales the channels of one image.
+        scaled = volume if parameters.get("prescaled_volume") else scale_channels(volume, "stack" if mode == "full_3d" else scale)
         diameter = parameters.get("diameter_px", parameters.get("diameter"))
         diameter = None if diameter in (None, 0) else float(diameter)
         if diameter is None and classic:
@@ -301,6 +350,7 @@ class CellposeBackend:
             details["augment"] = True
         if classic:
             options["channels"] = [0, 0]
+        options.update(several)
         try:
             if mode == "stitch_slices":
                 planes = []
@@ -357,6 +407,7 @@ class CellposeBackend:
         from cellquant.engines import CELLPOSE_CLASSIC
 
         details = self.describe(parameters)
+        several = _several_channels(np.asarray(image), 2, details)  # (y, x, channels)
         diameter = parameters.get("diameter_px", parameters.get("diameter"))
         diameter = None if diameter in (None, 0) else float(diameter)
         gpu = bool(parameters.get("gpu", False))
@@ -411,6 +462,7 @@ class CellposeBackend:
                     min_size=min_size,
                     normalize=normalize,
                     **augment,
+                    **several,
                 )
             device = getattr(model, "device", None)
         except (SegmentationError, progress.AnalysisCancelled):
@@ -427,6 +479,32 @@ class CellposeBackend:
                 "Check that an NVIDIA GPU is present and that Install CellQuant.bat installed GPU support."
             )
         return np.asarray(masks, dtype=np.int32), details
+
+
+def _several_channels(image: np.ndarray, spatial_dimensions: int, details: dict[str, Any]) -> dict[str, Any]:
+    """Options for ``model.eval`` when ``image`` has a channel axis after its spatial ones.
+
+    {} for one channel, so one-channel runs call Cellpose exactly as before. With two or three
+    channels the count goes into ``details["input_channels"]`` and Cellpose is told where the
+    channel axis is. Classic Cellpose is refused: only Cellpose-SAM reads the channels together.
+    """
+
+    if image.ndim == spatial_dimensions:
+        return {}
+    from cellquant.engines import CELLPOSE_CLASSIC
+
+    if details["engine"] == CELLPOSE_CLASSIC:
+        raise SegmentationError(
+            "Extra input channels need Cellpose-SAM (Cellpose 4), but this copy of CellQuant runs classic Cellpose. "
+            "Clear Extra input channels in step 2 (Advanced), or open CellQuant with Cellpose-SAM."
+        )
+    count = int(image.shape[-1])
+    if image.ndim != spatial_dimensions + 1 or not 2 <= count <= MAX_INPUT_CHANNELS:
+        raise SegmentationError(
+            f"Cellpose-SAM reads at most {MAX_INPUT_CHANNELS} channels: the source channel and {MAX_INPUT_CHANNELS - 1} more."
+        )
+    details["input_channels"] = count
+    return {"channel_axis": -1}
 
 
 def resizes_to_diameter(parameters: dict[str, Any], classic: bool) -> bool:
@@ -778,8 +856,13 @@ def segment_objects(
     pixel_size_x: float | None = None,
     pixel_size_y: float | None = None,
     details: dict[str, Any] | None = None,
+    extra_channels: list[np.ndarray] | None = None,
 ) -> np.ndarray:
-    """Segment one 2D channel and apply shared size and border filters."""
+    """Segment one 2D channel and apply shared size and border filters.
+
+    ``extra_channels`` (Cellpose-SAM only): one or two more channels of the same image, read
+    together with ``channel`` to find the objects.
+    """
 
     if algorithm not in _BACKENDS:
         known = ", ".join(available_segmentation_backends()) or "none"
@@ -789,11 +872,14 @@ def segment_objects(
     import time
 
     backend = _BACKENDS[algorithm]
+    image = np.asarray(channel)
+    extras = _input_channels(image, extra_channels, backend, algorithm)
+    source = np.stack([image, *extras], axis=-1) if extras else image
     with_details = getattr(backend, "segment_with_details", None)
     if with_details is not None:
         started = time.perf_counter()
         with stage_timer() as stages:
-            raw, engine_details = with_details(np.asarray(channel), dict(parameters or {}))
+            raw, engine_details = with_details(source, dict(parameters or {}))
         elapsed = time.perf_counter() - started
         timings = engine_details.pop("timings", {})
         if details is not None:
@@ -805,11 +891,11 @@ def segment_objects(
                 "masks_and_rest": max(0.0, elapsed - network - timings.get("size_estimate", 0.0)),
             }
     else:
-        raw = backend.segment(np.asarray(channel), dict(parameters or {}))
+        raw = backend.segment(source, dict(parameters or {}))
     labels = np.asarray(raw)
     if labels.ndim != 2:
         raise SegmentationError("Segmentation must return a 2D label image.")
-    if labels.shape != np.asarray(channel).shape:
+    if labels.shape != image.shape:
         raise SegmentationError("Segmentation labels do not match the image shape.")
     if not np.issubdtype(labels.dtype, np.integer):
         raise SegmentationError("Segmentation labels must be integers.")
@@ -850,6 +936,7 @@ def segment_regions(
     pixel_size_x: float | None = None,
     pixel_size_y: float | None = None,
     details: dict[str, Any] | None = None,
+    extra_channels: list[np.ndarray] | None = None,
 ) -> np.ndarray:
     """Segment only inside these rectangles of one 2D channel; labels come back in the full frame.
 
@@ -857,6 +944,7 @@ def segment_regions(
     threshold (after the same smoothing) and Cellpose's brightness scaling, which is applied to
     the full image before cropping (Cellpose is then told not to scale again). Size limits apply
     to the pasted, full-frame labels. Object numbers are unique across rectangles.
+    ``extra_channels`` (Cellpose-SAM only) are read together with ``channel``, each scaled on its own.
     """
 
     import time
@@ -868,6 +956,7 @@ def segment_regions(
         raise SegmentationError(f"Unknown segmentation algorithm '{algorithm}'.")
     backend = _BACKENDS[algorithm]
     image = np.asarray(channel)
+    extras = _input_channels(image, extra_channels, backend, algorithm)
     parameters = dict(parameters or {})
     region_parameters = dict(parameters)
     if algorithm == "classical":
@@ -886,6 +975,8 @@ def segment_regions(
     elif algorithm == "cellpose":
         started = time.perf_counter()
         source = normalize_like_cellpose(image)  # the whole image's scaling
+        if extras:
+            source = np.stack([source, *(normalize_like_cellpose(item) for item in extras)], axis=-1)
         timings["normalize"] = time.perf_counter() - started
         region_parameters["normalize"] = False
         if region_parameters.get("diameter_px") in (None, 0) and hasattr(backend, "estimate_diameter"):
@@ -918,7 +1009,7 @@ def segment_regions(
             else:
                 raw = backend.segment(part, region_parameters)
             labels = np.asarray(raw).astype(np.int32, copy=False)
-            if labels.shape != part.shape:
+            if labels.shape != part.shape[:2]:
                 raise SegmentationError("Segmentation labels do not match the image shape.")
             inside = labels > 0
             full[y0:y1, x0:x1][inside] = labels[inside] + offset

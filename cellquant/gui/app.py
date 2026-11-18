@@ -2283,6 +2283,7 @@ class CellQuantWindow:
                 inputs.extend(widget for widget in panel.findChildren(kind) if widget not in view_only)
         # The crop channels are a checkable list; they change the settings too.
         inputs.append(self._objects_panel.crop_channels)
+        inputs.append(self._objects_panel.extra_channels)
         return inputs
 
     def _lock_settings(self, locked: bool) -> None:
@@ -2729,7 +2730,9 @@ class CellQuantWindow:
         self._refresh_all(keep_image=True)
         self.refresh_guidance()
         item = controller.active_analysis()
-        self.message(f"Showing analysis '{item.name}': objects found in {controller._channel_name(controller.recipe.object_set.segmentation_channel)}.")
+        extras = controller.extra_channel_names()
+        with_extra = f", with extra input channel{'s' if len(extras) > 1 else ''} {' and '.join(extras)}" if extras else ""
+        self.message(f"Showing analysis '{item.name}': objects found in {controller._channel_name(controller.recipe.object_set.segmentation_channel)}{with_extra}.")
 
     def set_nav_filter(self, words: str | None, ids: list[str] | None = None) -> None:
         """Previous / Next go through only these images (words: what they are), or every included image (None)."""
@@ -4827,6 +4830,16 @@ class ObjectsPanel(QWidget):
         advanced.addRow("Watershed minimum distance", self.watershed_distance)
         advanced.addRow("Watershed compactness", self.compactness)
         advanced.addRow("Cellpose model", self.cellpose_model)
+        # Cellpose-SAM only: up to two more channels it reads together with the source channel.
+        self.extra_channels = QListWidget()
+        self.extra_channels.setMaximumHeight(70)
+        self.extra_channels_note = QLabel("")
+        self.extra_channels_note.setWordWrap(True)
+        self.extra_channels_note.setStyleSheet("QLabel { color: #b9770e; }")
+        self.extra_channels.itemChanged.connect(lambda _item: self._extra_channels_changed())
+        self.channel.currentIndexChanged.connect(lambda _index: self._fill_extra_channels())
+        advanced.addRow("Extra input channels", self.extra_channels)
+        advanced.addRow(self.extra_channels_note)
         advanced.addRow(self.resize_to_diameter)
         advanced.addRow("Cellpose diameter (px)", self.diameter)
         advanced.addRow("Flow threshold", self.flow)
@@ -4915,6 +4928,9 @@ class ObjectsPanel(QWidget):
                 self._note_model_swap(str(saved_model), str(model))
         self.cellpose_model.setCurrentText(str(model or ""))
         self._refresh_crop(controller)
+        from cellquant.segmentation import extra_channel_indices
+
+        self._fill_extra_channels(extra_channel_indices(parameters))
         pixel = self._pixel_size_um()
         if parameters.get("diameter_um") is not None:
             self.nucleus_diameter_um.setValue(float(parameters["diameter_um"]))
@@ -5139,12 +5155,82 @@ class ObjectsPanel(QWidget):
         diameter = cellpose and (
             self._engine_key() == CELLPOSE_CLASSIC or self.resize_to_diameter.isChecked() or mode == "full_3d"
         )
+        sam = cellpose and self._engine_key() != CELLPOSE_CLASSIC
+        _show_row(self._advanced_form, self.extra_channels, sam)
+        self._show_extra_channels_note()
         _show_row(self._form, self.nucleus_diameter_um, diameter)
         _show_row(self._form, self.size_hint, diameter)
         _show_row(self._advanced_form, self.diameter, diameter)
         # Link overlap and Brightness belong to 2D + stitching only.
         _show_row(self._z3d_form, self.z_link, mode == "stitch_slices")
         _show_row(self._z3d_form, self.z_scale, mode == "stitch_slices")
+
+    def extra_channel_choice(self) -> list[int]:
+        """The extra input channels ticked, in list order."""
+
+        return [
+            int(self.extra_channels.item(row).data(Qt.UserRole))
+            for row in range(self.extra_channels.count())
+            if self.extra_channels.item(row).checkState() == Qt.Checked
+        ]
+
+    def _fill_extra_channels(self, chosen: list[int] | None = None) -> None:
+        """Every channel but the Default channel; ticks are kept (or taken from `chosen`) when still valid."""
+
+        if not hasattr(self, "extra_channels"):
+            return
+        controller = self.shell.controller
+        keep = set(self.extra_channel_choice() if chosen is None else chosen)
+        source = self.channel.currentData()
+        self.extra_channels.blockSignals(True)
+        self.extra_channels.clear()
+        if controller is not None:
+            for channel in controller.experiment.channels:
+                if channel.channel_index == source:
+                    continue
+                item = QListWidgetItem(channel_label(channel.channel_index, channel.channel_name))
+                item.setData(Qt.UserRole, channel.channel_index)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if channel.channel_index in keep else Qt.Unchecked)
+                self.extra_channels.addItem(item)
+        self.extra_channels.blockSignals(False)
+        self._extra_channels_changed()
+
+    def _extra_channels_changed(self) -> None:
+        """At most two ticked (the others are greyed out), and the note names what is read together."""
+
+        from cellquant.segmentation import MAX_INPUT_CHANNELS
+
+        limit = MAX_INPUT_CHANNELS - 1
+        full = len(self.extra_channel_choice()) >= limit
+        self.extra_channels.blockSignals(True)
+        for row in range(self.extra_channels.count()):
+            item = self.extra_channels.item(row)
+            block = full and item.checkState() != Qt.Checked
+            item.setFlags(item.flags() & ~Qt.ItemIsEnabled if block else item.flags() | Qt.ItemIsEnabled)
+            item.setToolTip(f"Cellpose-SAM reads at most {MAX_INPUT_CHANNELS} channels: the source channel and {limit} more." if block else "")
+        self.extra_channels.blockSignals(False)
+        self._show_extra_channels_note()
+
+    def _show_extra_channels_note(self) -> None:
+        if not hasattr(self, "extra_channels_note"):
+            return
+        from cellquant.engines import CELLPOSE_CLASSIC
+
+        names = []
+        for row in range(self.extra_channels.count()):
+            item = self.extra_channels.item(row)
+            if item.checkState() == Qt.Checked:
+                names.append(item.text().split(" = ", 1)[-1])
+        controller = self.shell.controller
+        index = self.channel.currentData()
+        source = controller._channel_name(index) if controller is not None and index is not None else self.channel.currentText().split(" = ", 1)[-1]
+        if names:
+            self.extra_channels_note.setText(
+                f"Objects are found from {' + '.join([source, *names])} together. A marker you measure, used here, can favor marker-positive cells."
+            )
+        shown = bool(names) and self.method.currentData() == "cellpose" and self._engine_key() != CELLPOSE_CLASSIC
+        _show_row(self._advanced_form, self.extra_channels_note, shown)
 
     def _refresh_crop(self, controller) -> None:
         from cellquant.crop import crop_channels
@@ -5453,6 +5539,12 @@ class ObjectsPanel(QWidget):
                 "gpu": self.use_gpu() if local else bool(previous.get("gpu", False)),
                 **size_filters,
             }
+            # Written only when used (Cellpose-SAM), so settings saved by earlier versions keep their content.
+            from cellquant.engines import CELLPOSE_CLASSIC
+
+            extra = self.extra_channel_choice() if local else list(previous.get("extra_channels") or [])
+            if extra and self._engine_key() != CELLPOSE_CLASSIC:
+                parameters["extra_channels"] = extra
             if not self.resize_to_diameter.isChecked() or self.z_stack.currentData() == "full_3d":
                 # Written when off, and always in true 3D (where it starts off), so 2D settings that
                 # resize stay as every earlier version saved them.
