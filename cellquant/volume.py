@@ -52,6 +52,15 @@ def scale_brightness(stack: np.ndarray, scope: str = "stack") -> np.ndarray:
     return _scale(data, sample)
 
 
+def scale_channels(stack: np.ndarray, scope: str = "stack") -> np.ndarray:
+    """``scale_brightness`` for ``(z, y, x)``, or for each channel of ``(z, y, x, channels)`` on its own."""
+
+    data = np.asarray(stack)
+    if data.ndim != 4:
+        return scale_brightness(data, scope)
+    return np.stack([scale_brightness(data[..., index], scope) for index in range(data.shape[-1])], axis=-1)
+
+
 def _scale(values: np.ndarray, sample: np.ndarray) -> np.ndarray:
     low, high = np.percentile(sample, [LOW_PERCENTILE, HIGH_PERCENTILE])
     if not np.isfinite(low) or not np.isfinite(high) or high <= low:
@@ -171,14 +180,14 @@ def _segment_regions_3d(volume, algorithm, backend, parameters, mode, scale, rat
 
     if algorithm != "cellpose":
         raise SegmentationError("Cropping a Z-stack needs Cellpose; use the whole image for the classical method.")
-    source = scale_brightness(volume, "stack" if mode == "full_3d" else scale)
+    source = scale_channels(volume, "stack" if mode == "full_3d" else scale)
     region_parameters = {**parameters, "prescaled_volume": True}
     if region_parameters.get("diameter_px") in (None, 0) and hasattr(backend, "estimate_diameter"):
         y0, y1, x0, x1 = max(rectangles, key=lambda box: (box[1] - box[0]) * (box[3] - box[2]))
         estimate = backend.estimate_diameter(np.ascontiguousarray(source[:, y0:y1, x0:x1].max(axis=0)), region_parameters)
         if estimate:
             region_parameters["diameter_px"] = estimate
-    full = np.zeros(volume.shape, dtype=np.int32)
+    full = np.zeros(volume.shape[:3], dtype=np.int32)
     offset = 0
     timings: dict[str, float] = {}
     for y0, y1, x0, x1 in rectangles:
@@ -188,7 +197,7 @@ def _segment_regions_3d(volume, algorithm, backend, parameters, mode, scale, rat
         info["engine"] = part_info.get("engine", info.get("engine"))
         for key, seconds in part_info.get("timings", {}).items():
             timings[key] = timings.get(key, 0.0) + seconds
-        if raw.shape != part.shape:
+        if raw.shape != part.shape[:3]:
             raise SegmentationError("Segmentation labels do not match the image shape.")
         inside = raw > 0
         full[:, y0:y1, x0:x1][inside] = raw[inside] + offset
@@ -212,8 +221,12 @@ def segment_volume(
     min_slices: int = 1,
     details: dict[str, Any] | None = None,
     rectangles: list[tuple[int, int, int, int]] | None = None,
+    extra_channels: list[np.ndarray] | None = None,
 ) -> np.ndarray:
     """Segment one channel of a Z-stack, ``(z, y, x)``, into 3D objects.
+
+    ``extra_channels`` (Cellpose-SAM only): one or two more channels of the same stack, read
+    together with ``stack`` to find the objects.
 
     Size limits are applied to each object's largest cross-section, so they
     mean the same as in 2D. Objects in fewer than ``min_slices`` slices are
@@ -222,7 +235,7 @@ def segment_volume(
     """
 
     from cellquant.regions import isotropic_pixel_size
-    from cellquant.segmentation import _BACKENDS, available_segmentation_backends, filter_objects
+    from cellquant.segmentation import _BACKENDS, _input_channels, available_segmentation_backends, filter_objects
 
     volume = np.asarray(stack)
     if volume.ndim != 3:
@@ -234,6 +247,8 @@ def segment_volume(
         raise SegmentationError(f"Unknown segmentation algorithm '{algorithm}'. Available algorithms: {known}.")
     parameters = dict(parameters or {})
     backend = _BACKENDS[algorithm]
+    extras = _input_channels(volume, extra_channels, backend, algorithm)
+    source = np.stack([volume, *extras], axis=-1) if extras else volume  # (z, y, x, channels)
     xy = isotropic_pixel_size(pixel_size_x, pixel_size_y)
     ratio = anisotropy(xy, pixel_size_z)
     info: dict[str, Any] = {"z_mode": mode, "z_scale_brightness": scale, "anisotropy": ratio}
@@ -245,9 +260,9 @@ def segment_volume(
             "Enter the Z step in step 1 for correct 3D shapes."
         )
     if rectangles:
-        raw = _segment_regions_3d(volume, algorithm, backend, parameters, mode, scale, ratio, rectangles, info)
+        raw = _segment_regions_3d(source, algorithm, backend, parameters, mode, scale, ratio, rectangles, info)
     else:
-        raw = _segment_whole(volume, algorithm, backend, parameters, mode, scale, ratio, info)
+        raw = _segment_whole(source, algorithm, backend, parameters, mode, scale, ratio, info)
     labels = np.asarray(raw)
     if labels.shape != volume.shape:
         raise SegmentationError("Segmentation labels do not match the image shape.")
