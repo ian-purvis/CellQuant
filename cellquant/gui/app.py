@@ -1205,20 +1205,21 @@ class CellQuantWindow:
         self._tabs.currentChanged.connect(lambda _index: self._edit_panel._set_circle(None))
         self._tabs.currentChanged.connect(lambda _index: self._review_panel.leave_marking())
         main_dock = self.viewer.window.add_dock_widget(self._dock, name="CellQuant", area="right")
+        from cellquant.gui.panel_fit import PanelFitter, PanelScroll
         from cellquant.gui.plan_dock import PlanDock
 
         self._plan_dock = PlanDock(self)
-        self._plan_dock_widget = self.viewer.window.add_dock_widget(self._plan_dock, name="Plan", area="left")
+        self._plan_dock_widget = self.viewer.window.add_dock_widget(PanelScroll(self._plan_dock), name="Plan", area="left")
         self._plan_dock_widget.hide()
         from cellquant.gui.measure_dock import MeasureDock
 
         self._measure_dock = MeasureDock(self)
-        self._measure_dock_widget = self.viewer.window.add_dock_widget(self._measure_dock, name="Measure", area="right")
+        self._measure_dock_widget = self.viewer.window.add_dock_widget(PanelScroll(self._measure_dock), name="Measure", area="right")
         self._measure_dock_widget.hide()
         run_dock = self.viewer.window.add_dock_widget(FooterScroll(self._footer), name="Run", area="bottom")
         # Under napari's layer controls: a view control that stays put whichever layer is selected.
         self._view_box = ViewBox(self)
-        view_dock = self.viewer.window.add_dock_widget(self._view_box, name="View", area="left")
+        view_dock = self.viewer.window.add_dock_widget(PanelScroll(self._view_box), name="View", area="left")
         self._floating_headers = [floating_header(dock) for dock in (main_dock, self._plan_dock_widget, self._measure_dock_widget, run_dock, view_dock)]
         # napari's own layer controls and layer list: popped out they get the same header, minus Close, and they
         # cannot be hidden by accident. Any panel can be docked side by side with another, not just tabbed.
@@ -1230,6 +1231,12 @@ class CellQuantWindow:
 
         main_window = self.viewer.window._qt_window
         main_window.setDockOptions(main_window.dockOptions() | QMainWindow.DockOption.AllowNestedDocks)
+        # In a window too short for a column of panels, they scroll instead of being drawn over each other:
+        # first the Plan, then Measure and View, and napari's layer list and layer controls last.
+        layer_docks = [qt_viewer.dockLayerList, qt_viewer.dockLayerControls]
+        for dock in layer_docks:
+            dock.setWidget(PanelScroll(dock.widget()))
+        self._panel_fitter = PanelFitter(main_window, [self._plan_dock_widget, self._measure_dock_widget, view_dock, *layer_docks])
         guide.apply_help(self)
         self._add_help_entries()
         self._guide_timer = guide.start_refresh_timer(self)
@@ -2378,7 +2385,15 @@ class CellQuantWindow:
     def show_plan(self) -> None:
         if self.require_controller() is None:
             return
+        # Popped out, like Measure: the column beside the image is too short for the list on most screens.
+        first = not self._plan_dock_widget.isVisible()
+        if first:
+            # Before it is shown: shown docked for a moment, it would leave its column widened.
+            self._plan_dock_widget.setFloating(True)
         self._plan_dock_widget.show()
+        if first:
+            # Qt opens it at its smallest size, a few rows of the list; open it at the size the Plan asks for.
+            self._plan_dock_widget.resize(self._plan_dock_widget.size().expandedTo(self._plan_dock_widget.sizeHint()))
         self._plan_dock_widget.raise_()
         self._plan_dock.refresh()
 
@@ -3595,6 +3610,7 @@ class ViewBox(QWidget):
         self.measure.setToolTip("Open the Measure window: draw lines or shapes on the image to get length, area and volume, and export them to a CSV.")
         self.measure.clicked.connect(lambda: shell.show_measure())
         layout.addWidget(self.measure)
+        layout.addStretch(1)  # popped out and made taller, the rows stay together at the top
         self.refresh()
 
     def _image_layers(self):
