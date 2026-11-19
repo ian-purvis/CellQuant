@@ -117,10 +117,20 @@ class PanelFitter(QObject):
     def _docked(self, dock) -> bool:
         return not dock.isHidden() and not dock.isFloating()
 
+    @staticmethod
+    def _scroll(dock):
+        """The dock's PanelScroll, or None while the dock holds something else (a panel taken out or swapped meanwhile)."""
+
+        widget = dock.widget()
+        return widget if isinstance(widget, PanelScroll) else None
+
     def _state(self):
         """What the fit depends on. Squeezing changes none of it, so the layout request that follows a fit ends here."""
 
-        mine = tuple((self._docked(dock), dock.widget().full_height()) for dock in self._docks)
+        mine = tuple(
+            (self._docked(dock), scroll.full_height() if scroll is not None else 0)
+            for dock, scroll in ((dock, self._scroll(dock)) for dock in self._docks)
+        )
         others = tuple(
             dock.minimumSizeHint().height()
             for dock in self._window.findChildren(QDockWidget)
@@ -146,13 +156,14 @@ class PanelFitter(QObject):
         self._seen = state
         layout = self._window.layout()
         for dock in self._docks:
-            dock.widget().set_squeezed(False)
+            if self._scroll(dock) is not None:
+                self._scroll(dock).set_squeezed(False)
         squeezed = []
-        for dock in (dock for dock in self._docks if self._docked(dock)):
+        for dock in (dock for dock in self._docks if self._docked(dock) and self._scroll(dock) is not None):
             layout.invalidate()  # the height the window needs is worked out again, with the panels as they are now
             if layout.totalMinimumSize().height() <= self._window.height():
                 break
-            dock.widget().set_squeezed(True)
+            self._scroll(dock).set_squeezed(True)
             squeezed.append(dock)
         if squeezed:
             QTimer.singleShot(0, lambda: self._share(squeezed))
@@ -161,8 +172,8 @@ class PanelFitter(QObject):
         """A squeezed panel takes the room its column has to spare, up to its full height (Qt would leave it at the floor)."""
 
         try:
-            docks = [dock for dock in squeezed if self._docked(dock) and dock.widget().squeezed()]
-            heights = [dock.widget().full_height() + dock.height() - dock.widget().height() for dock in docks]
+            docks = [dock for dock in squeezed if self._docked(dock) and self._scroll(dock) is not None and self._scroll(dock).squeezed()]
+            heights = [self._scroll(dock).full_height() + dock.height() - dock.widget().height() for dock in docks]
             if docks:
                 self._window.resizeDocks(docks, heights, Qt.Vertical)
         except RuntimeError:
