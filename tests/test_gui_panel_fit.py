@@ -126,3 +126,30 @@ def test_panels_keep_their_full_height_when_the_window_has_room(tmp_path: Path, 
     _events(0.8)
     assert not view.widget().squeezed() and view.widget().height() >= view.widget().full_height()
     assert _overlaps(window) == []
+
+
+def test_a_dock_that_lost_its_panel_is_skipped(qtbot):
+    """A dock whose panel was taken out or swapped (seen in a long batch run) must not break the fit, now or later."""
+
+    from qtpy.QtCore import Qt
+    from qtpy.QtWidgets import QDockWidget, QLabel, QMainWindow
+
+    from cellquant.gui.panel_fit import PanelFitter, PanelScroll
+
+    window = QMainWindow()
+    qtbot.addWidget(window)
+    docks = []
+    for name in ("One", "Two", "Three"):
+        dock = QDockWidget(name, window)
+        dock.setWidget(PanelScroll(QLabel(name)))
+        window.addDockWidget(Qt.LeftDockWidgetArea, dock)
+        docks.append(dock)
+    fitter = PanelFitter(window, docks)
+    window.show()
+    fitter.fit()
+    docks[1].setWidget(QLabel("swapped"))  # not a PanelScroll
+    docks[2].setWidget(None)  # nothing at all
+    window.resize(300, 120)
+    fitter.fit()  # no AttributeError
+    window.resize(300, 400)
+    fitter.fit()
